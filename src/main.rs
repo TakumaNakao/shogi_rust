@@ -1,7 +1,7 @@
 use anyhow::Result;
-use rayon::prelude::*;
-use shogi::{Color, Piece, PieceKind, Position, Square, Move};
-use shogi_csa::Record;
+
+use shogi_core::{Color, Piece, PieceKind, Position, Square, Move};
+use csa;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
@@ -13,7 +13,7 @@ use rand::prelude::*;
 use rand_distr::Distribution;
 
 const KPP_DIM: usize = 200_000_000;
-const NNZ: usize = 1482;
+
 const BATCH_SIZE: usize = 32;
 
 #[derive(Default)]
@@ -70,7 +70,7 @@ impl SparseModel {
     fn update_batch(&mut self, batch: &[(Vec<usize>, f32)], batch_index: usize) {
         let m = batch.len() as f32;
         let mut total_loss = 0.0;
-        for (x, &y_true) in batch.iter() {
+        for (x, y_true) in batch.iter() {
             let y_pred = self.predict(x);
             let error = y_pred - y_true;
             total_loss += error * error;
@@ -85,34 +85,44 @@ impl SparseModel {
 
 fn encode_piece(piece: Piece, sq: Option<Square>, hand_index: usize) -> usize {
     let base = match sq {
-        Some(sq) => sq.to_u8() as usize,
+        Some(sq) => sq.index() as usize,
         None => 81 + hand_index,
     };
-    let kind = piece.piece_kind().to_u8() as usize;
-    let owner = if piece.color().is_black() { 0 } else { 1 };
+    let kind = piece.piece_kind() as u8 as usize;
+    let owner = if piece.color() == Color::Black { 0 } else { 1 };
     owner * 750 + kind * 81 + base
 }
 
 fn extract_kpp_features(pos: &Position) -> Vec<usize> {
     let mut pieces = vec![];
 
-    let king_sq = if let Some(sq) = pos.king_square(Color::Black) {
-        sq.to_u8() as usize
+    let king_sq = if let Some(king_sq_val) = (0..81).find_map(|i| {
+        let sq = Square::from_u8(i as u8).unwrap();
+        pos.piece_at(sq).and_then(|p| {
+            if p.piece_kind() == PieceKind::King && p.color() == Color::Black {
+                Some(sq.index() as usize)
+            } else {
+                None
+            }
+        })
+    }) {
+        king_sq_val
     } else {
         return vec![];
     };
 
-    for sq in Square::all() {
+    for i in 0..81 {
+        let sq = Square::from_u8(i as u8).unwrap();
         if let Some(piece) = pos.piece_at(sq) {
             pieces.push(encode_piece(piece, Some(sq), 0));
         }
     }
 
     for color in [Color::Black, Color::White] {
-        for kind in PieceKind::iter() {
-            let count = pos.hand_of(color).num_kind(kind);
+        for kind in PieceKind::all().iter().copied() {
+            let count = pos.hand_of_a_player(color).count(kind).unwrap_or(0);
             for i in 0..count {
-                pieces.push(encode_piece(Piece::new(color, kind), None, i as usize));
+                pieces.push(encode_piece(Piece::new(kind, color), None, i as usize));
             }
         }
     }
@@ -134,20 +144,30 @@ fn load_csa_dataset(dir: &Path) -> Result<Vec<(Vec<usize>, f32)>> {
         let path = entry?.path();
         if path.extension().map(|e| e == "csa").unwrap_or(false) {
             let text = fs::read_to_string(&path)?;
-            let record = Record::from_str(&text)?;
+            let record = csa::parse_csa(&text)?;
 
-            let mut pos = Position::startpos();
+            let mut pos = Position::default();
             for mv in &record.moves {
-                if let Move::Normal(m) = mv {
-                    let features = extract_kpp_features(&pos);
-                    let label = match record.win {
-                        Some(Color::Black) => 1.0,
-                        Some(Color::White) => -1.0,
-                        None => 0.0,
-                    };
-                    data.push((features, label));
-                    pos.make_move(m);
-                }
+                let shogi_move = match &mv.action {
+                    csa::Action::Move(_color, from_csa, to_csa, piece_type_after_csa) => {
+                        let from_sq = Square::new(from_csa.file, from_csa.rank).unwrap();
+                        let to_sq = Square::new(to_csa.file, to_csa.rank).unwrap();
+                        let piece_before = pos.piece_at(from_sq).unwrap();
+                        let promote = piece_before.piece_kind() as u8 != *piece_type_after_csa as u8;
+                        Move::Normal { from: from_sq, to: to_sq, promote }
+                    },
+                    _ => continue, // Skip non-move actions for now
+                };
+
+                let features = extract_kpp_features(&pos);
+                let label = match &mv.action {
+                    csa::Action::Toryo => 0.0,
+                    csa::Action::TimeUp => 0.0,
+                    csa::Action::IllegalMove => 0.0,
+                    _ => 0.0,
+                };
+                data.push((features, label));
+                let _ = pos.make_move(shogi_move);
             }
         }
     }
@@ -160,7 +180,8 @@ fn main() -> Result<()> {
     io::stdin().read_line(&mut year)?;
     let year = year.trim();
 
-    let data_dir = Path::new(&format!("./csa_files/{}", year));
+    let data_dir_str = format!("./csa_files/{}", year);
+    let data_dir = Path::new(&data_dir_str);
     let weight_path = Path::new("./weights.csv");
 
     let dataset = load_csa_dataset(data_dir)?;
