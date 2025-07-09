@@ -9,6 +9,8 @@ use std::path::Path;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::BufRead;
+use rand::prelude::*;
+use rand_distr::Distribution;
 
 const KPP_DIM: usize = 200_000_000;
 const NNZ: usize = 1482;
@@ -25,16 +27,6 @@ impl SparseModel {
         Self {
             w: HashMap::new(),
             eta,
-        }
-    }
-
-    fn initialize_random(&mut self, count: usize, stddev: f32) {
-        let mut rng = rand::thread_rng();
-        let dist = rand_distr::Normal::new(0.0, stddev).unwrap();
-        for _ in 0..count {
-            let i = rng.gen_range(0..KPP_DIM);
-            let v = dist.sample(&mut rng) as f32;
-            self.w.insert(i, v);
         }
     }
 
@@ -61,20 +53,33 @@ impl SparseModel {
         Ok(())
     }
 
+    fn initialize_random(&mut self, count: usize, stddev: f32) {
+        let mut rng = rand::thread_rng();
+        let dist = rand_distr::Normal::new(0.0, stddev).unwrap();
+        for _ in 0..count {
+            let i = rng.gen_range(0..KPP_DIM);
+            let v = dist.sample(&mut rng) as f32;
+            self.w.insert(i, v);
+        }
+    }
+
     fn predict(&self, x: &[usize]) -> f32 {
         x.iter().map(|&i| *self.w.get(&i).unwrap_or(&0.0)).sum()
     }
 
-    fn update_batch(&mut self, batch: &[(Vec<usize>, f32)]) {
+    fn update_batch(&mut self, batch: &[(Vec<usize>, f32)], batch_index: usize) {
         let m = batch.len() as f32;
+        let mut total_loss = 0.0;
         for (x, &y_true) in batch.iter() {
             let y_pred = self.predict(x);
             let error = y_pred - y_true;
+            total_loss += error * error;
             for &i in x {
                 let w_i = self.w.entry(i).or_insert(0.0);
                 *w_i -= self.eta * error / m;
             }
         }
+        println!("バッチ {}: 平均二乗誤差 = {:.6}", batch_index, total_loss / m);
     }
 }
 
@@ -155,7 +160,7 @@ fn main() -> Result<()> {
     io::stdin().read_line(&mut year)?;
     let year = year.trim();
 
-    let data_dir = Path::new(&format!('./csa_files/{}', year));
+    let data_dir = Path::new(&format!("./csa_files/{}", year));
     let weight_path = Path::new("./weights.csv");
 
     let dataset = load_csa_dataset(data_dir)?;
@@ -168,13 +173,13 @@ fn main() -> Result<()> {
         println!("重みファイルを読み込みました。");
     } else {
         println!("重みファイルが存在しません。初期化中...");
-        model.initialize_random(50_000, 0.01); // 例：50,000点を平均0・標準偏差0.01で初期化
+        model.initialize_random(50_000, 0.01);
         model.save(weight_path)?;
         println!("初期重みを保存しました。");
     }
 
-    for batch in dataset.chunks(BATCH_SIZE) {
-        model.update_batch(batch);
+    for (batch_index, batch) in dataset.chunks(BATCH_SIZE).enumerate() {
+        model.update_batch(batch, batch_index);
     }
 
     println!("学習完了。重み数: {}", model.w.len());
