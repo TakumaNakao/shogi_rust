@@ -97,7 +97,9 @@ fn extract_kpp_features(pos: &Position) -> Vec<usize> {
     let mut pieces = vec![];
 
     let king_sq = if let Some(king_sq_val) = (0..81).find_map(|i| {
-        let sq = Square::from_u8(i as u8).unwrap();
+        let file = (i % 9) as u8 + 1;
+        let rank = (i / 9) as u8 + 1;
+        let sq = Square::new(file, rank).unwrap();
         pos.piece_at(sq).and_then(|p| {
             if p.piece_kind() == PieceKind::King && p.color() == Color::Black {
                 Some(sq.index() as usize)
@@ -112,7 +114,9 @@ fn extract_kpp_features(pos: &Position) -> Vec<usize> {
     };
 
     for i in 0..81 {
-        let sq = Square::from_u8(i as u8).unwrap();
+        let file = (i % 9) as u8 + 1;
+        let rank = (i / 9) as u8 + 1;
+        let sq = Square::new(file, rank).unwrap();
         if let Some(piece) = pos.piece_at(sq) {
             pieces.push(encode_piece(piece, Some(sq), 0));
         }
@@ -150,9 +154,9 @@ fn load_csa_dataset(dir: &Path) -> Result<Vec<(Vec<usize>, f32)>> {
             for mv in &record.moves {
                 let shogi_move = match &mv.action {
                     csa::Action::Move(_color, from_csa, to_csa, piece_type_after_csa) => {
-                        let from_sq = Square::new(from_csa.file, from_csa.rank).unwrap();
-                        let to_sq = Square::new(to_csa.file, to_csa.rank).unwrap();
-                        let piece_before = pos.piece_at(from_sq).unwrap();
+                        let from_sq = if let Some(sq) = Square::new(from_csa.file, from_csa.rank) { sq } else { continue; };
+                        let to_sq = if let Some(sq) = Square::new(to_csa.file, to_csa.rank) { sq } else { continue; };
+                        let piece_before = if let Some(p) = pos.piece_at(from_sq) { p } else { continue; };
                         let promote = piece_before.piece_kind() as u8 != *piece_type_after_csa as u8;
                         Move::Normal { from: from_sq, to: to_sq, promote }
                     },
