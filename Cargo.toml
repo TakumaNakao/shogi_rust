@@ -1,5 +1,11 @@
-shogi = "0.25.0"
-shogi_csa = "0.14.0"
+[package]
+name = "shogi_kpp_training"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shogi = "0.12.2"
+csa = "1.0.2"
 anyhow = "1.0"
 rayon = "1.5"
 rand = "0.8"
