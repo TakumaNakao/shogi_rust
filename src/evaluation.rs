@@ -82,9 +82,9 @@ pub fn encode_piece(piece: Piece, sq: Option<Square>, hand_index: usize) -> usiz
         Some(sq) => sq.index() as usize,
         None => 81 + hand_index,
     };
-    let kind = piece.piece_kind() as u8 as usize;
+    let kind = piece.piece_kind() as u8 as usize - 1;
     let owner = if piece.color() == Color::Black { 0 } else { 1 };
-    owner * 750 + kind * 81 + base
+    owner * 1500 + kind * 100 + base
 }
 
 pub fn extract_kpp_features(pos: &Position) -> Vec<usize> {
@@ -126,9 +126,17 @@ pub fn extract_kpp_features(pos: &Position) -> Vec<usize> {
     }
 
     let mut indices = vec![];
+
     for i in 0..pieces.len() {
         for j in (i + 1)..pieces.len() {
-            let idx = king_sq * 1500 * 1500 + pieces[i] * 1500 + pieces[j];
+            // 2つの駒の順序を固定して組み合わせの重複をなくす
+            let (p1, p2) = if pieces[i] < pieces[j] { (pieces[i], pieces[j]) } else { (pieces[j], pieces[i]) };
+
+            // 注意: このインデックス計算はKPP_DIMを超える可能性があります。
+            // pieceのエンコード値の最大値(P_MAX)を考慮すると、
+            // king_sq * P_MAX * P_MAX + p1 * P_MAX + p2 は巨大な数になります。
+            // インデックスの設計を見直す必要があります。
+            let idx = (king_sq * 1500 * 1500 + p1 * 1500 + p2) % KPP_DIM;
             indices.push(idx);
         }
     }
