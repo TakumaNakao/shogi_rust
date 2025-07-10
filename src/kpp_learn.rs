@@ -1,16 +1,16 @@
 use anyhow::Result;
-
 use shogi_core::{Color, Move, Piece, PieceKind, Position, Square};
 use csa;
 use std::fs;
-use std::io::{self, Write};
+use std::env;
 use std::path::Path;
 use rand::prelude::*;
+use plotters::prelude::*;
 
 mod evaluation;
 use evaluation::{SparseModel, extract_kpp_features};
 
-const BATCH_SIZE: usize = 4096;
+const BATCH_SIZE: usize = 16768;
 
 const REWARD_GAIN: f32 = 25.0;
 
@@ -34,7 +34,7 @@ fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     }
 }
 
-fn process_csa_file(path: &Path, model: &mut SparseModel, batch: &mut Vec<(Vec<usize>, f32)>, batch_count: &mut usize) -> Result<()> {
+fn process_csa_file(path: &Path, _model: &mut SparseModel, batch: &mut Vec<(Vec<usize>, f32)>) -> Result<()> {
     let text = fs::read_to_string(path)?;
     let record = csa::parse_csa(&text)?;
 
@@ -86,11 +86,13 @@ fn process_csa_file(path: &Path, model: &mut SparseModel, batch: &mut Vec<(Vec<u
                     let from_sq = if let Some(sq) = Square::new(from_csa.file, from_csa.rank) {
                         sq
                     } else {
+                        println!{"Error from_sq"};
                         continue;
                     };
                     let piece_before = if let Some(p) = pos.piece_at(from_sq) {
                         p
                     } else {
+                        println!{"Error piece_before"};
                         continue;
                     };
                     let promote = piece_before.piece_kind() != csa_to_shogi_piece_kind(*piece_type_after_csa);
@@ -110,11 +112,6 @@ fn process_csa_file(path: &Path, model: &mut SparseModel, batch: &mut Vec<(Vec<u
         let features = extract_kpp_features(&pos);
         if !features.is_empty() {
             batch.push((features, label));
-            if batch.len() >= BATCH_SIZE {
-                model.update_batch(batch, *batch_count);
-                *batch_count += 1;
-                batch.clear();
-            }
         }
         if pos.make_move(shogi_move).is_none() {
             break;
@@ -123,15 +120,46 @@ fn process_csa_file(path: &Path, model: &mut SparseModel, batch: &mut Vec<(Vec<u
     Ok(())
 }
 
+fn draw_mse_graph(data: &[(usize, f32)], path: &str) -> Result<()> {
+    let root = BitMapBackend::new(path, (1024, 768)).into_drawing_area();
+    root.fill(&WHITE)?;
+
+    if data.is_empty() {
+        return Ok(());
+    }
+
+    let max_mse = data.iter().map(|&(_, mse)| mse).fold(f32::NAN, f32::max);
+
+    let mut chart = ChartBuilder::on(&root)
+        .caption("MSE per Batch", ("sans-serif", 50).into_font())
+        .margin(10)
+        .x_label_area_size(30)
+        .y_label_area_size(50)
+        .build_cartesian_2d(0..data.len(), 0f32..max_mse)?;
+
+    chart.configure_mesh().draw()?;
+
+    chart.draw_series(LineSeries::new(
+        data.iter().enumerate().map(|(i, &(_, mse))| (i, mse)),
+        &RED,
+    ))?;
+
+    root.present()?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
-    println!("使用する年を入力してください（例: 2017）: ");
-    let mut year = String::new();
-    io::stdin().read_line(&mut year)?;
-    let year = year.trim();
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        eprintln!("使用法: {} <year>", args[0]);
+        return Ok(());
+    }
+    let year = String::from(&args[1]);
 
     let data_dir_str = format!("./csa_files/{}", year);
     let data_dir = Path::new(&data_dir_str);
     let weight_path = Path::new("./weights.csv");
+    let mse_graph_path = "mse_graph.png";
 
     let mut model = SparseModel::new(0.01);
 
@@ -166,25 +194,36 @@ fn main() -> Result<()> {
     let mut batch = Vec::with_capacity(BATCH_SIZE);
     let mut batch_count = 0;
     let mut file_count = 0;
+    let mut mse_history = Vec::new();
 
     for path in &csa_files {
-        if let Err(e) = process_csa_file(&path, &mut model, &mut batch, &mut batch_count) {
+        if let Err(e) = process_csa_file(&path, &mut model, &mut batch) {
             eprintln!("ファイル処理エラー: {:?} - {}", path, e);
         }
+        
+        if batch.len() >= BATCH_SIZE {
+            let mse = model.update_batch(&batch, batch_count);
+            mse_history.push((batch_count, mse));
+            batch_count += 1;
+            batch.clear();
+            draw_mse_graph(&mse_history, mse_graph_path)?;
+        }
+
         file_count += 1;
         println!("処理済みファイル数: {} / {}", file_count, csa_files.len());
 
-        // ファイル処理ごとに重みを保存
         model.save(weight_path)?;
     }
 
-    // 残りのバッチを処理
     if !batch.is_empty() {
-        model.update_batch(&batch, batch_count);
+        let mse = model.update_batch(&batch, batch_count);
+        mse_history.push((batch_count, mse));
+        draw_mse_graph(&mse_history, mse_graph_path)?;
     }
 
     println!("学習完了。重み数: {}", model.w.len());
     model.save(weight_path)?;
     println!("最終的な重みを保存しました: {:?}", weight_path);
+    println!("MSEグラフを保存しました: {}", mse_graph_path);
     Ok(())
 }

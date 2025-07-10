@@ -61,8 +61,11 @@ impl SparseModel {
         x.iter().map(|&i| *self.w.get(&i).unwrap_or(&0.0)).sum()
     }
 
-    pub fn update_batch(&mut self, batch: &[(Vec<usize>, f32)], batch_index: usize) {
+    pub fn update_batch(&mut self, batch: &[(Vec<usize>, f32)], batch_index: usize) -> f32 {
         let m = batch.len() as f32;
+        if m == 0.0 {
+            return 0.0;
+        }
         let mut total_loss = 0.0;
         for (x, y_true) in batch.iter() {
             let y_pred = self.predict(x);
@@ -73,7 +76,9 @@ impl SparseModel {
                 *w_i -= self.eta * error / m;
             }
         }
-        println!("バッチ {}: 平均二乗誤差 = {:.6}", batch_index, total_loss / m);
+        let mse = total_loss / m;
+        println!("バッチ {}: 平均二乗誤差 = {:.6}", batch_index, mse);
+        mse
     }
 }
 
