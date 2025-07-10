@@ -16,3 +16,11 @@ serde_json = "1.0"
 glob = "0.3"
 indicatif = "0.17"
 flate2 = "1.0"
+
+[[bin]]
+name = "kpp_learn"
+path = "src/kpp_learn.rs"
+
+[[bin]]
+name = "kpp_test"
+path = "src/kpp_test.rs"
