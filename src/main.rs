@@ -150,6 +150,41 @@ fn load_csa_dataset(dir: &Path) -> Result<Vec<(Vec<usize>, f32)>> {
             let text = fs::read_to_string(&path)?;
             let record = csa::parse_csa(&text)?;
 
+            // 最後の指し手を取得して勝敗を判断
+            let last_move = if let Some(mv) = record.moves.last() {
+                mv
+            } else {
+                continue; // 指し手がない棋譜はスキップ
+            };
+
+            // 最後のActionまたはSpecialMoveから勝者を決定する
+            let winner: Option<csa::Color> = match last_move.action {
+                csa::Action::Toryo | csa::Action::Tsumi => {
+                    // 投了・詰みがあった場合、最後の実際の駒移動手を探す
+                    // ※MapRecord::action が Action::Move のものを逆順に検索
+                    if let Some(prev) = record.moves.iter().rev().find(|m| matches!(m.action, csa::Action::Move(_, _, _, _)))
+                    {
+                        if let csa::Action::Move(color, _, _, _) = prev.action {
+                            Some(color)
+                        }
+                        else{
+                            None
+                        }
+                    }
+                    else{
+                        None
+                    }
+                }
+                _ => None,
+            };
+            
+            // 勝敗結果から、この棋譜全体の基準となるラベルを決定
+            let final_label = match winner {
+                Some(csa::Color::Black) => 1.0,
+                Some(csa::Color::White) => -1.0,
+                None => continue, // 勝敗がついていない棋譜はスキップ
+            };
+
             let mut pos = Position::default();
             for mv in &record.moves {
                 let shogi_move = match &mv.action {
@@ -163,14 +198,16 @@ fn load_csa_dataset(dir: &Path) -> Result<Vec<(Vec<usize>, f32)>> {
                     _ => continue, // Skip non-move actions for now
                 };
 
-                let features = extract_kpp_features(&pos);
-                let label = match &mv.action {
-                    csa::Action::Toryo => 0.0,
-                    csa::Action::TimeUp => 0.0,
-                    csa::Action::IllegalMove => 0.0,
-                    _ => 0.0,
+                let label = if pos.side_to_move() == Color::Black {
+                    final_label
+                } else {
+                    -final_label
                 };
-                data.push((features, label));
+
+                let features = extract_kpp_features(&pos);
+                if !features.is_empty() {
+                    data.push((features, label));
+                }
                 let _ = pos.make_move(shogi_move);
             }
         }
