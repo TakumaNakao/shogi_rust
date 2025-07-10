@@ -1,148 +1,18 @@
 use anyhow::Result;
 
-use shogi_core::{Color, Piece, PieceKind, Position, Square, Move};
+use shogi_core::{Color, Position, Square, Move};
 use csa;
-use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use std::fs::File;
-use std::io::BufReader;
-use std::io::BufRead;
 use rand::prelude::*;
-use rand_distr::Distribution;
 
-const KPP_DIM: usize = 200_000_000;
+mod evaluation;
+use evaluation::{SparseModel, extract_kpp_features};
 
 const BATCH_SIZE: usize = 1024;
 
 const REWARD_GAIN: f32 = 25.0;
-
-#[derive(Default)]
-struct SparseModel {
-    w: HashMap<usize, f32>,
-    eta: f32,
-}
-
-impl SparseModel {
-    fn new(eta: f32) -> Self {
-        Self {
-            w: HashMap::new(),
-            eta,
-        }
-    }
-
-    fn load(&mut self, path: &Path) -> Result<()> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        for line in reader.lines() {
-            let line = line?;
-            let mut parts = line.split(',');
-            if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
-                let k: usize = k.parse()?;
-                let v: f32 = v.parse()?;
-                self.w.insert(k, v);
-            }
-        }
-        Ok(())
-    }
-
-    fn save(&self, path: &Path) -> Result<()> {
-        let mut file = File::create(path)?;
-        for (&k, &v) in &self.w {
-            writeln!(file, "{},{}", k, v)?;
-        }
-        Ok(())
-    }
-
-    fn initialize_random(&mut self, count: usize, stddev: f32) {
-        let mut rng = rand::thread_rng();
-        let dist = rand_distr::Normal::new(0.0, stddev).unwrap();
-        for _ in 0..count {
-            let i = rng.gen_range(0..KPP_DIM);
-            let v = dist.sample(&mut rng) as f32;
-            self.w.insert(i, v);
-        }
-    }
-
-    fn predict(&self, x: &[usize]) -> f32 {
-        x.iter().map(|&i| *self.w.get(&i).unwrap_or(&0.0)).sum()
-    }
-
-    fn update_batch(&mut self, batch: &[(Vec<usize>, f32)], batch_index: usize) {
-        let m = batch.len() as f32;
-        let mut total_loss = 0.0;
-        for (x, y_true) in batch.iter() {
-            let y_pred = self.predict(x);
-            let error = y_pred - y_true;
-            total_loss += error * error;
-            for &i in x {
-                let w_i = self.w.entry(i).or_insert(0.0);
-                *w_i -= self.eta * error / m;
-            }
-        }
-        println!("バッチ {}: 平均二乗誤差 = {:.6}", batch_index, total_loss / m);
-    }
-}
-
-fn encode_piece(piece: Piece, sq: Option<Square>, hand_index: usize) -> usize {
-    let base = match sq {
-        Some(sq) => sq.index() as usize,
-        None => 81 + hand_index,
-    };
-    let kind = piece.piece_kind() as u8 as usize;
-    let owner = if piece.color() == Color::Black { 0 } else { 1 };
-    owner * 750 + kind * 81 + base
-}
-
-fn extract_kpp_features(pos: &Position) -> Vec<usize> {
-    let mut pieces = vec![];
-
-    let king_sq = if let Some(king_sq_val) = (0..81).find_map(|i| {
-        let file = (i % 9) as u8 + 1;
-        let rank = (i / 9) as u8 + 1;
-        let sq = Square::new(file, rank).unwrap();
-        pos.piece_at(sq).and_then(|p| {
-            if p.piece_kind() == PieceKind::King && p.color() == Color::Black {
-                Some(sq.index() as usize)
-            } else {
-                None
-            }
-        })
-    }) {
-        king_sq_val
-    } else {
-        return vec![];
-    };
-
-    for i in 0..81 {
-        let file = (i % 9) as u8 + 1;
-        let rank = (i / 9) as u8 + 1;
-        let sq = Square::new(file, rank).unwrap();
-        if let Some(piece) = pos.piece_at(sq) {
-            pieces.push(encode_piece(piece, Some(sq), 0));
-        }
-    }
-
-    for color in [Color::Black, Color::White] {
-        for kind in PieceKind::all().iter().copied() {
-            let count = pos.hand_of_a_player(color).count(kind).unwrap_or(0);
-            for i in 0..count {
-                pieces.push(encode_piece(Piece::new(kind, color), None, i as usize));
-            }
-        }
-    }
-
-    let mut indices = vec![];
-    for i in 0..pieces.len() {
-        for j in (i + 1)..pieces.len() {
-            let idx = king_sq * 1500 * 1500 + pieces[i] * 1500 + pieces[j];
-            indices.push(idx);
-        }
-    }
-
-    indices
-}
 
 fn process_csa_file(path: &Path, model: &mut SparseModel, batch: &mut Vec<(Vec<usize>, f32)>, batch_count: &mut usize) -> Result<()> {
     let text = fs::read_to_string(path)?;

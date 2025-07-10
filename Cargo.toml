@@ -16,6 +16,7 @@ serde_json = "1.0"
 glob = "0.3"
 indicatif = "0.17"
 flate2 = "1.0"
+plotters = "0.3.6"
 
 [[bin]]
 name = "kpp_learn"
