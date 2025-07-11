@@ -8,7 +8,7 @@ use rand::prelude::*;
 use plotters::prelude::*;
 
 mod evaluation;
-use evaluation::{SparseModel, KppState};
+use evaluation::{SparseModel, extract_kpp_features};
 
 const BATCH_SIZE: usize = 16768;
 
@@ -66,12 +66,6 @@ fn process_csa_file(path: &Path, _model: &mut SparseModel, batch: &mut Vec<(Vec<
     };
 
     let mut pos = Position::default();
-    let mut kpp_state = if let Some(state) = KppState::new(&pos) {
-        state
-    } else {
-        return Ok(()); // 初期局面でKPP状態を生成できなければスキップ
-    };
-
     for (index, mv) in record.moves.iter().enumerate() {
         let shogi_move = match &mv.action {
             csa::Action::Move(color, from_csa, to_csa, piece_type_after_csa) => {
@@ -98,8 +92,7 @@ fn process_csa_file(path: &Path, _model: &mut SparseModel, batch: &mut Vec<(Vec<
                     let piece_before = if let Some(p) = pos.piece_at(from_sq) {
                         p
                     } else {
-                        // fromに駒がなければ不正な棋譜データ
-                        eprintln!("Warning: No piece at 'from' square in CSA file.");
+                        println!{"Error piece_before"};
                         continue;
                     };
                     let promote = piece_before.piece_kind() != csa_to_shogi_piece_kind(*piece_type_after_csa);
@@ -116,15 +109,13 @@ fn process_csa_file(path: &Path, _model: &mut SparseModel, batch: &mut Vec<(Vec<
         let gain = index as f32 / (index as f32 + REWARD_GAIN);
         let label = gain * final_label;
 
-        if !kpp_state.features.is_empty() {
-            batch.push((kpp_state.features.iter().cloned().collect(), label));
+        let features = extract_kpp_features(&pos);
+        if !features.is_empty() {
+            batch.push((features, label));
         }
-
-        let old_pos = pos.clone();
         if pos.make_move(shogi_move).is_none() {
             break;
         }
-        kpp_state.update(&old_pos, &shogi_move);
     }
     Ok(())
 }

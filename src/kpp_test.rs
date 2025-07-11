@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 
 mod evaluation;
-use evaluation::{KppState, SparseModel};
+use evaluation::{extract_kpp_features, SparseModel};
 
 fn csa_to_shogi_piece_kind(csa_piece_type: PieceType) -> PieceKind {
     match csa_piece_type {
@@ -55,14 +55,8 @@ fn main() -> Result<()> {
     let mut pos = Position::default();
     let mut scores = vec![];
 
-    let mut kpp_state = if let Some(state) = KppState::new(&pos) {
-        state
-    } else {
-        eprintln!("初期局面でKPP状態を生成できませんでした。");
-        return Ok(());
-    };
-
-    let score = model.predict(&kpp_state.features.iter().cloned().collect::<Vec<usize>>());
+    let features = extract_kpp_features(&pos);
+    let score = model.predict(&features);
     scores.push((0, score));
 
     for (index, mv) in record.moves.iter().enumerate() {
@@ -103,10 +97,9 @@ fn main() -> Result<()> {
             _ => continue,
         };
 
-        let old_pos = pos.clone();
         if pos.make_move(shogi_move).is_some() {
-            kpp_state.update(&old_pos, &shogi_move);
-            let score = model.predict(&kpp_state.features.iter().cloned().collect::<Vec<usize>>());
+            let features = extract_kpp_features(&pos);
+            let score = model.predict(&features);
             scores.push((index as i32 + 1, score));
         } else {
             eprintln!("不正な手です: {:?}", shogi_move);
