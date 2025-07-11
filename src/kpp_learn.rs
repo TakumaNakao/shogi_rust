@@ -11,7 +11,8 @@ use plotters::prelude::*;
 mod evaluation;
 use evaluation::{SparseModel, extract_kpp_features};
 
-const BATCH_SIZE: usize = 16768;
+const LEARNING_RATE: f32 = 0.1;
+const BATCH_SIZE: usize = 65536;
 
 const REWARD_GAIN: f32 = 25.0;
 
@@ -162,9 +163,10 @@ fn main() -> Result<()> {
     let weight_path = Path::new("./weights.csv");
     let mse_graph_path = "mse_graph.png";
 
-    let mut model = SparseModel::new(0.0000001); // learning_rateを直接渡す
+    let mut model = SparseModel::new(LEARNING_RATE);
 
     if weight_path.exists() {
+        println!("重みファイルを読み込んでいます...");
         model.load(weight_path)?;
         println!("重みファイルを読み込みました。");
     } else {
@@ -214,7 +216,10 @@ fn main() -> Result<()> {
             batch.clear();
             let elapsed_time_batch = start_time_batch.elapsed();
             println!("バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", batch_count, mse, elapsed_time_batch);
+            let start_time_save = Instant::now();
             model.save(weight_path)?;
+            let elapsed_time_save = start_time_save.elapsed();
+            println!("モデル保存 , 処理時間: {:?}", elapsed_time_save);
             mse_history.push((batch_count, mse));
             draw_mse_graph(&mse_history, mse_graph_path)?;
         }
@@ -225,7 +230,10 @@ fn main() -> Result<()> {
         let mse = model.update_batch(&batch, batch_count);
         let elapsed_time_batch = start_time_batch.elapsed();
         println!("バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", batch_count, mse, elapsed_time_batch);
+        let start_time_save = Instant::now();
         model.save(weight_path)?;
+        let elapsed_time_save = start_time_save.elapsed();
+        println!("モデル保存 , 処理時間: {:?}", elapsed_time_save);
         mse_history.push((batch_count, mse));
         draw_mse_graph(&mse_history, mse_graph_path)?;
     }

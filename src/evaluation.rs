@@ -118,19 +118,10 @@ impl SparseModel {
         self.bias = f32::from_le_bytes(buffer);
 
         // Read weights
-        loop {
-            match file.read_exact(&mut buffer) {
-                Ok(_) => {
-                    let k = u32::from_le_bytes(buffer) as usize;
-                    file.read_exact(&mut buffer)?;
-                    let v = f32::from_le_bytes(buffer);
-                    if k < MAX_FEATURES {
-                        self.w[k] = v;
-                    }
-                },
-                Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break, // End of file
-                Err(e) => return Err(e.into()), // Other error
-            }
+        for i in 0..MAX_FEATURES {
+            file.read_exact(&mut buffer)?;
+            let v = f32::from_le_bytes(buffer);
+            self.w[i] = v;
         }
         Ok(())
     }
@@ -139,13 +130,13 @@ impl SparseModel {
         let mut file = File::create(path)?;
         file.write_all(&self.bias.to_le_bytes())?;
 
-        for (k, &v) in self.w.iter().enumerate() {
-            if v != 0.0 {
-                let k_u32 = k as u32;
-                file.write_all(&k_u32.to_le_bytes())?;
-                file.write_all(&v.to_le_bytes())?;
-            }
+        // 全ての要素を書き込む
+        let mut buffer = Vec::with_capacity(self.w.len() * 4); // f32は4バイト
+        for &v in self.w.iter() {
+            buffer.extend_from_slice(&v.to_le_bytes());
         }
+        file.write_all(&buffer)?; // 一括書き込み
+
         Ok(())
     }
 
