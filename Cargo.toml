@@ -25,3 +25,7 @@ path = "src/kpp_learn.rs"
 [[bin]]
 name = "kpp_test"
 path = "src/kpp_test.rs"
+
+[[bin]]
+name = "evaluation_benchmark"
+path = "src/evaluation_benchmark.rs"
