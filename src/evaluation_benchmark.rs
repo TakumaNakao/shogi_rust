@@ -30,13 +30,40 @@ fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     }
 }
 
-fn process_csa_file(path: &Path) -> Result<()> {
+fn process_csa_file(path: &Path, batch: &mut Vec<(Vec<usize>, f32)>) -> Result<()> {
     let text = fs::read_to_string(path)?;
     let record = csa::parse_csa(&text)?;
 
+    let last_move = if let Some(mv) = record.moves.last() {
+        mv
+    } else {
+        return Ok(()); // Skip games with no moves
+    };
+
+    let winner: Option<csa::Color> = match last_move.action {
+        csa::Action::Toryo | csa::Action::Tsumi => {
+            if let Some(prev) = record.moves.iter().rev().find(|m| matches!(m.action, csa::Action::Move(_, _, _, _))) {
+                if let csa::Action::Move(color, _, _, _) = prev.action {
+                    Some(color)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    let final_label = match winner {
+        Some(csa::Color::Black) => 1.0,
+        Some(csa::Color::White) => -1.0,
+        None => return Ok(()), // Skip games with no winner
+    };
+
     let mut pos = Position::default();
 
-    for mv in record.moves.iter() {
+    for (index, mv) in record.moves.iter().enumerate() {
         let shogi_move = match &mv.action {
             csa::Action::Move(color, from_csa, to_csa, piece_type_after_csa) => {
                 let to_sq = if let Some(sq) = Square::new(to_csa.file, to_csa.rank) {
@@ -77,7 +104,13 @@ fn process_csa_file(path: &Path) -> Result<()> {
         };
 
         // 特徴ベクトルを実際に使用しないが、生成は行う
-        let _features = evaluation::extract_kpp_features(&pos);
+        let gain = index as f32 / (index as f32 + 25.0); // REWARD_GAINを直接指定
+        let label = gain * final_label;
+
+        let features = evaluation::extract_kpp_features(&pos);
+        if !features.is_empty() {
+            batch.push((features, label));
+        }
 
         if pos.make_move(shogi_move).is_none() {
             continue;
@@ -114,20 +147,21 @@ fn main() -> Result<()> {
     
     println!("{}個のCSAファイルを処理します。", csa_files.len());
 
-    println!("\n--- ベンチマーク ---");
+    println!("--- ベンチマーク ---");
+    let mut batch = Vec::new(); // バッチを初期化
     let start_time_old = Instant::now();
-    let mut processed_files_old = 0;
+    let mut processed_files = 0;
     for path in &csa_files {
-        if let Err(e) = process_csa_file(&path) {
+        if let Err(e) = process_csa_file(&path, &mut batch) {
             eprintln!("ファイル処理エラー: {:?} - {}", path, e);
         }
-        processed_files_old += 1;
-        if processed_files_old % 1000 == 0 {
-            println!("処理済みファイル数: {}", processed_files_old);
+        processed_files += 1;
+        if processed_files % 1000 == 0 {
+            println!("処理済みファイル数: {}", processed_files);
         }
     }
-    let elapsed_time_old = start_time_old.elapsed();
-    println!("全ファイルの処理にかかった時間: {:?}", elapsed_time_old);
+    let elapsed_time = start_time_old.elapsed();
+    println!("全ファイルの処理にかかった時間: {:?}", elapsed_time);
 
     Ok(())
 }

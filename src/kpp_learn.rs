@@ -4,6 +4,7 @@ use csa;
 use std::fs;
 use std::env;
 use std::path::Path;
+use std::time::Instant;
 use rand::prelude::*;
 use plotters::prelude::*;
 
@@ -161,7 +162,7 @@ fn main() -> Result<()> {
     let weight_path = Path::new("./weights.csv");
     let mse_graph_path = "mse_graph.png";
 
-    let mut model = SparseModel::new(0.01);
+    let mut model = SparseModel::new(0.0000001); // learning_rateを直接渡す
 
     if weight_path.exists() {
         model.load(weight_path)?;
@@ -169,6 +170,7 @@ fn main() -> Result<()> {
     } else {
         println!("重みファイルが存在しません。初期化中...");
         model.initialize_random(50_000, 0.01);
+        println!("保存中...");
         model.save(weight_path)?;
         println!("初期重みを保存しました。");
     }
@@ -197,33 +199,37 @@ fn main() -> Result<()> {
     let mut mse_history = Vec::new();
 
     for path in &csa_files {
+        let start_time_file = Instant::now();
         if let Err(e) = process_csa_file(&path, &mut model, &mut batch) {
             eprintln!("ファイル処理エラー: {:?} - {}", path, e);
         }
+        file_count += 1;
+        let elapsed_time_file = start_time_file.elapsed();
+        println!("処理済みファイル数: {} / {} , 処理時間: {:?}", file_count, csa_files.len(), elapsed_time_file);
         
         if batch.len() >= BATCH_SIZE {
+            let start_time_batch = Instant::now();
             let mse = model.update_batch(&batch, batch_count);
-            mse_history.push((batch_count, mse));
             batch_count += 1;
             batch.clear();
+            let elapsed_time_batch = start_time_batch.elapsed();
+            println!("バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", batch_count, mse, elapsed_time_batch);
+            model.save(weight_path)?;
+            mse_history.push((batch_count, mse));
             draw_mse_graph(&mse_history, mse_graph_path)?;
         }
-
-        file_count += 1;
-        println!("処理済みファイル数: {} / {}", file_count, csa_files.len());
-
-        model.save(weight_path)?;
     }
 
     if !batch.is_empty() {
+        let start_time_batch = Instant::now();
         let mse = model.update_batch(&batch, batch_count);
+        let elapsed_time_batch = start_time_batch.elapsed();
+        println!("バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", batch_count, mse, elapsed_time_batch);
+        model.save(weight_path)?;
         mse_history.push((batch_count, mse));
         draw_mse_graph(&mse_history, mse_graph_path)?;
     }
 
     println!("学習完了。重み数: {}", model.w.len());
-    model.save(weight_path)?;
-    println!("最終的な重みを保存しました: {:?}", weight_path);
-    println!("MSEグラフを保存しました: {}", mse_graph_path);
     Ok(())
 }

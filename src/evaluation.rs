@@ -1,8 +1,7 @@
 use anyhow::Result;
 use shogi_core::{Color, Piece, PieceKind, Position, Square};
-use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::path::Path;
 use rand::prelude::*;
 use rand_distr::Distribution;
@@ -46,6 +45,7 @@ const NUM_PIECE_PAIRS: usize = NUM_PIECE_STATES * (NUM_PIECE_STATES - 1) / 2; //
 // 81 * 2,379,591 = 192,746,871
 // 少し余裕を持たせて1億9300万に設定
 pub const KPP_DIM: usize = 193_000_000;
+const MAX_FEATURES: usize = 200_000_000; // 2億
 
 const ALL_HAND_PIECES: [PieceKind; 7] = [
     PieceKind::Pawn,
@@ -95,28 +95,41 @@ fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
 
 #[derive(Default)]
 pub struct SparseModel {
-    pub w: HashMap<usize, f32>,
+    pub w: Vec<f32>,
+    pub bias: f32,
     pub eta: f32,
 }
 
 impl SparseModel {
     pub fn new(eta: f32) -> Self {
         Self {
-            w: HashMap::new(),
+            w: vec![0.0; MAX_FEATURES],
+            bias: 0.0,
             eta,
         }
     }
 
     pub fn load(&mut self, path: &Path) -> Result<()> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        for line in reader.lines() {
-            let line = line?;
-            let mut parts = line.split(',');
-            if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
-                let k: usize = k.parse()?;
-                let v: f32 = v.parse()?;
-                self.w.insert(k, v);
+        let mut file = File::open(path)?;
+        let mut buffer = [0u8; 4]; // For f32 and u32
+
+        // Read bias
+        file.read_exact(&mut buffer)?;
+        self.bias = f32::from_le_bytes(buffer);
+
+        // Read weights
+        loop {
+            match file.read_exact(&mut buffer) {
+                Ok(_) => {
+                    let k = u32::from_le_bytes(buffer) as usize;
+                    file.read_exact(&mut buffer)?;
+                    let v = f32::from_le_bytes(buffer);
+                    if k < MAX_FEATURES {
+                        self.w[k] = v;
+                    }
+                },
+                Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break, // End of file
+                Err(e) => return Err(e.into()), // Other error
             }
         }
         Ok(())
@@ -124,8 +137,14 @@ impl SparseModel {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         let mut file = File::create(path)?;
-        for (&k, &v) in &self.w {
-            writeln!(file, "{},{}", k, v)?;
+        file.write_all(&self.bias.to_le_bytes())?;
+
+        for (k, &v) in self.w.iter().enumerate() {
+            if v != 0.0 {
+                let k_u32 = k as u32;
+                file.write_all(&k_u32.to_le_bytes())?;
+                file.write_all(&v.to_le_bytes())?;
+            }
         }
         Ok(())
     }
@@ -134,14 +153,20 @@ impl SparseModel {
         let mut rng = rand::thread_rng();
         let dist = rand_distr::Normal::new(0.0, stddev).unwrap();
         for _ in 0..count {
-            let i = rng.gen_range(0..KPP_DIM);
+            let i = rng.gen_range(0..MAX_FEATURES);
             let v = dist.sample(&mut rng) as f32;
-            self.w.insert(i, v);
+            self.w[i] = v;
         }
     }
 
     pub fn predict(&self, x: &[usize]) -> f32 {
-        x.iter().map(|&i| *self.w.get(&i).unwrap_or(&0.0)).sum()
+        let mut prediction = self.bias;
+        for &i in x {
+            if i < MAX_FEATURES {
+                prediction += self.w[i];
+            }
+        }
+        prediction
     }
 
     pub fn update_batch(&mut self, batch: &[(Vec<usize>, f32)], batch_index: usize) -> f32 {
@@ -154,13 +179,18 @@ impl SparseModel {
             let y_pred = self.predict(x);
             let error = y_pred - y_true;
             total_loss += error * error;
+
+            // Update bias
+            self.bias -= self.eta * error / m;
+
+            // Update weights
             for &i in x {
-                let w_i = self.w.entry(i).or_insert(0.0);
-                *w_i -= self.eta * error / m;
+                if i < MAX_FEATURES {
+                    self.w[i] -= self.eta * error / m;
+                }
             }
         }
         let mse = total_loss / m;
-        println!("バッチ {}: 平均二乗誤差 = {:.6}", batch_index, mse);
         mse
     }
 }
@@ -267,3 +297,4 @@ pub fn extract_kpp_features(pos: &Position) -> Vec<usize> {
 
     indices
 }
+
