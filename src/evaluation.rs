@@ -118,10 +118,23 @@ impl SparseModel {
         self.bias = f32::from_le_bytes(buffer);
 
         // Read weights
+        let mut weights_bytes = Vec::new();
+        file.read_to_end(&mut weights_bytes)?; // Read all remaining bytes into weights_bytes
+
+        // Ensure the size is correct
+        if weights_bytes.len() != MAX_FEATURES * 4 {
+            return Err(anyhow::anyhow!("File size mismatch for weights"));
+        }
+
+        // Convert bytes to f32
         for i in 0..MAX_FEATURES {
-            file.read_exact(&mut buffer)?;
-            let v = f32::from_le_bytes(buffer);
-            self.w[i] = v;
+            let start = i * 4;
+            let end = start + 4;
+            // Using `try_into()` on a slice to convert to a fixed-size array.
+            // This requires the slice to have the exact length of the array.
+            let bytes: [u8; 4] = weights_bytes[start..end].try_into()
+                .map_err(|_| anyhow::anyhow!("Failed to convert slice to array"))?;
+            self.w[i] = f32::from_le_bytes(bytes);
         }
         Ok(())
     }
@@ -160,7 +173,7 @@ impl SparseModel {
         prediction
     }
 
-    pub fn update_batch(&mut self, batch: &[(Vec<usize>, f32)], batch_index: usize) -> f32 {
+    pub fn update_batch(&mut self, batch: &[(Vec<usize>, f32)]) -> f32 {
         let m = batch.len() as f32;
         if m == 0.0 {
             return 0.0;
