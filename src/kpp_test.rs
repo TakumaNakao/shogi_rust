@@ -37,7 +37,7 @@ fn main() -> Result<()> {
     }
 
     let csa_file_path = Path::new(&args[1]);
-    let weight_path = Path::new("./weights.csv");
+    let weight_path = Path::new("./weights.binary");
     let output_path = "evaluation_graph.png";
 
     let mut model = SparseModel::new(0.0);

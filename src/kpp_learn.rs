@@ -11,7 +11,7 @@ use plotters::prelude::*;
 mod evaluation;
 use evaluation::{SparseModel, extract_kpp_features};
 
-const LEARNING_RATE: f32 = 0.1;
+const LEARNING_RATE: f32 = 0.3;
 const BATCH_SIZE: usize = 65536;
 
 const REWARD_GAIN: f32 = 25.0;
@@ -160,7 +160,7 @@ fn main() -> Result<()> {
 
     let data_dir_str = format!("./csa_files/{}", year);
     let data_dir = Path::new(&data_dir_str);
-    let weight_path = Path::new("./weights.csv");
+    let weight_path = Path::new("./weights.binary");
     let mse_graph_path = "mse_graph.png";
 
     let mut model = SparseModel::new(LEARNING_RATE);
@@ -201,13 +201,10 @@ fn main() -> Result<()> {
     let mut mse_history = Vec::new();
 
     for path in &csa_files {
-        let start_time_file = Instant::now();
         if let Err(e) = process_csa_file(&path, &mut model, &mut batch) {
             eprintln!("ファイル処理エラー: {:?} - {}", path, e);
         }
         file_count += 1;
-        let elapsed_time_file = start_time_file.elapsed();
-        println!("処理済みファイル数: {} / {} , 処理時間: {:?}", file_count, csa_files.len(), elapsed_time_file);
         
         if batch.len() >= BATCH_SIZE {
             let start_time_batch = Instant::now();
@@ -215,7 +212,7 @@ fn main() -> Result<()> {
             batch_count += 1;
             batch.clear();
             let elapsed_time_batch = start_time_batch.elapsed();
-            println!("バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", batch_count, mse, elapsed_time_batch);
+            println!("処理済みファイル数: {} / {} , バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", file_count, csa_files.len(), batch_count, mse, elapsed_time_batch);
             let start_time_save = Instant::now();
             model.save(weight_path)?;
             let elapsed_time_save = start_time_save.elapsed();
@@ -229,7 +226,7 @@ fn main() -> Result<()> {
         let start_time_batch = Instant::now();
         let mse = model.update_batch(&batch, batch_count);
         let elapsed_time_batch = start_time_batch.elapsed();
-        println!("バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", batch_count, mse, elapsed_time_batch);
+        println!("処理済みファイル数: {} / {} , バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", file_count, csa_files.len(), batch_count, mse, elapsed_time_batch);
         let start_time_save = Instant::now();
         model.save(weight_path)?;
         let elapsed_time_save = start_time_save.elapsed();
