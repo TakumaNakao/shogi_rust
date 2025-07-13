@@ -1,5 +1,5 @@
 use anyhow::Result;
-use shogi_core::{Color, Move, Piece, PieceKind, Position, Square};
+use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use csa;
 use std::fs;
 use std::env;
@@ -67,7 +67,7 @@ fn process_csa_file(path: &Path, _model: &mut SparseModel, batch: &mut Vec<(Vec<
         None => return Ok(()), // Skip games with no winner
     };
 
-    let mut pos = Position::default();
+    let mut pos = shogi_core::Position::default();
     for (index, mv) in record.moves.iter().enumerate() {
         let shogi_move = match &mv.action {
             csa::Action::Move(color, from_csa, to_csa, piece_type_after_csa) => {

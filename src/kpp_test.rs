@@ -1,7 +1,7 @@
 use anyhow::Result;
 use csa::PieceType;
 use plotters::prelude::*;
-use shogi_core::{Move, Piece, PieceKind, Position, Square, Color};
+use shogi_core::{Move, Piece, PieceKind, Square, Color};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     let text = fs::read_to_string(csa_file_path)?;
     let record = csa::parse_csa(&text)?;
 
-    let mut pos = Position::default();
+    let mut pos = shogi_core::Position::default();
     let mut scores = vec![];
 
     let features = extract_kpp_features(&pos);
@@ -97,7 +97,7 @@ fn main() -> Result<()> {
             _ => continue,
         };
 
-        if pos.make_move(shogi_move).is_some() {
+        if pos.make_move(shogi_move).is_some(){
             let features = extract_kpp_features(&pos);
             let score = model.predict(&features);
             scores.push((index as i32 + 1, score));

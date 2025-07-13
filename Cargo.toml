@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-shogi_core = "0.1.5"
+shogi_core = { version = "0.1.5", features = ["ord"] }
 csa = "1.0.2"
 anyhow = "1.0"
 rayon = "1.5"
@@ -17,6 +17,8 @@ glob = "0.3"
 indicatif = "0.17"
 flate2 = "1.0"
 plotters = "0.3.6"
+arrayvec = "0.7.2"
+yasai = { git = "https://github.com/sugyan/yasai.git", branch = "main" }
 
 [[bin]]
 name = "kpp_learn"
@@ -29,3 +31,7 @@ path = "src/kpp_test.rs"
 [[bin]]
 name = "evaluation_benchmark"
 path = "src/evaluation_benchmark.rs"
+
+[[bin]]
+name = "shogi_ai"
+path = "src/shogi_ai.rs"

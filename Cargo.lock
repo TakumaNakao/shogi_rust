@@ -30,6 +30,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 
 [[package]]
+name = "arrayvec"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -896,6 +902,7 @@ name = "shogi_kpp_training"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrayvec",
  "csa",
  "flate2",
  "glob",
@@ -908,6 +915,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shogi_core",
+ "yasai",
 ]
 
 [[package]]
@@ -1266,6 +1274,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d129932f4644ac2396cb456385cbf9e63b5b30c6e8dc4820bdca4eb082037a5"
 dependencies = [
  "winapi",
+]
+
+[[package]]
+name = "yasai"
+version = "0.5.0"
+source = "git+https://github.com/sugyan/yasai.git?branch=main#51c23780109a4ac7258c27d8965640d4f8b78e9e"
+dependencies = [
+ "arrayvec",
+ "cfg-if",
+ "once_cell",
+ "rand",
+ "shogi_core",
 ]
 
 [[package]]

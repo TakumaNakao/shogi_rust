@@ -1,19 +1,22 @@
 use anyhow::Result;
-use shogi_core::{Color, Piece, PieceKind, Position, Square};
+use shogi_core::{Color, Piece, PieceKind, Square};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use rand::prelude::*;
 use rand_distr::Distribution;
 
+// --- Evaluator Trait ---
+pub trait Evaluator {
+    fn evaluate(&self, position: &shogi_core::Position) -> f32;
+}
+
+// --- KPP-based Evaluator ---
 
 const NUM_SQUARES: usize = 81;
-// KPPで扱う駒の種類（盤上）。玉を除いた13種（歩,香,桂,銀,金,角,飛 + それらの成駒）。
 const NUM_BOARD_PIECE_KINDS: usize = 13;
-// KPPで扱う駒の種類（持ち駒）。成駒はないので7種。
 const NUM_HAND_PIECE_KINDS: usize = 7;
 
-// 各持ち駒の最大枚数
 const MAX_HAND_PAWNS: usize = 18;
 const MAX_HAND_LANCES: usize = 4;
 const MAX_HAND_KNIGHTS: usize = 4;
@@ -22,30 +25,21 @@ const MAX_HAND_GOLDS: usize = 4;
 const MAX_HAND_BISHOPS: usize = 2;
 const MAX_HAND_ROOKS: usize = 2;
 
-// 片方のプレイヤーが持ちうる持ち駒の総スロット数
 const NUM_HAND_PIECE_SLOTS_PER_PLAYER: usize = MAX_HAND_PAWNS
     + MAX_HAND_LANCES
     + MAX_HAND_KNIGHTS
     + MAX_HAND_SILVERS
     + MAX_HAND_GOLDS
     + MAX_HAND_BISHOPS
-    + MAX_HAND_ROOKS; // = 38
+    + MAX_HAND_ROOKS;
 
-// 全ての駒の状態（駒ID）の総数
-// = (盤上の駒状態) + (持ち駒の状態)
-// = (13種 * 81マス * 2色) + (38スロット * 2色) = 2106 + 76 = 2182
 const NUM_PIECE_STATES: usize =
     (NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2) + (NUM_HAND_PIECE_SLOTS_PER_PLAYER * 2);
 
-// 2つの駒の組み合わせの総数
-const NUM_PIECE_PAIRS: usize = NUM_PIECE_STATES * (NUM_PIECE_STATES - 1) / 2; // = 2,379,591
+const NUM_PIECE_PAIRS: usize = NUM_PIECE_STATES * (NUM_PIECE_STATES - 1) / 2;
 
-// KPP特徴量の総次元数
-// = 玉の位置(81) * 駒のペアの組み合わせ総数
-// 81 * 2,379,591 = 192,746,871
-// 少し余裕を持たせて1億9300万に設定
 pub const KPP_DIM: usize = 193_000_000;
-const MAX_FEATURES: usize = 200_000_000; // 2億
+const MAX_FEATURES: usize = 200_000_000;
 
 const ALL_HAND_PIECES: [PieceKind; 7] = [
     PieceKind::Pawn,
@@ -57,9 +51,6 @@ const ALL_HAND_PIECES: [PieceKind; 7] = [
     PieceKind::Rook,
 ];
 
-// --- ヘルパー関数 ---
-
-/// 盤上の駒の種類を0-12のインデックスに変換する
 fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
     match kind {
         PieceKind::Pawn => Some(0),
@@ -75,11 +66,10 @@ fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
         PieceKind::ProSilver => Some(10),
         PieceKind::ProBishop => Some(11),
         PieceKind::ProRook => Some(12),
-        PieceKind::King => None, // 玉は対象外
+        PieceKind::King => None,
     }
 }
 
-/// 持ち駒の種類からID計算用のオフセットを返す
 fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
     match kind {
         PieceKind::Pawn => Some(0),
@@ -89,7 +79,7 @@ fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
         PieceKind::Gold => Some(MAX_HAND_PAWNS + MAX_HAND_LANCES + MAX_HAND_KNIGHTS + MAX_HAND_SILVERS),
         PieceKind::Bishop => Some(MAX_HAND_PAWNS + MAX_HAND_LANCES + MAX_HAND_KNIGHTS + MAX_HAND_SILVERS + MAX_HAND_GOLDS),
         PieceKind::Rook => Some(MAX_HAND_PAWNS + MAX_HAND_LANCES + MAX_HAND_KNIGHTS + MAX_HAND_SILVERS + MAX_HAND_GOLDS + MAX_HAND_BISHOPS),
-        _ => None, // 持ち駒になりえない駒種
+        _ => None,
     }
 }
 
@@ -111,27 +101,21 @@ impl SparseModel {
 
     pub fn load(&mut self, path: &Path) -> Result<()> {
         let mut file = File::open(path)?;
-        let mut buffer = [0u8; 4]; // For f32 and u32
+        let mut buffer = [0u8; 4];
 
-        // Read bias
         file.read_exact(&mut buffer)?;
         self.bias = f32::from_le_bytes(buffer);
 
-        // Read weights
         let mut weights_bytes = Vec::new();
-        file.read_to_end(&mut weights_bytes)?; // Read all remaining bytes into weights_bytes
+        file.read_to_end(&mut weights_bytes)?;
 
-        // Ensure the size is correct
         if weights_bytes.len() != MAX_FEATURES * 4 {
             return Err(anyhow::anyhow!("File size mismatch for weights"));
         }
 
-        // Convert bytes to f32
         for i in 0..MAX_FEATURES {
             let start = i * 4;
             let end = start + 4;
-            // Using `try_into()` on a slice to convert to a fixed-size array.
-            // This requires the slice to have the exact length of the array.
             let bytes: [u8; 4] = weights_bytes[start..end].try_into()
                 .map_err(|_| anyhow::anyhow!("Failed to convert slice to array"))?;
             self.w[i] = f32::from_le_bytes(bytes);
@@ -143,12 +127,11 @@ impl SparseModel {
         let mut file = File::create(path)?;
         file.write_all(&self.bias.to_le_bytes())?;
 
-        // 全ての要素を書き込む
-        let mut buffer = Vec::with_capacity(self.w.len() * 4); // f32は4バイト
+        let mut buffer = Vec::with_capacity(self.w.len() * 4);
         for &v in self.w.iter() {
             buffer.extend_from_slice(&v.to_le_bytes());
         }
-        file.write_all(&buffer)?; // 一括書き込み
+        file.write_all(&buffer)?;
 
         Ok(())
     }
@@ -184,10 +167,8 @@ impl SparseModel {
             let error = y_pred - y_true;
             total_loss += error * error;
 
-            // Update bias
             self.bias -= self.eta * error / m;
 
-            // Update weights
             for &i in x {
                 if i < MAX_FEATURES {
                     self.w[i] -= self.eta * error / m;
@@ -199,74 +180,61 @@ impl SparseModel {
     }
 }
 
-// --- ID生成・特徴量抽出関数 ---
-
-/// 駒の状態（種類、位置、先後など）からユニークなID（0から2181）を生成する
 fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize) -> Option<usize> {
     let color_offset = if piece.color() == Color::Black { 0 } else { 1 };
 
     if let Some(sq) = sq {
-        // --- 盤上の駒のID ---
         if let Some(kind_index) = board_kind_to_index(piece.piece_kind()) {
-            // ID = (色による大きなオフセット) + (駒種によるオフセット) + マス目
             let id = (color_offset * NUM_BOARD_PIECE_KINDS * NUM_SQUARES)
                 + (kind_index * NUM_SQUARES)
                 + (sq.index() as usize);
             Some(id)
         } else {
-            None // 玉はIDをつけない
+            None
         }
     } else {
-        // --- 持ち駒のID ---
-        // 盤上の駒IDの総数分オフセットを足す
         let board_pieces_total = NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2;
         if let Some(kind_offset) = hand_kind_to_offset(piece.piece_kind()) {
-            // ID = (盤上駒の総数) + (色によるオフセット) + (駒種オフセット) + 持ち駒インデックス
             let id = board_pieces_total
                 + (color_offset * NUM_HAND_PIECE_SLOTS_PER_PLAYER)
                 + kind_offset
                 + hand_index;
             Some(id)
         } else {
-            None // 持ち駒になりえない駒種
+            None
         }
     }
 }
 
-/// KPP (King, Piece, Piece) の特徴量インデックスを抽出する
-pub fn extract_kpp_features(pos: &Position) -> Vec<usize> {
-    // 0. 自玉（黒玉）の位置を探す
-    let king_sq_index = match (1..=81).find_map(|i| {
-        let sq = Square::from_u8(i as u8).unwrap(); // This line is safe, as 0..80 are all valid squares
-        pos.piece_at(sq).and_then(|p| {
-            if p.piece_kind() == PieceKind::King && p.color() == Color::Black {
-                Some(i)
-            } else {
-                None
-            }
+pub fn extract_kpp_features(pos: &shogi_core::Position) -> Vec<usize> {
+    let king_sq_index = match (0..81).find_map(|i| {
+        Square::from_u8(i as u8 + 1).and_then(|sq| {
+            pos.piece_at(sq).and_then(|p| {
+                if p.piece_kind() == PieceKind::King && p.color() == Color::Black {
+                    Some(i as usize)
+                } else {
+                    None
+                }
+            })
         })
     }) {
         Some(idx) => idx,
         None => {
-            // If the black king is not found, we cannot generate KPP features.
-            // Return an empty vector as intended.
             println!("Warning: Black king not found on the board. Skipping this position.");
             return vec![];
         }
     };
 
-    // 1. 全ての駒（玉以外）の状態からIDをリストアップする
     let mut piece_ids = Vec::with_capacity(40);
-    // 盤上の駒
-    for i in 1..=81 {
-        let sq = Square::from_u8(i as u8).unwrap();
-        if let Some(piece) = pos.piece_at(sq) {
-            if let Some(id) = piece_to_id(piece, Some(sq), 0) {
-                piece_ids.push(id);
+    for i in 0..81 {
+        if let Some(sq) = Square::from_u8(i as u8 + 1) {
+            if let Some(piece) = pos.piece_at(sq) {
+                if let Some(id) = piece_to_id(piece, Some(sq), 0) {
+                    piece_ids.push(id);
+                }
             }
         }
     }
-    // 持ち駒
     for color in [Color::Black, Color::White] {
         for kind in ALL_HAND_PIECES.iter() {
             let count = pos.hand_of_a_player(color).count(*kind).unwrap_or(0);
@@ -278,23 +246,18 @@ pub fn extract_kpp_features(pos: &Position) -> Vec<usize> {
         }
     }
 
-    // 2. 駒のペアを作り、最終的な特徴量インデックスを計算する
     let mut indices = Vec::with_capacity(piece_ids.len() * piece_ids.len() / 2);
     for i in 0..piece_ids.len() {
         for j in (i + 1)..piece_ids.len() {
-            // 2つの駒IDをソートし、組み合わせを一意にする（(歩,金)と(金,歩)を同じと扱う）
             let (id1, id2) = if piece_ids[i] < piece_ids[j] {
                 (piece_ids[i], piece_ids[j])
             } else {
                 (piece_ids[j], piece_ids[i])
             };
 
-            // 三角行列インデックスを使って、ペアのインデックスを密に計算する
-            // これにより、特徴量空間を効率的に使える
             let pair_index = id2 * (id2 - 1) / 2 + id1;
 
-            // 最終的なインデックス = (玉の位置によるオフセット) + ペアのインデックス
-            let final_index = king_sq_index as usize * NUM_PIECE_PAIRS + pair_index;
+            let final_index = king_sq_index * NUM_PIECE_PAIRS + pair_index;
             indices.push(final_index);
         }
     }
@@ -302,3 +265,21 @@ pub fn extract_kpp_features(pos: &Position) -> Vec<usize> {
     indices
 }
 
+pub struct SparseModelEvaluator {
+    pub model: SparseModel,
+}
+
+impl SparseModelEvaluator {
+    pub fn new(weight_path: &Path) -> Self {
+        let mut model = SparseModel::new(0.0);
+        let _ = model.load(weight_path);
+        SparseModelEvaluator { model }
+    }
+}
+
+impl Evaluator for SparseModelEvaluator {
+    fn evaluate(&self, position: &shogi_core::Position) -> f32 {
+        let features = extract_kpp_features(position);
+        self.model.predict(&features)
+    }
+}
