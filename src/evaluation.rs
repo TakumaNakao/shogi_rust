@@ -14,7 +14,7 @@ pub trait Evaluator {
 // --- KPP-based Evaluator ---
 
 const NUM_SQUARES: usize = 81;
-const NUM_BOARD_PIECE_KINDS: usize = 13;
+const NUM_BOARD_PIECE_KINDS: usize = 14;
 const NUM_HAND_PIECE_KINDS: usize = 7;
 
 const MAX_HAND_PAWNS: usize = 18;
@@ -66,7 +66,7 @@ fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
         PieceKind::ProSilver => Some(10),
         PieceKind::ProBishop => Some(11),
         PieceKind::ProRook => Some(12),
-        PieceKind::King => None,
+        PieceKind::King => Some(13),
     }
 }
 
@@ -270,10 +270,10 @@ pub struct SparseModelEvaluator {
 }
 
 impl SparseModelEvaluator {
-    pub fn new(weight_path: &Path) -> Self {
+    pub fn new(weight_path: &Path) -> Result<Self> {
         let mut model = SparseModel::new(0.0);
-        let _ = model.load(weight_path);
-        SparseModelEvaluator { model }
+        model.load(weight_path)?;
+        Ok(SparseModelEvaluator { model })
     }
 }
 

@@ -2,3 +2,4 @@ csa_files/
 target/
 *.png
 *.binary
+*.kif
