@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+use plotters::prelude::*;
 
 use shogi_core::{Color, Move, Piece, PieceKind, Position};
 use arrayvec::ArrayVec;
@@ -19,6 +20,7 @@ use search::MoveOrdering;
 pub struct ShogiAI<E: Evaluator> {
     move_ordering: MoveOrdering,
     evaluator: E, // 評価関数のインスタンスを保持
+    position_history: Vec<shogi_core::Position>,
 }
 
 impl<E: Evaluator> ShogiAI<E> {
@@ -28,6 +30,7 @@ impl<E: Evaluator> ShogiAI<E> {
         ShogiAI {
             move_ordering: MoveOrdering::new(),
             evaluator,
+            position_history: Vec::new(),
         }
     }
 
@@ -117,6 +120,11 @@ impl<E: Evaluator> ShogiAI<E> {
                 continue;
             }
 
+            // 千日手チェック
+            if self.position_history.iter().filter(|&p| p == &next_position).count() >= 3 {
+                continue; // この手は千日手になるのでスキップ
+            }
+
             let eval = -self.alpha_beta_search(&next_position, depth - 1, -beta, -alpha, current_player);
 
             if eval > best_eval {
@@ -139,7 +147,7 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
 
     match mv {
         Move::Normal { from, to, promote } => {
-            let piece = if let Some(p) = position.piece_at(*from) { p } else { return "".to_string(); };
+            let piece = if let Some(p) = position.piece_at(*from) { p } else { println!("err");return "".to_string(); };
             let piece_kind = piece.piece_kind();
 
             let from_s = format!("({}{})", from.file(), from.rank());
@@ -196,7 +204,7 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
 fn main() {
     println!("--- ShogiAI 自己対局 ---");
 
-    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights2017-2022.binary")).expect("Failed to create SparseModelEvaluator for Sente");
+    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights2017-2018.binary")).expect("Failed to create SparseModelEvaluator for Sente");
     let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights.binary")).expect("Failed to create SparseModelEvaluator for Gote");
 
     let mut ai_sente = ShogiAI::new(evaluator_sente);
@@ -208,8 +216,11 @@ fn main() {
     println!("初期局面:{}", position.to_sfen_owned());
 
     let mut turn = 0;
-    let max_turns = 100; // 最大ターン数
+    let max_turns = 300; // 最大ターン数
     let mut kif_moves: Vec<String> = Vec::new(); // KIF形式の指し手を保存するベクトル
+    let mut evaluation_history: Vec<(usize, f32)> = Vec::new(); // 評価値の履歴を保存するベクトル
+    let mut sente_evaluation_history: Vec<(usize, f32)> = Vec::new();
+    let mut gote_evaluation_history: Vec<(usize, f32)> = Vec::new();
 
     loop {
         turn += 1;
@@ -237,8 +248,28 @@ fn main() {
                         println!("指し手の適用に失敗しました。");
                         break;
                 }
+                current_ai.position_history.push(position.clone());
+                println!("position history size: {}", current_ai.position_history.len());
+
+                if current_ai.position_history.iter().filter(|&p| p == &position).count() >= 4 {
+                    println!("千日手により対局終了。");
+                    break;
+                }
                 println!("指し手を適用しました。新しい手番: {:?}", position.side_to_move());
                 println!("局面:{}", position.to_sfen_owned());
+
+                // 現在の局面の評価値を記録
+                let current_eval = current_ai.evaluator.evaluate(&position);
+                evaluation_history.push((turn, current_eval));
+
+                match position.side_to_move() {
+                    Color::Black => {
+                        sente_evaluation_history.push((turn, current_eval));
+                    },
+                    Color::White => {
+                        gote_evaluation_history.push((turn, current_eval));
+                    },
+                }
         
                 // TODO: 終局判定 (詰み、千日手など) をここに追加
                 // 現状は最大ターン数で終了
@@ -264,4 +295,50 @@ fn main() {
     }
 
     println!("\n棋譜を game.kif に出力しました。");
+
+    // 評価値グラフを生成
+    if let Err(e) = draw_evaluation_graph(&sente_evaluation_history, &gote_evaluation_history, "evaluation_graph1.png") {
+        eprintln!("評価値グラフの生成に失敗しました: {}", e);
+    }
+}
+
+fn draw_evaluation_graph(sente_data: &[(usize, f32)], gote_data: &[(usize, f32)], path: &str) -> anyhow::Result<()> {
+    let root = BitMapBackend::new(path, (1024, 768)).into_drawing_area();
+    root.fill(&WHITE)?;
+
+    if sente_data.is_empty() && gote_data.is_empty() {
+        return Ok(());
+    }
+
+    let max_turn = sente_data.iter().map(|&(turn, _)| turn).max().unwrap_or(0).max(gote_data.iter().map(|&(turn, _)| turn).max().unwrap_or(0));
+    let (min_score, max_score) = sente_data
+        .iter()
+        .chain(gote_data.iter())
+        .fold((f32::MAX, f32::MIN), |(min, max), &(_, score)| {
+            (min.min(score), max.max(score))
+        });
+
+    let mut chart = ChartBuilder::on(&root)
+        .caption("評価値の推移", ("sans-serif", 50).into_font())
+        .margin(10)
+        .x_label_area_size(30)
+        .y_label_area_size(30)
+        .build_cartesian_2d(0..max_turn as i32, min_score..max_score)?;
+
+    chart.configure_mesh().draw()?;
+
+    chart.draw_series(LineSeries::new(
+        sente_data.iter().map(|&(turn, score)| (turn as i32, score)),
+        &BLUE,
+    ))?.label("先手AI評価値").legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
+
+    chart.draw_series(LineSeries::new(
+        gote_data.iter().map(|&(turn, score)| (turn as i32, score)),
+        &RED,
+    ))?.label("後手AI評価値").legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
+
+    chart.configure_series_labels().border_style(&BLACK).draw()?;
+
+    root.present()?;
+    Ok(())
 }
