@@ -153,7 +153,12 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
                 PieceKind::Bishop => "角",
                 PieceKind::Rook => "飛",
                 PieceKind::King => "玉",
-                _ => "UNKNOWN", // Promoted pieces
+                PieceKind::ProPawn => "と",
+                PieceKind::ProLance => "成香",
+                PieceKind::ProKnight => "成桂",
+                PieceKind::ProSilver => "成銀",
+                PieceKind::ProBishop => "馬",
+                PieceKind::ProRook => "龍",
             };
             kif_str.push_str(&format!("{}{}{}", to_s, piece_kind_str, from_s));
             if *promote {
@@ -171,6 +176,12 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
                 PieceKind::Bishop => "角",
                 PieceKind::Rook => "飛",
                 PieceKind::King => "玉",
+                PieceKind::ProPawn => "と",
+                PieceKind::ProLance => "成香",
+                PieceKind::ProKnight => "成桂",
+                PieceKind::ProSilver => "成銀",
+                PieceKind::ProBishop => "馬",
+                PieceKind::ProRook => "龍",
                 _ => "UNKNOWN",
             };
             kif_str.push_str(&format!("{}{}打", to_s, piece_kind_str));
