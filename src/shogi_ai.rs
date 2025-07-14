@@ -18,6 +18,28 @@ use search::MoveOrdering;
 
 // --- 千日手検出ロジック ---
 
+/// 千日手の判定に使用する、手数を含まない局面情報。
+/// shogi_core::PartialPosition には手数(ply)が含まれるため、
+/// 同一局面の判定にはこの構造体を使用する。
+#[derive(PartialEq, Eq, Clone)]
+struct SennichiteKey {
+    board: shogi_core::Bitboard,
+    hands: [shogi_core::Hand; 2],
+    side_to_move: shogi_core::Color,
+}
+
+impl From<&shogi_core::PartialPosition> for SennichiteKey {
+    fn from(pos: &shogi_core::PartialPosition) -> Self {
+        SennichiteKey {
+            // PartialPositionから手数(ply)以外のフィールドをクローンする
+            board: pos.occupied_bitboard(),
+            hands: [pos.hand_of_a_player(Color::Black), pos.hand_of_a_player(Color::White)],
+            side_to_move: pos.side_to_move(),
+        }
+    }
+}
+
+
 /// 千日手の状態を表す列挙型
 #[derive(PartialEq, Debug, Eq, Clone, Copy)]
 pub enum SennichiteStatus {
@@ -34,7 +56,7 @@ pub enum SennichiteStatus {
 pub struct SennichiteDetector<const CAPACITY: usize> {
     /// 過去の局面ハッシュの履歴（固定サイズのリングバッファ）
     /// circular-bufferは容量に達すると古い要素を自動的に上書きします。
-    history: CircularBuffer<CAPACITY, PartialPosition>,
+    history: CircularBuffer<CAPACITY, SennichiteKey>,
 }
 
 impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
@@ -51,8 +73,9 @@ impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
     ///
     /// `shogi_core::Position`のハッシュ機能を使用します。
     pub fn record_position(&mut self, position: &Position) {
-        // 新しいハッシュを履歴に追加（上書き挙動）
-        self.history.push_back(position.inner().clone());
+        // PositionからSennichiteKeyを生成して履歴に追加
+        let key = SennichiteKey::from(position.inner());
+        self.history.push_back(key);
     }
 
     /// 履歴から最も新しい局面ハッシュを削除し、出現回数を更新します。
@@ -63,8 +86,9 @@ impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
 
     /// 特定の局面の出現回数を取得します。
     pub fn get_position_count(&self, position: &Position) -> u32 {
-        let target_inner = position.inner();
-        self.history.iter().filter(|p| p == &target_inner).count() as u32
+        // PositionからSennichiteKeyを生成して比較
+        let target_key = SennichiteKey::from(position.inner());
+        self.history.iter().filter(|key| *key == &target_key).count() as u32
     }
 
     /// 連続王手チェックのプレースホルダー関数。
@@ -142,7 +166,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 let sennichite_status = self.is_sennichite_internal(&next_position); // 内部的な千日手チェック
 
                 let eval = match sennichite_status {
-                    SennichiteStatus::Draw => 0.0, // 引き分けは0点
+                    SennichiteStatus::Draw => continue, 
                     SennichiteStatus::PerpetualCheckLoss => -f32::INFINITY, // 連続王手による負けは最低点
                     SennichiteStatus::None => {
                         // 千日手ではない場合、探索を続行
@@ -175,7 +199,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 let sennichite_status = self.is_sennichite_internal(&next_position); // 内部的な千日手チェック
 
                 let eval = match sennichite_status {
-                    SennichiteStatus::Draw => 0.0, // 引き分けは0点
+                    SennichiteStatus::Draw => continue, 
                     SennichiteStatus::PerpetualCheckLoss => f32::INFINITY, // 連続王手による負けは相手の勝ちなので最高点
                     SennichiteStatus::None => {
                         // 千日手ではない場合、探索を続行
@@ -245,7 +269,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             self.sennichite_detector.unrecord_last_position(); // チェック後すぐに履歴から削除
 
             let eval = match sennichite_status {
-                SennichiteStatus::Draw => continue,
+                SennichiteStatus::Draw => continue, 
                 SennichiteStatus::PerpetualCheckLoss => f32::INFINITY, // 連続王手による負けは、この手番のプレイヤーが勝つことを意味するので最高評価
                 SennichiteStatus::None => {
                     // 千日手ではない場合、通常のアルファベータ探索
@@ -332,7 +356,7 @@ fn main() {
 
     // 千日手検出のための履歴バッファの容量を定義
     // 将棋のゲーム履歴は通常数百手なので、256や512程度が妥当です。
-    const GAME_HISTORY_CAPACITY: usize = 20;
+    const GAME_HISTORY_CAPACITY: usize = 128;
 
     let mut ai_sente = ShogiAI::<SparseModelEvaluator, GAME_HISTORY_CAPACITY>::new(evaluator_sente);
     let mut ai_gote = ShogiAI::<SparseModelEvaluator, GAME_HISTORY_CAPACITY>::new(evaluator_gote);
@@ -548,24 +572,26 @@ mod tests {
 
         // 繰り返す局面を作成
         let mut repeating_pos = Position::default();
-        repeating_pos.make_move(Move::Normal { from: Square::new(7, 7).unwrap(), to: Square::new(7, 6).unwrap(), promote: false }).unwrap();
-
-        let pos1 = Position::default();
-        let pos2 = repeating_pos;
-
         for _ in 0..3 {
-            ai.sennichite_detector.record_position(&pos2);
-            ai.sennichite_detector.record_position(&pos1);
+            repeating_pos.make_move(Move::Normal { from: Square::new(6, 9).unwrap(), to: Square::new(6, 8).unwrap(), promote: false }).unwrap();
+            ai.sennichite_detector.record_position(&repeating_pos);
+            repeating_pos.make_move(Move::Normal { from: Square::new(6, 8).unwrap(), to: Square::new(6, 9).unwrap(), promote: false }).unwrap();
+            ai.sennichite_detector.record_position(&repeating_pos);
         }
 
-        // 3回出現した時点では千日手ではないはず
-        assert_eq!(ai.is_sennichite_internal(&pos2), SennichiteStatus::None);
+        repeating_pos.make_move(Move::Normal { from: Square::new(6, 9).unwrap(), to: Square::new(6, 8).unwrap(), promote: false }).unwrap();
 
-        ai.sennichite_detector.record_position(&pos2);
-        ai.sennichite_detector.record_position(&pos1);
+        // 3回出現した時点では千日手ではないはず
+        assert_eq!(ai.is_sennichite_internal(&repeating_pos), SennichiteStatus::None);
+
+        ai.sennichite_detector.record_position(&repeating_pos);
+        repeating_pos.make_move(Move::Normal { from: Square::new(6, 8).unwrap(), to: Square::new(6, 9).unwrap(), promote: false }).unwrap();
+        ai.sennichite_detector.record_position(&repeating_pos);
+
+        repeating_pos.make_move(Move::Normal { from: Square::new(6, 9).unwrap(), to: Square::new(6, 8).unwrap(), promote: false }).unwrap();
 
         // 4回出現したので千日手になるはず (連続王手ではないと仮定)
-        assert_eq!(ai.is_sennichite_internal(&pos2), SennichiteStatus::Draw);
+        assert_eq!(ai.is_sennichite_internal(&repeating_pos), SennichiteStatus::Draw);
 
         // 異なる局面では千日手ではないことを確認
         let mut different_position = Position::default();
