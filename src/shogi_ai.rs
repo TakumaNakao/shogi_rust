@@ -97,6 +97,11 @@ impl<E: Evaluator> ShogiAI<E> {
         }
     }
 
+    pub fn is_sennichite(&self, position: &shogi_core::Position) -> bool {
+        println!("{}",self.position_history.iter().filter(|&p| p == position).count());
+        self.position_history.iter().filter(|&p| p == position).count() >= 3
+    }
+
     /// 現在の局面で最適な指し手を見つけます。
     pub fn find_best_move(&mut self, position: &shogi_core::Position, depth: u8) -> Option<Move> {
         let mut best_move: Option<Move> = None;
@@ -121,7 +126,7 @@ impl<E: Evaluator> ShogiAI<E> {
             }
 
             // 千日手チェック
-            if self.position_history.iter().filter(|&p| p == &next_position).count() >= 3 {
+            if self.is_sennichite(&next_position) {
                 continue; // この手は千日手になるのでスキップ
             }
 
@@ -168,10 +173,7 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
                 PieceKind::ProBishop => "馬",
                 PieceKind::ProRook => "龍",
             };
-            kif_str.push_str(&format!("{}{}{}", to_s, piece_kind_str, from_s));
-            if *promote {
-                kif_str.push_str("成");
-            }
+            kif_str.push_str(&format!("{}{}{}{}", to_s, piece_kind_str, if *promote { "成" } else { "" }, from_s));
         },
         Move::Drop { to, piece } => {
             let to_s = format!("{}{}", to.file(), to.rank());
@@ -248,13 +250,13 @@ fn main() {
                         println!("指し手の適用に失敗しました。");
                         break;
                 }
-                current_ai.position_history.push(position.clone());
-                println!("position history size: {}", current_ai.position_history.len());
 
-                if current_ai.position_history.iter().filter(|&p| p == &position).count() >= 4 {
+                if current_ai.is_sennichite(&position) {
                     println!("千日手により対局終了。");
                     break;
                 }
+                current_ai.position_history.push(position.clone());
+
                 println!("指し手を適用しました。新しい手番: {:?}", position.side_to_move());
                 println!("局面:{}", position.to_sfen_owned());
 
@@ -341,4 +343,139 @@ fn draw_evaluation_graph(sente_data: &[(usize, f32)], gote_data: &[(usize, f32)]
 
     root.present()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shogi_core::{Square, Hand, Piece};
+    use crate::evaluation::Evaluator;
+
+    // モック評価関数
+    struct MockEvaluator;
+
+    impl Evaluator for MockEvaluator {
+        fn evaluate(&self, position: &Position) -> f32 {
+            // シンプルな評価: 駒の価値の合計
+            let mut score = 0.0;
+            for i in 1..=9 {
+                for j in 1..=9 {
+                    if let Some(piece) = position.piece_at(Square::new(i, j).unwrap()) {
+                        score += piece_value(piece) * if piece.color() == Color::Black { 1.0 } else { -1.0 };
+                    }
+                }
+            }
+            // 持ち駒の評価
+            for color in &[Color::Black, Color::White] {
+                let hand = position.hand_of_a_player(*color);
+                for piece_kind in PieceKind::all() {
+                    let count = hand.count(piece_kind).unwrap_or(0);
+                    score += piece_kind_value(piece_kind) * count as f32 * if *color == Color::Black { 1.0 } else { -1.0 };
+                }
+            }
+            score
+        }
+    }
+
+    fn piece_value(piece: Piece) -> f32 {
+        piece_kind_value(piece.piece_kind())
+    }
+
+    fn piece_kind_value(piece_kind: PieceKind) -> f32 {
+        match piece_kind {
+            PieceKind::Pawn => 100.0,
+            PieceKind::Lance => 300.0,
+            PieceKind::Knight => 350.0,
+            PieceKind::Silver => 500.0,
+            PieceKind::Gold => 550.0,
+            PieceKind::Bishop => 800.0,
+            PieceKind::Rook => 1000.0,
+            PieceKind::King => 10000.0,
+            PieceKind::ProPawn | PieceKind::ProLance | PieceKind::ProKnight | PieceKind::ProSilver => 600.0,
+            PieceKind::ProBishop => 1000.0,
+            PieceKind::ProRook => 1200.0,
+        }
+    }
+
+    #[test]
+    fn test_is_sennichite_detection() {
+        let evaluator = MockEvaluator;
+        let mut ai = ShogiAI::new(evaluator);
+        let mut position = Position::default(); // This will be our repeating position
+
+        for _ in 0..2 {
+            position.make_move(Move::Normal { from: Square::new(6, 9).unwrap(), to: Square::new(6, 8).unwrap(), promote: false }).unwrap();
+            ai.position_history.push(position.clone());
+            position.make_move(Move::Normal { from: Square::new(6, 1).unwrap(), to: Square::new(6, 2).unwrap(), promote: false }).unwrap();
+            position.make_move(Move::Normal { from: Square::new(6, 8).unwrap(), to: Square::new(6, 9).unwrap(), promote: false }).unwrap();
+            ai.position_history.push(position.clone());
+            position.make_move(Move::Normal { from: Square::new(6, 2).unwrap(), to: Square::new(6, 1).unwrap(), promote: false }).unwrap();
+        }
+
+        // At this point, the position has appeared 3 times. It should NOT be sennichite.
+        position.make_move(Move::Normal { from: Square::new(6, 9).unwrap(), to: Square::new(6, 8).unwrap(), promote: false }).unwrap();
+        assert!(!ai.is_sennichite(&position));
+        ai.position_history.push(position.clone());
+
+        // Add the position one more time, making it 4 occurrences.
+        position.make_move(Move::Normal { from: Square::new(6, 1).unwrap(), to: Square::new(6, 2).unwrap(), promote: false }).unwrap();
+        position.make_move(Move::Normal { from: Square::new(6, 8).unwrap(), to: Square::new(6, 9).unwrap(), promote: false }).unwrap();
+        ai.position_history.push(position.clone());
+        position.make_move(Move::Normal { from: Square::new(6, 2).unwrap(), to: Square::new(6, 1).unwrap(), promote: false }).unwrap();
+        position.make_move(Move::Normal { from: Square::new(6, 9).unwrap(), to: Square::new(6, 8).unwrap(), promote: false }).unwrap();
+
+        // Now it should be sennichite.
+        assert!(ai.is_sennichite(&position));
+
+        // Test with a different position that is not sennichite
+        let mut different_position = Position::default();
+        different_position.make_move(Move::Normal { from: Square::new(7, 7).unwrap(), to: Square::new(7, 6).unwrap(), promote: false }).unwrap();
+        assert!(!ai.is_sennichite(&different_position));
+    }
+
+    #[test]
+    fn test_find_best_move_takes_piece() {
+        let evaluator = MockEvaluator;
+        let mut ai = ShogiAI::new(evaluator);
+        let mut position = Position::default();
+        // 7六歩、3四歩、2二角成 の局面
+        position.make_move(Move::Normal { from: Square::new(7, 7).unwrap(), to: Square::new(7, 6).unwrap(), promote: false }).unwrap();
+        position.make_move(Move::Normal { from: Square::new(3, 3).unwrap(), to: Square::new(3, 4).unwrap(), promote: false }).unwrap();
+        position.make_move(Move::Normal { from: Square::new(2, 8).unwrap(), to: Square::new(2, 2).unwrap(), promote: true }).unwrap();
+
+        // 次の最善手は同銀のはず
+        let best_move = ai.find_best_move(&position, 1).unwrap();
+        let expected_move = Move::Normal { from: Square::new(3, 1).unwrap(), to: Square::new(2, 2).unwrap(), promote: false };
+
+        assert_eq!(best_move, expected_move);
+    }
+
+    #[test]
+    fn test_move_to_kif_normal() {
+        let position = Position::default();
+        let mv = Move::Normal { from: Square::new(7, 7).unwrap(), to: Square::new(7, 6).unwrap(), promote: false };
+        let kif = move_to_kif(&mv, &position, 1);
+        assert_eq!(kif, "1 76歩(77)");
+    }
+
+    #[test]
+    fn test_move_to_kif_promote() {
+        let mut position = Position::default();
+        position.make_move(Move::Normal { from: Square::new(7, 7).unwrap(), to: Square::new(7, 6).unwrap(), promote: false }).unwrap();
+        position.make_move(Move::Normal { from: Square::new(3, 3).unwrap(), to: Square::new(3, 4).unwrap(), promote: false }).unwrap();
+        let mv = Move::Normal { from: Square::new(2, 8).unwrap(), to: Square::new(2, 2).unwrap(), promote: true };
+        let kif = move_to_kif(&mv, &position, 3);
+        assert_eq!(kif, "3 22飛成(28)");
+    }
+
+    #[test]
+    fn test_move_to_kif_drop() {
+        let mut position = Position::default();
+        let mut hand = Hand::new();
+        hand = hand.added(PieceKind::Pawn).unwrap();
+        *position.hand_of_a_player_mut(Color::Black) = hand;
+        let mv = Move::Drop { to: Square::new(5, 5).unwrap(), piece: Piece::new(PieceKind::Pawn, Color::Black) };
+        let kif = move_to_kif(&mv, &position, 1);
+        assert_eq!(kif, "1 55歩打");
+    }
 }
