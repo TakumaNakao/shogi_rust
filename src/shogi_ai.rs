@@ -3,18 +3,23 @@ use std::io::Write;
 use std::path::Path;
 use plotters::prelude::*;
 
-use shogi_core::{Color, Move, Piece, PieceKind, Position, PartialPosition};
+use shogi_core::{Color, Move, PieceKind, Position, Square, Bitboard};
 use arrayvec::ArrayVec;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
+
 use circular_buffer::CircularBuffer; // circular-buffer クレートをインポート
 
 pub mod evaluation;
 pub mod search;
 
-use evaluation::{Evaluator, SparseModelEvaluator};
+use evaluation::{Evaluator, SparseModelEvaluator, get_piece_value};
 use search::MoveOrdering;
+
+fn flip_color(color: Color) -> Color {
+    match color {
+        Color::Black => Color::White,
+        Color::White => Color::Black,
+    }
+}
 
 // --- 千日手検出ロジック ---
 
@@ -119,16 +124,77 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
 
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     /// 新しい`ShogiAI`インスタンスを作成します。
-    /// 評価関数のインスタンスを引数として受け取ります。
     pub fn new(evaluator: E) -> Self {
         ShogiAI {
             move_ordering: MoveOrdering::new(),
             evaluator,
-            sennichite_detector: SennichiteDetector::new(), // 千日手検出器を初期化
+            sennichite_detector: SennichiteDetector::new(),
         }
     }
+
+    // --- ここからSEE実装（新規追加メソッド） ---
+
+    /// SEE: 指定されたマスを攻撃している、指定色の最も価値の低い駒を見つけます。
+    fn get_least_valuable_attacker(
+        &self,
+        position: &Position,
+        target: Square,
+        side: Color,
+        occupied: shogi_core::Bitboard,
+    ) -> Option<(Square, PieceKind)> {
+        let mut least_valuable_attacker: Option<(Square, PieceKind)> = None;
+        let mut min_value = i32::MAX;
+
+        // 盤上の駒を走査して攻撃駒を探します
+        for sq_int in 0..81 {
+            let Some(sq) = Square::from_u8(sq_int) else { continue; };
+            if let Some(piece) = position.piece_at(sq) {
+                if piece.color() == side && occupied.contains(sq) {
+                    let attacks = shogi_core::Bitboard::empty(); // 暫定的な対応
+                    if attacks.contains(target) {
+                        let value = get_piece_value(piece.piece_kind());
+                        if value < min_value {
+                            min_value = value;
+                            least_valuable_attacker = Some((sq, piece.piece_kind()));
+                        }
+                    }
+                }
+            }
+        }
+        least_valuable_attacker
+    }
+
+    /// 静的交換評価（SEE）を計算します。指し手を行う側の視点での損得を返します。
+    fn calculate_see(&self, position: &Position, mv: Move) -> i32 {
+        if let Move::Normal { from, to, .. } = mv {
+            if let (Some(attacker), Some(victim)) = (position.piece_at(from), position.piece_at(to)) {
+                let occupied = position.occupied_bitboard() & !Bitboard::single(from);
+                return get_piece_value(victim.piece_kind())
+                    - self.see_recursive(position, to, flip_color(position.side_to_move()), occupied, attacker.piece_kind());
+            }
+        }
+        0
+    }
+
+    /// SEEの再帰ヘルパー関数。
+    fn see_recursive(
+        &self,
+        position: &Position,
+        target_sq: Square,
+        side: Color,
+        occupied: shogi_core::Bitboard,
+        victim_kind: PieceKind,
+    ) -> i32 {
+        if let Some((attacker_sq, attacker_kind)) = self.get_least_valuable_attacker(position, target_sq, side, occupied) {
+            let new_occupied = occupied & !Bitboard::single(attacker_sq);
+            return get_piece_value(victim_kind)
+                - self.see_recursive(position, target_sq, flip_color(side), new_occupied, attacker_kind);
+        }
+        0
+    }
+    // --- SEE実装ここまで ---
+
     /// 静止探索（Quiescence Search）を実行し、局面の安定した評価値を返します。
-    /// この関数は、通常の探索深度が0に達したときに呼び出されます。
     fn quiescence_search(
         &mut self,
         position: &shogi_core::Position,
@@ -136,7 +202,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         mut beta: f32,
         maximizing_player_color: Color,
     ) -> f32 {
-        // --- ステップ2：「スタンド・パット」スコアの導入 ---
         let stand_pat_score = self.evaluator.evaluate(position);
 
         if position.side_to_move() == maximizing_player_color {
@@ -164,15 +229,11 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let mut forcing_moves: ArrayVec<Move, 593> = ArrayVec::new(); // 捕獲手や王手を格納するバッファ
 
         for mv in yasai_pos.legal_moves() {
-            // 駒の捕獲手をフィルタリング
             if let Move::Normal { to, .. } = mv {
                 if position.piece_at(to).is_some() {
                     forcing_moves.push(mv);
                 }
             }
-            // TODO: オプション拡張：王手（Checks）のフィルタリングもここに追加できます。
-            // `shogi_core` や `yasai` が王手判定機能を提供していれば実装可能です。
-            // 例: if is_check(mv, position) { forcing_moves.push(mv); }
         }
         
         // 静止探索では、強制手が存在しない場合は評価値をそのまま返します。
@@ -180,24 +241,22 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             return stand_pat_score;
         }
 
-        // 強制手を並べ替える（良い手から先に探索することで枝刈り効率を向上させる）
-        // 静止探索においては、通常の探索とは異なるオーダリング戦略が有効な場合もありますが、
-        // ここではMoveOrderingの既存のソート機能を利用します。
         self.move_ordering.sort_moves(&mut forcing_moves, position);
 
-
         if position.side_to_move() == maximizing_player_color {
-            let mut max_eval = stand_pat_score; // スタンド・パットスコアを初期値とする
+            let mut max_eval = stand_pat_score;
             for mv in forcing_moves {
-                let mut next_position = position.clone();
-                if next_position.make_move(mv).is_none() {
-                    continue;
+                // ▼▼▼ SEEによる枝刈り ▼▼▼
+                if self.calculate_see(position, mv) < 0 {
+                    continue; // 駒損になる交換は探索しない
                 }
+                // ▲▲▲ SEEによる枝刈り ▲▲▲
 
-                // 探索中に仮の局面を履歴に記録し、千日手チェックを行う
+                let mut next_position = position.clone();
+                if next_position.make_move(mv).is_none() { continue; }
+
                 self.sennichite_detector.record_position(&next_position);
                 let sennichite_status = self.is_sennichite_internal(&next_position); 
-
                 let eval = match sennichite_status {
                     SennichiteStatus::Draw => continue, 
                     SennichiteStatus::PerpetualCheckLoss => -f32::INFINITY, 
@@ -206,8 +265,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         self.quiescence_search(&next_position, alpha, beta, maximizing_player_color)
                     }
                 };
-
-                // 探索から戻る際に、仮の局面を履歴から削除
                 self.sennichite_detector.unrecord_last_position();
 
                 max_eval = max_eval.max(eval);
@@ -223,17 +280,19 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
             max_eval
         } else { // minimizing_player_color
-            let mut min_eval = stand_pat_score; // スタンド・パットスコアを初期値とする
+            let mut min_eval = stand_pat_score;
             for mv in forcing_moves {
-                let mut next_position = position.clone();
-                if next_position.make_move(mv).is_none() {
-                    continue;
+                // ▼▼▼ SEEによる枝刈り ▼▼▼
+                if self.calculate_see(position, mv) < 0 {
+                    continue; // 駒損になる交換は探索しない
                 }
+                // ▲▲▲ SEEによる枝刈り ▲▲▲
 
-                // 探索中に仮の局面を履歴に記録し、千日手チェックを行う
+                let mut next_position = position.clone();
+                if next_position.make_move(mv).is_none() { continue; }
+
                 self.sennichite_detector.record_position(&next_position);
                 let sennichite_status = self.is_sennichite_internal(&next_position); 
-
                 let eval = match sennichite_status {
                     SennichiteStatus::Draw => continue, 
                     SennichiteStatus::PerpetualCheckLoss => f32::INFINITY, 
@@ -242,8 +301,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         self.quiescence_search(&next_position, alpha, beta, maximizing_player_color)
                     }
                 };
-
-                // 探索から戻る際に、仮の局面を履歴から削除
                 self.sennichite_detector.unrecord_last_position();
 
                 min_eval = min_eval.min(eval);
@@ -472,13 +529,9 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
                 PieceKind::ProSilver => "成銀",
                 PieceKind::ProBishop => "馬",
                 PieceKind::ProRook => "龍",
-                _ => "UNKNOWN",
             };
             kif_str.push_str(&format!("{}{}打", to_s, piece_kind_str));
         },
-        _ => {
-            kif_str.push_str("UNKNOWN_MOVE");
-        }
     }
     kif_str
 }

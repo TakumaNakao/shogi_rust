@@ -98,6 +98,24 @@ fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
     }
 }
 
+pub fn get_piece_value(piece_kind: PieceKind) -> i32 {
+    use shogi_core::PieceKind::*;
+    match piece_kind {
+        Pawn => 100,
+        Lance => 300,
+        Knight => 300,
+        Silver => 500,
+        Gold => 600,
+        Bishop => 800,
+        Rook => 1000,
+        King => 20000,   // 実質的に無限大として扱う
+        ProPawn | ProLance | ProKnight => 400,
+        ProSilver => 600,
+        ProBishop => 1200, // 竜馬
+        ProRook => 1500,   // 竜王
+    }
+}
+
 #[derive(Default)]
 pub struct SparseModel {
     pub w: Vec<f32>,

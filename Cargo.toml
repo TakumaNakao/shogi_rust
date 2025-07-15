@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-shogi_core = { version = "0.1.5", features = ["ord"] }
+shogi_core = { version = "0.1.5" }
 csa = "1.0.2"
 anyhow = "1.0"
 rayon = "1.5"
