@@ -15,7 +15,6 @@ pub trait Evaluator {
 
 const NUM_SQUARES: usize = 81;
 const NUM_BOARD_PIECE_KINDS: usize = 14;
-const NUM_HAND_PIECE_KINDS: usize = 7;
 
 const MAX_HAND_PAWNS: usize = 18;
 const MAX_HAND_LANCES: usize = 4;
@@ -38,7 +37,6 @@ const NUM_PIECE_STATES: usize =
 
 const NUM_PIECE_PAIRS: usize = NUM_PIECE_STATES * (NUM_PIECE_STATES - 1) / 2;
 
-pub const KPP_DIM: usize = 193_000_000;
 const MAX_FEATURES: usize = 200_000_000;
 
 const ALL_HAND_PIECES: [PieceKind; 7] = [
@@ -51,8 +49,8 @@ const ALL_HAND_PIECES: [PieceKind; 7] = [
     PieceKind::Rook,
 ];
 
-// King is not included in piece_values
-const NUM_PIECE_VALUES: usize = 13;
+const NUM_BOARD_PIECE_VALUES: usize = 13; // King is not included
+const NUM_HAND_PIECE_VALUES: usize = 7;
 
 fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
     match kind {
@@ -73,6 +71,19 @@ fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
     }
 }
 
+fn hand_kind_to_index(kind: PieceKind) -> Option<usize> {
+    match kind {
+        PieceKind::Pawn => Some(0),
+        PieceKind::Lance => Some(1),
+        PieceKind::Knight => Some(2),
+        PieceKind::Silver => Some(3),
+        PieceKind::Gold => Some(4),
+        PieceKind::Bishop => Some(5),
+        PieceKind::Rook => Some(6),
+        _ => None,
+    }
+}
+
 fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
     match kind {
         PieceKind::Pawn => Some(0),
@@ -90,7 +101,8 @@ fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
 pub struct SparseModel {
     pub w: Vec<f32>,
     pub bias: f32,
-    pub piece_values: [f32; NUM_PIECE_VALUES],
+    pub board_piece_values: [f32; NUM_BOARD_PIECE_VALUES],
+    pub hand_piece_values: [f32; NUM_HAND_PIECE_VALUES],
     pub material_weight: f32,
     pub eta: f32,
 }
@@ -100,10 +112,11 @@ impl SparseModel {
         Self {
             w: vec![0.0; MAX_FEATURES],
             bias: 0.0,
-            piece_values: [
+            board_piece_values: [
                 100.0, 300.0, 350.0, 500.0, 550.0, 800.0, 1000.0, 600.0, 600.0, 600.0, 600.0,
                 1000.0, 1200.0,
             ],
+            hand_piece_values: [100.0, 300.0, 350.0, 500.0, 550.0, 800.0, 1000.0],
             material_weight: 1.0,
             eta,
         }
@@ -119,8 +132,13 @@ impl SparseModel {
         self.bias = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
         offset += 4;
 
-        for i in 0..NUM_PIECE_VALUES {
-            self.piece_values[i] = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
+        for i in 0..NUM_BOARD_PIECE_VALUES {
+            self.board_piece_values[i] = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
+            offset += 4;
+        }
+
+        for i in 0..NUM_HAND_PIECE_VALUES {
+            self.hand_piece_values[i] = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
             offset += 4;
         }
 
@@ -146,7 +164,10 @@ impl SparseModel {
         let mut buffer = Vec::new();
 
         buffer.extend_from_slice(&self.bias.to_le_bytes());
-        for &value in &self.piece_values {
+        for &value in &self.board_piece_values {
+            buffer.extend_from_slice(&value.to_le_bytes());
+        }
+        for &value in &self.hand_piece_values {
             buffer.extend_from_slice(&value.to_le_bytes());
         }
         buffer.extend_from_slice(&self.material_weight.to_le_bytes());
@@ -177,7 +198,7 @@ impl SparseModel {
                 prediction += self.w[i];
             }
         }
-        prediction += self.material_weight * calculate_material_score(pos, &self.piece_values);
+        prediction += self.material_weight * calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
         prediction
     }
 
@@ -190,7 +211,8 @@ impl SparseModel {
 
         let mut bias_grad = 0.0;
         let mut w_grads = vec![0.0; MAX_FEATURES];
-        let mut piece_values_grads = [0.0; NUM_PIECE_VALUES];
+        let mut board_piece_values_grads = [0.0; NUM_BOARD_PIECE_VALUES];
+        let mut hand_piece_values_grads = [0.0; NUM_HAND_PIECE_VALUES];
         let mut material_weight_grad = 0.0;
 
         for (pos, kpp_features, y_true) in batch.iter() {
@@ -208,12 +230,15 @@ impl SparseModel {
                 }
             }
 
-            let material_score = calculate_material_score(pos, &self.piece_values);
+            let material_score = calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
             material_weight_grad += error_grad * material_score;
 
-            let piece_counts = get_piece_counts(pos);
-            for i in 1..NUM_PIECE_VALUES { // Skip Pawn
-                piece_values_grads[i] += error_grad * self.material_weight * piece_counts[i];
+            let (board_counts, hand_counts) = get_piece_counts(pos);
+            for i in 1..NUM_BOARD_PIECE_VALUES { // Skip Pawn
+                board_piece_values_grads[i] += error_grad * self.material_weight * board_counts[i];
+            }
+            for i in 1..NUM_HAND_PIECE_VALUES { // Skip Pawn
+                hand_piece_values_grads[i] += error_grad * self.material_weight * hand_counts[i];
             }
         }
 
@@ -221,8 +246,11 @@ impl SparseModel {
         for i in 0..MAX_FEATURES {
             self.w[i] -= self.eta * w_grads[i];
         }
-        for i in 1..NUM_PIECE_VALUES { // Skip Pawn
-            self.piece_values[i] -= self.eta * piece_values_grads[i];
+        for i in 1..NUM_BOARD_PIECE_VALUES { // Skip Pawn
+            self.board_piece_values[i] -= self.eta * board_piece_values_grads[i];
+        }
+        for i in 1..NUM_HAND_PIECE_VALUES { // Skip Pawn
+            self.hand_piece_values[i] -= self.eta * hand_piece_values_grads[i];
         }
         self.material_weight -= self.eta * material_weight_grad;
 
@@ -316,19 +344,21 @@ pub fn extract_kpp_features(pos: &shogi_core::Position) -> Vec<usize> {
     indices
 }
 
-fn get_piece_counts(position: &shogi_core::Position) -> [f32; NUM_PIECE_VALUES] {
-    let mut counts = [0.0; NUM_PIECE_VALUES];
+fn get_piece_counts(position: &shogi_core::Position) -> ([f32; NUM_BOARD_PIECE_VALUES], [f32; NUM_HAND_PIECE_VALUES]) {
+    let mut board_counts = [0.0; NUM_BOARD_PIECE_VALUES];
+    let mut hand_counts = [0.0; NUM_HAND_PIECE_VALUES];
+
     // 盤上の駒を評価
     for i in 1..=9 {
         for j in 1..=9 {
             if let Some(square) = Square::new(i, j) {
                 if let Some(piece) = position.piece_at(square) {
                     if let Some(index) = board_kind_to_index(piece.piece_kind()) {
-                        if index < NUM_PIECE_VALUES {
+                        if index < NUM_BOARD_PIECE_VALUES {
                             if piece.color() == Color::Black {
-                                counts[index] += 1.0;
+                                board_counts[index] += 1.0;
                             } else {
-                                counts[index] -= 1.0;
+                                board_counts[index] -= 1.0;
                             }
                         }
                     }
@@ -341,28 +371,33 @@ fn get_piece_counts(position: &shogi_core::Position) -> [f32; NUM_PIECE_VALUES] 
         let hand = position.hand_of_a_player(*color);
         for piece_kind in ALL_HAND_PIECES.iter() {
             if let Some(count) = hand.count(*piece_kind) {
-                if let Some(index) = board_kind_to_index(*piece_kind) {
-                     if index < NUM_PIECE_VALUES {
-                        if *color == Color::Black {
-                            counts[index] += count as f32;
-                        } else {
-                            counts[index] -= count as f32;
-                        }
+                if let Some(index) = hand_kind_to_index(*piece_kind) {
+                     if *color == Color::Black {
+                        hand_counts[index] += count as f32;
+                    } else {
+                        hand_counts[index] -= count as f32;
                     }
                 }
             }
         }
     }
-    counts
+    (board_counts, hand_counts)
 }
 
 
 // 駒得を計算する関数
-fn calculate_material_score(position: &shogi_core::Position, piece_values: &[f32; NUM_PIECE_VALUES]) -> f32 {
+fn calculate_material_score(
+    position: &shogi_core::Position, 
+    board_piece_values: &[f32; NUM_BOARD_PIECE_VALUES], 
+    hand_piece_values: &[f32; NUM_HAND_PIECE_VALUES]
+) -> f32 {
     let mut score = 0.0;
-    let piece_counts = get_piece_counts(position);
-    for i in 0..NUM_PIECE_VALUES {
-        score += piece_counts[i] * piece_values[i];
+    let (board_counts, hand_counts) = get_piece_counts(position);
+    for i in 0..NUM_BOARD_PIECE_VALUES {
+        score += board_counts[i] * board_piece_values[i];
+    }
+    for i in 0..NUM_HAND_PIECE_VALUES {
+        score += hand_counts[i] * hand_piece_values[i];
     }
     score
 }
