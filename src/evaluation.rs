@@ -51,6 +51,7 @@ const ALL_HAND_PIECES: [PieceKind; 7] = [
 
 const NUM_BOARD_PIECE_VALUES: usize = 13; // King is not included
 const NUM_HAND_PIECE_VALUES: usize = 7;
+const MAX_MATERIAL_WEIGHT: f32 = 0.01;
 
 fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
     match kind {
@@ -103,21 +104,23 @@ pub struct SparseModel {
     pub bias: f32,
     pub board_piece_values: [f32; NUM_BOARD_PIECE_VALUES],
     pub hand_piece_values: [f32; NUM_HAND_PIECE_VALUES],
-    pub material_weight: f32,
+    pub material_weight_raw: f32,
     pub eta: f32,
 }
 
 impl SparseModel {
     pub fn new(eta: f32) -> Self {
+        const INITIAL_MATERIAL_WEIGHT_RAW: f32 = 0.0;
+
         Self {
             w: vec![0.0; MAX_FEATURES],
             bias: 0.0,
             board_piece_values: [
-                100.0, 300.0, 350.0, 500.0, 550.0, 800.0, 1000.0, 600.0, 600.0, 600.0, 600.0,
-                1000.0, 1200.0,
+                1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0, 6.0, 6.0, 6.0, 6.0,
+                10.0, 12.0,
             ],
-            hand_piece_values: [100.0, 300.0, 350.0, 500.0, 550.0, 800.0, 1000.0],
-            material_weight: 1.0,
+            hand_piece_values: [1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0],
+            material_weight_raw: INITIAL_MATERIAL_WEIGHT_RAW,
             eta,
         }
     }
@@ -142,7 +145,7 @@ impl SparseModel {
             offset += 4;
         }
 
-        self.material_weight = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
+        self.material_weight_raw = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
         offset += 4;
 
         let expected_w_bytes = MAX_FEATURES * 4;
@@ -170,7 +173,7 @@ impl SparseModel {
         for &value in &self.hand_piece_values {
             buffer.extend_from_slice(&value.to_le_bytes());
         }
-        buffer.extend_from_slice(&self.material_weight.to_le_bytes());
+        buffer.extend_from_slice(&self.material_weight_raw.to_le_bytes());
 
         for &v in self.w.iter() {
             buffer.extend_from_slice(&v.to_le_bytes());
@@ -191,6 +194,10 @@ impl SparseModel {
         }
     }
 
+    fn get_material_weight(&self) -> f32 {
+        MAX_MATERIAL_WEIGHT * (1.0 / (1.0 + (-self.material_weight_raw).exp()))
+    }
+
     pub fn predict(&self, pos: &shogi_core::Position, kpp_features: &[usize]) -> f32 {
         let mut prediction = self.bias;
         for &i in kpp_features {
@@ -198,7 +205,8 @@ impl SparseModel {
                 prediction += self.w[i];
             }
         }
-        prediction += self.material_weight * calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
+        let material_weight = self.get_material_weight();
+        prediction += material_weight * calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
         prediction
     }
 
@@ -213,7 +221,7 @@ impl SparseModel {
         let mut w_grads = vec![0.0; MAX_FEATURES];
         let mut board_piece_values_grads = [0.0; NUM_BOARD_PIECE_VALUES];
         let mut hand_piece_values_grads = [0.0; NUM_HAND_PIECE_VALUES];
-        let mut material_weight_grad = 0.0;
+        let mut material_weight_raw_grad = 0.0;
 
         for (pos, kpp_features, y_true) in batch.iter() {
             let y_pred = self.predict(pos, kpp_features);
@@ -230,15 +238,22 @@ impl SparseModel {
                 }
             }
 
+            let material_weight = self.get_material_weight();
             let material_score = calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
-            material_weight_grad += error_grad * material_score;
+            
+            // Chain rule for material_weight_raw
+            // d(loss)/d(raw) = d(loss)/d(weight) * d(weight)/d(raw)
+            let d_loss_d_weight = error_grad * material_score;
+            let sigmoid_val = material_weight / MAX_MATERIAL_WEIGHT;
+            let d_weight_d_raw = MAX_MATERIAL_WEIGHT * sigmoid_val * (1.0 - sigmoid_val);
+            material_weight_raw_grad += d_loss_d_weight * d_weight_d_raw;
 
             let (board_counts, hand_counts) = get_piece_counts(pos);
             for i in 1..NUM_BOARD_PIECE_VALUES { // Skip Pawn
-                board_piece_values_grads[i] += error_grad * self.material_weight * board_counts[i];
+                board_piece_values_grads[i] += error_grad * material_weight * board_counts[i];
             }
             for i in 1..NUM_HAND_PIECE_VALUES { // Skip Pawn
-                hand_piece_values_grads[i] += error_grad * self.material_weight * hand_counts[i];
+                hand_piece_values_grads[i] += error_grad * material_weight * hand_counts[i];
             }
         }
 
@@ -252,9 +267,12 @@ impl SparseModel {
         for i in 1..NUM_HAND_PIECE_VALUES { // Skip Pawn
             self.hand_piece_values[i] -= self.eta * hand_piece_values_grads[i];
         }
-        self.material_weight -= self.eta * material_weight_grad;
+        self.material_weight_raw -= self.eta * material_weight_raw_grad;
 
         let mse = total_loss / m;
+        println!("material_weight: {}, material_weight_raw: {}", self.get_material_weight(), self.material_weight_raw);
+        println!("board_piece_values: {:?}", self.board_piece_values);
+        println!("hand_piece_values: {:?}", self.hand_piece_values);
         mse
     }
 }

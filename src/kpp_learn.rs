@@ -11,7 +11,7 @@ use plotters::prelude::*;
 mod evaluation;
 use evaluation::{SparseModel, extract_kpp_features};
 
-const LEARNING_RATE: f32 = 0.3;
+const LEARNING_RATE: f32 = 0.01;
 const BATCH_SIZE: usize = 65536;
 
 const REWARD_GAIN: f32 = 25.0;
