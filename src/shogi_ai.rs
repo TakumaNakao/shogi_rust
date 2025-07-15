@@ -575,8 +575,10 @@ mod tests {
         for _ in 0..3 {
             repeating_pos.make_move(Move::Normal { from: Square::new(6, 9).unwrap(), to: Square::new(6, 8).unwrap(), promote: false }).unwrap();
             ai.sennichite_detector.record_position(&repeating_pos);
+            repeating_pos.make_move(Move::Normal { from: Square::new(6, 1).unwrap(), to: Square::new(6, 2).unwrap(), promote: false }).unwrap();
             repeating_pos.make_move(Move::Normal { from: Square::new(6, 8).unwrap(), to: Square::new(6, 9).unwrap(), promote: false }).unwrap();
             ai.sennichite_detector.record_position(&repeating_pos);
+            repeating_pos.make_move(Move::Normal { from: Square::new(6, 2).unwrap(), to: Square::new(6, 1).unwrap(), promote: false }).unwrap();
         }
 
         repeating_pos.make_move(Move::Normal { from: Square::new(6, 9).unwrap(), to: Square::new(6, 8).unwrap(), promote: false }).unwrap();
@@ -585,8 +587,10 @@ mod tests {
         assert_eq!(ai.is_sennichite_internal(&repeating_pos), SennichiteStatus::None);
 
         ai.sennichite_detector.record_position(&repeating_pos);
+        repeating_pos.make_move(Move::Normal { from: Square::new(6, 1).unwrap(), to: Square::new(6, 2).unwrap(), promote: false }).unwrap();
         repeating_pos.make_move(Move::Normal { from: Square::new(6, 8).unwrap(), to: Square::new(6, 9).unwrap(), promote: false }).unwrap();
         ai.sennichite_detector.record_position(&repeating_pos);
+        repeating_pos.make_move(Move::Normal { from: Square::new(6, 2).unwrap(), to: Square::new(6, 1).unwrap(), promote: false }).unwrap();
 
         repeating_pos.make_move(Move::Normal { from: Square::new(6, 9).unwrap(), to: Square::new(6, 8).unwrap(), promote: false }).unwrap();
 
