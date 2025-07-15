@@ -1,5 +1,5 @@
 use anyhow::Result;
-use shogi_core::{Color, Move, Piece, PieceKind, Square};
+use shogi_core::{Color, Move, Piece, PieceKind, Square, Position};
 use csa;
 use std::fs;
 use std::env;
@@ -36,7 +36,7 @@ fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     }
 }
 
-fn process_csa_file(path: &Path, _model: &mut SparseModel, batch: &mut Vec<(Vec<usize>, f32)>) -> Result<()> {
+fn process_csa_file(path: &Path, batch: &mut Vec<(Position, Vec<usize>, f32)>) -> Result<()> {
     let text = fs::read_to_string(path)?;
     let record = csa::parse_csa(&text)?;
 
@@ -88,13 +88,13 @@ fn process_csa_file(path: &Path, _model: &mut SparseModel, batch: &mut Vec<(Vec<
                     let from_sq = if let Some(sq) = Square::new(from_csa.file, from_csa.rank) {
                         sq
                     } else {
-                        println!{"Error from_sq"};
+                        println!("Error from_sq");
                         continue;
                     };
                     let piece_before = if let Some(p) = pos.piece_at(from_sq) {
                         p
                     } else {
-                        println!{"Error piece_before"};
+                        println!("Error piece_before");
                         continue;
                     };
                     let promote = piece_before.piece_kind() != csa_to_shogi_piece_kind(*piece_type_after_csa);
@@ -113,7 +113,7 @@ fn process_csa_file(path: &Path, _model: &mut SparseModel, batch: &mut Vec<(Vec<
 
         let features = extract_kpp_features(&pos);
         if !features.is_empty() {
-            batch.push((features, label));
+            batch.push((pos.clone(), features, label));
         }
         if pos.make_move(shogi_move).is_none() {
             break;
@@ -195,13 +195,13 @@ fn main() -> Result<()> {
 
     println!("{}個のCSAファイルを読み込みます。", csa_files.len());
 
-    let mut batch = Vec::with_capacity(BATCH_SIZE);
+    let mut batch: Vec<(Position, Vec<usize>, f32)> = Vec::with_capacity(BATCH_SIZE);
     let mut batch_count = 0;
     let mut file_count = 0;
     let mut mse_history = Vec::new();
 
     for path in &csa_files {
-        if let Err(e) = process_csa_file(&path, &mut model, &mut batch) {
+        if let Err(e) = process_csa_file(&path, &mut batch) {
             eprintln!("ファイル処理エラー: {:?} - {}", path, e);
         }
         file_count += 1;

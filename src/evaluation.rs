@@ -51,6 +51,9 @@ const ALL_HAND_PIECES: [PieceKind; 7] = [
     PieceKind::Rook,
 ];
 
+// King is not included in piece_values
+const NUM_PIECE_VALUES: usize = 13;
+
 fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
     match kind {
         PieceKind::Pawn => Some(0),
@@ -87,6 +90,8 @@ fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
 pub struct SparseModel {
     pub w: Vec<f32>,
     pub bias: f32,
+    pub piece_values: [f32; NUM_PIECE_VALUES],
+    pub material_weight: f32,
     pub eta: f32,
 }
 
@@ -95,42 +100,61 @@ impl SparseModel {
         Self {
             w: vec![0.0; MAX_FEATURES],
             bias: 0.0,
+            piece_values: [
+                100.0, 300.0, 350.0, 500.0, 550.0, 800.0, 1000.0, 600.0, 600.0, 600.0, 600.0,
+                1000.0, 1200.0,
+            ],
+            material_weight: 1.0,
             eta,
         }
     }
 
     pub fn load(&mut self, path: &Path) -> Result<()> {
         let mut file = File::open(path)?;
-        let mut buffer = [0u8; 4];
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
 
-        file.read_exact(&mut buffer)?;
-        self.bias = f32::from_le_bytes(buffer);
+        let mut offset = 0;
 
-        let mut weights_bytes = Vec::new();
-        file.read_to_end(&mut weights_bytes)?;
+        self.bias = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
+        offset += 4;
 
-        if weights_bytes.len() != MAX_FEATURES * 4 {
+        for i in 0..NUM_PIECE_VALUES {
+            self.piece_values[i] = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
+            offset += 4;
+        }
+
+        self.material_weight = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
+        offset += 4;
+
+        let expected_w_bytes = MAX_FEATURES * 4;
+        if buffer.len() - offset != expected_w_bytes {
             return Err(anyhow::anyhow!("File size mismatch for weights"));
         }
 
         for i in 0..MAX_FEATURES {
-            let start = i * 4;
+            let start = offset + i * 4;
             let end = start + 4;
-            let bytes: [u8; 4] = weights_bytes[start..end].try_into()
-                .map_err(|_| anyhow::anyhow!("Failed to convert slice to array"))?;
-            self.w[i] = f32::from_le_bytes(bytes);
+            self.w[i] = f32::from_le_bytes(buffer[start..end].try_into()?);
         }
+
         Ok(())
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
         let mut file = File::create(path)?;
-        file.write_all(&self.bias.to_le_bytes())?;
+        let mut buffer = Vec::new();
 
-        let mut buffer = Vec::with_capacity(self.w.len() * 4);
+        buffer.extend_from_slice(&self.bias.to_le_bytes());
+        for &value in &self.piece_values {
+            buffer.extend_from_slice(&value.to_le_bytes());
+        }
+        buffer.extend_from_slice(&self.material_weight.to_le_bytes());
+
         for &v in self.w.iter() {
             buffer.extend_from_slice(&v.to_le_bytes());
         }
+
         file.write_all(&buffer)?;
 
         Ok(())
@@ -146,35 +170,62 @@ impl SparseModel {
         }
     }
 
-    pub fn predict(&self, x: &[usize]) -> f32 {
+    pub fn predict(&self, pos: &shogi_core::Position, kpp_features: &[usize]) -> f32 {
         let mut prediction = self.bias;
-        for &i in x {
+        for &i in kpp_features {
             if i < MAX_FEATURES {
                 prediction += self.w[i];
             }
         }
+        prediction += self.material_weight * calculate_material_score(pos, &self.piece_values);
         prediction
     }
 
-    pub fn update_batch(&mut self, batch: &[(Vec<usize>, f32)]) -> f32 {
+    pub fn update_batch(&mut self, batch: &[(shogi_core::Position, Vec<usize>, f32)]) -> f32 {
         let m = batch.len() as f32;
         if m == 0.0 {
             return 0.0;
         }
         let mut total_loss = 0.0;
-        for (x, y_true) in batch.iter() {
-            let y_pred = self.predict(x);
+
+        let mut bias_grad = 0.0;
+        let mut w_grads = vec![0.0; MAX_FEATURES];
+        let mut piece_values_grads = [0.0; NUM_PIECE_VALUES];
+        let mut material_weight_grad = 0.0;
+
+        for (pos, kpp_features, y_true) in batch.iter() {
+            let y_pred = self.predict(pos, kpp_features);
             let error = y_pred - y_true;
             total_loss += error * error;
 
-            self.bias -= self.eta * error / m;
+            let error_grad = 2.0 * error / m;
 
-            for &i in x {
+            bias_grad += error_grad;
+
+            for &i in kpp_features {
                 if i < MAX_FEATURES {
-                    self.w[i] -= self.eta * error / m;
+                    w_grads[i] += error_grad;
                 }
             }
+
+            let material_score = calculate_material_score(pos, &self.piece_values);
+            material_weight_grad += error_grad * material_score;
+
+            let piece_counts = get_piece_counts(pos);
+            for i in 1..NUM_PIECE_VALUES { // Skip Pawn
+                piece_values_grads[i] += error_grad * self.material_weight * piece_counts[i];
+            }
         }
+
+        self.bias -= self.eta * bias_grad;
+        for i in 0..MAX_FEATURES {
+            self.w[i] -= self.eta * w_grads[i];
+        }
+        for i in 1..NUM_PIECE_VALUES { // Skip Pawn
+            self.piece_values[i] -= self.eta * piece_values_grads[i];
+        }
+        self.material_weight -= self.eta * material_weight_grad;
+
         let mse = total_loss / m;
         mse
     }
@@ -265,6 +316,57 @@ pub fn extract_kpp_features(pos: &shogi_core::Position) -> Vec<usize> {
     indices
 }
 
+fn get_piece_counts(position: &shogi_core::Position) -> [f32; NUM_PIECE_VALUES] {
+    let mut counts = [0.0; NUM_PIECE_VALUES];
+    // 盤上の駒を評価
+    for i in 1..=9 {
+        for j in 1..=9 {
+            if let Some(square) = Square::new(i, j) {
+                if let Some(piece) = position.piece_at(square) {
+                    if let Some(index) = board_kind_to_index(piece.piece_kind()) {
+                        if index < NUM_PIECE_VALUES {
+                            if piece.color() == Color::Black {
+                                counts[index] += 1.0;
+                            } else {
+                                counts[index] -= 1.0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 持ち駒を評価
+    for color in &[Color::Black, Color::White] {
+        let hand = position.hand_of_a_player(*color);
+        for piece_kind in ALL_HAND_PIECES.iter() {
+            if let Some(count) = hand.count(*piece_kind) {
+                if let Some(index) = board_kind_to_index(*piece_kind) {
+                     if index < NUM_PIECE_VALUES {
+                        if *color == Color::Black {
+                            counts[index] += count as f32;
+                        } else {
+                            counts[index] -= count as f32;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    counts
+}
+
+
+// 駒得を計算する関数
+fn calculate_material_score(position: &shogi_core::Position, piece_values: &[f32; NUM_PIECE_VALUES]) -> f32 {
+    let mut score = 0.0;
+    let piece_counts = get_piece_counts(position);
+    for i in 0..NUM_PIECE_VALUES {
+        score += piece_counts[i] * piece_values[i];
+    }
+    score
+}
+
 pub struct SparseModelEvaluator {
     pub model: SparseModel,
 }
@@ -279,7 +381,7 @@ impl SparseModelEvaluator {
 
 impl Evaluator for SparseModelEvaluator {
     fn evaluate(&self, position: &shogi_core::Position) -> f32 {
-        let features = extract_kpp_features(position);
-        self.model.predict(&features)
+        let kpp_features = extract_kpp_features(position);
+        self.model.predict(position, &kpp_features)
     }
 }
