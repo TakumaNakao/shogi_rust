@@ -538,8 +538,8 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
 fn main() {
     println!("--- ShogiAI 自己対局 ---");
 
-    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights2017-2024.binary")).expect("Failed to create SparseModelEvaluator for Sente");
-    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights.binary")).expect("Failed to create SparseModelEvaluator for Gote");
+    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights.binary")).expect("Failed to create SparseModelEvaluator for Sente");
+    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights2017-2024.binary")).expect("Failed to create SparseModelEvaluator for Gote");
 
     // 千日手検出のための履歴バッファの容量を定義
     // 将棋のゲーム履歴は通常数百手なので、256や512程度が妥当です。
@@ -556,7 +556,6 @@ fn main() {
     let mut turn = 0;
     let max_turns = 150; // 最大ターン数
     let mut kif_moves: Vec<String> = Vec::new(); // KIF形式の指し手を保存するベクトル
-    let mut evaluation_history: Vec<(usize, f32)> = Vec::new(); // 評価値の履歴を保存するベクトル
     let mut sente_evaluation_history: Vec<(usize, f32)> = Vec::new();
     let mut gote_evaluation_history: Vec<(usize, f32)> = Vec::new();
 
@@ -586,6 +585,18 @@ fn main() {
         match best_move {
             Some(mv) => {
                 kif_moves.push(move_to_kif(&mv, &position, turn));
+                
+                // 現在の局面の評価値を記録
+                let current_eval = current_ai.evaluator.evaluate(&position);
+                match position.side_to_move() {
+                    Color::Black => {
+                        sente_evaluation_history.push((turn, current_eval));
+                    },
+                    Color::White => {
+                        gote_evaluation_history.push((turn, current_eval));
+                    },
+                }
+
                 println!("見つかった最適な指し手: {:?}", mv);
                     if position.make_move(mv).is_none() {
                         println!("指し手の適用に失敗しました。");
@@ -615,19 +626,6 @@ fn main() {
 
                 println!("指し手を適用しました。新しい手番: {:?}", position.side_to_move());
                 println!("局面:{}", position.to_sfen_owned());
-
-                // 現在の局面の評価値を記録
-                let current_eval = current_ai.evaluator.evaluate(&position);
-                evaluation_history.push((turn, current_eval));
-
-                match position.side_to_move() {
-                    Color::Black => {
-                        sente_evaluation_history.push((turn, current_eval));
-                    },
-                    Color::White => {
-                        gote_evaluation_history.push((turn, current_eval));
-                    },
-                }
             }
             None => {
                 println!("最適な指し手が見つかりませんでした。対局終了。");
