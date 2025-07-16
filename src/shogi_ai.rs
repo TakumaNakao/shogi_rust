@@ -199,35 +199,21 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         &mut self,
         position: &shogi_core::Position,
         mut alpha: f32,
-        mut beta: f32,
-        maximizing_player_color: Color,
+        beta: f32,
     ) -> f32 {
-        let stand_pat_score = self.evaluator.evaluate(position);
+        let stand_pat_score = if position.side_to_move() == Color::Black {
+            self.evaluator.evaluate(position)
+        } else {
+            -self.evaluator.evaluate(position)
+        };
 
-        if position.side_to_move() == maximizing_player_color {
-            // 現在の評価値が既にベータ値を上回っていれば、これ以上探索する必要はない（βカット）
-            if stand_pat_score >= beta {
-                return beta;
-            }
-            // アルファ値の更新
-            alpha = alpha.max(stand_pat_score);
-        } else { // minimizing_player_color
-            // 現在の評価値が既にアルファ値を下回っていれば、これ以上探索する必要はない（αカット）
-            if stand_pat_score <= alpha {
-                return alpha;
-            }
-            // ベータ値の更新
-            beta = beta.min(stand_pat_score);
+        if stand_pat_score >= beta {
+            return beta;
         }
+        alpha = alpha.max(stand_pat_score);
 
         let yasai_pos: yasai::Position = yasai::Position::new(position.inner().clone());
-        // --- ステップ3：強制手の生成 ---
-        // 静止探索では、駒の捕獲手のみを生成します。
-        // 王手も強制手と見なす場合は、`yasai_pos.legal_moves()` を使用し、
-        // その中から王手と捕獲手のみをフィルタリングする必要があります。
-        // 現状では、駒の捕獲手のみを抽出します。
-        let mut forcing_moves: ArrayVec<Move, 593> = ArrayVec::new(); // 捕獲手や王手を格納するバッファ
-
+        let mut forcing_moves: ArrayVec<Move, 593> = ArrayVec::new();
         for mv in yasai_pos.legal_moves() {
             if let Move::Normal { to, .. } = mv {
                 if position.piece_at(to).is_some() {
@@ -235,84 +221,43 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 }
             }
         }
-        
-        // 静止探索では、強制手が存在しない場合は評価値をそのまま返します。
+
         if forcing_moves.is_empty() {
             return stand_pat_score;
         }
 
         self.move_ordering.sort_moves(&mut forcing_moves, position);
 
-        if position.side_to_move() == maximizing_player_color {
-            let mut max_eval = stand_pat_score;
-            for mv in forcing_moves {
-                // ▼▼▼ SEEによる枝刈り ▼▼▼
-                if self.calculate_see(position, mv) < 0 {
-                    continue; // 駒損になる交換は探索しない
-                }
-                // ▲▲▲ SEEによる枝刈り ▲▲▲
-
-                let mut next_position = position.clone();
-                if next_position.make_move(mv).is_none() { continue; }
-
-                self.sennichite_detector.record_position(&next_position);
-                let sennichite_status = self.is_sennichite_internal(&next_position); 
-                let eval = match sennichite_status {
-                    SennichiteStatus::Draw => continue, 
-                    SennichiteStatus::PerpetualCheckLoss => -f32::INFINITY, 
-                    SennichiteStatus::None => {
-                        // 千日手ではない場合、静止探索を再帰的に呼び出し
-                        self.quiescence_search(&next_position, alpha, beta, maximizing_player_color)
-                    }
-                };
-                self.sennichite_detector.unrecord_last_position();
-
-                max_eval = max_eval.max(eval);
-                alpha = alpha.max(eval);
-
-                // --- ステップ4：静止探索における枝刈り ---
-                // αβ法の枝刈り
-                if beta <= alpha {
-                    // 静止探索でのHistory Heuristic更新は通常行いません。
-                    // 必要であれば、ここに追加実装できます。
-                    break;
-                }
+        let mut best_score = stand_pat_score;
+        for mv in forcing_moves {
+            if self.calculate_see(position, mv) < 0 {
+                continue;
             }
-            max_eval
-        } else { // minimizing_player_color
-            let mut min_eval = stand_pat_score;
-            for mv in forcing_moves {
-                // ▼▼▼ SEEによる枝刈り ▼▼▼
-                if self.calculate_see(position, mv) < 0 {
-                    continue; // 駒損になる交換は探索しない
+
+            let mut next_position = position.clone();
+            if next_position.make_move(mv).is_none() { continue; }
+
+            self.sennichite_detector.record_position(&next_position);
+            let sennichite_status = self.is_sennichite_internal(&next_position);
+            let score = match sennichite_status {
+                SennichiteStatus::Draw => 0.0,
+                SennichiteStatus::PerpetualCheckLoss => -f32::INFINITY,
+                SennichiteStatus::None => {
+                    -self.quiescence_search(&next_position, -beta, -alpha)
                 }
-                // ▲▲▲ SEEによる枝刈り ▲▲▲
+            };
+            self.sennichite_detector.unrecord_last_position();
 
-                let mut next_position = position.clone();
-                if next_position.make_move(mv).is_none() { continue; }
-
-                self.sennichite_detector.record_position(&next_position);
-                let sennichite_status = self.is_sennichite_internal(&next_position); 
-                let eval = match sennichite_status {
-                    SennichiteStatus::Draw => continue, 
-                    SennichiteStatus::PerpetualCheckLoss => f32::INFINITY, 
-                    SennichiteStatus::None => {
-                        // 千日手ではない場合、静止探索を再帰的に呼び出し
-                        self.quiescence_search(&next_position, alpha, beta, maximizing_player_color)
-                    }
-                };
-                self.sennichite_detector.unrecord_last_position();
-
-                min_eval = min_eval.min(eval);
-                beta = beta.min(eval);
-
-                // αβ法の枝刈り
-                if beta <= alpha {
-                    break;
-                }
+            if score > best_score {
+                best_score = score;
             }
-            min_eval
+            alpha = alpha.max(score);
+
+            if alpha >= beta {
+                break;
+            }
         }
+        best_score
     }
 
 
@@ -322,95 +267,52 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         position: &shogi_core::Position,
         depth: u8,
         mut alpha: f32,
-        mut beta: f32,
-        maximizing_player_color: Color,
+        beta: f32,
     ) -> f32 {
-        // --- ステップ1：αβ探索との統合 ---
-        // 探索深度が0になったら、静止探索を呼び出す
         if depth == 0 {
-            return self.quiescence_search(position, alpha, beta, maximizing_player_color);
+            return self.quiescence_search(position, alpha, beta);
         }
 
         let yasai_pos: yasai::Position = yasai::Position::new(position.inner().clone());
         let mut moves = yasai_pos.legal_moves();
-        self.move_ordering.sort_moves(&mut moves, position);
 
         if moves.is_empty() {
-            // 詰みまたはステイルメイト（将棋ではステイルメイトは通常発生しない）
-            return if position.side_to_move() == maximizing_player_color {
-                -f32::INFINITY // 詰まされた側は負け
-            } else {
-                f32::INFINITY // 詰ました側は勝ち
+            return -f32::INFINITY; // 詰まされた側は負け
+        }
+
+        self.move_ordering.sort_moves(&mut moves, position);
+
+        let mut best_score = -f32::INFINITY;
+        for mv in moves {
+            let mut next_position = position.clone();
+            if next_position.make_move(mv).is_none() {
+                continue;
+            }
+
+            self.sennichite_detector.record_position(&next_position);
+            let sennichite_status = self.is_sennichite_internal(&next_position);
+
+            let score = match sennichite_status {
+                SennichiteStatus::Draw => 0.0,
+                SennichiteStatus::PerpetualCheckLoss => -f32::INFINITY,
+                SennichiteStatus::None => {
+                    -self.alpha_beta_search(&next_position, depth - 1, -beta, -alpha)
+                }
             };
-        }
 
-        if position.side_to_move() == maximizing_player_color {
-            let mut max_eval = -f32::INFINITY;
-            for mv in moves {
-                let mut next_position = position.clone();
-                if next_position.make_move(mv).is_none() {
-                    continue;
-                }
+            self.sennichite_detector.unrecord_last_position();
 
-                // 探索中に仮の局面を履歴に記録し、千日手チェックを行う
-                self.sennichite_detector.record_position(&next_position);
-                let sennichite_status = self.is_sennichite_internal(&next_position); // 内部的な千日手チェック
-
-                let eval = match sennichite_status {
-                    SennichiteStatus::Draw => continue, 
-                    SennichiteStatus::PerpetualCheckLoss => -f32::INFINITY, // 連続王手による負けは最低点
-                    SennichiteStatus::None => {
-                        // 千日手ではない場合、探索を続行
-                        self.alpha_beta_search(&next_position, depth - 1, alpha, beta, maximizing_player_color)
-                    }
-                };
-
-                // 探索から戻る際に、仮の局面を履歴から削除
-                self.sennichite_detector.unrecord_last_position();
-
-                max_eval = max_eval.max(eval);
-                alpha = alpha.max(eval);
-
-                if beta <= alpha {
-                    self.move_ordering.update_history(&mv, position, depth as i32 * 10);
-                    break;
-                }
+            if score > best_score {
+                best_score = score;
             }
-            max_eval
-        } else { // minimizing_player_color
-            let mut min_eval = f32::INFINITY;
-            for mv in moves {
-                let mut next_position = position.clone();
-                if next_position.make_move(mv).is_none() {
-                    continue;
-                }
+            alpha = alpha.max(score);
 
-                // 探索中に仮の局面を履歴に記録し、千日手チェックを行う
-                self.sennichite_detector.record_position(&next_position);
-                let sennichite_status = self.is_sennichite_internal(&next_position); // 内部的な千日手チェック
-
-                let eval = match sennichite_status {
-                    SennichiteStatus::Draw => continue, 
-                    SennichiteStatus::PerpetualCheckLoss => f32::INFINITY, // 連続王手による負けは相手の勝ちなので最高点
-                    SennichiteStatus::None => {
-                        // 千日手ではない場合、探索を続行
-                        self.alpha_beta_search(&next_position, depth - 1, alpha, beta, maximizing_player_color)
-                    }
-                };
-
-                // 探索から戻る際に、仮の局面を履歴から削除
-                self.sennichite_detector.unrecord_last_position();
-
-                min_eval = min_eval.min(eval);
-                beta = beta.min(eval);
-
-                if beta <= alpha {
-                    self.move_ordering.update_history(&mv, position, depth as i32 * 10);
-                    break;
-                }
+            if alpha >= beta {
+                self.move_ordering.update_history(&mv, position, depth as i32 * 10);
+                break;
             }
-            min_eval
         }
+        best_score
     }
 
     /// 特定の局面が千日手であるか（4回出現したか）をチェックします。
@@ -437,7 +339,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let mut alpha = -f32::INFINITY;
         let beta = f32::INFINITY;
 
-        let current_player = position.side_to_move();
         let yasai_pos: yasai::Position = yasai::Position::new(position.inner().clone());
         let mut moves = yasai_pos.legal_moves();
 
@@ -453,19 +354,16 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 continue;
             }
 
-            // 探索のルートノードで、仮の指し手による千日手チェック
-            // ここでも履歴に一時的に追加・削除してチェックします。
             self.sennichite_detector.record_position(&next_position);
             let sennichite_status = self.is_sennichite_internal(&next_position);
-            self.sennichite_detector.unrecord_last_position(); // チェック後すぐに履歴から削除
+            self.sennichite_detector.unrecord_last_position();
 
             let eval = match sennichite_status {
-                SennichiteStatus::Draw => continue, 
-                SennichiteStatus::PerpetualCheckLoss => f32::INFINITY, // 連続王手による負けは、この手番のプレイヤーが勝つことを意味するので最高評価
+                SennichiteStatus::Draw => 0.0,
+                SennichiteStatus::PerpetualCheckLoss => -f32::INFINITY,
                 SennichiteStatus::None => {
-                    // 千日手ではない場合、通常のアルファベータ探索
-                    self.alpha_beta_search(&next_position, depth - 1, alpha, beta, current_player)
-            }
+                    -self.alpha_beta_search(&next_position, depth - 1, -beta, -alpha)
+                }
             };
 
             if eval > best_eval {
@@ -538,8 +436,8 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
 fn main() {
     println!("--- ShogiAI 自己対局 ---");
 
-    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights.binary")).expect("Failed to create SparseModelEvaluator for Sente");
-    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights2017-2024.binary")).expect("Failed to create SparseModelEvaluator for Gote");
+    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights2017-2024.binary")).expect("Failed to create SparseModelEvaluator for Sente");
+    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights.binary")).expect("Failed to create SparseModelEvaluator for Gote");
 
     // 千日手検出のための履歴バッファの容量を定義
     // 将棋のゲーム履歴は通常数百手なので、256や512程度が妥当です。

@@ -468,11 +468,6 @@ impl SparseModelEvaluator {
 impl Evaluator for SparseModelEvaluator {
     fn evaluate(&self, position: &shogi_core::Position) -> f32 {
         let kpp_features = extract_kpp_features(position);
-        let score_from_black_perspective = self.model.predict(position, &kpp_features);
-        if position.side_to_move() == Color::Black {
-            score_from_black_perspective
-        } else {
-            -score_from_black_perspective
-        }
+        self.model.predict(position, &kpp_features)
     }
 }
