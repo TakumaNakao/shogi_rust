@@ -228,7 +228,11 @@ impl SparseModel {
             }
         }
         let material_weight = self.get_material_weight();
-        prediction += material_weight * calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
+        let material_score = calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
+        
+        // KPPは手番視点に正規化されているので、駒得も手番視点に合わせる
+        let material_term = material_weight * material_score;
+        prediction += if pos.side_to_move() == Color::Black { material_term } else { -material_term };
 
         prediction
     }
@@ -300,19 +304,24 @@ impl SparseModel {
     }
 }
 
-fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize) -> Option<usize> {
-    let color_offset = if piece.color() == Color::Black { 0 } else { 1 };
+fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color) -> Option<usize> {
+    // 色を正規化: 現在の手番のプレイヤーを「自分(Black)」、相手を「敵(White)」とする
+    let normalized_color = if piece.color() == turn { Color::Black } else { Color::White };
+    let color_offset = if normalized_color == Color::Black { 0 } else { 1 };
 
     if let Some(sq) = sq {
+        // 盤上の駒の位置を正規化: 手番が後手なら盤面を180度回転
+        let normalized_sq = if turn == Color::Black { sq } else { sq.flip() };
         if let Some(kind_index) = board_kind_to_index(piece.piece_kind()) {
             let id = (color_offset * NUM_BOARD_PIECE_KINDS * NUM_SQUARES)
                 + (kind_index * NUM_SQUARES)
-                + (sq.index() as usize);
+                + (normalized_sq.index() as usize);
             Some(id)
         } else {
             None
         }
     } else {
+        // 持ち駒
         let board_pieces_total = NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2;
         if let Some(kind_offset) = hand_kind_to_offset(piece.piece_kind()) {
             let id = board_pieces_total
@@ -327,29 +336,37 @@ fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize) -> Option<us
 }
 
 pub fn extract_kpp_features(pos: &shogi_core::Position) -> Vec<usize> {
-    let king_sq_index = match (0..81).find_map(|i| {
+    let turn = pos.side_to_move();
+
+    // 手番側の王の位置を探す
+    let king_sq = match (0..81).find_map(|i| {
         Square::from_u8(i as u8 + 1).and_then(|sq| {
             pos.piece_at(sq).and_then(|p| {
-                if p.piece_kind() == PieceKind::King && p.color() == Color::Black {
-                    Some(i as usize)
+                if p.piece_kind() == PieceKind::King && p.color() == turn {
+                    Some(sq)
                 } else {
                     None
                 }
             })
         })
     }) {
-        Some(idx) => idx,
+        Some(sq) => sq,
         None => {
-            println!("Warning: Black king not found on the board. Skipping this position.");
+            println!("Warning: King not found for side {:?}. Skipping this position.", turn);
             return vec![];
         }
     };
+
+    // 王の位置を正規化
+    let normalized_king_sq = if turn == Color::Black { king_sq } else { king_sq.flip() };
+    let king_sq_index = normalized_king_sq.index() as usize;
+
 
     let mut piece_ids = Vec::with_capacity(40);
     for i in 0..81 {
         if let Some(sq) = Square::from_u8(i as u8 + 1) {
             if let Some(piece) = pos.piece_at(sq) {
-                if let Some(id) = piece_to_id(piece, Some(sq), 0) {
+                if let Some(id) = piece_to_id(piece, Some(sq), 0, turn) {
                     piece_ids.push(id);
                 }
             }
@@ -359,7 +376,7 @@ pub fn extract_kpp_features(pos: &shogi_core::Position) -> Vec<usize> {
         for kind in ALL_HAND_PIECES.iter() {
             let count = pos.hand_of_a_player(color).count(*kind).unwrap_or(0);
             for i in 0..count {
-                if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize) {
+                if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize, turn) {
                     piece_ids.push(id);
                 }
             }

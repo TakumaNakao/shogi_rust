@@ -111,9 +111,14 @@ fn process_csa_file(path: &Path, batch: &mut Vec<(Position, Vec<usize>, f32)>) -
         let gain = index as f32 / (index as f32 + REWARD_GAIN);
         let label = gain * final_label;
 
+        let turn = pos.side_to_move();
         let features = extract_kpp_features(&pos);
+
+        // 教師ラベルを、その局面の手番の視点に合わせる
+        let label_for_turn = if turn == Color::Black { label } else { -label };
+
         if !features.is_empty() {
-            batch.push((pos.clone(), features, label));
+            batch.push((pos.clone(), features, label_for_turn));
         }
         if pos.make_move(shogi_move).is_none() {
             break;

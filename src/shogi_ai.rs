@@ -201,11 +201,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         mut alpha: f32,
         beta: f32,
     ) -> f32 {
-        let stand_pat_score = if position.side_to_move() == Color::Black {
-            self.evaluator.evaluate(position)
-        } else {
-            -self.evaluator.evaluate(position)
-        };
+        // evaluate()は常に手番視点のスコアを返すようになった
+        let stand_pat_score = self.evaluator.evaluate(position);
 
         if stand_pat_score >= beta {
             return beta;
@@ -436,8 +433,8 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
 fn main() {
     println!("--- ShogiAI 自己対局 ---");
 
-    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights2017-2024.binary")).expect("Failed to create SparseModelEvaluator for Sente");
-    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights.binary")).expect("Failed to create SparseModelEvaluator for Gote");
+    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights.binary")).expect("Failed to create SparseModelEvaluator for Sente");
+    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights2017-2024.binary")).expect("Failed to create SparseModelEvaluator for Gote");
 
     // 千日手検出のための履歴バッファの容量を定義
     // 将棋のゲーム履歴は通常数百手なので、256や512程度が妥当です。
