@@ -464,8 +464,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 SennichiteStatus::PerpetualCheckLoss => f32::INFINITY, // 連続王手による負けは、この手番のプレイヤーが勝つことを意味するので最高評価
                 SennichiteStatus::None => {
                     // 千日手ではない場合、通常のアルファベータ探索
-                    // Negamaxの原則に従い、子ノードの評価値を反転させて渡す
-                    -self.alpha_beta_search(&next_position, depth - 1, -beta, -alpha, current_player)
+                    self.alpha_beta_search(&next_position, depth - 1, alpha, beta, current_player)
             }
             };
 
@@ -550,7 +549,7 @@ fn main() {
     let mut ai_gote = ShogiAI::<SparseModelEvaluator, GAME_HISTORY_CAPACITY>::new(evaluator_gote);
 
     let mut position = shogi_core::Position::default();
-    let search_depth = 3; // 探索の深さ
+    let search_depth = 2; // 探索の深さ
 
     println!("初期局面:{}", position.to_sfen_owned());
 
