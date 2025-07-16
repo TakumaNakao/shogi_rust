@@ -268,10 +268,10 @@ impl SparseModel {
 
             let (board_counts, hand_counts) = get_piece_counts(pos);
             for i in 1..NUM_BOARD_PIECE_VALUES { // Skip Pawn
-                board_piece_values_grads[i] += error_grad * material_weight * board_counts[i];
+                board_piece_values_grads[i] += error_grad * material_weight * board_counts[i] as f32;
             }
             for i in 1..NUM_HAND_PIECE_VALUES { // Skip Pawn
-                hand_piece_values_grads[i] += error_grad * material_weight * hand_counts[i];
+                hand_piece_values_grads[i] += error_grad * material_weight * hand_counts[i] as f32;
             }
         }
 
@@ -380,38 +380,48 @@ pub fn extract_kpp_features(pos: &shogi_core::Position) -> Vec<usize> {
     indices
 }
 
-fn get_piece_counts(position: &shogi_core::Position) -> ([f32; NUM_BOARD_PIECE_VALUES], [f32; NUM_HAND_PIECE_VALUES]) {
-    let mut board_counts = [0.0; NUM_BOARD_PIECE_VALUES];
-    let mut hand_counts = [0.0; NUM_HAND_PIECE_VALUES];
+pub fn get_piece_counts(position: &shogi_core::Position) -> ([i8; NUM_BOARD_PIECE_VALUES], [i8; NUM_HAND_PIECE_VALUES]) {
+    let mut board_counts: [i8; NUM_BOARD_PIECE_VALUES] = [0; NUM_BOARD_PIECE_VALUES];
+    let mut hand_counts: [i8; NUM_HAND_PIECE_VALUES] = [0; NUM_HAND_PIECE_VALUES];
 
-    // 盤上の駒を評価
-    for i in 1..=9 {
-        for j in 1..=9 {
-            if let Some(square) = Square::new(i, j) {
-                if let Some(piece) = position.piece_at(square) {
-                    if let Some(index) = board_kind_to_index(piece.piece_kind()) {
-                        if index < NUM_BOARD_PIECE_VALUES {
-                            if piece.color() == Color::Black {
-                                board_counts[index] += 1.0;
-                            } else {
-                                board_counts[index] -= 1.0;
-                            }
-                        }
-                    }
-                }
-            }
+    // 各駒種と色についてBitboardを取得し、count()メソッドで駒数を数える
+
+    // 黒番の駒
+    for piece_kind in PieceKind::all() { // PieceKindの全列挙を想定
+        if piece_kind == PieceKind::King {
+            continue;
+        }
+        let piece = Piece::new(piece_kind, Color::Black);
+        // Position::piece_bitboard が PartialPosition::piece_bitboard を呼び出すため、これは有効なパスです
+        let count = position.piece_bitboard(piece).count();
+        if let Some(index) = board_kind_to_index(piece.piece_kind()) {
+            board_counts[index] += count as i8;
         }
     }
-    // 持ち駒を評価
+
+    // 白番の駒
+    for piece_kind in PieceKind::all() { // PieceKindの全列挙を想定
+        if piece_kind == PieceKind::King {
+            continue;
+        }
+        let piece = Piece::new(piece_kind, Color::White);
+        // Position::piece_bitboard が PartialPosition::piece_bitboard を呼び出すため、これは有効なパスです
+        let count = position.piece_bitboard(piece).count();
+        if let Some(index) = board_kind_to_index(piece.piece_kind()) {
+            board_counts[index] -= count as i8;
+        }
+    }
+
+    // 持ち駒のカウント (既存の実装を維持)
     for color in &[Color::Black, Color::White] {
         let hand = position.hand_of_a_player(*color);
         for piece_kind in ALL_HAND_PIECES.iter() {
             if let Some(count) = hand.count(*piece_kind) {
                 if let Some(index) = hand_kind_to_index(*piece_kind) {
                      if *color == Color::Black {
-                        hand_counts[index] += count as f32;
+                        hand_counts[index] += count as i8;
                     } else {
-                        hand_counts[index] -= count as f32;
+                        hand_counts[index] -= count as i8;
                     }
                 }
             }
@@ -430,10 +440,10 @@ fn calculate_material_score(
     let mut score = 0.0;
     let (board_counts, hand_counts) = get_piece_counts(position);
     for i in 0..NUM_BOARD_PIECE_VALUES {
-        score += board_counts[i] * board_piece_values[i];
+        score += board_counts[i] as f32 * board_piece_values[i];
     }
     for i in 0..NUM_HAND_PIECE_VALUES {
-        score += hand_counts[i] * hand_piece_values[i];
+        score += hand_counts[i] as f32 * hand_piece_values[i];
     }
     score
 }

@@ -550,7 +550,7 @@ fn main() {
     let mut ai_gote = ShogiAI::<SparseModelEvaluator, GAME_HISTORY_CAPACITY>::new(evaluator_gote);
 
     let mut position = shogi_core::Position::default();
-    let search_depth = 2; // 探索の深さ
+    let search_depth = 3; // 探索の深さ
 
     println!("初期局面:{}", position.to_sfen_owned());
 
