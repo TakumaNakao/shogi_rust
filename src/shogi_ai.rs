@@ -538,8 +538,8 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
 fn main() {
     println!("--- ShogiAI 自己対局 ---");
 
-    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights.binary")).expect("Failed to create SparseModelEvaluator for Sente");
-    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights2017-2024.binary")).expect("Failed to create SparseModelEvaluator for Gote");
+    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights2017-2024.binary")).expect("Failed to create SparseModelEvaluator for Sente");
+    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights.binary")).expect("Failed to create SparseModelEvaluator for Gote");
 
     // 千日手検出のための履歴バッファの容量を定義
     // 将棋のゲーム履歴は通常数百手なので、256や512程度が妥当です。

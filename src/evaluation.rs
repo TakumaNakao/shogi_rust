@@ -116,52 +116,6 @@ pub fn get_piece_value(piece_kind: PieceKind) -> i32 {
     }
 }
 
-fn manhattan_distance(sq1: Square, sq2: Square) -> u32 {
-    (sq1.file() as i8 - sq2.file() as i8).abs() as u32 + (sq1.rank() as i8 - sq2.rank() as i8).abs() as u32
-}
-
-fn calculate_king_distance_score(position: &shogi_core::Position, color: Color) -> f32 {
-    let opponent = if color == Color::Black { Color::White } else { Color::Black };
-
-    let opponent_king_sq = match (0..81).find_map(|i| {
-        Square::from_u8(i as u8 + 1).and_then(|sq| {
-            position.piece_at(sq).and_then(|p| {
-                if p.piece_kind() == PieceKind::King && p.color() == opponent {
-                    Some(sq)
-                } else {
-                    None
-                }
-            })
-        })
-    }) {
-        Some(sq) => sq,
-        None => return 0.0, // 相手の玉がなければ評価しない
-    };
-
-    let mut total_distance = 0;
-
-    for i in 1..=9 {
-        for j in 1..=9 {
-            if let Some(sq) = Square::new(i, j) {
-                if let Some(piece) = position.piece_at(sq) {
-                    if piece.color() == color && piece.piece_kind() != PieceKind::King {
-                        let distance = manhattan_distance(sq, opponent_king_sq);
-                        if distance < 4 {
-                            total_distance += distance;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if total_distance > 0 {
-        1.0 / total_distance as f32
-    } else {
-        0.0
-    }
-}
-
 #[derive(Default)]
 pub struct SparseModel {
     pub w: Vec<f32>,
@@ -169,7 +123,6 @@ pub struct SparseModel {
     pub board_piece_values: [f32; NUM_BOARD_PIECE_VALUES],
     pub hand_piece_values: [f32; NUM_HAND_PIECE_VALUES],
     pub material_weight_raw: f32,
-    pub king_distance_weight: f32,
     pub eta: f32,
 }
 
@@ -186,7 +139,6 @@ impl SparseModel {
             ],
             hand_piece_values: [1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0],
             material_weight_raw: INITIAL_MATERIAL_WEIGHT_RAW,
-            king_distance_weight: 0.001,
             eta,
         }
     }
@@ -214,9 +166,6 @@ impl SparseModel {
         self.material_weight_raw = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
         offset += 4;
 
-        self.king_distance_weight = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
-        offset += 4;
-
         let expected_w_bytes = MAX_FEATURES * 4;
         if buffer.len() - offset != expected_w_bytes {
             return Err(anyhow::anyhow!("File size mismatch for weights"));
@@ -229,7 +178,6 @@ impl SparseModel {
         }
 
         println!("material_weight: {}, material_weight_raw: {}", self.get_material_weight(), self.material_weight_raw);
-        println!("king_distance_weight: {}", self.king_distance_weight);
         println!("board_piece_values: {:?}", self.board_piece_values);
         println!("hand_piece_values: {:?}", self.hand_piece_values);
 
@@ -248,7 +196,6 @@ impl SparseModel {
             buffer.extend_from_slice(&value.to_le_bytes());
         }
         buffer.extend_from_slice(&self.material_weight_raw.to_le_bytes());
-        buffer.extend_from_slice(&self.king_distance_weight.to_le_bytes());
 
         for &v in self.w.iter() {
             buffer.extend_from_slice(&v.to_le_bytes());
@@ -283,10 +230,6 @@ impl SparseModel {
         let material_weight = self.get_material_weight();
         prediction += material_weight * calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
 
-        let black_king_distance_score = calculate_king_distance_score(pos, Color::Black);
-        let white_king_distance_score = calculate_king_distance_score(pos, Color::White);
-        prediction += self.king_distance_weight * (black_king_distance_score - white_king_distance_score);
-
         prediction
     }
 
@@ -302,7 +245,6 @@ impl SparseModel {
         let mut board_piece_values_grads = [0.0; NUM_BOARD_PIECE_VALUES];
         let mut hand_piece_values_grads = [0.0; NUM_HAND_PIECE_VALUES];
         let mut material_weight_raw_grad = 0.0;
-        let mut king_distance_weight_grad = 0.0;
 
         for (pos, kpp_features, y_true) in batch.iter() {
             let y_pred = self.predict(pos, kpp_features);
@@ -336,10 +278,6 @@ impl SparseModel {
             for i in 1..NUM_HAND_PIECE_VALUES { // Skip Pawn
                 hand_piece_values_grads[i] += error_grad * material_weight * hand_counts[i] as f32;
             }
-
-            let black_king_distance_score = calculate_king_distance_score(pos, Color::Black);
-            let white_king_distance_score = calculate_king_distance_score(pos, Color::White);
-            king_distance_weight_grad += error_grad * (black_king_distance_score - white_king_distance_score);
         }
 
         self.bias -= self.eta * bias_grad;
@@ -353,11 +291,9 @@ impl SparseModel {
             self.hand_piece_values[i] -= self.eta * hand_piece_values_grads[i];
         }
         self.material_weight_raw -= self.eta * material_weight_raw_grad;
-        self.king_distance_weight -= self.eta * king_distance_weight_grad;
 
         let mse = total_loss / m;
         println!("material_weight: {}, material_weight_raw: {}", self.get_material_weight(), self.material_weight_raw);
-        println!("king_distance_weight: {}", self.king_distance_weight);
         println!("board_piece_values: {:?}", self.board_piece_values);
         println!("hand_piece_values: {:?}", self.hand_piece_values);
         mse
