@@ -145,7 +145,10 @@ fn calculate_king_distance_score(position: &shogi_core::Position, color: Color) 
             if let Some(sq) = Square::new(i, j) {
                 if let Some(piece) = position.piece_at(sq) {
                     if piece.color() == color && piece.piece_kind() != PieceKind::King {
-                        total_distance += manhattan_distance(sq, opponent_king_sq);
+                        let distance = manhattan_distance(sq, opponent_king_sq);
+                        if distance < 4 {
+                            total_distance += distance;
+                        }
                     }
                 }
             }
@@ -224,6 +227,11 @@ impl SparseModel {
             let end = start + 4;
             self.w[i] = f32::from_le_bytes(buffer[start..end].try_into()?);
         }
+
+        println!("material_weight: {}, material_weight_raw: {}", self.get_material_weight(), self.material_weight_raw);
+        println!("king_distance_weight: {}", self.king_distance_weight);
+        println!("board_piece_values: {:?}", self.board_piece_values);
+        println!("hand_piece_values: {:?}", self.hand_piece_values);
 
         Ok(())
     }

@@ -170,8 +170,6 @@ fn main() -> Result<()> {
         model.load(weight_path)?;
         println!("重みファイルを読み込みました。");
     } else {
-        println!("重みファイルが存在しません。初期化中...");
-        model.initialize_random(50_000, 0.01);
         println!("保存中...");
         model.save(weight_path)?;
         println!("初期重みを保存しました。");
@@ -213,10 +211,6 @@ fn main() -> Result<()> {
             batch.clear();
             let elapsed_time_batch = start_time_batch.elapsed();
             println!("処理済みファイル数: {} / {} , バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", file_count, csa_files.len(), batch_count, mse, elapsed_time_batch);
-            let start_time_save = Instant::now();
-            model.save(weight_path)?;
-            let elapsed_time_save = start_time_save.elapsed();
-            println!("モデル保存 , 処理時間: {:?}", elapsed_time_save);
             mse_history.push((batch_count, mse));
             draw_mse_graph(&mse_history, mse_graph_path)?;
         }
@@ -227,13 +221,14 @@ fn main() -> Result<()> {
         let mse = model.update_batch(&batch);
         let elapsed_time_batch = start_time_batch.elapsed();
         println!("処理済みファイル数: {} / {} , バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", file_count, csa_files.len(), batch_count, mse, elapsed_time_batch);
-        let start_time_save = Instant::now();
-        model.save(weight_path)?;
-        let elapsed_time_save = start_time_save.elapsed();
-        println!("モデル保存 , 処理時間: {:?}", elapsed_time_save);
         mse_history.push((batch_count, mse));
         draw_mse_graph(&mse_history, mse_graph_path)?;
     }
+
+    let start_time_save = Instant::now();
+    model.save(weight_path)?;
+    let elapsed_time_save = start_time_save.elapsed();
+    println!("モデル保存 , 処理時間: {:?}", elapsed_time_save);
 
     println!("学習完了。重み数: {}", model.w.len());
     Ok(())
