@@ -214,17 +214,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     /// 連続王手の例外も考慮します。
     /// この関数は、AIの探索中に仮の局面に対して呼び出されます。
     pub fn is_sennichite_internal(&self, position: &shogi_core::Position) -> SennichiteStatus {
-        let count = self.sennichite_detector.get_position_count(position);
-        if count >= 4 { // 将棋の千日手は4回繰り返しで成立 [5]
-            // 連続王手チェックは、shogi_coreが合法手判定を提供しないため、プレースホルダーです [3, 4]。
-            if self.sennichite_detector.is_perpetual_check_placeholder() {
-                SennichiteStatus::PerpetualCheckLoss
-            } else {
-                SennichiteStatus::Draw
-            }
-        } else {
-            SennichiteStatus::None
-        }
+        self.sennichite_detector.check_sennichite(position)
     }
 
     /// 現在の局面で最適な指し��を見つけます。
