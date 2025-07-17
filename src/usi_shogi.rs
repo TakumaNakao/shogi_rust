@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -69,7 +68,7 @@ const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
 
 struct UsiEngine {
-    ai: ShogiAI<SparseModelEvaluator, HISTORY_CAPACITY>,
+    _ai: ShogiAI<SparseModelEvaluator, HISTORY_CAPACITY>,
     position: Position,
     stop_signal: Arc<AtomicBool>,
 }
@@ -80,31 +79,24 @@ impl UsiEngine {
         exe_path.pop();
         let weights_path = exe_path.join("weights5times.binary");
         
-        eprintln!("Attempting to load weights from: {:?}", weights_path);
-
         let evaluator = SparseModelEvaluator::new(&weights_path)
             .unwrap_or_else(|e| panic!("Failed to create SparseModelEvaluator: {:?}. Ensure 'weights5times.binary' is next to the executable.", e));
         
-        eprintln!("Weights loaded successfully.");
-
         UsiEngine {
-            ai: ShogiAI::new(evaluator),
+            _ai: ShogiAI::new(evaluator),
             position: Position::startpos(),
             stop_signal: Arc::new(AtomicBool::new(false)),
         }
     }
 
     fn run(&mut self) {
-        eprintln!("Engine run loop started.");
         loop {
             let mut input = String::new();
             if io::stdin().lock().read_line(&mut input).is_err() {
-                eprintln!("Failed to read from stdin. Exiting.");
                 break;
             }
             
             let tokens: Vec<&str> = input.trim().split_whitespace().collect();
-            eprintln!("Received command: {:?}", tokens);
 
             if let Some(&command) = tokens.get(0) {
                 match command {
@@ -114,10 +106,7 @@ impl UsiEngine {
                     "position" => self.handle_position(&tokens),
                     "go" => self.handle_go(),
                     "stop" => self.handle_stop(),
-                    "quit" => {
-                        eprintln!("Quit command received. Exiting.");
-                        break;
-                    }
+                    "quit" => break,
                     _ => {}
                 }
             }
@@ -131,7 +120,6 @@ impl UsiEngine {
     }
 
     fn handle_isready(&self) {
-        eprintln!("isready received.");
         println!("readyok");
     }
 
@@ -161,8 +149,6 @@ impl UsiEngine {
         let position = self.position.clone();
         let stop_signal = self.stop_signal.clone();
         
-        // Create a new AI instance for the thinking thread.
-        // This is not ideal for performance but solves the borrowing issue for now.
         let mut exe_path = std::env::current_exe().expect("Failed to find executable path for thread");
         exe_path.pop();
         let weights_path = exe_path.join("weights5times.binary");
@@ -186,23 +172,7 @@ impl UsiEngine {
     }
 }
 
-fn init_logging() {
-    if let Ok(mut exe_path) = std::env::current_exe() {
-        exe_path.pop();
-        let log_path = exe_path.join("engine_log.txt");
-        if let Ok(file) = File::create(&log_path) {
-            unsafe {
-                use std::os::unix::io::AsRawFd;
-                libc::dup2(file.as_raw_fd(), std::io::stderr().as_raw_fd());
-            }
-        }
-    }
-}
-
 pub fn run_usi() {
-    init_logging();
-    eprintln!("Engine starting...");
     let mut engine = UsiEngine::new();
     engine.run();
-    eprintln!("Engine finished.");
 }
