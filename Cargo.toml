@@ -22,6 +22,7 @@ yasai = { git = "https://github.com/sugyan/yasai.git", branch = "main" }
 circular-buffer = "0.1.1"
 lazy_static = "1.4.0"
 rand_chacha = "0.3.1"
+libc = "0.2"
 
 [[bin]]
 name = "kpp_learn"
