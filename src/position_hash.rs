@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn test_hash_changes_on_hand_piece() {
-        let mut pos = Position::default();
+        let pos = Position::default();
         let hash_before = PositionHasher::calculate_hash(&pos);
 
         // Simulate capturing a pawn
