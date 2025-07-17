@@ -133,30 +133,32 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     // --- ここからSEE実装（新規追加メソッド） ---
-
     /// SEE: 指定されたマスを攻撃している、指定色の最も価値の低い駒を見つけます。
     fn get_least_valuable_attacker(
         &self,
         position: &Position,
         target: Square,
         side: Color,
-        occupied: shogi_core::Bitboard,
+        _occupied: shogi_core::Bitboard, // yasai::Position を使うので occupied は不要
     ) -> Option<(Square, PieceKind)> {
         let mut least_valuable_attacker: Option<(Square, PieceKind)> = None;
         let mut min_value = i32::MAX;
 
-        // 盤上の駒を走査して攻撃駒を探します
-        for sq_int in 0..81 {
-            let Some(sq) = Square::from_u8(sq_int) else { continue; };
-            if let Some(piece) = position.piece_at(sq) {
-                if piece.color() == side && occupied.contains(sq) {
-                    let attacks = shogi_core::Bitboard::empty(); // 暫定的な対応
-                    if attacks.contains(target) {
-                        let value = get_piece_value(piece.piece_kind());
-                        if value < min_value {
-                            min_value = value;
-                            least_valuable_attacker = Some((sq, piece.piece_kind()));
-                        }
+        // yasai::Position を使って合法手を生成する
+        let yasai_pos = yasai::Position::new(position.inner().clone());
+        let legal_moves = yasai_pos.legal_moves();
+
+        for mv in legal_moves {
+            if let Move::Normal { from, to, .. } = mv {
+                // 目的のマス(target)への攻撃（駒を取る動き）で、
+                // かつ、攻撃している駒の色(side)が一致しているものを探す
+                if to == target && position.piece_at(from).map_or(false, |p| p.color() == side) {
+                    let piece = position.piece_at(from).unwrap(); // 上でチェック済み
+                    let value = get_piece_value(piece.piece_kind());
+
+                    if value < min_value {
+                        min_value = value;
+                        least_valuable_attacker = Some((from, piece.piece_kind()));
                     }
                 }
             }
