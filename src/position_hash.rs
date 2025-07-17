@@ -3,29 +3,29 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use shogi_core::{Color, PieceKind, Position, Square};
 
-const PIECE_KINDS: [PieceKind; 14] = [
+pub const PIECE_KINDS: [PieceKind; 14] = [
     PieceKind::Pawn, PieceKind::Lance, PieceKind::Knight, PieceKind::Silver,
     PieceKind::Gold, PieceKind::Bishop, PieceKind::Rook, PieceKind::King,
     PieceKind::ProPawn, PieceKind::ProLance, PieceKind::ProKnight, PieceKind::ProSilver,
     PieceKind::ProBishop, PieceKind::ProRook,
 ];
 
-const HAND_PIECE_KINDS: [PieceKind; 7] = [
+pub const HAND_PIECE_KINDS: [PieceKind; 7] = [
     PieceKind::Pawn, PieceKind::Lance, PieceKind::Knight, PieceKind::Silver,
     PieceKind::Gold, PieceKind::Bishop, PieceKind::Rook,
 ];
 
 const MAX_HAND_COUNTS: [usize; 7] = [18, 4, 4, 4, 4, 2, 2];
 
-struct ZobristKeys {
+pub struct ZobristKeys {
     // piece, square, color
-    board: [[[u64; 2]; 81]; 14],
+    pub board: [[[u64; 2]; 81]; 14],
     // piece, count, color
-    hand: [[[u64; 2]; 19]; 7],
-    side_to_move: u64,
+    pub hand: [[[u64; 2]; 19]; 7],
+    pub side_to_move: u64,
 }
 
-fn color_to_index(color: Color) -> usize {
+pub fn color_to_index(color: Color) -> usize {
     match color {
         Color::Black => 0,
         Color::White => 1,
@@ -62,7 +62,7 @@ impl ZobristKeys {
 }
 
 lazy_static! {
-    static ref ZOBRIST_KEYS: ZobristKeys = ZobristKeys::new();
+    pub static ref ZOBRIST_KEYS: ZobristKeys = ZobristKeys::new();
 }
 
 pub struct PositionHasher;
@@ -73,12 +73,8 @@ impl PositionHasher {
 
         // Board pieces
         for sq in Square::all() {
-            let sq_idx = sq.index() as usize;
-            if sq_idx > 80 {
-                // Skip invalid square index returned by the iterator.
-                continue;
-            }
             if let Some(piece) = position.piece_at(sq) {
+                let sq_idx = (sq.index() - 1) as usize; // Correctly map 1..=81 to 0..=80
                 let piece_idx = PIECE_KINDS.iter().position(|&k| k == piece.piece_kind()).unwrap();
                 let color_idx = color_to_index(piece.color());
                 hash ^= ZOBRIST_KEYS.board[piece_idx][sq_idx][color_idx];
