@@ -482,9 +482,97 @@ impl SparseModelEvaluator {
     }
 }
 
+
 impl Evaluator for SparseModelEvaluator {
     fn evaluate(&self, position: &shogi_core::Position) -> f32 {
         let kpp_features = extract_kpp_features(position);
         self.model.predict(position, &kpp_features)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shogi_core::{Position, PieceKind, PartialPosition, Color};
+
+    // テスト用のヘルパー関数: 空のモデルを生成
+    fn create_test_model() -> SparseModel {
+        let mut model = SparseModel::new(0.0);
+        // テスト用にバイアスと重みを0に初期化
+        model.bias = 0.0;
+        model.w = vec![0.0; MAX_FEATURES];
+        // 駒の価値を標準的なものに設定
+        model.board_piece_values = [
+            1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0, // 通常駒
+            6.0, 6.0, 6.0, 6.0, 10.0, 12.0,     // 成り駒
+        ];
+        model.hand_piece_values = [1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0];
+        model.material_weight_raw = 10.0; // material_weightがほぼMAX_MATERIAL_WEIGHTになるように設定
+        model
+    }
+
+    #[test]
+    fn test_initial_position_evaluation() {
+        // 1. 初期局面の評価値テスト
+        let model = create_test_model();
+        let pos = Position::default();
+        let features = extract_kpp_features(&pos);
+        let score = model.predict(&pos, &features);
+
+        // 初期局面ではKPP特徴量はほぼ対称で、駒得もないため、評価値はバイアス(0)に近いはず
+        assert!(score.abs() < 0.1, "Initial score should be close to 0, but was {}", score);
+    }
+
+    #[test]
+    fn test_material_advantage_evaluation() {
+        // 2. 駒得がある局面の評価値テスト
+        let model = create_test_model();
+        let mut partial_pos = PartialPosition::startpos();
+
+        // 先手に飛車と角を持たせる
+        let black_hand = partial_pos.hand_of_a_player_mut(Color::Black);
+        *black_hand = black_hand.added(PieceKind::Rook).unwrap();
+        *black_hand = black_hand.added(PieceKind::Bishop).unwrap();
+        
+        let pos = Position::arbitrary_position(partial_pos);
+
+        let features = extract_kpp_features(&pos);
+        let score = model.predict(&pos, &features);
+
+        // 駒得を計算
+        let material_weight = model.get_material_weight();
+        let expected_material_score = material_weight * (model.hand_piece_values[hand_kind_to_index(PieceKind::Rook).unwrap()] + model.hand_piece_values[hand_kind_to_index(PieceKind::Bishop).unwrap()]);
+        
+        // KPPの特徴によるスコアは無視して、駒得のスコアが支配的であることを確認
+        // KPPのスコアは初期局面では0に近いため、駒得スコアが評価値の大部分を占めるはず
+        assert!(score > expected_material_score * 0.9, "Score ({}) should strongly reflect material advantage ({})", score, expected_material_score);
+    }
+
+    #[test]
+    fn test_evaluation_is_from_side_to_move_perspective() {
+        // 3. 手番による評価値の変化テスト
+        let model = create_test_model();
+        
+        // 非対称な局面を作成（先手の歩が一つ多い）
+        let mut partial_pos_black = PartialPosition::startpos();
+        let black_hand = partial_pos_black.hand_of_a_player_mut(Color::Black);
+        *black_hand = black_hand.added(PieceKind::Pawn).unwrap();
+        
+        let pos_black_turn = Position::arbitrary_position(partial_pos_black.clone());
+
+        // 同じ局面で手番を後手にする
+        let mut partial_pos_white = partial_pos_black;
+        partial_pos_white.side_to_move_set(Color::White);
+        let pos_white_turn = Position::arbitrary_position(partial_pos_white);
+
+        let features_black = extract_kpp_features(&pos_black_turn);
+        let score_black_turn = model.predict(&pos_black_turn, &features_black);
+
+        let features_white = extract_kpp_features(&pos_white_turn);
+        let score_white_turn = model.predict(&pos_white_turn, &features_white);
+        
+        // 後手番の評価値は、先手番の評価値の符号を反転させたものに近いはず
+        // KPP特徴量が変わるため完全な反転にはならないが、絶対値はほぼ等しくなる
+        assert!((score_black_turn + score_white_turn).abs() < 0.1, "White's score ({}) should be close to the negative of Black's score ({})", score_white_turn, score_black_turn);
     }
 }
