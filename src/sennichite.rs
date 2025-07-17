@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn test_is_sennichite_detection() {
         // テスト用に小さな容量のリングバッファを使用
-        const TEST_CAPACITY: usize = 10;
+        const TEST_CAPACITY: usize = 20;
         let mut detector = SennichiteDetector::<TEST_CAPACITY>::new();
 
         // 繰り返す局面を作成
@@ -130,14 +130,12 @@ mod tests {
             
             repeating_pos.make_move(mv1).unwrap();
             repeating_pos.make_move(mv2).unwrap();
+            detector.record_position(&repeating_pos);
             repeating_pos.make_move(mv3).unwrap();
             repeating_pos.make_move(mv4).unwrap();
-            
-            // この時点で初期局面に戻っている
             detector.record_position(&repeating_pos);
         }
 
-        // 3回出現した時点では千日手ではないはず
         assert_eq!(detector.get_position_count(&Position::default()), 4);
         assert_eq!(detector.check_sennichite(&Position::default()), SennichiteStatus::Draw);
     }
