@@ -1,4 +1,4 @@
-use shogi_core::{Color, Move, Piece, PieceKind, Position, Square};
+use shogi_core::{Color, Move, Piece, PieceKind, Position};
 use plotters::prelude::*;
 use crate::evaluation::get_piece_value;
 

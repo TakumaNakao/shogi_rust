@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-use shogi_core::{Color, Position};
+use shogi_core::Color;
 
 use crate::ai::ShogiAI;
 use crate::evaluation::{Evaluator, SparseModelEvaluator};
