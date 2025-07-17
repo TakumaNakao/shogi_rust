@@ -102,9 +102,9 @@ dependencies = [
 
 [[package]]
 name = "circular-buffer"
-version = "1.1.0"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23bdce1da528cadbac4654b5632bfcd8c6c63e25b1d42cea919a95958790b51d"
+checksum = "b67261db007b5f4cf8cba393c1a5c511a5cc072339ce16e12aeba1d7b9b77946"
 
 [[package]]
 name = "color_quant"
@@ -898,13 +898,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
-name = "shogi_core"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d0a7de4ff7c66bf0b6346bda1d530c94a496f8aa3317938923886c58191aa14"
-
-[[package]]
-name = "shogi_kpp_training"
+name = "shogi_ai"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -924,6 +918,12 @@ dependencies = [
  "shogi_core",
  "yasai",
 ]
+
+[[package]]
+name = "shogi_core"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d0a7de4ff7c66bf0b6346bda1d530c94a496f8aa3317938923886c58191aa14"
 
 [[package]]
 name = "simd-adler32"

@@ -1,7 +1,7 @@
 [package]
-name = "shogi_kpp_training"
+name = "shogi_ai"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 shogi_core = { version = "0.1.5" }
@@ -19,7 +19,7 @@ flate2 = "1.0"
 plotters = "0.3.6"
 arrayvec = "0.7.2"
 yasai = { git = "https://github.com/sugyan/yasai.git", branch = "main" }
-circular-buffer = "1.1.0"
+circular-buffer = "0.1.1"
 
 [[bin]]
 name = "kpp_learn"
@@ -34,5 +34,5 @@ name = "evaluation_benchmark"
 path = "src/evaluation_benchmark.rs"
 
 [[bin]]
-name = "shogi_ai"
-path = "src/shogi_ai.rs"
+name = "shogi_game"
+path = "src/main.rs"
