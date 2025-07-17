@@ -37,4 +37,8 @@ path = "src/evaluation_benchmark.rs"
 
 [[bin]]
 name = "shogi_game"
-path = "src/main.rs"
+path = "src/bin/shogi_game.rs"
+
+[[bin]]
+name = "usi_engine"
+path = "src/bin/usi_engine.rs"
