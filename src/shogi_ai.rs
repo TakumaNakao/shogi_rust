@@ -433,8 +433,8 @@ fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String {
 fn main() {
     println!("--- ShogiAI 自己対局 ---");
 
-    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights.binary")).expect("Failed to create SparseModelEvaluator for Sente");
-    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights2017-2024.binary")).expect("Failed to create SparseModelEvaluator for Gote");
+    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights5times.binary")).expect("Failed to create SparseModelEvaluator for Sente");
+    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights5times.binary")).expect("Failed to create SparseModelEvaluator for Gote");
 
     // 千日手検出のための履歴バッファの容量を定義
     // 将棋のゲーム履歴は通常数百手なので、256や512程度が妥当です。
@@ -469,6 +469,21 @@ fn main() {
         println!("--- ターン {} ---", turn);
         println!("手番: {:?}", position.side_to_move());
 
+        // 現在の局面の評価値を記録
+        let ai_sente_current_eval = ai_sente.evaluator.evaluate(&position);
+        let ai_gote_current_eval = ai_gote.evaluator.evaluate(&position);
+        match position.side_to_move() {
+            Color::Black => {
+                sente_evaluation_history.push((turn, ai_sente_current_eval));
+                gote_evaluation_history.push((turn, ai_gote_current_eval));
+            },
+            Color::White => {
+                // 先手視点の評価値に統一するため、後手番の評価値は符号を反転させる
+                sente_evaluation_history.push((turn, -ai_sente_current_eval));
+                gote_evaluation_history.push((turn, -ai_gote_current_eval));
+            },
+        }
+
         let current_ai = match position.side_to_move() {
             Color::Black => &mut ai_sente,
             Color::White => &mut ai_gote,
@@ -480,17 +495,6 @@ fn main() {
         match best_move {
             Some(mv) => {
                 kif_moves.push(move_to_kif(&mv, &position, turn));
-                
-                // 現在の局面の評価値を記録
-                let current_eval = current_ai.evaluator.evaluate(&position);
-                match position.side_to_move() {
-                    Color::Black => {
-                        sente_evaluation_history.push((turn, current_eval));
-                    },
-                    Color::White => {
-                        gote_evaluation_history.push((turn, current_eval));
-                    },
-                }
 
                 println!("見つかった最適な指し手: {:?}", mv);
                     if position.make_move(mv).is_none() {

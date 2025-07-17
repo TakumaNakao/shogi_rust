@@ -3,3 +3,4 @@ target/
 *.png
 *.binary
 *.kif
+learn.sh
