@@ -3,10 +3,9 @@ use std::io::Write;
 use std::path::Path;
 use plotters::prelude::*;
 
-use shogi_core::{Color, Move, PieceKind, Position, Square, Bitboard};
+use shogi_core::{Color, Move, Piece, PieceKind, Position, Square, Bitboard};
 use arrayvec::ArrayVec;
-
-use circular_buffer::CircularBuffer; // circular-buffer クレートをインポート
+use circular_buffer::CircularBuffer;
 
 pub mod evaluation;
 pub mod search;
@@ -139,26 +138,27 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         position: &Position,
         target: Square,
         side: Color,
-        _occupied: shogi_core::Bitboard, // yasai::Position を使うので occupied は不要
+        _occupied: shogi_core::Bitboard,
     ) -> Option<(Square, PieceKind)> {
-        let mut least_valuable_attacker: Option<(Square, PieceKind)> = None;
-        let mut min_value = i32::MAX;
-
-        // yasai::Position を使って合法手を生成する
+        // legal_moves()の呼び出しを一度に抑え、その結果を使い回すことで高速化を図る
         let yasai_pos = yasai::Position::new(position.inner().clone());
         let legal_moves = yasai_pos.legal_moves();
 
+        let mut least_valuable_attacker: Option<(Square, PieceKind)> = None;
+        let mut min_value = i32::MAX;
+
+        // 生成された合法手の中から、targetを攻撃しているものを探す
         for mv in legal_moves {
             if let Move::Normal { from, to, .. } = mv {
-                // 目的のマス(target)への攻撃（駒を取る動き）で、
-                // かつ、攻撃している駒の色(side)が一致しているものを探す
-                if to == target && position.piece_at(from).map_or(false, |p| p.color() == side) {
-                    let piece = position.piece_at(from).unwrap(); // 上でチェック済み
-                    let value = get_piece_value(piece.piece_kind());
-
-                    if value < min_value {
-                        min_value = value;
-                        least_valuable_attacker = Some((from, piece.piece_kind()));
+                if to == target { // targetへの移動である
+                    if let Some(p) = position.piece_at(from) {
+                        if p.color() == side { // 攻撃している駒の色が正しい
+                            let value = get_piece_value(p.piece_kind());
+                            if value < min_value {
+                                min_value = value;
+                                least_valuable_attacker = Some((from, p.piece_kind()));
+                            }
+                        }
                     }
                 }
             }
