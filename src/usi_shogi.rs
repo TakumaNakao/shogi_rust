@@ -5,7 +5,7 @@ use std::thread;
 use shogi_core::{Color, Move, Piece, PieceKind, Position, Square};
 use crate::ai::ShogiAI;
 use crate::evaluation::SparseModelEvaluator;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // --- USI Parsing/Formatting Helpers (omitted for brevity, no changes) ---
 fn parse_usi_move(s: &str) -> Option<Move> {
@@ -72,6 +72,8 @@ struct UsiEngine {
     position: Position,
     stop_signal: Arc<AtomicBool>,
     eval_file_path: PathBuf,
+    max_depth: u8,
+    search_time_limit: u64,
 }
 
 impl UsiEngine {
@@ -84,6 +86,8 @@ impl UsiEngine {
             position: Position::startpos(),
             stop_signal: Arc::new(AtomicBool::new(false)),
             eval_file_path: default_weights_path,
+            max_depth: 30, // Default max depth
+            search_time_limit: 10000, // Default time limit in ms
         }
     }
 
@@ -116,20 +120,38 @@ impl UsiEngine {
         println!("id name {}", ENGINE_NAME);
         println!("id author {}", ENGINE_AUTHOR);
         println!("option name EvalFile type string default {}", self.eval_file_path.to_string_lossy());
+        println!("option name MaxDepth type spin default {} min 1 max 100", self.max_depth);
+        println!("option name SearchTimeLimit type spin default {} min 100 max 300000", self.search_time_limit);
         println!("usiok");
     }
 
     fn handle_isready(&self) {
-        // ここで評価関数の読み込みチェックなどを行うのが望ましい
         println!("readyok");
     }
 
     fn handle_setoption(&mut self, tokens: &[&str]) {
-        if tokens.get(1) == Some(&"name") && tokens.get(2) == Some(&"EvalFile") && tokens.get(3) == Some(&"value") {
-            if let Some(path_str) = tokens.get(4) {
-                self.eval_file_path = PathBuf::from(path_str);
-                // デバッグ用にファイルパスを表示
-                // eprintln!("info string Set EvalFile to {}", self.eval_file_path.to_string_lossy());
+        if tokens.get(1) == Some(&"name") && tokens.get(3) == Some(&"value") {
+            match tokens.get(2) {
+                Some(&"EvalFile") => {
+                    if let Some(path_str) = tokens.get(4) {
+                        self.eval_file_path = PathBuf::from(path_str);
+                    }
+                }
+                Some(&"MaxDepth") => {
+                    if let Some(val_str) = tokens.get(4) {
+                        if let Ok(val) = val_str.parse::<u8>() {
+                            self.max_depth = val;
+                        }
+                    }
+                }
+                Some(&"SearchTimeLimit") => {
+                    if let Some(val_str) = tokens.get(4) {
+                        if let Ok(val) = val_str.parse::<u64>() {
+                            self.search_time_limit = val;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -157,18 +179,19 @@ impl UsiEngine {
     fn handle_go(&mut self, tokens: &[&str]) {
         self.stop_signal.store(false, Ordering::SeqCst);
 
-        let mut byoyomi = 5000; // デフォルト5秒
-        if let Some(byoyomi_idx) = tokens.iter().position(|&s| s == "byoyomi") {
-            if let Some(byoyomi_str) = tokens.get(byoyomi_idx + 1) {
-                if let Ok(val) = byoyomi_str.parse::<u64>() {
-                    byoyomi = val;
-                }
-            }
-        }
+        let mut byoyomi = self.search_time_limit;
+        // if let Some(byoyomi_idx) = tokens.iter().position(|&s| s == "byoyomi") {
+        //     if let Some(byoyomi_str) = tokens.get(byoyomi_idx + 1) {
+        //         if let Ok(val) = byoyomi_str.parse::<u64>() {
+        //             byoyomi = val;
+        //         }
+        //     }
+        // }
 
         let position = self.position.clone();
         let stop_signal = self.stop_signal.clone();
         let eval_file_path = self.eval_file_path.clone();
+        let max_depth = self.max_depth;
 
         thread::spawn(move || {
             let evaluator = match SparseModelEvaluator::new(&eval_file_path) {
@@ -180,7 +203,7 @@ impl UsiEngine {
             };
             let mut thinking_ai = ShogiAI::<SparseModelEvaluator, HISTORY_CAPACITY>::new(evaluator);
 
-            if let Some(best_move) = thinking_ai.find_best_move(&position, 30, Some(10000)) {
+            if let Some(best_move) = thinking_ai.find_best_move(&position, max_depth, Some(byoyomi)) {
                 if !stop_signal.load(Ordering::SeqCst) {
                     println!("bestmove {}", format_move_usi(best_move));
                 }
