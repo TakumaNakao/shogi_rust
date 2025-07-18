@@ -66,6 +66,7 @@ fn format_square(sq: Square) -> String {
 const ENGINE_NAME: &str = "Shogi AI";
 const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
+const WEIGHTS_PATH_NAME: &str = "weightsmany.binary";
 
 struct UsiEngine {
     _ai: ShogiAI<SparseModelEvaluator, HISTORY_CAPACITY>,
@@ -77,7 +78,7 @@ impl UsiEngine {
     fn new() -> Self {
         let mut exe_path = std::env::current_exe().expect("Failed to find executable path");
         exe_path.pop();
-        let weights_path = exe_path.join("weights5times.binary");
+        let weights_path = exe_path.join(WEIGHTS_PATH_NAME);
         
         let evaluator = SparseModelEvaluator::new(&weights_path)
             .unwrap_or_else(|e| panic!("Failed to create SparseModelEvaluator: {:?}. Ensure 'weights5times.binary' is next to the executable.", e));
@@ -151,7 +152,7 @@ impl UsiEngine {
         
         let mut exe_path = std::env::current_exe().expect("Failed to find executable path for thread");
         exe_path.pop();
-        let weights_path = exe_path.join("weights5times.binary");
+        let weights_path = exe_path.join(WEIGHTS_PATH_NAME);
         let mut thinking_ai = ShogiAI::<SparseModelEvaluator, HISTORY_CAPACITY>::new(
             SparseModelEvaluator::new(&weights_path).unwrap()
         );
