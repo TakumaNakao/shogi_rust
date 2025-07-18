@@ -5,6 +5,7 @@ use std::thread;
 use shogi_core::{Color, Move, Piece, PieceKind, Position, Square};
 use crate::ai::ShogiAI;
 use crate::evaluation::SparseModelEvaluator;
+use std::path::{Path, PathBuf};
 
 // --- USI Parsing/Formatting Helpers (omitted for brevity, no changes) ---
 fn parse_usi_move(s: &str) -> Option<Move> {
@@ -65,27 +66,24 @@ fn format_square(sq: Square) -> String {
 const ENGINE_NAME: &str = "Shogi AI";
 const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
-const WEIGHTS_PATH_NAME: &str = "weights5times.binary";
+const DEFAULT_WEIGHTS_PATH_NAME: &str = "weights.bin";
 
 struct UsiEngine {
-    _ai: ShogiAI<SparseModelEvaluator, HISTORY_CAPACITY>,
     position: Position,
     stop_signal: Arc<AtomicBool>,
+    eval_file_path: PathBuf,
 }
 
 impl UsiEngine {
     fn new() -> Self {
         let mut exe_path = std::env::current_exe().expect("Failed to find executable path");
         exe_path.pop();
-        let weights_path = exe_path.join(WEIGHTS_PATH_NAME);
-        
-        let evaluator = SparseModelEvaluator::new(&weights_path)
-            .unwrap_or_else(|e| panic!("Failed to create SparseModelEvaluator: {:?}. Ensure 'weights5times.binary' is next to the executable.", e));
-        
+        let default_weights_path = exe_path.join(DEFAULT_WEIGHTS_PATH_NAME);
+
         UsiEngine {
-            _ai: ShogiAI::new(evaluator),
             position: Position::startpos(),
             stop_signal: Arc::new(AtomicBool::new(false)),
+            eval_file_path: default_weights_path,
         }
     }
 
@@ -102,6 +100,7 @@ impl UsiEngine {
                 match command {
                     "usi" => self.handle_usi(),
                     "isready" => self.handle_isready(),
+                    "setoption" => self.handle_setoption(&tokens),
                     "usinewgame" => self.handle_usinewgame(),
                     "position" => self.handle_position(&tokens),
                     "go" => self.handle_go(&tokens),
@@ -116,11 +115,23 @@ impl UsiEngine {
     fn handle_usi(&self) {
         println!("id name {}", ENGINE_NAME);
         println!("id author {}", ENGINE_AUTHOR);
+        println!("option name EvalFile type string default {}", self.eval_file_path.to_string_lossy());
         println!("usiok");
     }
 
     fn handle_isready(&self) {
+        // ここで評価関数の読み込みチェックなどを行うのが望ましい
         println!("readyok");
+    }
+
+    fn handle_setoption(&mut self, tokens: &[&str]) {
+        if tokens.get(1) == Some(&"name") && tokens.get(2) == Some(&"EvalFile") && tokens.get(3) == Some(&"value") {
+            if let Some(path_str) = tokens.get(4) {
+                self.eval_file_path = PathBuf::from(path_str);
+                // デバッグ用にファイルパスを表示
+                // eprintln!("info string Set EvalFile to {}", self.eval_file_path.to_string_lossy());
+            }
+        }
     }
 
     fn handle_usinewgame(&mut self) {
@@ -157,16 +168,19 @@ impl UsiEngine {
 
         let position = self.position.clone();
         let stop_signal = self.stop_signal.clone();
-
-        let mut exe_path = std::env::current_exe().expect("Failed to find executable path for thread");
-        exe_path.pop();
-        let weights_path = exe_path.join(WEIGHTS_PATH_NAME);
-        let mut thinking_ai = ShogiAI::<SparseModelEvaluator, HISTORY_CAPACITY>::new(
-            SparseModelEvaluator::new(&weights_path).unwrap()
-        );
+        let eval_file_path = self.eval_file_path.clone();
 
         thread::spawn(move || {
-            if let Some(best_move) = thinking_ai.find_best_move(&position, 30, Some(10000)) { // 深さ10または時間切れまで
+            let evaluator = match SparseModelEvaluator::new(&eval_file_path) {
+                Ok(eval) => eval,
+                Err(e) => {
+                    eprintln!("info string Error: Failed to load evaluation file: {}. Error: {}", eval_file_path.to_string_lossy(), e);
+                    return;
+                }
+            };
+            let mut thinking_ai = ShogiAI::<SparseModelEvaluator, HISTORY_CAPACITY>::new(evaluator);
+
+            if let Some(best_move) = thinking_ai.find_best_move(&position, 30, Some(10000)) {
                 if !stop_signal.load(Ordering::SeqCst) {
                     println!("bestmove {}", format_move_usi(best_move));
                 }
