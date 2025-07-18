@@ -1,5 +1,4 @@
 use std::io::{self, BufRead};
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -66,7 +65,7 @@ fn format_square(sq: Square) -> String {
 const ENGINE_NAME: &str = "Shogi AI";
 const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
-const WEIGHTS_PATH_NAME: &str = "weightsmany.binary";
+const WEIGHTS_PATH_NAME: &str = "weights5times.binary";
 
 struct UsiEngine {
     _ai: ShogiAI<SparseModelEvaluator, HISTORY_CAPACITY>,
@@ -105,7 +104,7 @@ impl UsiEngine {
                     "isready" => self.handle_isready(),
                     "usinewgame" => self.handle_usinewgame(),
                     "position" => self.handle_position(&tokens),
-                    "go" => self.handle_go(),
+                    "go" => self.handle_go(&tokens),
                     "stop" => self.handle_stop(),
                     "quit" => break,
                     _ => {}
@@ -144,12 +143,21 @@ impl UsiEngine {
         }
     }
 
-    fn handle_go(&mut self) {
+    fn handle_go(&mut self, tokens: &[&str]) {
         self.stop_signal.store(false, Ordering::SeqCst);
-        
+
+        let mut byoyomi = 5000; // デフォルト5秒
+        if let Some(byoyomi_idx) = tokens.iter().position(|&s| s == "byoyomi") {
+            if let Some(byoyomi_str) = tokens.get(byoyomi_idx + 1) {
+                if let Ok(val) = byoyomi_str.parse::<u64>() {
+                    byoyomi = val;
+                }
+            }
+        }
+
         let position = self.position.clone();
         let stop_signal = self.stop_signal.clone();
-        
+
         let mut exe_path = std::env::current_exe().expect("Failed to find executable path for thread");
         exe_path.pop();
         let weights_path = exe_path.join(WEIGHTS_PATH_NAME);
@@ -158,7 +166,7 @@ impl UsiEngine {
         );
 
         thread::spawn(move || {
-            if let Some(best_move) = thinking_ai.find_best_move(&position, 4) {
+            if let Some(best_move) = thinking_ai.find_best_move(&position, 30, Some(10000)) { // 深さ10または時間切れまで
                 if !stop_signal.load(Ordering::SeqCst) {
                     println!("bestmove {}", format_move_usi(best_move));
                 }

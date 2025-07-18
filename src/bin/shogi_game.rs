@@ -47,7 +47,7 @@ fn main() {
         let ai_sente_current_eval = ai_sente.evaluator.evaluate(&position);
         let ai_gote_current_eval = ai_gote.evaluator.evaluate(&position);
 
-        let (current_ai, search_depth) = match position.side_to_move() {
+        let (current_ai, max_depth) = match position.side_to_move() {
             Color::Black => {
                 sente_evaluation_history.push((turn, ai_sente_current_eval));
                 gote_evaluation_history.push((turn, ai_gote_current_eval));
@@ -60,9 +60,9 @@ fn main() {
             },
         };
         
-        println!("手番: {:?}, 探索深さ: {}", position.side_to_move(), search_depth);
+        println!("手番: {:?}, 探索深さ: {}", position.side_to_move(), max_depth);
 
-        let best_move = current_ai.find_best_move(&position, search_depth);
+        let best_move = current_ai.find_best_move(&position, max_depth, None);
 
         match best_move {
             Some(mv) => {

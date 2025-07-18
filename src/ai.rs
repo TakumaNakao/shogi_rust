@@ -4,6 +4,7 @@ use crate::evaluation::{get_piece_value, Evaluator};
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
+use std::time::{Duration, Instant};
 
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -24,12 +25,14 @@ struct TranspositionEntry {
     node_type: NodeType,
 }
 
-/// 将棋のア��ファベータ探索を管理する構造体
+/// 将棋のアルファベータ探索を管理する構造体
 pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     move_ordering: MoveOrdering,
     pub evaluator: E,
     pub sennichite_detector: SennichiteDetector<HISTORY_CAPACITY>,
     transposition_table: HashMap<u64, TranspositionEntry>,
+    start_time: Option<Instant>,
+    time_limit: Option<Duration>,
 }
 
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
@@ -39,6 +42,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             evaluator,
             sennichite_detector: SennichiteDetector::new(),
             transposition_table: HashMap::new(),
+            start_time: None,
+            time_limit: None,
         }
     }
 
@@ -52,11 +57,23 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         0
     }
 
-    pub fn quiescence_search( &mut self, position: &shogi_core::Position, mut alpha: f32, beta: f32, ) -> f32 {
+    fn is_time_up(&self) -> bool {
+        if let (Some(start), Some(limit)) = (self.start_time, self.time_limit) {
+            start.elapsed() >= limit
+        } else {
+            false
+        }
+    }
+
+    pub fn quiescence_search( &mut self, position: &shogi_core::Position, mut alpha: f32, beta: f32, ) -> Option<f32> {
+        if self.is_time_up() {
+            return None;
+        }
+
         let stand_pat_score = self.evaluator.evaluate(position);
 
         if stand_pat_score >= beta {
-            return beta;
+            return Some(beta);
         }
         alpha = alpha.max(stand_pat_score);
 
@@ -72,7 +89,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         });
 
         if moves.is_empty() {
-            return stand_pat_score;
+            return Some(stand_pat_score);
         }
 
         self.move_ordering.sort_moves(&mut moves, position);
@@ -89,27 +106,35 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             self.sennichite_detector.record_position(&next_position);
             let sennichite_status = self.is_sennichite_internal(&next_position);
             let score = match sennichite_status {
-                SennichiteStatus::Draw => 0.0,
-                SennichiteStatus::PerpetualCheckLoss => -f32::INFINITY,
+                SennichiteStatus::Draw => Some(0.0),
+                SennichiteStatus::PerpetualCheckLoss => Some(-f32::INFINITY),
                 SennichiteStatus::None => {
-                    -self.quiescence_search(&next_position, -beta, -alpha)
+                    self.quiescence_search(&next_position, -beta, -alpha).map(|s| -s)
                 }
             };
             self.sennichite_detector.unrecord_last_position();
 
-            if score > best_score {
-                best_score = score;
-            }
-            alpha = alpha.max(score);
+            if let Some(current_score) = score {
+                if current_score > best_score {
+                    best_score = current_score;
+                }
+                alpha = alpha.max(current_score);
 
-            if alpha >= beta {
-                break;
+                if alpha >= beta {
+                    break;
+                }
+            } else {
+                return None; // 時間切れを伝播
             }
         }
-        best_score
+        Some(best_score)
     }
 
-    pub fn alpha_beta_search( &mut self, position: &shogi_core::Position, depth: u8, mut alpha: f32, mut beta: f32, ) -> f32 {
+    pub fn alpha_beta_search( &mut self, position: &shogi_core::Position, depth: u8, mut alpha: f32, mut beta: f32, ) -> Option<f32> {
+        if self.is_time_up() {
+            return None;
+        }
+
         if depth == 0 {
             return self.quiescence_search(position, alpha, beta);
         }
@@ -121,12 +146,12 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         if let Some(entry) = self.transposition_table.get(&hash) {
             if entry.depth >= depth {
                 match entry.node_type {
-                    NodeType::Exact => return entry.score,
+                    NodeType::Exact => return Some(entry.score),
                     NodeType::LowerBound => alpha = alpha.max(entry.score),
                     NodeType::UpperBound => beta = beta.min(entry.score),
                 }
                 if alpha >= beta {
-                    return entry.score;
+                    return Some(entry.score);
                 }
             }
         }
@@ -135,12 +160,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let mut moves = yasai_pos.legal_moves();
 
         if moves.is_empty() {
-            return -f32::INFINITY;
+            return Some(-f32::INFINITY);
         }
 
         self.move_ordering.sort_moves(&mut moves, position);
 
         let mut best_score = -f32::INFINITY;
+        let mut node_type = NodeType::UpperBound;
+
         for mv in moves {
             let mut next_position = position.clone();
             if next_position.make_move(mv).is_none() {
@@ -150,36 +177,37 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             self.sennichite_detector.record_position(&next_position);
             let sennichite_status = self.is_sennichite_internal(&next_position);
 
-            let score = match sennichite_status {
-                SennichiteStatus::Draw => 0.0,
-                SennichiteStatus::PerpetualCheckLoss => -f32::INFINITY,
+            let score_result = match sennichite_status {
+                SennichiteStatus::Draw => Some(0.0),
+                SennichiteStatus::PerpetualCheckLoss => Some(-f32::INFINITY),
                 SennichiteStatus::None => {
-                    -self.alpha_beta_search(&next_position, depth - 1, -beta, -alpha)
+                    self.alpha_beta_search(&next_position, depth - 1, -beta, -alpha).map(|s| -s)
                 }
             };
 
             self.sennichite_detector.unrecord_last_position();
 
-            if score > best_score {
-                best_score = score;
-            }
-            alpha = alpha.max(score);
+            if let Some(score) = score_result {
+                if score > best_score {
+                    best_score = score;
+                }
+                if best_score > alpha {
+                    alpha = best_score;
+                    node_type = NodeType::Exact;
+                }
 
-            if alpha >= beta {
-                self.move_ordering.update_history(&mv, position, depth as i32 * 10);
-                break;
+                if alpha >= beta {
+                    self.move_ordering.update_history(&mv, position, depth as i32 * 10);
+                    node_type = NodeType::LowerBound;
+                    break;
+                }
+            } else {
+                return None; // 時間切れを伝播
             }
         }
 
         // --- テーブル保存 ---
-        let node_type = if best_score >= beta {
-            NodeType::LowerBound
-        } else if best_score > original_alpha {
-            NodeType::Exact
-        } else {
-            NodeType::UpperBound
-        };
-
+        // 時間切れで探索が不完全な場合は保存しない
         let entry = TranspositionEntry {
             score: best_score,
             depth,
@@ -187,58 +215,81 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         };
         self.transposition_table.insert(hash, entry);
 
-        best_score
+        Some(best_score)
     }
 
     pub fn is_sennichite_internal(&self, position: &shogi_core::Position) -> SennichiteStatus {
         self.sennichite_detector.check_sennichite(position)
     }
 
-    pub fn find_best_move(&mut self, position: &shogi_core::Position, depth: u8) -> Option<Move> {
-        // 新しい探索ごとにテーブルをクリアする
+    pub fn find_best_move(&mut self, position: &shogi_core::Position, max_depth: u8, time_limit_ms: Option<u64>) -> Option<Move> {
         self.transposition_table.clear();
-        
-        let mut best_move: Option<Move> = None;
-        let mut best_eval = -f32::INFINITY;
-        let mut alpha = -f32::INFINITY;
-        let beta = f32::INFINITY;
+        self.start_time = Some(Instant::now());
+        self.time_limit = time_limit_ms.map(Duration::from_millis);
 
+        let mut best_move: Option<Move> = None;
+        
         let yasai_pos = yasai::Position::new(position.inner().clone());
         let mut moves = yasai_pos.legal_moves();
-
-        self.move_ordering.sort_moves(&mut moves, position);
-
         if moves.is_empty() {
             return None;
         }
+        self.move_ordering.sort_moves(&mut moves, position);
 
-        for mv in moves {
-            let mut next_position = position.clone();
-            if next_position.make_move(mv).is_none() {
-                continue;
-            }
+        for depth in 1..=max_depth {
+            let mut current_best_move_for_depth: Option<Move> = None;
+            let mut best_eval_for_depth = -f32::INFINITY;
+            let mut alpha = -f32::INFINITY;
+            let beta = f32::INFINITY;
 
-            self.sennichite_detector.record_position(&next_position);
-            let sennichite_status = self.is_sennichite_internal(&next_position);
-            self.sennichite_detector.unrecord_last_position();
+            let mut search_interrupted = false;
 
-            let eval = match sennichite_status {
-                SennichiteStatus::Draw => 0.0,
-                SennichiteStatus::PerpetualCheckLoss => -f32::INFINITY,
-                SennichiteStatus::None => {
-                    -self.alpha_beta_search(&next_position, depth - 1, -beta, -alpha)
+            for mv in &moves {
+                if self.is_time_up() {
+                    search_interrupted = true;
+                    break;
                 }
-            };
 
-            if eval > best_eval {
-                best_eval = eval;
-                best_move = Some(mv);
+                let mut next_position = position.clone();
+                if next_position.make_move(*mv).is_none() {
+                    continue;
+                }
+
+                self.sennichite_detector.record_position(&next_position);
+                let sennichite_status = self.is_sennichite_internal(&next_position);
+                self.sennichite_detector.unrecord_last_position();
+
+                let eval_result = match sennichite_status {
+                    SennichiteStatus::Draw => Some(0.0),
+                    SennichiteStatus::PerpetualCheckLoss => Some(-f32::INFINITY),
+                    SennichiteStatus::None => {
+                        self.alpha_beta_search(&next_position, depth - 1, -beta, -alpha).map(|s| -s)
+                    }
+                };
+
+                if let Some(eval) = eval_result {
+                    if eval > best_eval_for_depth {
+                        best_eval_for_depth = eval;
+                        current_best_move_for_depth = Some(*mv);
+                    }
+                    alpha = alpha.max(eval);
+                } else {
+                    search_interrupted = true;
+                    break;
+                }
             }
-            alpha = alpha.max(eval);
-        }
 
-        if let Some(bm) = best_move {
-            self.move_ordering.update_history(&bm, position, depth as i32 * 20);
+            if !search_interrupted {
+                // 深さdの探索が完全に終わった場合のみ、最善手を更新
+                best_move = current_best_move_for_depth;
+                if let Some(bm) = best_move {
+                     // 探索が完了した深さが大きいほど、履歴の重みを大きくする
+                    self.move_ordering.update_history(&bm, position, depth as i32 * 20);
+                }
+            } else {
+                // 時間切れでループを抜ける
+                break;
+            }
         }
 
         best_move
