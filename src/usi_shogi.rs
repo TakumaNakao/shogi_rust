@@ -1,6 +1,6 @@
 use std::io::{self, BufRead};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use shogi_core::{Color, Move, Piece, PieceKind, Position, Square};
 use crate::ai::ShogiAI;
@@ -66,7 +66,7 @@ fn format_square(sq: Square) -> String {
 const ENGINE_NAME: &str = "Shogi AI";
 const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
-const DEFAULT_WEIGHTS_PATH_NAME: &str = "weights.bin";
+const DEFAULT_WEIGHTS_PATH_NAME: &str = "weightsmany.binary";
 
 struct UsiEngine {
     position: Position,
@@ -74,6 +74,7 @@ struct UsiEngine {
     eval_file_path: PathBuf,
     max_depth: u8,
     search_time_limit: u64,
+    ai: Arc<Mutex<ShogiAI<SparseModelEvaluator, HISTORY_CAPACITY>>>,
 }
 
 impl UsiEngine {
@@ -82,12 +83,17 @@ impl UsiEngine {
         exe_path.pop();
         let default_weights_path = exe_path.join(DEFAULT_WEIGHTS_PATH_NAME);
 
+        let evaluator = SparseModelEvaluator::new(&default_weights_path)
+            .expect("Failed to load default evaluation file on startup");
+        let ai = ShogiAI::<SparseModelEvaluator, HISTORY_CAPACITY>::new(evaluator);
+
         UsiEngine {
             position: Position::startpos(),
             stop_signal: Arc::new(AtomicBool::new(false)),
             eval_file_path: default_weights_path,
             max_depth: 30, // Default max depth
             search_time_limit: 10000, // Default time limit in ms
+            ai: Arc::new(Mutex::new(ai)),
         }
     }
 
@@ -134,7 +140,18 @@ impl UsiEngine {
             match tokens.get(2) {
                 Some(&"EvalFile") => {
                     if let Some(path_str) = tokens.get(4) {
-                        self.eval_file_path = PathBuf::from(path_str);
+                        let new_path = PathBuf::from(path_str);
+                        match SparseModelEvaluator::new(&new_path) {
+                            Ok(evaluator) => {
+                                let new_ai = ShogiAI::new(evaluator);
+                                *self.ai.lock().unwrap() = new_ai;
+                                self.eval_file_path = new_path;
+                                eprintln!("info string Loaded new evaluation file: {}", path_str);
+                            }
+                            Err(e) => {
+                                eprintln!("info string Error: Failed to load new evaluation file: {}. Error: {}", path_str, e);
+                            }
+                        }
                     }
                 }
                 Some(&"MaxDepth") => {
@@ -158,6 +175,7 @@ impl UsiEngine {
 
     fn handle_usinewgame(&mut self) {
         self.position = Position::startpos();
+        self.ai.lock().unwrap().clear();
     }
 
     fn handle_position(&mut self, tokens: &[&str]) {
@@ -176,33 +194,17 @@ impl UsiEngine {
         }
     }
 
-    fn handle_go(&mut self, tokens: &[&str]) {
+    fn handle_go(&mut self, _tokens: &[&str]) {
         self.stop_signal.store(false, Ordering::SeqCst);
 
-        let mut byoyomi = self.search_time_limit;
-        // if let Some(byoyomi_idx) = tokens.iter().position(|&s| s == "byoyomi") {
-        //     if let Some(byoyomi_str) = tokens.get(byoyomi_idx + 1) {
-        //         if let Ok(val) = byoyomi_str.parse::<u64>() {
-        //             byoyomi = val;
-        //         }
-        //     }
-        // }
-
+        let byoyomi = self.search_time_limit;
         let position = self.position.clone();
         let stop_signal = self.stop_signal.clone();
-        let eval_file_path = self.eval_file_path.clone();
         let max_depth = self.max_depth;
+        let ai = self.ai.clone();
 
         thread::spawn(move || {
-            let evaluator = match SparseModelEvaluator::new(&eval_file_path) {
-                Ok(eval) => eval,
-                Err(e) => {
-                    eprintln!("info string Error: Failed to load evaluation file: {}. Error: {}", eval_file_path.to_string_lossy(), e);
-                    return;
-                }
-            };
-            let mut thinking_ai = ShogiAI::<SparseModelEvaluator, HISTORY_CAPACITY>::new(evaluator);
-
+            let mut thinking_ai = ai.lock().unwrap();
             if let Some(best_move) = thinking_ai.find_best_move(&position, max_depth, Some(byoyomi)) {
                 if !stop_signal.load(Ordering::SeqCst) {
                     println!("bestmove {}", format_move_usi(best_move));

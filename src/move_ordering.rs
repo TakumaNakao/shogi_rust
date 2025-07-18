@@ -177,7 +177,7 @@ impl MoveOrdering {
     }
 
     /// すべての履歴テーブルをクリアします。
-    pub fn clear_histories(&mut self) {
+    pub fn clear(&mut self) {
         self.piece_to_history.clear();
         self.butterfly_history.clear();
         self.counter_move_history.clear();

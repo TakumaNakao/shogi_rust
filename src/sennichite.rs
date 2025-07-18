@@ -65,6 +65,11 @@ impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
         // ここに実際の連続王手チェックロジックを実装します。
         false
     }
+
+    /// 履歴をクリアします。
+    pub fn clear(&mut self) {
+        self.history.clear();
+    }
 }
 
 #[cfg(test)]

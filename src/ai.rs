@@ -47,6 +47,12 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.move_ordering.clear();
+        self.sennichite_detector.clear();
+        self.transposition_table.clear();
+    }
+
     /// 静的交換評価（SEE）を計算します。
     fn see(&self, position: &Position, mv: Move) -> i32 {
         if let Move::Normal { from, to, .. } = mv {
@@ -139,7 +145,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             return self.quiescence_search(position, alpha, beta);
         }
 
-        let original_alpha = alpha;
         let hash = PositionHasher::calculate_hash(position);
 
         // --- テーブル参照 ---
