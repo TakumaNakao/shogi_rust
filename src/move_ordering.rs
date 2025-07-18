@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use shogi_core::{Color, Move, PieceKind, Square};
 use arrayvec::ArrayVec;
 use crate::position_hash::{ZOBRIST_KEYS, PIECE_KINDS, HAND_PIECE_KINDS, color_to_index};
+use crate::evaluation::get_piece_value;
 
 fn hash_move(mv: Move) -> u64 {
     match mv {
@@ -47,6 +48,12 @@ impl PieceToHistory {
     fn clear(&mut self) {
         self.history.clear();
     }
+
+    fn decay(&mut self) {
+        for score in self.history.values_mut() {
+            *score /= 2;
+        }
+    }
 }
 
 /// `ButterflyHistory`テーブル
@@ -75,6 +82,12 @@ impl ButterflyHistory {
     fn clear(&mut self) {
         self.history.clear();
     }
+
+    fn decay(&mut self) {
+        for score in self.history.values_mut() {
+            *score /= 2;
+        }
+    }
 }
 
 /// `CounterMoveHistory`テーブル
@@ -96,6 +109,12 @@ impl CounterMoveHistory {
 
     fn clear(&mut self) {
         self.history.clear();
+    }
+
+    fn decay(&mut self) {
+        for score in self.history.values_mut() {
+            *score /= 2;
+        }
     }
 }
 
@@ -134,11 +153,13 @@ impl MoveOrdering {
             score += self.counter_move_history.get_score(op_move, *current_move);
         }
 
-        if let Move::Normal { to, .. } = current_move {
-            if position.piece_at(*to).is_some() {
-                score += 1000;
+        if let Move::Normal { from, to, .. } = current_move {
+            // 駒を取る手の場合、MVV-LVAスコアを加算
+            if let (Some(victim), Some(attacker)) = (position.piece_at(*to), position.piece_at(*from)) {
+                score += get_piece_value(victim.piece_kind()) * 100 - get_piece_value(attacker.piece_kind());
             }
         }
+
         if let Move::Normal { promote, .. } = current_move {
             if *promote {
                 score += 500;
@@ -181,5 +202,12 @@ impl MoveOrdering {
         self.piece_to_history.clear();
         self.butterfly_history.clear();
         self.counter_move_history.clear();
+    }
+
+    /// すべての履歴テーブルのスコアを減衰させます。
+    pub fn decay(&mut self) {
+        self.piece_to_history.decay();
+        self.butterfly_history.decay();
+        self.counter_move_history.decay();
     }
 }

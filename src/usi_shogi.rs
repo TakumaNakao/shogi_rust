@@ -193,6 +193,11 @@ impl UsiEngine {
             return;
         }
 
+        // 思考開始前に履歴を減衰させる
+        if let Some(ai_instance) = self.ai.lock().unwrap().as_mut() {
+            ai_instance.decay_history();
+        }
+
         self.stop_signal.store(false, Ordering::SeqCst);
 
         let byoyomi = self.search_time_limit;

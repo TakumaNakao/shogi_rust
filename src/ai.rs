@@ -6,6 +6,8 @@ use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
 use std::time::{Duration, Instant};
 
+const MAX_DEPTH: usize = 64;
+
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NodeType {
@@ -31,6 +33,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     pub evaluator: E,
     pub sennichite_detector: SennichiteDetector<HISTORY_CAPACITY>,
     transposition_table: HashMap<u64, TranspositionEntry>,
+    killer_moves: [[Option<Move>; 2]; MAX_DEPTH],
     start_time: Option<Instant>,
     time_limit: Option<Duration>,
 }
@@ -42,6 +45,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             evaluator,
             sennichite_detector: SennichiteDetector::new(),
             transposition_table: HashMap::new(),
+            killer_moves: [[None; 2]; MAX_DEPTH],
             start_time: None,
             time_limit: None,
         }
@@ -51,6 +55,28 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.move_ordering.clear();
         self.sennichite_detector.clear();
         self.transposition_table.clear();
+        self.clear_killer_moves();
+    }
+
+    fn clear_killer_moves(&mut self) {
+        self.killer_moves = [[None; 2]; MAX_DEPTH];
+    }
+
+    pub fn decay_history(&mut self) {
+        self.move_ordering.decay();
+    }
+
+    fn update_killer_moves(&mut self, depth: u8, mv: Move) {
+        let d = depth as usize;
+        if d < MAX_DEPTH {
+            // すでに登録されている場合は何もしない（重複を防ぐ）
+            if self.killer_moves[d][0] == Some(mv) {
+                return;
+            }
+            // 2番目を1番目にずらし、新しい手を1番目に登録
+            self.killer_moves[d][1] = self.killer_moves[d][0];
+            self.killer_moves[d][0] = Some(mv);
+        }
     }
 
     /// 静的交換評価（SEE）を計算します。
@@ -170,6 +196,20 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
         self.move_ordering.sort_moves(&mut moves, position);
 
+        // --- キラームーブを優先 ---
+        if (depth as usize) < MAX_DEPTH {
+            let killers = self.killer_moves[depth as usize];
+            let mut killer_idx = 0;
+            for i in 0..moves.len() {
+                if killer_idx < killers.len() && killers[killer_idx] == Some(moves[i]) {
+                    let killer_move = moves.remove(i);
+                    moves.insert(killer_idx, killer_move);
+                    killer_idx += 1;
+                }
+            }
+        }
+
+
         let mut best_score = -f32::INFINITY;
         let mut node_type = NodeType::UpperBound;
 
@@ -202,6 +242,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 }
 
                 if alpha >= beta {
+                    self.update_killer_moves(depth, mv);
                     self.move_ordering.update_history(&mv, position, depth as i32 * 10);
                     node_type = NodeType::LowerBound;
                     break;
@@ -229,6 +270,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn find_best_move(&mut self, position: &shogi_core::Position, max_depth: u8, time_limit_ms: Option<u64>) -> Option<Move> {
         self.transposition_table.clear();
+        self.clear_killer_moves();
         self.start_time = Some(Instant::now());
         self.time_limit = time_limit_ms.map(Duration::from_millis);
 
