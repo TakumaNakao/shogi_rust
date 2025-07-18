@@ -66,34 +66,25 @@ fn format_square(sq: Square) -> String {
 const ENGINE_NAME: &str = "Shogi AI";
 const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
-const DEFAULT_WEIGHTS_PATH_NAME: &str = "weightsmany.binary";
 
 struct UsiEngine {
     position: Position,
     stop_signal: Arc<AtomicBool>,
-    eval_file_path: PathBuf,
+    eval_file_path: Option<PathBuf>,
     max_depth: u8,
     search_time_limit: u64,
-    ai: Arc<Mutex<ShogiAI<SparseModelEvaluator, HISTORY_CAPACITY>>>,
+    ai: Arc<Mutex<Option<ShogiAI<SparseModelEvaluator, HISTORY_CAPACITY>>>>,
 }
 
 impl UsiEngine {
     fn new() -> Self {
-        let mut exe_path = std::env::current_exe().expect("Failed to find executable path");
-        exe_path.pop();
-        let default_weights_path = exe_path.join(DEFAULT_WEIGHTS_PATH_NAME);
-
-        let evaluator = SparseModelEvaluator::new(&default_weights_path)
-            .expect("Failed to load default evaluation file on startup");
-        let ai = ShogiAI::<SparseModelEvaluator, HISTORY_CAPACITY>::new(evaluator);
-
         UsiEngine {
             position: Position::startpos(),
             stop_signal: Arc::new(AtomicBool::new(false)),
-            eval_file_path: default_weights_path,
+            eval_file_path: None,
             max_depth: 30, // Default max depth
             search_time_limit: 10000, // Default time limit in ms
-            ai: Arc::new(Mutex::new(ai)),
+            ai: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -125,7 +116,7 @@ impl UsiEngine {
     fn handle_usi(&self) {
         println!("id name {}", ENGINE_NAME);
         println!("id author {}", ENGINE_AUTHOR);
-        println!("option name EvalFile type string default {}", self.eval_file_path.to_string_lossy());
+        println!("option name EvalFile type string default");
         println!("option name MaxDepth type spin default {} min 1 max 100", self.max_depth);
         println!("option name SearchTimeLimit type spin default {} min 100 max 300000", self.search_time_limit);
         println!("usiok");
@@ -144,8 +135,8 @@ impl UsiEngine {
                         match SparseModelEvaluator::new(&new_path) {
                             Ok(evaluator) => {
                                 let new_ai = ShogiAI::new(evaluator);
-                                *self.ai.lock().unwrap() = new_ai;
-                                self.eval_file_path = new_path;
+                                *self.ai.lock().unwrap() = Some(new_ai);
+                                self.eval_file_path = Some(new_path);
                                 eprintln!("info string Loaded new evaluation file: {}", path_str);
                             }
                             Err(e) => {
@@ -175,7 +166,9 @@ impl UsiEngine {
 
     fn handle_usinewgame(&mut self) {
         self.position = Position::startpos();
-        self.ai.lock().unwrap().clear();
+        if let Some(ai_instance) = self.ai.lock().unwrap().as_mut() {
+            ai_instance.clear();
+        }
     }
 
     fn handle_position(&mut self, tokens: &[&str]) {
@@ -195,6 +188,11 @@ impl UsiEngine {
     }
 
     fn handle_go(&mut self, _tokens: &[&str]) {
+        if self.ai.lock().unwrap().is_none() {
+            println!("info string Error: Evaluation file is not set. Use 'setoption name EvalFile value <path>'");
+            return;
+        }
+
         self.stop_signal.store(false, Ordering::SeqCst);
 
         let byoyomi = self.search_time_limit;
@@ -204,13 +202,15 @@ impl UsiEngine {
         let ai = self.ai.clone();
 
         thread::spawn(move || {
-            let mut thinking_ai = ai.lock().unwrap();
-            if let Some(best_move) = thinking_ai.find_best_move(&position, max_depth, Some(byoyomi)) {
-                if !stop_signal.load(Ordering::SeqCst) {
-                    println!("bestmove {}", format_move_usi(best_move));
+            let mut ai_lock = ai.lock().unwrap();
+            if let Some(thinking_ai) = ai_lock.as_mut() {
+                if let Some(best_move) = thinking_ai.find_best_move(&position, max_depth, Some(byoyomi)) {
+                    if !stop_signal.load(Ordering::SeqCst) {
+                        println!("bestmove {}", format_move_usi(best_move));
+                    }
+                } else {
+                    println!("bestmove resign");
                 }
-            } else {
-                println!("bestmove resign");
             }
         });
     }
