@@ -210,10 +210,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let moves = yasai_pos.legal_moves();
         if moves.is_empty() { return Some(-f32::INFINITY); }
 
-        let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|&mv| {
-            let mut score = self.move_ordering.score_move(&mv, position);
-            score += self.evaluate_move_safety(position, mv);
-            (mv, score)
+        let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|mv| {
+            let mut score = self.move_ordering.score_move(mv, position);
+            score += self.evaluate_move_safety(position, *mv);
+            if let Move::Normal { promote, .. } = mv {
+                if *promote {
+                    score += 4000;
+                }
+            }
+            (*mv, score)
         }).collect();
         scored_moves.sort_by_key(|a| -a.1);
         let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
@@ -280,10 +285,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let moves = yasai_pos.legal_moves();
         if moves.is_empty() { return None; }
 
-        let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|&mv| {
-            let mut score = self.move_ordering.score_move(&mv, position);
-            score += self.evaluate_move_safety(position, mv);
-            (mv, score)
+        let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|mv| {
+            let mut score = self.move_ordering.score_move(mv, position);
+            score += self.evaluate_move_safety(position, *mv);
+            if let Move::Normal { promote, .. } = mv {
+                if *promote {
+                    score += 4000;
+                }
+            }
+            (*mv, score)
         }).collect();
         scored_moves.sort_by_key(|a| -a.1);
         let sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
