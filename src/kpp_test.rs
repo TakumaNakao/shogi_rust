@@ -40,7 +40,7 @@ fn main() -> Result<()> {
     let weight_path = Path::new("./weights.binary");
     let output_path = "evaluation_graph.png";
 
-    let mut model = SparseModel::new(0.0, 0.5);
+    let mut model = SparseModel::new(0.0, 0.5, 1.0);
     if weight_path.exists() {
         model.load(weight_path)?;
         println!("重みファイルを読み込みました。");

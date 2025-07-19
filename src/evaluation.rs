@@ -51,7 +51,7 @@ const ALL_HAND_PIECES: [PieceKind; 7] = [
 
 const NUM_BOARD_PIECE_VALUES: usize = 13; // King is not included
 const NUM_HAND_PIECE_VALUES: usize = 7;
-const MAX_MATERIAL_WEIGHT: f32 = 0.01;
+const MAX_MATERIAL_WEIGHT: f32 = 1.0;
 
 fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
     match kind {
@@ -125,10 +125,11 @@ pub struct SparseModel {
     pub material_weight_raw: f32,
     pub eta: f32,
     pub material_loss_ratio: f32,
+    pub max_gradient: f32,
 }
 
 impl SparseModel {
-    pub fn new(eta: f32, material_loss_ratio: f32) -> Self {
+    pub fn new(eta: f32, material_loss_ratio: f32, max_gradient: f32) -> Self {
         const INITIAL_MATERIAL_WEIGHT_RAW: f32 = 0.0;
 
         Self {
@@ -142,6 +143,7 @@ impl SparseModel {
             material_weight_raw: INITIAL_MATERIAL_WEIGHT_RAW,
             eta,
             material_loss_ratio,
+            max_gradient,
         }
     }
 
@@ -224,7 +226,11 @@ impl SparseModel {
     }
 
     fn get_material_weight(&self) -> f32 {
-        MAX_MATERIAL_WEIGHT * (1.0 / (1.0 + (-self.material_weight_raw).exp()))
+        if self.max_gradient <= 0.0 {
+            return MAX_MATERIAL_WEIGHT * (1.0 / (1.0 + (-self.material_weight_raw).exp()));
+        }
+        let k = (MAX_MATERIAL_WEIGHT * 0.25) / self.max_gradient;
+        MAX_MATERIAL_WEIGHT * (1.0 / (1.0 + (-self.material_weight_raw / k).exp()))
     }
 
     pub fn predict(&self, pos: &shogi_core::Position, kpp_features: &[usize]) -> f32 {
@@ -300,8 +306,18 @@ impl SparseModel {
 
             // d(loss)/d(raw) = d(loss)/d(weight) * d(weight)/d(raw)
             let d_loss_d_weight = error_grad_material * raw_material_score * material_grad_sign;
-            let sigmoid_val = material_weight / MAX_MATERIAL_WEIGHT;
-            let d_weight_d_raw = MAX_MATERIAL_WEIGHT * sigmoid_val * (1.0 - sigmoid_val);
+            
+            let k = if self.max_gradient <= 0.0 {
+                1.0 // 旧来の挙動
+            } else {
+                (MAX_MATERIAL_WEIGHT * 0.25) / self.max_gradient
+            };
+
+            let sigmoid_input = self.material_weight_raw / k;
+            let sigmoid_val = 1.0 / (1.0 + (-sigmoid_input).exp());
+            let d_sigmoid_d_input = sigmoid_val * (1.0 - sigmoid_val);
+            let d_weight_d_raw = (MAX_MATERIAL_WEIGHT / k) * d_sigmoid_d_input;
+
             material_weight_raw_grad += d_loss_d_weight * d_weight_d_raw;
 
             let (board_counts, hand_counts) = get_piece_counts(pos);
@@ -504,7 +520,7 @@ pub struct SparseModelEvaluator {
 
 impl SparseModelEvaluator {
     pub fn new(weight_path: &Path) -> Result<Self> {
-        let mut model = SparseModel::new(0.0, 0.5); // テスト用にデフォルト値を追加
+        let mut model = SparseModel::new(0.0, 0.5, 1.0);
         model.load(weight_path)?;
         Ok(SparseModelEvaluator { model })
     }
@@ -525,7 +541,7 @@ mod tests {
 
     // テスト用のヘルパー関数: 空のモデルを生成
     fn create_test_model() -> SparseModel {
-        let mut model = SparseModel::new(0.0, 0.5);
+        let mut model = SparseModel::new(0.0, 0.5, 1.0);
         // テスト用にバイアスと重みを0に初期化
         model.bias = 0.0;
         model.w = vec![0.0; MAX_FEATURES];
@@ -535,7 +551,7 @@ mod tests {
             6.0, 6.0, 6.0, 6.0, 10.0, 12.0,     // 成り駒
         ];
         model.hand_piece_values = [1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0];
-        model.material_weight_raw = 10.0; // material_weightがほぼMAX_MATERIAL_WEIGHTになるように設定
+        model.material_weight_raw = 10.0; // material_weightがほぼMAX_MATERIAL_WEIGHTになる���うに設定
         model
     }
 

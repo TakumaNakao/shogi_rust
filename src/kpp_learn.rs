@@ -12,7 +12,8 @@ mod evaluation;
 use evaluation::{SparseModel, extract_kpp_features};
 
 const LEARNING_RATE: f32 = 0.01;
-const MATERIAL_LOSS_RATIO: f32 = 0.5;
+const MATERIAL_LOSS_RATIO: f32 = 0.6;
+const MAX_GRADIENT: f32 = 0.01;
 const BATCH_SIZE: usize = 65536;
 
 const REWARD_GAIN: f32 = 25.0;
@@ -169,7 +170,7 @@ fn main() -> Result<()> {
     let weight_path = Path::new("./weights.binary");
     let mse_graph_path = "mse_graph.png";
 
-    let mut model = SparseModel::new(LEARNING_RATE, MATERIAL_LOSS_RATIO);
+    let mut model = SparseModel::new(LEARNING_RATE, MATERIAL_LOSS_RATIO, MAX_GRADIENT);
 
     if weight_path.exists() {
         println!("重みファイルを読み込んでいます...");
