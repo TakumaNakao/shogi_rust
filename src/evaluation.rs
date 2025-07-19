@@ -121,7 +121,7 @@ pub struct SparseModel {
     pub w: Vec<f32>,
     pub bias: f32,
     pub board_piece_values: [f32; NUM_BOARD_PIECE_VALUES],
-    pub hand_piece_values: [f32; NUM_HAND_PIECE_VALUES],
+    pub hand_value_multiplier_raw: f32,
     pub material_weight_raw: f32,
     pub eta: f32,
     pub material_loss_ratio: f32,
@@ -131,6 +131,7 @@ pub struct SparseModel {
 impl SparseModel {
     pub fn new(eta: f32, material_loss_ratio: f32, max_gradient: f32) -> Self {
         const INITIAL_MATERIAL_WEIGHT_RAW: f32 = 0.0;
+        const INITIAL_HAND_VALUE_MULTIPLIER_RAW: f32 = 0.0;
 
         Self {
             w: vec![0.0; MAX_FEATURES],
@@ -139,7 +140,7 @@ impl SparseModel {
                 1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0, 6.0, 6.0, 6.0, 6.0,
                 10.0, 12.0,
             ],
-            hand_piece_values: [1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0],
+            hand_value_multiplier_raw: INITIAL_HAND_VALUE_MULTIPLIER_RAW,
             material_weight_raw: INITIAL_MATERIAL_WEIGHT_RAW,
             eta,
             material_loss_ratio,
@@ -162,10 +163,8 @@ impl SparseModel {
             offset += 4;
         }
 
-        for i in 0..NUM_HAND_PIECE_VALUES {
-            self.hand_piece_values[i] = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
-            offset += 4;
-        }
+        self.hand_value_multiplier_raw = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
+        offset += 4;
 
         self.material_weight_raw = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
         offset += 4;
@@ -183,7 +182,7 @@ impl SparseModel {
 
         println!("material_weight: {}, material_weight_raw: {}", self.get_material_weight(), self.material_weight_raw);
         println!("board_piece_values: {:?}", self.board_piece_values);
-        println!("hand_piece_values: {:?}", self.hand_piece_values);
+        println!("hand_value_multiplier: {}", self.get_hand_value_multiplier());
 
         Ok(())
     }
@@ -196,9 +195,7 @@ impl SparseModel {
         for &value in &self.board_piece_values {
             buffer.extend_from_slice(&value.to_le_bytes());
         }
-        for &value in &self.hand_piece_values {
-            buffer.extend_from_slice(&value.to_le_bytes());
-        }
+        buffer.extend_from_slice(&self.hand_value_multiplier_raw.to_le_bytes());
         buffer.extend_from_slice(&self.material_weight_raw.to_le_bytes());
 
         for &v in self.w.iter() {
@@ -209,7 +206,7 @@ impl SparseModel {
         
         println!("material_weight: {}, material_weight_raw: {}", self.get_material_weight(), self.material_weight_raw);
         println!("board_piece_values: {:?}", self.board_piece_values);
-        println!("hand_piece_values: {:?}", self.hand_piece_values);
+        println!("hand_value_multiplier: {}", self.get_hand_value_multiplier());
         println!("Max W: {:?}", self.w.iter().cloned().max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)));
 
         Ok(())
@@ -233,6 +230,10 @@ impl SparseModel {
         MAX_MATERIAL_WEIGHT * (1.0 / (1.0 + (-self.material_weight_raw / k).exp()))
     }
 
+    fn get_hand_value_multiplier(&self) -> f32 {
+        1.0 + (self.hand_value_multiplier_raw).exp().ln_1p() // softplus
+    }
+
     pub fn predict(&self, pos: &shogi_core::Position, kpp_features: &[usize]) -> f32 {
         let mut prediction = self.bias;
         for &i in kpp_features {
@@ -241,9 +242,9 @@ impl SparseModel {
             }
         }
         let material_weight = self.get_material_weight();
-        let material_score = calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
+        let hand_value_multiplier = self.get_hand_value_multiplier();
+        let material_score = calculate_material_score(pos, &self.board_piece_values, hand_value_multiplier);
         
-        // KPPは手番視点に正規化されているので、駒得も手番視点に合わせる
         let material_term = material_weight * material_score;
         prediction += if pos.side_to_move() == Color::Black { material_term } else { -material_term };
 
@@ -257,35 +258,30 @@ impl SparseModel {
         }
         let mut total_loss = 0.0;
 
-        // KPPの勾配
         let mut bias_grad = 0.0;
         let mut w_grads = vec![0.0; MAX_FEATURES];
 
-        // 駒得の勾配
         let mut board_piece_values_grads = [0.0; NUM_BOARD_PIECE_VALUES];
-        let mut hand_piece_values_grads = [0.0; NUM_HAND_PIECE_VALUES];
+        let mut hand_value_multiplier_raw_grad = 0.0;
         let mut material_weight_raw_grad = 0.0;
 
         for (pos, kpp_features, y_true) in batch.iter() {
-            // --- 予測値の計算 ---
-            // KPP部分
             let mut kpp_score = self.bias;
             for &i in kpp_features {
                 if i < MAX_FEATURES {
                     kpp_score += self.w[i];
                 }
             }
-            // 駒得部分
+            
             let material_weight = self.get_material_weight();
-            let raw_material_score = calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
+            let hand_value_multiplier = self.get_hand_value_multiplier();
+            let raw_material_score = calculate_material_score(pos, &self.board_piece_values, hand_value_multiplier);
             let material_score = material_weight * raw_material_score;
             let material_score_for_turn = if pos.side_to_move() == Color::Black { material_score } else { -material_score };
 
             let y_pred = kpp_score + material_score_for_turn;
             total_loss += (y_pred - y_true) * (y_pred - y_true);
 
-            // --- 勾配計算 ---
-            // KPP部分
             let y_kpp_true = y_true * (1.0 - self.material_loss_ratio);
             let error_kpp = kpp_score - y_kpp_true;
             let error_grad_kpp = 2.0 * error_kpp / m;
@@ -297,39 +293,42 @@ impl SparseModel {
                 }
             }
 
-            // 駒���部分
             let y_material_true = y_true * self.material_loss_ratio;
             let error_material = material_score_for_turn - y_material_true;
             let error_grad_material = 2.0 * error_material / m;
 
             let material_grad_sign = if pos.side_to_move() == Color::Black { 1.0 } else { -1.0 };
 
-            // d(loss)/d(raw) = d(loss)/d(weight) * d(weight)/d(raw)
             let d_loss_d_weight = error_grad_material * raw_material_score * material_grad_sign;
-            
-            let k = if self.max_gradient <= 0.0 {
-                1.0 // 旧来の挙動
-            } else {
-                (MAX_MATERIAL_WEIGHT * 0.25) / self.max_gradient
-            };
-
+            let k = if self.max_gradient <= 0.0 { 1.0 } else { (MAX_MATERIAL_WEIGHT * 0.25) / self.max_gradient };
             let sigmoid_input = self.material_weight_raw / k;
             let sigmoid_val = 1.0 / (1.0 + (-sigmoid_input).exp());
             let d_sigmoid_d_input = sigmoid_val * (1.0 - sigmoid_val);
             let d_weight_d_raw = (MAX_MATERIAL_WEIGHT / k) * d_sigmoid_d_input;
-
             material_weight_raw_grad += d_loss_d_weight * d_weight_d_raw;
 
             let (board_counts, hand_counts) = get_piece_counts(pos);
-            for i in 0..NUM_BOARD_PIECE_VALUES {
-                board_piece_values_grads[i] += error_grad_material * material_weight * (board_counts[i] as f32) * material_grad_sign;
-            }
+            let mut hand_material_for_grad = 0.0;
             for i in 0..NUM_HAND_PIECE_VALUES {
-                hand_piece_values_grads[i] += error_grad_material * material_weight * (hand_counts[i] as f32) * material_grad_sign;
+                if let Some(board_idx) = hand_kind_to_board_index(ALL_HAND_PIECES[i]) {
+                    hand_material_for_grad += (hand_counts[i] as f32) * self.board_piece_values[board_idx];
+                }
+            }
+
+            let d_C_d_raw = 1.0 / (1.0 + (-self.hand_value_multiplier_raw).exp()); // sigmoid
+            let d_loss_d_C = error_grad_material * material_weight * hand_material_for_grad * material_grad_sign;
+            hand_value_multiplier_raw_grad += d_loss_d_C * d_C_d_raw;
+
+            for i in 0..NUM_BOARD_PIECE_VALUES {
+                let mut hand_count_for_board_piece = 0;
+                if let Some(hand_idx) = board_index_to_hand_index(i) {
+                    hand_count_for_board_piece = hand_counts[hand_idx];
+                }
+                let total_count = (board_counts[i] as f32) + hand_value_multiplier * (hand_count_for_board_piece as f32);
+                board_piece_values_grads[i] += error_grad_material * material_weight * total_count * material_grad_sign;
             }
         }
 
-        // --- パラメータ更新 ---
         self.bias -= self.eta * bias_grad;
         for i in 0..MAX_FEATURES {
             self.w[i] -= self.eta * w_grads[i];
@@ -338,9 +337,7 @@ impl SparseModel {
         for i in 0..NUM_BOARD_PIECE_VALUES {
             self.board_piece_values[i] -= self.eta * board_piece_values_grads[i];
         }
-        for i in 0..NUM_HAND_PIECE_VALUES {
-            self.hand_piece_values[i] -= self.eta * hand_piece_values_grads[i];
-        }
+        self.hand_value_multiplier_raw -= self.eta * hand_value_multiplier_raw_grad;
         self.material_weight_raw -= self.eta * material_weight_raw_grad;
 
         let mse = total_loss / m;
@@ -349,12 +346,10 @@ impl SparseModel {
 }
 
 fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color) -> Option<usize> {
-    // 色を正規化: 現在の手番のプレイヤーを「自分(Black)」、相手を「敵(White)」とする
     let normalized_color = if piece.color() == turn { Color::Black } else { Color::White };
     let color_offset = if normalized_color == Color::Black { 0 } else { 1 };
 
     if let Some(sq) = sq {
-        // 盤上の駒の位置を正規化: 手番が後手なら盤面を180度回転
         let normalized_sq = if turn == Color::Black { sq } else { sq.flip() };
         if let Some(kind_index) = board_kind_to_index(piece.piece_kind()) {
             let id = (color_offset * NUM_BOARD_PIECE_KINDS * NUM_SQUARES)
@@ -365,7 +360,6 @@ fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color)
             None
         }
     } else {
-        // 持ち駒
         let board_pieces_total = NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2;
         if let Some(kind_offset) = hand_kind_to_offset(piece.piece_kind()) {
             let id = board_pieces_total
@@ -382,7 +376,6 @@ fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color)
 pub fn extract_kpp_features(pos: &shogi_core::Position) -> Vec<usize> {
     let turn = pos.side_to_move();
 
-    // 手番側の王の位置を探す
     let king_sq = match (0..81).find_map(|i| {
         Square::from_u8(i as u8 + 1).and_then(|sq| {
             pos.piece_at(sq).and_then(|p| {
@@ -401,7 +394,6 @@ pub fn extract_kpp_features(pos: &shogi_core::Position) -> Vec<usize> {
         }
     };
 
-    // 王の位置を正規化
     let normalized_king_sq = if turn == Color::Black { king_sq } else { king_sq.flip() };
     let king_sq_index = normalized_king_sq.index() as usize;
 
@@ -450,58 +442,44 @@ pub fn get_piece_counts(position: &shogi_core::Position) -> ([i8; NUM_BOARD_PIEC
     let mut board_counts: [i8; NUM_BOARD_PIECE_VALUES] = [0; NUM_BOARD_PIECE_VALUES];
     let mut hand_counts: [i8; NUM_HAND_PIECE_VALUES] = [0; NUM_HAND_PIECE_VALUES];
 
-    // 各駒種と色についてBitboardを取得し、count()メソッドで駒数を数える
-
-    // 黒番の駒
-    for piece_kind in PieceKind::all() { // PieceKindの全列挙を想定
-        if piece_kind == PieceKind::King {
-            continue;
-        }
-        let piece = Piece::new(piece_kind, Color::Black);
-        // Position::piece_bitboard が PartialPosition::piece_bitboard を呼び出すため、これは有効なパスです
-        let count = position.piece_bitboard(piece).count();
-        if let Some(index) = board_kind_to_index(piece.piece_kind()) {
-            board_counts[index] += count as i8;
+    for piece_kind in PieceKind::all() {
+        if piece_kind == PieceKind::King { continue; }
+        if let Some(index) = board_kind_to_index(piece_kind) {
+            let black_count = position.piece_bitboard(Piece::new(piece_kind, Color::Black)).count();
+            let white_count = position.piece_bitboard(Piece::new(piece_kind, Color::White)).count();
+            board_counts[index] = (black_count as i8) - (white_count as i8);
         }
     }
 
-    // 白番の駒
-    for piece_kind in PieceKind::all() { // PieceKindの全列挙を想定
-        if piece_kind == PieceKind::King {
-            continue;
-        }
-        let piece = Piece::new(piece_kind, Color::White);
-        // Position::piece_bitboard が PartialPosition::piece_bitboard を呼び出すため、これは有効なパスです
-        let count = position.piece_bitboard(piece).count();
-        if let Some(index) = board_kind_to_index(piece.piece_kind()) {
-            board_counts[index] -= count as i8;
-        }
-    }
-
-    // 持ち駒のカウント (既存の実装を維持)
-    for color in &[Color::Black, Color::White] {
-        let hand = position.hand_of_a_player(*color);
-        for piece_kind in ALL_HAND_PIECES.iter() {
-            if let Some(count) = hand.count(*piece_kind) {
-                if let Some(index) = hand_kind_to_index(*piece_kind) {
-                     if *color == Color::Black {
-                        hand_counts[index] += count as i8;
-                    } else {
-                        hand_counts[index] -= count as i8;
-                    }
-                }
-            }
-        }
+    for (index, &piece_kind) in ALL_HAND_PIECES.iter().enumerate() {
+        let black_count = position.hand_of_a_player(Color::Black).count(piece_kind).unwrap_or(0);
+        let white_count = position.hand_of_a_player(Color::White).count(piece_kind).unwrap_or(0);
+        hand_counts[index] = (black_count as i8) - (white_count as i8);
     }
     (board_counts, hand_counts)
 }
 
+fn hand_kind_to_board_index(kind: PieceKind) -> Option<usize> {
+    board_kind_to_index(kind)
+}
 
-// 駒得を計算する関数
+fn board_index_to_hand_index(index: usize) -> Option<usize> {
+    match index {
+        0 => Some(0), // Pawn
+        1 => Some(1), // Lance
+        2 => Some(2), // Knight
+        3 => Some(3), // Silver
+        4 => Some(4), // Gold
+        5 => Some(5), // Bishop
+        6 => Some(6), // Rook
+        _ => None,
+    }
+}
+
 fn calculate_material_score(
     position: &shogi_core::Position, 
     board_piece_values: &[f32; NUM_BOARD_PIECE_VALUES], 
-    hand_piece_values: &[f32; NUM_HAND_PIECE_VALUES]
+    hand_value_multiplier: f32
 ) -> f32 {
     let mut score = 0.0;
     let (board_counts, hand_counts) = get_piece_counts(position);
@@ -509,7 +487,9 @@ fn calculate_material_score(
         score += board_counts[i] as f32 * board_piece_values[i];
     }
     for i in 0..NUM_HAND_PIECE_VALUES {
-        score += hand_counts[i] as f32 * hand_piece_values[i];
+        if let Some(board_idx) = hand_kind_to_board_index(ALL_HAND_PIECES[i]) {
+            score += hand_counts[i] as f32 * board_piece_values[board_idx] * hand_value_multiplier;
+        }
     }
     score
 }
@@ -539,41 +519,33 @@ mod tests {
     use super::*;
     use shogi_core::{Position, PieceKind, PartialPosition, Color};
 
-    // テスト用のヘルパー関数: 空のモデルを生成
     fn create_test_model() -> SparseModel {
         let mut model = SparseModel::new(0.0, 0.5, 1.0);
-        // テスト用にバイアスと重みを0に初期化
         model.bias = 0.0;
         model.w = vec![0.0; MAX_FEATURES];
-        // 駒の価値を標準的なものに設定
         model.board_piece_values = [
-            1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0, // 通常駒
-            6.0, 6.0, 6.0, 6.0, 10.0, 12.0,     // 成り駒
+            1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0,
+            6.0, 6.0, 6.0, 6.0, 10.0, 12.0,
         ];
-        model.hand_piece_values = [1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0];
-        model.material_weight_raw = 10.0; // material_weightがほぼMAX_MATERIAL_WEIGHTになる���うに設定
+        model.hand_value_multiplier_raw = 0.0; // multiplier will be > 1.0
+        model.material_weight_raw = 10.0;
         model
     }
 
     #[test]
     fn test_initial_position_evaluation() {
-        // 1. 初期局面の評価値テスト
         let model = create_test_model();
         let pos = Position::default();
         let features = extract_kpp_features(&pos);
         let score = model.predict(&pos, &features);
-
-        // 初期局面ではKPP特徴量はほぼ対称で、駒得もないため、評価値はバイアス(0)に近いはず
         assert!(score.abs() < 0.1, "Initial score should be close to 0, but was {}", score);
     }
 
     #[test]
     fn test_material_advantage_evaluation() {
-        // 2. 駒得がある局面の評価値テスト
         let model = create_test_model();
         let mut partial_pos = PartialPosition::startpos();
 
-        // 先手に飛車と角を持たせる
         let black_hand = partial_pos.hand_of_a_player_mut(Color::Black);
         *black_hand = black_hand.added(PieceKind::Rook).unwrap();
         *black_hand = black_hand.added(PieceKind::Bishop).unwrap();
@@ -583,28 +555,25 @@ mod tests {
         let features = extract_kpp_features(&pos);
         let score = model.predict(&pos, &features);
 
-        // 駒得を計算
         let material_weight = model.get_material_weight();
-        let expected_material_score = material_weight * (model.hand_piece_values[hand_kind_to_index(PieceKind::Rook).unwrap()] + model.hand_piece_values[hand_kind_to_index(PieceKind::Bishop).unwrap()]);
+        let hand_multiplier = model.get_hand_value_multiplier();
+        let rook_val = model.board_piece_values[board_kind_to_index(PieceKind::Rook).unwrap()];
+        let bishop_val = model.board_piece_values[board_kind_to_index(PieceKind::Bishop).unwrap()];
+        let expected_material_score = material_weight * (rook_val + bishop_val) * hand_multiplier;
         
-        // KPPの特徴によるスコアは無視して、駒得のスコアが支配的であることを確認
-        // KPPのスコアは初期局面では0に近いため、駒得スコアが評価値の大部分を占めるはず
         assert!(score > expected_material_score * 0.9, "Score ({}) should strongly reflect material advantage ({})", score, expected_material_score);
     }
 
     #[test]
     fn test_evaluation_is_from_side_to_move_perspective() {
-        // 3. 手番による評価値の変化テスト
         let model = create_test_model();
         
-        // 非対称な局面を作成（先手の歩が一つ多い）
         let mut partial_pos_black = PartialPosition::startpos();
         let black_hand = partial_pos_black.hand_of_a_player_mut(Color::Black);
         *black_hand = black_hand.added(PieceKind::Pawn).unwrap();
         
         let pos_black_turn = Position::arbitrary_position(partial_pos_black.clone());
 
-        // 同じ局面で手番を後手にする
         let mut partial_pos_white = partial_pos_black;
         partial_pos_white.side_to_move_set(Color::White);
         let pos_white_turn = Position::arbitrary_position(partial_pos_white);
@@ -615,8 +584,6 @@ mod tests {
         let features_white = extract_kpp_features(&pos_white_turn);
         let score_white_turn = model.predict(&pos_white_turn, &features_white);
         
-        // 後手番の評価値は、先手番の評価値の符号を反転させたものに近いはず
-        // KPP特徴量が変わるため完全な反転にはならないが、絶対値はほぼ等しくなる
         assert!((score_black_turn + score_white_turn).abs() < 0.1, "White's score ({}) should be close to the negative of Black's score ({})", score_white_turn, score_black_turn);
     }
 }
