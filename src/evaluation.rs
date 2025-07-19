@@ -93,14 +93,16 @@ pub struct SparseModel {
     pub w: Vec<f32>,
     pub bias: f32,
     pub kpp_eta: f32,
+    pub l2_lambda: f32,
 }
 
 impl SparseModel {
-    pub fn new(kpp_eta: f32) -> Self {
+    pub fn new(kpp_eta: f32, l2_lambda: f32) -> Self {
         Self {
             w: vec![0.0; MAX_FEATURES],
             bias: 0.0,
             kpp_eta,
+            l2_lambda,
         }
     }
 
@@ -204,7 +206,7 @@ impl SparseModel {
 
         self.bias -= self.kpp_eta * bias_grad;
         for i in 0..MAX_FEATURES {
-            self.w[i] -= self.kpp_eta * w_grads[i];
+            self.w[i] -= self.kpp_eta * (w_grads[i] + self.l2_lambda * self.w[i]);
         }
         
         total_loss / m
@@ -312,7 +314,7 @@ pub struct SparseModelEvaluator {
 
 impl SparseModelEvaluator {
     pub fn new(weight_path: &Path) -> Result<Self> {
-        let mut model = SparseModel::new(0.0);
+        let mut model = SparseModel::new(0.0, 0.0); // eta and lambda are not used in evaluation
         model.load(weight_path)?;
         Ok(SparseModelEvaluator { model })
     }
@@ -332,7 +334,7 @@ mod tests {
     use shogi_core::{Position, PieceKind, PartialPosition, Color};
 
     fn create_test_model() -> SparseModel {
-        let mut model = SparseModel::new(0.01);
+        let mut model = SparseModel::new(0.01, 0.0);
         model.bias = 0.1;
         model.w = vec![0.0; MAX_FEATURES];
         model

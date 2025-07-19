@@ -12,6 +12,7 @@ mod evaluation;
 use evaluation::{SparseModel, extract_kpp_features};
 
 const KPP_LEARNING_RATE: f32 = 0.01;
+const L2_LAMBDA: f32 = 1e-4;
 const BATCH_SIZE: usize = 65536;
 
 const REWARD_GAIN: f32 = 25.0;
@@ -168,7 +169,7 @@ fn main() -> Result<()> {
     let weight_path = Path::new("./weights.binary");
     let mse_graph_path = "mse_graph.png";
 
-    let mut model = SparseModel::new(KPP_LEARNING_RATE);
+    let mut model = SparseModel::new(KPP_LEARNING_RATE, L2_LAMBDA);
 
     if weight_path.exists() {
         println!("重みファイルを読み込んでいます...");
