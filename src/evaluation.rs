@@ -51,7 +51,7 @@ const ALL_HAND_PIECES: [PieceKind; 7] = [
 
 const NUM_BOARD_PIECE_VALUES: usize = 13; // King is not included
 const NUM_HAND_PIECE_VALUES: usize = 7;
-const MAX_MATERIAL_WEIGHT: f32 = 2.0;
+const MAX_MATERIAL_WEIGHT: f32 = 0.01;
 
 fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
     match kind {
@@ -134,10 +134,10 @@ impl SparseModel {
             w: vec![0.0; MAX_FEATURES],
             bias: 0.0,
             board_piece_values: [
-                100.0, 300.0, 350.0, 500.0, 550.0, 800.0, 1000.0, 600.0, 600.0, 600.0, 600.0,
-                1000.0, 1200.0,
+                1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0, 6.0, 6.0, 6.0, 6.0,
+                10.0, 12.0,
             ],
-            hand_piece_values: [100.0, 300.0, 350.0, 500.0, 550.0, 800.0, 1000.0],
+            hand_piece_values: [1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0],
             material_weight_raw: INITIAL_MATERIAL_WEIGHT_RAW,
             eta,
         }
