@@ -124,10 +124,11 @@ pub struct SparseModel {
     pub hand_piece_values: [f32; NUM_HAND_PIECE_VALUES],
     pub material_weight_raw: f32,
     pub eta: f32,
+    pub material_loss_ratio: f32,
 }
 
 impl SparseModel {
-    pub fn new(eta: f32) -> Self {
+    pub fn new(eta: f32, material_loss_ratio: f32) -> Self {
         const INITIAL_MATERIAL_WEIGHT_RAW: f32 = 0.0;
 
         Self {
@@ -140,6 +141,7 @@ impl SparseModel {
             hand_piece_values: [1.0, 3.0, 3.5, 5.0, 5.5, 8.0, 10.0],
             material_weight_raw: INITIAL_MATERIAL_WEIGHT_RAW,
             eta,
+            material_loss_ratio,
         }
     }
 
@@ -249,54 +251,78 @@ impl SparseModel {
         }
         let mut total_loss = 0.0;
 
+        // KPPの勾配
         let mut bias_grad = 0.0;
         let mut w_grads = vec![0.0; MAX_FEATURES];
+
+        // 駒得の勾配
         let mut board_piece_values_grads = [0.0; NUM_BOARD_PIECE_VALUES];
         let mut hand_piece_values_grads = [0.0; NUM_HAND_PIECE_VALUES];
         let mut material_weight_raw_grad = 0.0;
 
         for (pos, kpp_features, y_true) in batch.iter() {
-            let y_pred = self.predict(pos, kpp_features);
-            let error = y_pred - y_true;
-            total_loss += error * error;
-
-            let error_grad = 2.0 * error / m;
-
-            bias_grad += error_grad;
-
+            // --- 予測値の計算 ---
+            // KPP部分
+            let mut kpp_score = self.bias;
             for &i in kpp_features {
                 if i < MAX_FEATURES {
-                    w_grads[i] += error_grad;
+                    kpp_score += self.w[i];
+                }
+            }
+            // 駒得部分
+            let material_weight = self.get_material_weight();
+            let raw_material_score = calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
+            let material_score = material_weight * raw_material_score;
+            let material_score_for_turn = if pos.side_to_move() == Color::Black { material_score } else { -material_score };
+
+            let y_pred = kpp_score + material_score_for_turn;
+            total_loss += (y_pred - y_true) * (y_pred - y_true);
+
+            // --- 勾配計算 ---
+            // KPP部分
+            let y_kpp_true = y_true * (1.0 - self.material_loss_ratio);
+            let error_kpp = kpp_score - y_kpp_true;
+            let error_grad_kpp = 2.0 * error_kpp / m;
+            
+            bias_grad += error_grad_kpp;
+            for &i in kpp_features {
+                if i < MAX_FEATURES {
+                    w_grads[i] += error_grad_kpp;
                 }
             }
 
-            let material_weight = self.get_material_weight();
-            let material_score = calculate_material_score(pos, &self.board_piece_values, &self.hand_piece_values);
-            
-            // Chain rule for material_weight_raw
+            // 駒���部分
+            let y_material_true = y_true * self.material_loss_ratio;
+            let error_material = material_score_for_turn - y_material_true;
+            let error_grad_material = 2.0 * error_material / m;
+
+            let material_grad_sign = if pos.side_to_move() == Color::Black { 1.0 } else { -1.0 };
+
             // d(loss)/d(raw) = d(loss)/d(weight) * d(weight)/d(raw)
-            let d_loss_d_weight = error_grad * material_score;
+            let d_loss_d_weight = error_grad_material * raw_material_score * material_grad_sign;
             let sigmoid_val = material_weight / MAX_MATERIAL_WEIGHT;
             let d_weight_d_raw = MAX_MATERIAL_WEIGHT * sigmoid_val * (1.0 - sigmoid_val);
             material_weight_raw_grad += d_loss_d_weight * d_weight_d_raw;
 
             let (board_counts, hand_counts) = get_piece_counts(pos);
-            for i in 1..NUM_BOARD_PIECE_VALUES { // Skip Pawn
-                board_piece_values_grads[i] += error_grad * material_weight * board_counts[i] as f32;
+            for i in 0..NUM_BOARD_PIECE_VALUES {
+                board_piece_values_grads[i] += error_grad_material * material_weight * (board_counts[i] as f32) * material_grad_sign;
             }
-            for i in 1..NUM_HAND_PIECE_VALUES { // Skip Pawn
-                hand_piece_values_grads[i] += error_grad * material_weight * hand_counts[i] as f32;
+            for i in 0..NUM_HAND_PIECE_VALUES {
+                hand_piece_values_grads[i] += error_grad_material * material_weight * (hand_counts[i] as f32) * material_grad_sign;
             }
         }
 
+        // --- パラメータ更新 ---
         self.bias -= self.eta * bias_grad;
         for i in 0..MAX_FEATURES {
             self.w[i] -= self.eta * w_grads[i];
         }
-        for i in 1..NUM_BOARD_PIECE_VALUES { // Skip Pawn
+        
+        for i in 0..NUM_BOARD_PIECE_VALUES {
             self.board_piece_values[i] -= self.eta * board_piece_values_grads[i];
         }
-        for i in 1..NUM_HAND_PIECE_VALUES { // Skip Pawn
+        for i in 0..NUM_HAND_PIECE_VALUES {
             self.hand_piece_values[i] -= self.eta * hand_piece_values_grads[i];
         }
         self.material_weight_raw -= self.eta * material_weight_raw_grad;
@@ -478,7 +504,7 @@ pub struct SparseModelEvaluator {
 
 impl SparseModelEvaluator {
     pub fn new(weight_path: &Path) -> Result<Self> {
-        let mut model = SparseModel::new(0.0);
+        let mut model = SparseModel::new(0.0, 0.5); // テスト用にデフォルト値を追加
         model.load(weight_path)?;
         Ok(SparseModelEvaluator { model })
     }
@@ -499,7 +525,7 @@ mod tests {
 
     // テスト用のヘルパー関数: 空のモデルを生成
     fn create_test_model() -> SparseModel {
-        let mut model = SparseModel::new(0.0);
+        let mut model = SparseModel::new(0.0, 0.5);
         // テスト用にバイアスと重みを0に初期化
         model.bias = 0.0;
         model.w = vec![0.0; MAX_FEATURES];
