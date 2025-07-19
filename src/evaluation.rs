@@ -358,8 +358,8 @@ mod tests {
 
         let mut partial_pos_black = PartialPosition::startpos();
         // A move that is unlikely to trigger feature 12345, just to change the turn
-        partial_pos_black.piece_set(Square::new(7, 6).unwrap(), Piece::new(PieceKind::Pawn, Color::Black));
-        partial_pos_black.piece_set(Square::new(7, 7).unwrap(), shogi_core::Piece::EMPTY);
+        partial_pos_black.piece_set(Square::new(7, 6).unwrap(), Some(Piece::new(PieceKind::Pawn, Color::Black)));
+        partial_pos_black.piece_set(Square::new(7, 7).unwrap(), None);
         
         let pos_black_turn = Position::arbitrary_position(partial_pos_black.clone());
 
