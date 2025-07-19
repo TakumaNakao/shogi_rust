@@ -323,7 +323,7 @@ impl SparseModel {
             let d_loss_d_C = error_grad_material * material_weight * hand_material_for_grad * material_grad_sign;
             hand_value_multiplier_raw_grad += d_loss_d_C * d_C_d_raw;
 
-            for i in 0..NUM_BOARD_PIECE_VALUES {
+            for i in 1..NUM_BOARD_PIECE_VALUES { // Skip Pawn
                 let mut hand_count_for_board_piece = 0;
                 if let Some(hand_idx) = board_index_to_hand_index(i) {
                     hand_count_for_board_piece = hand_counts[hand_idx];
@@ -338,7 +338,7 @@ impl SparseModel {
             self.w[i] -= self.eta * w_grads[i];
         }
         
-        for i in 0..NUM_BOARD_PIECE_VALUES {
+        for i in 1..NUM_BOARD_PIECE_VALUES { // Skip Pawn
             self.board_piece_values[i] -= self.eta * board_piece_values_grads[i];
         }
         self.hand_value_multiplier_raw -= self.eta * hand_value_multiplier_raw_grad;
