@@ -123,13 +123,14 @@ pub struct SparseModel {
     pub board_piece_values: [f32; NUM_BOARD_PIECE_VALUES],
     pub hand_value_multiplier_raw: f32,
     pub material_weight_raw: f32,
-    pub eta: f32,
+    pub kpp_eta: f32,
+    pub material_eta: f32,
     pub material_loss_ratio: f32,
     pub max_gradient: f32,
 }
 
 impl SparseModel {
-    pub fn new(eta: f32, material_loss_ratio: f32, max_gradient: f32) -> Self {
+    pub fn new(kpp_eta: f32, material_eta: f32, material_loss_ratio: f32, max_gradient: f32) -> Self {
         const INITIAL_MATERIAL_WEIGHT_RAW: f32 = 0.0;
         const INITIAL_HAND_VALUE_MULTIPLIER_RAW: f32 = 0.0;
 
@@ -142,7 +143,8 @@ impl SparseModel {
             ],
             hand_value_multiplier_raw: INITIAL_HAND_VALUE_MULTIPLIER_RAW,
             material_weight_raw: INITIAL_MATERIAL_WEIGHT_RAW,
-            eta,
+            kpp_eta,
+            material_eta,
             material_loss_ratio,
             max_gradient,
         }
@@ -333,16 +335,16 @@ impl SparseModel {
             }
         }
 
-        self.bias -= self.eta * bias_grad;
+        self.bias -= self.kpp_eta * bias_grad;
         for i in 0..MAX_FEATURES {
-            self.w[i] -= self.eta * w_grads[i];
+            self.w[i] -= self.kpp_eta * w_grads[i];
         }
         
         for i in 1..NUM_BOARD_PIECE_VALUES { // Skip Pawn
-            self.board_piece_values[i] -= self.eta * board_piece_values_grads[i];
+            self.board_piece_values[i] -= self.material_eta * board_piece_values_grads[i];
         }
-        self.hand_value_multiplier_raw -= self.eta * hand_value_multiplier_raw_grad;
-        self.material_weight_raw -= self.eta * material_weight_raw_grad;
+        self.hand_value_multiplier_raw -= self.material_eta * hand_value_multiplier_raw_grad;
+        self.material_weight_raw -= self.material_eta * material_weight_raw_grad;
 
         (total_loss / m, kpp_loss / m, material_loss / m)
     }
@@ -503,7 +505,7 @@ pub struct SparseModelEvaluator {
 
 impl SparseModelEvaluator {
     pub fn new(weight_path: &Path) -> Result<Self> {
-        let mut model = SparseModel::new(0.0, 0.5, 1.0);
+        let mut model = SparseModel::new(0.0, 0.0, 0.5, 1.0);
         model.load(weight_path)?;
         Ok(SparseModelEvaluator { model })
     }
@@ -523,7 +525,7 @@ mod tests {
     use shogi_core::{Position, PieceKind, PartialPosition, Color};
 
     fn create_test_model() -> SparseModel {
-        let mut model = SparseModel::new(0.0, 0.5, 1.0);
+        let mut model = SparseModel::new(0.0, 0.0, 0.5, 1.0);
         model.bias = 0.0;
         model.w = vec![0.0; MAX_FEATURES];
         model.board_piece_values = [

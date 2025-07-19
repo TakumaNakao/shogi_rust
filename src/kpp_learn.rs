@@ -11,9 +11,10 @@ use plotters::prelude::*;
 mod evaluation;
 use evaluation::{SparseModel, extract_kpp_features};
 
-const LEARNING_RATE: f32 = 0.01;
+const KPP_LEARNING_RATE: f32 = 0.01;
+const MATERIAL_LEARNING_RATE: f32 = 1.0;
 const MATERIAL_LOSS_RATIO: f32 = 0.5;
-const MAX_GRADIENT: f32 = 0.01;
+const MAX_GRADIENT: f32 = 1.0;
 const BATCH_SIZE: usize = 65536;
 
 const REWARD_GAIN: f32 = 25.0;
@@ -170,7 +171,7 @@ fn main() -> Result<()> {
     let weight_path = Path::new("./weights.binary");
     let mse_graph_path = "mse_graph.png";
 
-    let mut model = SparseModel::new(LEARNING_RATE, MATERIAL_LOSS_RATIO, MAX_GRADIENT);
+    let mut model = SparseModel::new(KPP_LEARNING_RATE, MATERIAL_LEARNING_RATE, MATERIAL_LOSS_RATIO, MAX_GRADIENT);
 
     if weight_path.exists() {
         println!("重みファイルを読み込んでいます...");
@@ -218,7 +219,7 @@ fn main() -> Result<()> {
             batch.clear();
             let elapsed_time_batch = start_time_batch.elapsed();
             println!("ファイル: {}/{}, バッチ {}: MSE(Total={:.6}, KPP={:.6}, Material={:.6}), 時間: {:?}", 
-                file_count, csa_files.len(), batch_count, mse, kpp_mse, material_mse, elapsed_time_batch);
+                file_count, csa_files.len(), batch_count, mse / 4000000.0, kpp_mse, material_mse, elapsed_time_batch);
             mse_history.push((batch_count, mse));
             draw_mse_graph(&mse_history, mse_graph_path)?;
         }
@@ -229,7 +230,7 @@ fn main() -> Result<()> {
         let (mse, kpp_mse, material_mse) = model.update_batch(&batch);
         let elapsed_time_batch = start_time_batch.elapsed();
         println!("ファイル: {}/{}, バッチ {}: MSE(Total={:.6}, KPP={:.6}, Material={:.6}), 時間: {:?}", 
-            file_count, csa_files.len(), batch_count, mse, kpp_mse, material_mse, elapsed_time_batch);
+            file_count, csa_files.len(), batch_count, mse / 4000000.0, kpp_mse, material_mse, elapsed_time_batch);
         mse_history.push((batch_count, mse));
         draw_mse_graph(&mse_history, mse_graph_path)?;
     }
