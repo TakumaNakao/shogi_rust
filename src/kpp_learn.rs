@@ -62,8 +62,8 @@ fn process_csa_file(path: &Path, batch: &mut Vec<(Position, Vec<usize>, f32)>) -
     };
 
     let final_label = match winner {
-        Some(csa::Color::Black) => 1.0,
-        Some(csa::Color::White) => -1.0,
+        Some(csa::Color::Black) => 2000.0,
+        Some(csa::Color::White) => -2000.0,
         None => return Ok(()), // Skip games with no winner
     };
 
