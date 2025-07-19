@@ -12,7 +12,7 @@ mod evaluation;
 use evaluation::{SparseModel, extract_kpp_features};
 
 const LEARNING_RATE: f32 = 0.01;
-const MATERIAL_LOSS_RATIO: f32 = 0.6;
+const MATERIAL_LOSS_RATIO: f32 = 0.5;
 const MAX_GRADIENT: f32 = 0.01;
 const BATCH_SIZE: usize = 65536;
 
@@ -213,11 +213,12 @@ fn main() -> Result<()> {
         
         if batch.len() >= BATCH_SIZE {
             let start_time_batch = Instant::now();
-            let mse = model.update_batch(&batch);
+            let (mse, kpp_mse, material_mse) = model.update_batch(&batch);
             batch_count += 1;
             batch.clear();
             let elapsed_time_batch = start_time_batch.elapsed();
-            println!("処理済みファイル数: {} / {} , バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", file_count, csa_files.len(), batch_count, mse, elapsed_time_batch);
+            println!("ファイル: {}/{}, バッチ {}: MSE(Total={:.6}, KPP={:.6}, Material={:.6}), 時間: {:?}", 
+                file_count, csa_files.len(), batch_count, mse, kpp_mse, material_mse, elapsed_time_batch);
             mse_history.push((batch_count, mse));
             draw_mse_graph(&mse_history, mse_graph_path)?;
         }
@@ -225,9 +226,10 @@ fn main() -> Result<()> {
 
     if !batch.is_empty() {
         let start_time_batch = Instant::now();
-        let mse = model.update_batch(&batch);
+        let (mse, kpp_mse, material_mse) = model.update_batch(&batch);
         let elapsed_time_batch = start_time_batch.elapsed();
-        println!("処理済みファイル数: {} / {} , バッチ {}: 平均二乗誤差 = {:.6} , 処理時間: {:?}", file_count, csa_files.len(), batch_count, mse, elapsed_time_batch);
+        println!("ファイル: {}/{}, バッチ {}: MSE(Total={:.6}, KPP={:.6}, Material={:.6}), 時間: {:?}", 
+            file_count, csa_files.len(), batch_count, mse, kpp_mse, material_mse, elapsed_time_batch);
         mse_history.push((batch_count, mse));
         draw_mse_graph(&mse_history, mse_graph_path)?;
     }

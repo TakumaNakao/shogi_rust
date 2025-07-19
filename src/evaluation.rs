@@ -251,12 +251,14 @@ impl SparseModel {
         prediction
     }
 
-    pub fn update_batch(&mut self, batch: &[(shogi_core::Position, Vec<usize>, f32)]) -> f32 {
+    pub fn update_batch(&mut self, batch: &[(shogi_core::Position, Vec<usize>, f32)]) -> (f32, f32, f32) {
         let m = batch.len() as f32;
         if m == 0.0 {
-            return 0.0;
+            return (0.0, 0.0, 0.0);
         }
         let mut total_loss = 0.0;
+        let mut kpp_loss = 0.0;
+        let mut material_loss = 0.0;
 
         let mut bias_grad = 0.0;
         let mut w_grads = vec![0.0; MAX_FEATURES];
@@ -284,6 +286,7 @@ impl SparseModel {
 
             let y_kpp_true = y_true * (1.0 - self.material_loss_ratio);
             let error_kpp = kpp_score - y_kpp_true;
+            kpp_loss += error_kpp * error_kpp;
             let error_grad_kpp = 2.0 * error_kpp / m;
             
             bias_grad += error_grad_kpp;
@@ -295,6 +298,7 @@ impl SparseModel {
 
             let y_material_true = y_true * self.material_loss_ratio;
             let error_material = material_score_for_turn - y_material_true;
+            material_loss += error_material * error_material;
             let error_grad_material = 2.0 * error_material / m;
 
             let material_grad_sign = if pos.side_to_move() == Color::Black { 1.0 } else { -1.0 };
@@ -340,8 +344,7 @@ impl SparseModel {
         self.hand_value_multiplier_raw -= self.eta * hand_value_multiplier_raw_grad;
         self.material_weight_raw -= self.eta * material_weight_raw_grad;
 
-        let mse = total_loss / m;
-        mse
+        (total_loss / m, kpp_loss / m, material_loss / m)
     }
 }
 
