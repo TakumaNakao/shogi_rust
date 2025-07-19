@@ -1,4 +1,4 @@
-use shogi_core::{Color, Move, Piece, PieceKind, Position};
+use shogi_core::{Color, Move, Piece, PieceKind, Position, Square};
 use plotters::prelude::*;
 
 pub fn get_piece_value(piece_kind: PieceKind) -> i32 {
@@ -122,4 +122,57 @@ pub fn draw_evaluation_graph(sente_data: &[(usize, f32)], gote_data: &[(usize, f
 
     root.present()?;
     Ok(())
+}
+
+// --- USI Parsing/Formatting Helpers ---
+pub fn parse_usi_move(s: &str) -> Option<Move> {
+    if s.len() < 4 || s.len() > 5 { return None; }
+    if s.chars().nth(1) == Some('*') {
+        let piece_char = s.chars().nth(0)?;
+        let piece_kind = match piece_char {
+            'P' => PieceKind::Pawn, 'L' => PieceKind::Lance, 'N' => PieceKind::Knight,
+            'S' => PieceKind::Silver, 'G' => PieceKind::Gold, 'B' => PieceKind::Bishop,
+            'R' => PieceKind::Rook,
+            _ => return None,
+        };
+        let to_sq = parse_square(&s[2..4])?;
+        return Some(Move::Drop { piece: Piece::new(piece_kind, Color::Black), to: to_sq });
+    }
+    let from_sq = parse_square(&s[0..2])?;
+    let to_sq = parse_square(&s[2..4])?;
+    let promote = s.len() == 5 && s.chars().nth(4) == Some('+');
+    Some(Move::Normal { from: from_sq, to: to_sq, promote })
+}
+pub fn parse_square(s: &str) -> Option<Square> {
+    let file = s.chars().nth(0)?.to_digit(10)? as u8;
+    let rank_char = s.chars().nth(1)?;
+    let rank = match rank_char {
+        'a' => 1, 'b' => 2, 'c' => 3, 'd' => 4, 'e' => 5, 'f' => 6, 'g' => 7, 'h' => 8, 'i' => 9,
+        _ => return None,
+    };
+    Square::new(file, rank)
+}
+pub fn format_move_usi(mv: Move) -> String {
+    match mv {
+        Move::Normal { from, to, promote } => {
+            format!("{}{}{}", format_square(from), format_square(to), if promote { "+" } else { "" })
+        }
+        Move::Drop { piece, to } => {
+            let piece_char = match piece.piece_kind() {
+                PieceKind::Pawn => 'P', PieceKind::Lance => 'L', PieceKind::Knight => 'N',
+                PieceKind::Silver => 'S', PieceKind::Gold => 'G', PieceKind::Bishop => 'B',
+                PieceKind::Rook => 'R',
+                _ => ' ',
+            };
+            format!("{}*{}", piece_char, format_square(to))
+        }
+    }
+}
+fn format_square(sq: Square) -> String {
+    let file = sq.file();
+    let rank = match sq.rank() {
+        1 => 'a', 2 => 'b', 3 => 'c', 4 => 'd', 5 => 'e', 6 => 'f', 7 => 'g', 8 => 'h', 9 => 'i',
+        _ => ' ',
+    };
+    format!("{}{}", file, rank)
 }
