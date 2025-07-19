@@ -202,6 +202,11 @@ impl SparseModel {
         }
 
         file.write_all(&buffer)?;
+        
+        println!("material_weight: {}, material_weight_raw: {}", self.get_material_weight(), self.material_weight_raw);
+        println!("board_piece_values: {:?}", self.board_piece_values);
+        println!("hand_piece_values: {:?}", self.hand_piece_values);
+        println!("Max W: {:?}", self.w.iter().cloned().max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)));
 
         Ok(())
     }
@@ -297,9 +302,6 @@ impl SparseModel {
         self.material_weight_raw -= self.eta * material_weight_raw_grad;
 
         let mse = total_loss / m;
-        println!("material_weight: {}, material_weight_raw: {}", self.get_material_weight(), self.material_weight_raw);
-        println!("board_piece_values: {:?}", self.board_piece_values);
-        println!("hand_piece_values: {:?}", self.hand_piece_values);
         mse
     }
 }
