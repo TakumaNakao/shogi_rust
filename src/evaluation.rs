@@ -132,7 +132,7 @@ pub struct SparseModel {
 impl SparseModel {
     pub fn new(kpp_eta: f32, material_eta: f32, material_loss_ratio: f32, max_gradient: f32) -> Self {
         const INITIAL_MATERIAL_WEIGHT_RAW: f32 = 0.0;
-        const INITIAL_HAND_VALUE_MULTIPLIER_RAW: f32 = 0.0;
+        const INITIAL_HAND_VALUE_MULTIPLIER_RAW: f32 = -10.0;
 
         Self {
             w: vec![0.0; MAX_FEATURES],
