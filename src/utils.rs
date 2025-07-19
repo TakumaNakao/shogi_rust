@@ -1,6 +1,23 @@
 use shogi_core::{Color, Move, Piece, PieceKind, Position};
 use plotters::prelude::*;
-use crate::evaluation::get_piece_value;
+
+pub fn get_piece_value(piece_kind: PieceKind) -> i32 {
+    use shogi_core::PieceKind::*;
+    match piece_kind {
+        Pawn => 100,
+        Lance => 300,
+        Knight => 300,
+        Silver => 500,
+        Gold => 600,
+        Bishop => 800,
+        Rook => 1000,
+        King => 20000,
+        ProPawn | ProLance | ProKnight => 400,
+        ProSilver => 600,
+        ProBishop => 1200,
+        ProRook => 1500,
+    }
+}
 
 pub fn flip_color(color: Color) -> Color {
     match color {

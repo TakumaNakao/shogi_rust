@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use shogi_core::{Color, Move, PieceKind, Square};
 use arrayvec::ArrayVec;
 use crate::position_hash::{ZOBRIST_KEYS, PIECE_KINDS, HAND_PIECE_KINDS, color_to_index};
-use crate::evaluation::get_piece_value;
+use crate::utils::get_piece_value;
 
 fn hash_move(mv: Move) -> u64 {
     match mv {

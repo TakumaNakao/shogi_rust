@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use shogi_core::{Move, Position, Square, Color, PieceKind, Bitboard};
-use crate::evaluation::{get_piece_value, Evaluator};
+use shogi_core::{Move, Position};
+use crate::evaluation::{Evaluator};
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
+use crate::utils::get_piece_value;
 use std::time::{Duration, Instant};
 
 const MAX_DEPTH: usize = 64;
