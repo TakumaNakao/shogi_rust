@@ -97,6 +97,16 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
     }
 
+    /// ある指し手が王手かどうかを判定します。
+    fn is_check(&self, position: &Position, mv: Move) -> bool {
+        // is_checkの判定のためにyasai::Positionを一時的に利用する
+        let mut yasai_pos = yasai::Position::new(position.inner().clone());
+        yasai_pos.do_move(mv);
+        // do_move後、手番が相手に移るため、in_check()は
+        // 相手玉が王手されているかを正しく判定します。
+        yasai_pos.in_check()
+    }
+
     pub fn quiescence_search( &mut self, position: &shogi_core::Position, mut alpha: f32, beta: f32, ) -> Option<f32> {
         if self.is_time_up() {
             return None;
@@ -113,11 +123,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let mut moves = yasai_pos.legal_moves();
         
         moves.retain(|m| {
-            if let Move::Normal { to, .. } = m {
-                position.piece_at(*to).is_some()
+            // 駒を取る手か、王手をかける手のみを静止探索の対象とする
+            let is_capture = if let Move::Normal { to, .. } = *m {
+                position.piece_at(to).is_some()
             } else {
                 false
-            }
+            };
+            is_capture || self.is_check(position, *m)
         });
 
         if moves.is_empty() {
