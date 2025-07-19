@@ -17,6 +17,8 @@ const BATCH_SIZE: usize = 65536;
 
 const REWARD_GAIN: f32 = 25.0;
 
+const WIN_SCORE: f32 = 100.0;
+
 fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     match csa_piece_type {
         csa::PieceType::Pawn => PieceKind::Pawn,
@@ -63,8 +65,8 @@ fn process_csa_file(path: &Path, batch: &mut Vec<(Position, Vec<usize>, f32)>) -
     };
 
     let final_label = match winner {
-        Some(csa::Color::Black) => 2000.0,
-        Some(csa::Color::White) => -2000.0,
+        Some(csa::Color::Black) => WIN_SCORE,
+        Some(csa::Color::White) => -WIN_SCORE,
         None => return Ok(()), // Skip games with no winner
     };
 
@@ -217,8 +219,8 @@ fn main() -> Result<()> {
             batch.clear();
             let elapsed_time_batch = start_time_batch.elapsed();
             println!("ファイル: {}/{}, バッチ {}: MSE(Total={:.6}), 時間: {:?}", 
-                file_count, csa_files.len(), batch_count, mse / 4000000.0, elapsed_time_batch);
-            mse_history.push((batch_count, mse / 4000000.0));
+                file_count, csa_files.len(), batch_count, mse / WIN_SCORE.powi(2), elapsed_time_batch);
+            mse_history.push((batch_count, mse / WIN_SCORE.powi(2)));
             draw_mse_graph(&mse_history, mse_graph_path)?;
         }
     }
@@ -228,8 +230,8 @@ fn main() -> Result<()> {
         let mse = model.update_batch(&batch);
         let elapsed_time_batch = start_time_batch.elapsed();
         println!("ファイル: {}/{}, バッチ {}: MSE(Total={:.6}), 時間: {:?}", 
-            file_count, csa_files.len(), batch_count, mse / 4000000.0, elapsed_time_batch);
-        mse_history.push((batch_count, mse / 4000000.0));
+            file_count, csa_files.len(), batch_count, mse / WIN_SCORE.powi(2), elapsed_time_batch);
+        mse_history.push((batch_count, mse / WIN_SCORE.powi(2)));
         draw_mse_graph(&mse_history, mse_graph_path)?;
     }
 
