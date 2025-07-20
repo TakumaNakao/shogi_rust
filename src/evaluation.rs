@@ -218,6 +218,78 @@ impl SparseModel {
         
         total_loss / m
     }
+
+    pub fn update_batch_for_moves(&mut self, batch: &[(shogi_lib::Position, shogi_core::Move)]) -> (usize, usize) {
+        let mut correct_predictions = 0;
+        let total_samples = batch.len();
+        if total_samples == 0 {
+            return (0, 0);
+        }
+
+        // Calculate gradients for the entire batch
+        let mut w_grads = vec![0.0; MAX_FEATURES];
+
+        for (pos, teacher_move) in batch.iter() {
+            let legal_moves = pos.legal_moves();
+            if legal_moves.is_empty() {
+                continue;
+            }
+
+            let mut best_move_by_model: Option<shogi_core::Move> = None;
+            let mut max_score = -f32::INFINITY;
+            let mut best_model_features: Vec<usize> = Vec::new();
+            let mut teacher_move_features: Option<Vec<usize>> = None;
+
+
+            for &mv in legal_moves.iter() {
+                let mut temp_pos = pos.clone();
+                temp_pos.do_move(mv);
+                let features = extract_kpp_features(&temp_pos);
+                let score = self.predict(&temp_pos, &features);
+
+                if score > max_score {
+                    max_score = score;
+                    best_move_by_model = Some(mv);
+                    best_model_features = features.clone();
+                }
+
+                if mv == *teacher_move {
+                    teacher_move_features = Some(features);
+                }
+            }
+
+            if let Some(model_move) = best_move_by_model {
+                if model_move == *teacher_move {
+                    correct_predictions += 1;
+                } else {
+                    // Update gradients based on the difference between teacher move and model's best move
+                    if let Some(teacher_features) = teacher_move_features {
+                        // Perceptron-like update: encourage teacher_features, discourage model_features
+                        for &idx in &teacher_features {
+                            if idx < MAX_FEATURES {
+                                w_grads[idx] += self.kpp_eta;
+                            }
+                        }
+                        for &idx in &best_model_features {
+                            if idx < MAX_FEATURES {
+                                w_grads[idx] -= self.kpp_eta;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply the batch gradients
+        for i in 0..MAX_FEATURES {
+            if w_grads[i] != 0.0 {
+                // Apply gradient and L2 regularization
+                self.w[i] += w_grads[i] / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.w[i];
+            }
+        }
+
+        (correct_predictions, total_samples)
+    }
 }
 
 fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color) -> Option<usize> {
@@ -342,7 +414,6 @@ impl Evaluator for SparseModelEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shogi_core::{PieceKind, Color};
     use shogi_lib::Position;
 
     fn create_test_model() -> SparseModel {
@@ -389,10 +460,10 @@ mod tests {
         // A perfect test would require mocking extract_kpp_features, which is complex here.
         // Instead, we check if the scores are roughly opposite for a simple position change.
         let features_black = extract_kpp_features(&pos_black_turn);
-        let score_black_turn = model.predict(&pos_black_turn, &features_black);
+        model.predict(&pos_black_turn, &features_black);
 
         let features_white = extract_kpp_features(&pos_white_turn);
-        let score_white_turn = model.predict(&pos_white_turn, &features_white);
+        model.predict(&pos_white_turn, &features_white);
         
         // This assertion is not strictly correct anymore because the features themselves change based on whose turn it is.
         // However, for a symmetric position, we expect the evaluation to be 0.

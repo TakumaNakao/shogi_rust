@@ -1,25 +1,22 @@
 use anyhow::Result;
-use shogi_core::{Color, Move, Piece, PieceKind, Square};
-use csa;
-use std::fs;
 use std::env;
+use std::fs;
 use std::path::Path;
 use std::time::Instant;
-use rand::prelude::*;
+
+use csa;
 use plotters::prelude::*;
+use rand::prelude::*;
 use rayon::prelude::*;
+use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use shogi_lib::Position;
 
 mod evaluation;
-use evaluation::{SparseModel, extract_kpp_features};
+use evaluation::SparseModel;
 
 const KPP_LEARNING_RATE: f32 = 0.01;
 const L2_LAMBDA: f32 = 1e-4;
-const BATCH_SIZE: usize = 65536;
-
-const REWARD_GAIN: f32 = 25.0;
-
-const WIN_SCORE: f32 = 100.0;
+const BATCH_SIZE: usize = 1024;
 
 fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     match csa_piece_type {
@@ -41,98 +38,73 @@ fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     }
 }
 
-fn process_csa_file(path: &Path) -> Result<Vec<(Position, Vec<usize>, f32)>> {
+/// Processes a single CSA file to extract (position, teacher_move) pairs.
+fn process_csa_file(path: &Path) -> Result<Vec<(Position, Move)>> {
     let text = fs::read_to_string(path)?;
     let record = csa::parse_csa(&text)?;
 
-    let mut positions_in_file = Vec::new();
-
-    let last_move = if let Some(mv) = record.moves.last() {
-        mv
-    } else {
-        return Ok(positions_in_file); // Skip games with no moves
-    };
-
-    let winner: Option<csa::Color> = match last_move.action {
-        csa::Action::Toryo | csa::Action::Tsumi => {
-            if let Some(prev) = record.moves.iter().rev().find(|m| matches!(m.action, csa::Action::Move(_, _, _, _))) {
-                if let csa::Action::Move(color, _, _, _) = prev.action {
-                    Some(color)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
-
-    let final_label = match winner {
-        Some(csa::Color::Black) => WIN_SCORE,
-        Some(csa::Color::White) => -WIN_SCORE,
-        None => return Ok(positions_in_file), // Skip games with no winner
-    };
-
+    let mut training_data = Vec::new();
     let mut shogi_lib_pos = Position::default();
-    for (index, mv) in record.moves.iter().enumerate() {
-        let shogi_move = match &mv.action {
+
+    for mv in record.moves.iter() {
+        let shogi_move = match mv.action {
             csa::Action::Move(color, from_csa, to_csa, piece_type_after_csa) => {
                 let to_sq = if let Some(sq) = Square::new(to_csa.file, to_csa.rank) {
                     sq
                 } else {
-                    continue;
+                    break;
                 };
 
                 if from_csa.file == 0 && from_csa.rank == 0 {
-                    let piece_kind = csa_to_shogi_piece_kind(*piece_type_after_csa);
-                    let piece_color = if *color == csa::Color::Black { Color::Black } else { Color::White };
-                    Move::Drop {
+                    let piece_kind = csa_to_shogi_piece_kind(piece_type_after_csa);
+                    let piece_color = if color == csa::Color::Black {
+                        Color::Black
+                    } else {
+                        Color::White
+                    };
+                    Some(Move::Drop {
                         piece: Piece::new(piece_kind, piece_color),
                         to: to_sq,
-                    }
+                    })
                 } else {
                     let from_sq = if let Some(sq) = Square::new(from_csa.file, from_csa.rank) {
                         sq
                     } else {
-                        println!("Error from_sq");
-                        continue;
+                        break;
                     };
                     let piece_before = if let Some(p) = shogi_lib_pos.piece_at(from_sq) {
                         p
                     } else {
-                        println!("Error piece_before");
-                        continue;
+                        break;
                     };
-                    let promote = piece_before.piece_kind() != csa_to_shogi_piece_kind(*piece_type_after_csa);
-                    Move::Normal {
+                    let promote =
+                        piece_before.piece_kind() != csa_to_shogi_piece_kind(piece_type_after_csa);
+                    Some(Move::Normal {
                         from: from_sq,
                         to: to_sq,
                         promote,
-                    }
+                    })
                 }
             }
-            _ => continue,
+            _ => None,
         };
 
-        let gain = index as f32 / (index as f32 + REWARD_GAIN);
-        let label = gain * final_label;
-
-        let turn = shogi_lib_pos.side_to_move();
-        let features = extract_kpp_features(&shogi_lib_pos);
-
-        // 教師ラベルを、その局面の手番の視点に合わせる
-        let label_for_turn = if turn == Color::Black { label } else { -label };
-
-        if !features.is_empty() {
-            positions_in_file.push((shogi_lib_pos.clone(), features, label_for_turn));
+        if let Some(shogi_move) = shogi_move {
+            let legal_moves = shogi_lib_pos.legal_moves();
+            if legal_moves.contains(&shogi_move) {
+                training_data.push((shogi_lib_pos.clone(), shogi_move));
+                shogi_lib_pos.do_move(shogi_move);
+            } else {
+                break;
+            }
+        } else {
+            break;
         }
-        shogi_lib_pos.do_move(shogi_move);
     }
-    Ok(positions_in_file)
+    Ok(training_data)
 }
 
-fn draw_mse_graph(data: &[(usize, f32)], path: &str) -> Result<()> {
+fn draw_accuracy_graph(data: &[(usize, f32)], path: &str) -> Result<()> {
     let root = BitMapBackend::new(path, (1024, 768)).into_drawing_area();
     root.fill(&WHITE)?;
 
@@ -140,20 +112,18 @@ fn draw_mse_graph(data: &[(usize, f32)], path: &str) -> Result<()> {
         return Ok(());
     }
 
-    let max_mse = data.iter().map(|&(_, mse)| mse).fold(f32::NAN, f32::max);
-
     let mut chart = ChartBuilder::on(&root)
-        .caption("MSE per Batch", ("sans-serif", 50).into_font())
+        .caption("Move Prediction Accuracy per Batch", ("sans-serif", 50).into_font())
         .margin(10)
         .x_label_area_size(30)
         .y_label_area_size(50)
-        .build_cartesian_2d(0..data.len(), 0f32..max_mse)?;
+        .build_cartesian_2d(0..data.len(), 0f32..100f32)?;
 
     chart.configure_mesh().draw()?;
 
     chart.draw_series(LineSeries::new(
-        data.iter().enumerate().map(|(i, &(_, mse))| (i, mse)),
-        &RED,
+        data.iter().enumerate().map(|(i, &(_, acc))| (i, acc)),
+        &BLUE,
     ))?;
 
     root.present()?;
@@ -170,8 +140,8 @@ fn main() -> Result<()> {
 
     let data_dir_str = format!("./csa_files/{}", year);
     let data_dir = Path::new(&data_dir_str);
-    let weight_path = Path::new("./weights.binary");
-    let mse_graph_path = "mse_graph.png";
+    let weight_path = Path::new("./policy_weights.binary");
+    let accuracy_graph_path = "move_accuracy_graph.png";
 
     let mut model = SparseModel::new(KPP_LEARNING_RATE, L2_LAMBDA);
 
@@ -180,9 +150,7 @@ fn main() -> Result<()> {
         model.load(weight_path)?;
         println!("重みファイルを読み込みました。");
     } else {
-        println!("保存中...");
-        model.save(weight_path)?;
-        println!("初期重みを保存しました。");
+        println!("新しい重みファイルを作成します。");
     }
 
     let mut csa_files: Vec<_> = fs::read_dir(data_dir)?
@@ -197,67 +165,82 @@ fn main() -> Result<()> {
             })
         })
         .collect();
-    
+
     let mut rng = thread_rng();
     csa_files.shuffle(&mut rng);
 
     println!("{}個のCSAファイルを読み込みます。", csa_files.len());
 
     let mut batch_count = 0;
-    let mut mse_history = Vec::new();
-    let mut remaining_data: Vec<(Position, Vec<usize>, f32)> = Vec::new();
+    let mut accuracy_history = Vec::new();
+    let mut remaining_data: Vec<(Position, Move)> = Vec::new();
 
-    let chunk_size = 2048; // 一度に並列処理するファイル数
+    let chunk_size = 1024; // Process files in chunks
 
     for (chunk_index, file_chunk) in csa_files.chunks(chunk_size).enumerate() {
         let start_time_chunk = Instant::now();
 
-        let chunk_results: Vec<Vec<(Position, Vec<usize>, f32)>> = file_chunk
+        let chunk_results: Vec<Vec<(Position, Move)>> = file_chunk
             .par_iter()
             .map(|path| process_csa_file(path))
             .filter_map(Result::ok)
             .collect();
-        
+
         let mut new_data: Vec<_> = chunk_results.into_iter().flatten().collect();
-        
-        // 前のチャンクからの残りデータを結合
+
         remaining_data.append(&mut new_data);
 
         let elapsed_time_chunk = start_time_chunk.elapsed();
-        println!("チャンク {}/{} ({} ファイル) の処理完了。時間: {:?}", 
-            chunk_index + 1, (csa_files.len() + chunk_size - 1) / chunk_size, file_chunk.len(), elapsed_time_chunk);
+        println!("チャンク {}/{} ({} ファイル) の処理完了。時間: {:?}. 現在のデータ数: {}",
+                 chunk_index + 1, (csa_files.len() + chunk_size - 1) / chunk_size, file_chunk.len(), elapsed_time_chunk, remaining_data.len());
 
-        // バッチ処理
         while remaining_data.len() >= BATCH_SIZE {
             let batch_data: Vec<_> = remaining_data.drain(0..BATCH_SIZE).collect();
             let start_time_batch = Instant::now();
-            let mse = model.update_batch(&batch_data);
+
+            let (correct_predictions, total_samples) = model.update_batch_for_moves(&batch_data);
+            let accuracy = if total_samples > 0 {
+                (correct_predictions as f32 / total_samples as f32) * 100.0
+            } else {
+                0.0
+            };
+
             batch_count += 1;
             let elapsed_time_batch = start_time_batch.elapsed();
-            println!("バッチ {}: MSE(Total={:.6}), 時間: {:?}", 
-                batch_count, mse / WIN_SCORE.powi(2), elapsed_time_batch);
-            mse_history.push((batch_count, mse / WIN_SCORE.powi(2)));
-            draw_mse_graph(&mse_history, mse_graph_path)?;
+            println!("バッチ {}: 正解率: {:.2}%, 時間: {:?}",
+                     batch_count, accuracy, elapsed_time_batch);
+
+            accuracy_history.push((batch_count, accuracy));
+            if batch_count % 10 == 0 {
+                draw_accuracy_graph(&accuracy_history, accuracy_graph_path)?;
+                model.save(weight_path)?;
+                println!("モデルを保存しました。");
+            }
         }
     }
 
-    // 最後の残ったデータを処理
+    // Process any remaining data
     if !remaining_data.is_empty() {
         let start_time_batch = Instant::now();
-        let mse = model.update_batch(&remaining_data);
+        let (correct_predictions, total_samples) = model.update_batch_for_moves(&remaining_data);
+        let accuracy = if total_samples > 0 {
+            (correct_predictions as f32 / total_samples as f32) * 100.0
+        } else {
+            0.0
+        };
         batch_count += 1;
         let elapsed_time_batch = start_time_batch.elapsed();
-        println!("最後のバッチ {}: MSE(Total={:.6}), 時間: {:?}", 
-            batch_count, mse / WIN_SCORE.powi(2), elapsed_time_batch);
-        mse_history.push((batch_count, mse / WIN_SCORE.powi(2)));
-        draw_mse_graph(&mse_history, mse_graph_path)?;
+        println!("最後のバッチ {}: 正解率: {:.2}%, 時間: {:?}",
+                 batch_count, accuracy, elapsed_time_batch);
+        accuracy_history.push((batch_count, accuracy));
+        draw_accuracy_graph(&accuracy_history, accuracy_graph_path)?;
     }
 
     let start_time_save = Instant::now();
     model.save(weight_path)?;
     let elapsed_time_save = start_time_save.elapsed();
-    println!("モデル保存 , 処理時間: {:?}", elapsed_time_save);
+    println!("最終モデル保存完了。処理時間: {:?}", elapsed_time_save);
 
-    println!("学習完了。重み数: {}", model.w.len());
+    println!("学習完了。");
     Ok(())
 }

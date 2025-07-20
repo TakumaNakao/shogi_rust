@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use shogi_core::{Color, PieceKind, Square};
+use shogi_core::{Color, PieceKind};
 use shogi_lib::Position;
 
 pub const PIECE_KINDS: [PieceKind; 14] = [
@@ -77,7 +77,7 @@ impl PositionHasher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shogi_core::{Move};
+    use shogi_core::{Move, Square};
 
     #[test]
     fn test_hash_consistency() {
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn test_hash_repetition() {
         let mut pos = Position::default();
-        let initial_hash = PositionHasher::calculate_hash(&pos);
+        PositionHasher::calculate_hash(&pos);
 
         // Define a sequence of moves
         let moves = [
