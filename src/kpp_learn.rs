@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::Instant;
 use rand::prelude::*;
 use plotters::prelude::*;
+use rayon::prelude::*;
 
 mod evaluation;
 use evaluation::{SparseModel, extract_kpp_features};
@@ -39,14 +40,16 @@ fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     }
 }
 
-fn process_csa_file(path: &Path, batch: &mut Vec<(Position, Vec<usize>, f32)>) -> Result<()> {
+fn process_csa_file(path: &Path) -> Result<Vec<(Position, Vec<usize>, f32)>> {
     let text = fs::read_to_string(path)?;
     let record = csa::parse_csa(&text)?;
+
+    let mut positions_in_file = Vec::new();
 
     let last_move = if let Some(mv) = record.moves.last() {
         mv
     } else {
-        return Ok(()); // Skip games with no moves
+        return Ok(positions_in_file); // Skip games with no moves
     };
 
     let winner: Option<csa::Color> = match last_move.action {
@@ -67,7 +70,7 @@ fn process_csa_file(path: &Path, batch: &mut Vec<(Position, Vec<usize>, f32)>) -
     let final_label = match winner {
         Some(csa::Color::Black) => WIN_SCORE,
         Some(csa::Color::White) => -WIN_SCORE,
-        None => return Ok(()), // Skip games with no winner
+        None => return Ok(positions_in_file), // Skip games with no winner
     };
 
     let mut pos = shogi_core::Position::default();
@@ -121,13 +124,13 @@ fn process_csa_file(path: &Path, batch: &mut Vec<(Position, Vec<usize>, f32)>) -
         let label_for_turn = if turn == Color::Black { label } else { -label };
 
         if !features.is_empty() {
-            batch.push((pos.clone(), features, label_for_turn));
+            positions_in_file.push((pos.clone(), features, label_for_turn));
         }
         if pos.make_move(shogi_move).is_none() {
             break;
         }
     }
-    Ok(())
+    Ok(positions_in_file)
 }
 
 fn draw_mse_graph(data: &[(usize, f32)], path: &str) -> Result<()> {
@@ -201,36 +204,52 @@ fn main() -> Result<()> {
 
     println!("{}個のCSAファイルを読み込みます。", csa_files.len());
 
-    let mut batch: Vec<(Position, Vec<usize>, f32)> = Vec::with_capacity(BATCH_SIZE);
     let mut batch_count = 0;
-    let mut file_count = 0;
     let mut mse_history = Vec::new();
+    let mut remaining_data: Vec<(Position, Vec<usize>, f32)> = Vec::new();
 
-    for path in &csa_files {
-        if let Err(e) = process_csa_file(&path, &mut batch) {
-            eprintln!("ファイル処理エラー: {:?} - {}", path, e);
-        }
-        file_count += 1;
+    let chunk_size = 2048; // 一度に並列処理するファイル数
+
+    for (chunk_index, file_chunk) in csa_files.chunks(chunk_size).enumerate() {
+        let start_time_chunk = Instant::now();
+
+        let chunk_results: Vec<Vec<(Position, Vec<usize>, f32)>> = file_chunk
+            .par_iter()
+            .map(|path| process_csa_file(path))
+            .filter_map(Result::ok)
+            .collect();
         
-        if batch.len() >= BATCH_SIZE {
+        let mut new_data: Vec<_> = chunk_results.into_iter().flatten().collect();
+        
+        // 前のチャンクからの残りデータを結合
+        remaining_data.append(&mut new_data);
+
+        let elapsed_time_chunk = start_time_chunk.elapsed();
+        println!("チャンク {}/{} ({} ファイル) の処理完了。時間: {:?}", 
+            chunk_index + 1, (csa_files.len() + chunk_size - 1) / chunk_size, file_chunk.len(), elapsed_time_chunk);
+
+        // バッチ処理
+        while remaining_data.len() >= BATCH_SIZE {
+            let batch_data: Vec<_> = remaining_data.drain(0..BATCH_SIZE).collect();
             let start_time_batch = Instant::now();
-            let mse = model.update_batch(&batch);
+            let mse = model.update_batch(&batch_data);
             batch_count += 1;
-            batch.clear();
             let elapsed_time_batch = start_time_batch.elapsed();
-            println!("ファイル: {}/{}, バッチ {}: MSE(Total={:.6}), 時間: {:?}", 
-                file_count, csa_files.len(), batch_count, mse / WIN_SCORE.powi(2), elapsed_time_batch);
+            println!("バッチ {}: MSE(Total={:.6}), 時間: {:?}", 
+                batch_count, mse / WIN_SCORE.powi(2), elapsed_time_batch);
             mse_history.push((batch_count, mse / WIN_SCORE.powi(2)));
             draw_mse_graph(&mse_history, mse_graph_path)?;
         }
     }
 
-    if !batch.is_empty() {
+    // 最後の残ったデータを処理
+    if !remaining_data.is_empty() {
         let start_time_batch = Instant::now();
-        let mse = model.update_batch(&batch);
+        let mse = model.update_batch(&remaining_data);
+        batch_count += 1;
         let elapsed_time_batch = start_time_batch.elapsed();
-        println!("ファイル: {}/{}, バッチ {}: MSE(Total={:.6}), 時間: {:?}", 
-            file_count, csa_files.len(), batch_count, mse / WIN_SCORE.powi(2), elapsed_time_batch);
+        println!("最後のバッチ {}: MSE(Total={:.6}), 時間: {:?}", 
+            batch_count, mse / WIN_SCORE.powi(2), elapsed_time_batch);
         mse_history.push((batch_count, mse / WIN_SCORE.powi(2)));
         draw_mse_graph(&mse_history, mse_graph_path)?;
     }
