@@ -10,7 +10,7 @@ USI (Universal Shogi Interface) プロトコルに対応した思考エンジン
 - `usi_engine`: USIプロトコル対応の将棋思考エンジンです。ShogiGUIなどのGUIに導入して対局や検討ができます。
 - `kpp_learn`: 評価関数KPP (Komi, Piece, Position) の学習を行います。
 
-## 使い方 (ShogiGUI)
+## 使い方 (ShogiHome)
 
 ### 1. エンジンのダウンロード
 
@@ -19,9 +19,9 @@ USI (Universal Shogi Interface) プロトコルに対応した思考エンジン
     *   **Windows:** `usi_engine.exe`
     *   **Linux:** `usi_engine`
 
-### 2. ShogiGUIへのエンジン登録
+### 2. [ShogiHome](https://sunfish-shogi.github.io/shogihome/)へのエンジン登録
 
-1.  ShogiGUIを起動します。
+1.  ShogiHomeを起動します。
 2.  「エンジン設定」を選択します。
 3.  「追加」ボタンをクリックします。
 4.  ファイル選択ダイアログが表示されるので、先ほどダウンロードした `usi_engine.exe` (または `usi_engine`) を選択します。
