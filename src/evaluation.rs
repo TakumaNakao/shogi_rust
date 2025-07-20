@@ -39,7 +39,7 @@ const NUM_PIECE_STATES: usize =
 
 const NUM_PIECE_PAIRS: usize = NUM_PIECE_STATES * (NUM_PIECE_STATES - 1) / 2;
 
-const MAX_FEATURES: usize = 200_000_000;
+const MAX_FEATURES: usize = 222_328_476;
 
 const ALL_HAND_PIECES: [PieceKind; 7] = [
     PieceKind::Pawn,
@@ -277,6 +277,9 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
     for i in 0..81 {
         if let Some(sq) = Square::from_u8(i as u8 + 1) {
             if let Some(piece) = pos.piece_at(sq) {
+                if piece.piece_kind() == PieceKind::King && piece.color() == turn {
+                    continue; // 王の駒はpiece_idsに追加しない
+                }
                 if let Some(id) = piece_to_id(piece, Some(sq), 0, turn) {
                     piece_ids.push(id);
                 }
