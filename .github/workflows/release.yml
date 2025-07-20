@@ -1,0 +1,31 @@
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: usi_engine
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: usi_engine.exe
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bin usi_engine
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
