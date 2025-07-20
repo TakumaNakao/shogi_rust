@@ -1289,7 +1289,6 @@ dependencies = [
 [[package]]
 name = "yasai"
 version = "0.5.0"
-source = "git+https://github.com/sugyan/yasai.git?branch=main#51c23780109a4ac7258c27d8965640d4f8b78e9e"
 dependencies = [
  "arrayvec",
  "cfg-if",

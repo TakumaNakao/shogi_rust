@@ -3,6 +3,9 @@ name = "shogi_ai"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+debug = true
+
 [dependencies]
 shogi_core = { version = "0.1.5" }
 csa = "1.0.2"
@@ -18,7 +21,7 @@ indicatif = "0.17"
 flate2 = "1.0"
 plotters = "0.3.6"
 arrayvec = "0.7.2"
-yasai = { git = "https://github.com/sugyan/yasai.git", branch = "main" }
+yasai = { path = "./shogi_lib" }
 circular-buffer = "0.1.1"
 lazy_static = "1.4.0"
 rand_chacha = "0.3.1"
