@@ -31,11 +31,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} --bin usi_engine --bin kpp_learn
+      - name: Rename artifacts
+        run: |
+          mv target/${{ matrix.target }}/release/${{ matrix.usi_engine_artifact_name }} target/${{ matrix.target }}/release/${{ matrix.usi_engine_artifact_name }}_${{ github.ref_name }}
+          mv target/${{ matrix.target }}/release/${{ matrix.kpp_learn_artifact_name }} target/${{ matrix.target }}/release/${{ matrix.kpp_learn_artifact_name }}_${{ github.ref_name }}
       - name: Upload to Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            target/${{ matrix.target }}/release/${{ matrix.usi_engine_artifact_name }}
-            target/${{ matrix.target }}/release/${{ matrix.kpp_learn_artifact_name }}
+            target/${{ matrix.target }}/release/${{ matrix.usi_engine_artifact_name }}_${{ github.ref_name }}
+            target/${{ matrix.target }}/release/${{ matrix.kpp_learn_artifact_name }}_${{ github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
