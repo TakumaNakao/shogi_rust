@@ -5,3 +5,4 @@ target/
 *.kif
 learn.sh
 ex_lib/
+*.exe
