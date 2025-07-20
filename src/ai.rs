@@ -91,36 +91,57 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
         // 1. 自分の手がタダ捨てになっていないかチェック
         position.do_move(mv);
+        // 相手の手番にして合法手を生成
         let opponent_moves = position.legal_moves();
         for opponent_move in opponent_moves {
             if let Move::Normal { to, .. } = opponent_move {
-                if to == mv.to() && self.see(position, opponent_move) > 0 {
-                    score -= 10000; // 大きなペナルティ
-                    break;
+                // mvで動かした駒が取り返されるか
+                if to == mv.to() {
+                    // 相手が取り返す手で駒損しないかチェック
+                    if self.see(position, opponent_move) > 0 {
+                        score -= 10000; // 大きなペナルティ
+                        break;
+                    }
                 }
             }
         }
-        position.undo_move(mv);
+        position.undo_move(mv); // 盤面を元に戻す（自分の手番に戻る）
 
 
         // 2. 相手の直前の手による脅威に対応しているかチェック
         if let Some(last_move) = position.last_move() {
             if let Move::Normal { to: attacker_sq, .. } = last_move {
-                // 相手が駒を動かした盤面(=現在のposition)で、その駒からの利きを調べる
-                // 注意：このロジックは元のコードを忠実に再現していますが、
-                // `position.legal_moves()`は現在の手番（自分）の合法手を生成するため、
-                // `from == attacker_sq` の条件が成立することはなく、意図通りに機能していない可能性があります。
-                let moves_from_current = position.legal_moves();
-                for response in moves_from_current {
-                     if let Move::Normal { from, to: victim_sq, .. } = response {
-                        // 相手の手番で、脅威となっている駒を動かして、こちらの駒を取る手
-                        if from == attacker_sq && self.see(position, response) > 0 {
-                             // 脅威を発見
-                            if mv.to() == attacker_sq { // 脅威を取り返す手
+                // 相手の手番に切り替えて、脅威となる手（駒を取る手）を探す
+                position.switch_turn();
+                let threats = position.legal_moves();
+                position.switch_turn(); // すぐに手番を元に戻す
+
+                for threat in threats {
+                    if let Move::Normal { from, to: victim_sq, .. } = threat {
+                        // 相手が直前に動かした駒(attacker_sq)からの脅威か？
+                        // そして、その手で駒を取れるか？
+                        if from == attacker_sq && position.piece_at(victim_sq).is_some() {
+                            // 脅威を発見！
+                            // この脅威に対応する手（mv）にボーナスを与える
+                            
+                            // a. 脅威となっている相手の駒(attacker_sq)を取る手か？
+                            if mv.to() == attacker_sq {
                                 score += 10000;
-                            } else if mv.from() == Some(victim_sq) { // 脅威から逃げる手
+                            } 
+                            // b. 取られそうな自分の駒(victim_sq)を動かす手か？
+                            else if mv.from() == Some(victim_sq) {
                                 score += 8000;
                             }
+                            // c. (発展) 間に駒を打って合駒する手か？
+                            //    これは少し複雑なので、まずはa, bから実装するのがおすすめです。
+
+                            // 重要な駒が取られる脅威ほど高く評価したい場合、
+                            // victimの価値をスコアに加えることもできます。
+                            // if let Some(victim_piece) = position.piece_at(victim_sq) {
+                            //     score += get_piece_value(victim_piece.piece_kind()) as i32 * 10;
+                            // }
+
+                            // 脅威を一つ見つけたら、他の脅威は一旦無視してループを抜ける
                             break;
                         }
                     }

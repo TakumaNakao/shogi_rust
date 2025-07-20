@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use shogi_core::{Color, PieceKind, Square};
+use shogi_core::{Color, PieceKind};
 use shogi_lib::Position;
 
 pub const PIECE_KINDS: [PieceKind; 14] = [

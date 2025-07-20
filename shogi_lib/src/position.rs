@@ -265,6 +265,12 @@ impl Position {
     fn checkable(&self, pk: PieceKind, sq: Square) -> bool {
         self.state().attack_info.checkable(pk, sq)
     }
+
+    pub fn switch_turn(&mut self) {
+        self.inner.side = self.inner.side.flip();
+        let state = self.states.last_mut().expect("empty states");
+        state.keys.0 ^= Key::COLOR;
+    }
 }
 
 impl Default for Position {
