@@ -6,6 +6,7 @@ use shogi_ai::evaluation::{Evaluator, SparseModelEvaluator};
 use shogi_ai::sennichite::SennichiteStatus;
 use shogi_ai::utils::{draw_evaluation_graph, move_to_kif};
 use shogi_core::Color;
+use yasai::Position;
 
 fn main() {
     println!("--- ShogiAI 自己対局 ---");
@@ -18,7 +19,7 @@ fn main() {
     let mut ai_sente = ShogiAI::<SparseModelEvaluator, GAME_HISTORY_CAPACITY>::new(evaluator_sente);
     let mut ai_gote = ShogiAI::<SparseModelEvaluator, GAME_HISTORY_CAPACITY>::new(evaluator_gote);
 
-    let mut position = shogi_core::Position::default();
+    let mut position = Position::default();
     
     let search_depth_sente = 4;
     let search_depth_gote = 2;
@@ -62,16 +63,13 @@ fn main() {
         
         println!("手番: {:?}, 探索深さ: {}", position.side_to_move(), max_depth);
 
-        let best_move = current_ai.find_best_move(&position, max_depth, None);
+        let best_move = current_ai.find_best_move(&mut position, max_depth, None);
 
         match best_move {
             Some(mv) => {
                 kif_moves.push(move_to_kif(&mv, &position, turn));
                 println!("見つかった最適な指し手: {:?}", mv);
-                if position.make_move(mv).is_none() {
-                    println!("指し手の適用に失敗しました。");
-                    break;
-                }
+                position.do_move(mv);
                 current_ai.sennichite_detector.record_position(&position);
                 let sennichite_status = current_ai.is_sennichite_internal(&position);
                 match sennichite_status {

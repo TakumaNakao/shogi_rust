@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use shogi_core::{Move, Position};
+use shogi_core::{Move};
+use yasai::Position;
 use crate::evaluation::{Evaluator};
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
@@ -85,31 +86,32 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         0
     }
 
-    fn evaluate_move_safety(&self, position: &Position, mv: Move) -> i32 {
+    fn evaluate_move_safety(&self, position: &mut Position, mv: Move) -> i32 {
         let mut score = 0;
 
         // 1. 自分の手がタダ捨てになっていないかチェック
-        let mut next_position_after_my_move = position.clone();
-        if next_position_after_my_move.make_move(mv).is_some() {
-            let yasai_pos = yasai::Position::new(next_position_after_my_move.inner().clone());
-            let opponent_moves = yasai_pos.legal_moves();
-            for opponent_move in opponent_moves {
-                if let Move::Normal { to, .. } = opponent_move {
-                    if to == mv.to() && self.see(&next_position_after_my_move, opponent_move) > 0 {
-                        score -= 10000; // 大きなペナルティ
-                        break;
-                    }
+        position.do_move(mv);
+        let opponent_moves = position.legal_moves();
+        for opponent_move in opponent_moves {
+            if let Move::Normal { to, .. } = opponent_move {
+                if to == mv.to() && self.see(position, opponent_move) > 0 {
+                    score -= 10000; // 大きなペナルティ
+                    break;
                 }
             }
         }
+        position.undo_move(mv);
+
 
         // 2. 相手の直前の手による脅威に対応しているかチェック
         if let Some(last_move) = position.last_move() {
             if let Move::Normal { to: attacker_sq, .. } = last_move {
                 // 相手が駒を動かした盤面(=現在のposition)で、その駒からの利きを調べる
-                let yasai_pos = yasai::Position::new(position.inner().clone());
-                let opponent_moves_from_current = yasai_pos.legal_moves();
-                for response in opponent_moves_from_current {
+                // 注意：このロジックは元のコードを忠実に再現していますが、
+                // `position.legal_moves()`は現在の手番（自分）の合法手を生成するため、
+                // `from == attacker_sq` の条件が成立することはなく、意図通りに機能していない可能性があります。
+                let moves_from_current = position.legal_moves();
+                for response in moves_from_current {
                      if let Move::Normal { from, to: victim_sq, .. } = response {
                         // 相手の手番で、脅威となっている駒を動かして、こちらの駒を取る手
                         if from == attacker_sq && self.see(position, response) > 0 {
@@ -128,6 +130,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         score
     }
 
+
     fn is_time_up(&self) -> bool {
         if let (Some(start), Some(limit)) = (self.start_time, self.time_limit) {
             start.elapsed() >= limit
@@ -136,13 +139,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
     }
 
-    fn is_check(&self, position: &Position, mv: Move) -> bool {
-        let mut yasai_pos = yasai::Position::new(position.inner().clone());
-        yasai_pos.do_move(mv);
-        yasai_pos.in_check()
+    fn is_check(&self, position: &mut Position, mv: Move) -> bool {
+        position.do_move(mv);
+        let is_in_check = position.in_check();
+        position.undo_move(mv);
+        is_in_check
     }
 
-    pub fn quiescence_search(&mut self, position: &shogi_core::Position, mut alpha: f32, beta: f32) -> Option<(f32, Vec<Move>)> {
+    pub fn quiescence_search(&mut self, position: &mut Position, mut alpha: f32, beta: f32) -> Option<(f32, Vec<Move>)> {
         if self.is_time_up() { return None; }
         self.nodes_searched += 1;
 
@@ -150,8 +154,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         if stand_pat_score >= beta { return Some((beta, Vec::new())); }
         alpha = alpha.max(stand_pat_score);
 
-        let yasai_pos = yasai::Position::new(position.inner().clone());
-        let mut moves = yasai_pos.legal_moves();
+        let mut moves = position.legal_moves();
         
         moves.retain(|m| {
             if let Move::Normal { to, .. } = *m {
@@ -172,17 +175,16 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 continue;
             }
 
-            let mut next_position = position.clone();
-            if next_position.make_move(mv).is_none() { continue; }
-
-            self.sennichite_detector.record_position(&next_position);
-            let sennichite_status = self.is_sennichite_internal(&next_position);
+            position.do_move(mv);
+            self.sennichite_detector.record_position(position);
+            let sennichite_status = self.is_sennichite_internal(position);
             let score_result = match sennichite_status {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
                 SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
-                SennichiteStatus::None => self.quiescence_search(&next_position, -beta, -alpha),
+                SennichiteStatus::None => self.quiescence_search(position, -beta, -alpha),
             };
             self.sennichite_detector.unrecord_last_position();
+            position.undo_move(mv);
 
             if let Some((current_score, _)) = score_result {
                 let negated_score = -current_score;
@@ -196,7 +198,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         Some((best_score, Vec::new()))
     }
 
-    pub fn alpha_beta_search(&mut self, position: &shogi_core::Position, depth: u8, mut alpha: f32, mut beta: f32) -> Option<(f32, Vec<Move>)> {
+    pub fn alpha_beta_search(&mut self, position: &mut Position, depth: u8, mut alpha: f32, mut beta: f32) -> Option<(f32, Vec<Move>)> {
         if self.is_time_up() { return None; }
         if depth == 0 { return self.quiescence_search(position, alpha, beta); }
         self.nodes_searched += 1;
@@ -213,8 +215,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
 
-        let yasai_pos = yasai::Position::new(position.inner().clone());
-        let moves = yasai_pos.legal_moves();
+        let moves = position.legal_moves();
         if moves.is_empty() { return Some((-f32::INFINITY, Vec::new())); }
 
         let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|mv| {
@@ -246,17 +247,16 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let mut node_type = NodeType::UpperBound;
 
         for mv in sorted_moves {
-            let mut next_position = position.clone();
-            if next_position.make_move(mv).is_none() { continue; }
-
-            self.sennichite_detector.record_position(&next_position);
-            let sennichite_status = self.is_sennichite_internal(&next_position);
+            position.do_move(mv);
+            self.sennichite_detector.record_position(position);
+            let sennichite_status = self.is_sennichite_internal(position);
             let search_result = match sennichite_status {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
                 SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
-                SennichiteStatus::None => self.alpha_beta_search(&next_position, depth - 1, -beta, -alpha),
+                SennichiteStatus::None => self.alpha_beta_search(position, depth - 1, -beta, -alpha),
             };
             self.sennichite_detector.unrecord_last_position();
+            position.undo_move(mv);
 
             if let Some((score, pv)) = search_result {
                 let current_score = -score;
@@ -291,11 +291,11 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         Some((best_score, final_pv))
     }
 
-    pub fn is_sennichite_internal(&self, position: &shogi_core::Position) -> SennichiteStatus {
+    pub fn is_sennichite_internal(&self, position: &Position) -> SennichiteStatus {
         self.sennichite_detector.check_sennichite(position)
     }
 
-    pub fn find_best_move(&mut self, position: &shogi_core::Position, max_depth: u8, time_limit_ms: Option<u64>) -> Option<Move> {
+    pub fn find_best_move(&mut self, position: &mut Position, max_depth: u8, time_limit_ms: Option<u64>) -> Option<Move> {
         self.transposition_table.clear();
         self.clear_killer_moves();
         self.start_time = Some(Instant::now());
@@ -303,8 +303,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.nodes_searched = 0;
 
         let mut best_move: Option<Move> = None;
-        let yasai_pos = yasai::Position::new(position.inner().clone());
-        let moves = yasai_pos.legal_moves();
+        let moves = position.legal_moves();
         if moves.is_empty() { return None; }
 
         let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|mv| {
@@ -334,18 +333,17 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     break;
                 }
 
-                let mut next_position = position.clone();
-                if next_position.make_move(*mv).is_none() { continue; }
-
-                self.sennichite_detector.record_position(&next_position);
-                let sennichite_status = self.is_sennichite_internal(&next_position);
+                position.do_move(*mv);
+                self.sennichite_detector.record_position(position);
+                let sennichite_status = self.is_sennichite_internal(position);
                 self.sennichite_detector.unrecord_last_position();
 
                 let eval_result = match sennichite_status {
                     SennichiteStatus::Draw => Some((0.0, Vec::new())),
                     SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
-                    SennichiteStatus::None => self.alpha_beta_search(&next_position, depth - 1, -beta, -alpha),
+                    SennichiteStatus::None => self.alpha_beta_search(position, depth - 1, -beta, -alpha),
                 };
+                position.undo_move(*mv);
 
                 if let Some((eval, pv)) = eval_result {
                     let current_eval = -eval;

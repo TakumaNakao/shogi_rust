@@ -6,10 +6,11 @@ use std::io::{Read, Write};
 use std::path::Path;
 use rand::prelude::*;
 use rand_distr::Distribution;
+use yasai;
 
 // --- Evaluator Trait ---
 pub trait Evaluator {
-    fn evaluate(&self, position: &shogi_core::Position) -> f32;
+    fn evaluate(&self, position: &yasai::Position) -> f32;
 }
 
 // --- KPP-based Evaluator ---
@@ -169,7 +170,7 @@ impl SparseModel {
 
     
 
-    pub fn predict(&self, _pos: &shogi_core::Position, kpp_features: &[usize]) -> f32 {
+    pub fn predict(&self, _pos: &yasai::Position, kpp_features: &[usize]) -> f32 {
         let mut prediction = self.bias;
         for &i in kpp_features {
             if i < MAX_FEATURES {
@@ -179,7 +180,7 @@ impl SparseModel {
         prediction
     }
 
-    pub fn update_batch(&mut self, batch: &[(shogi_core::Position, Vec<usize>, f32)]) -> f32 {
+    pub fn update_batch(&mut self, batch: &[(yasai::Position, Vec<usize>, f32)]) -> f32 {
         let m = batch.len() as f32;
         if m == 0.0 {
             return 0.0;
@@ -241,7 +242,7 @@ fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color)
     }
 }
 
-pub fn extract_kpp_features(pos: &shogi_core::Position) -> Vec<usize> {
+pub fn extract_kpp_features(pos: &yasai::Position) -> Vec<usize> {
     let turn = pos.side_to_move();
 
     let king_sq = match (0..81).find_map(|i| {
@@ -278,7 +279,7 @@ pub fn extract_kpp_features(pos: &shogi_core::Position) -> Vec<usize> {
     }
     for color in [Color::Black, Color::White] {
         for kind in ALL_HAND_PIECES.iter() {
-            let count = pos.hand_of_a_player(color).count(*kind).unwrap_or(0);
+            let count = pos.hand(color).count(*kind).unwrap_or(0);
             for i in 0..count {
                 if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize, turn) {
                     piece_ids.push(id);
@@ -322,7 +323,7 @@ impl SparseModelEvaluator {
 
 
 impl Evaluator for SparseModelEvaluator {
-    fn evaluate(&self, position: &shogi_core::Position) -> f32 {
+    fn evaluate(&self, position: &yasai::Position) -> f32 {
         let kpp_features = extract_kpp_features(position);
         self.model.predict(position, &kpp_features)
     }
@@ -331,7 +332,8 @@ impl Evaluator for SparseModelEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shogi_core::{Position, PieceKind, PartialPosition, Color};
+    use shogi_core::{PieceKind, Color};
+    use yasai::Position;
 
     fn create_test_model() -> SparseModel {
         let mut model = SparseModel::new(0.01, 0.0);
@@ -356,16 +358,21 @@ mod tests {
         // Add a specific feature weight to see a non-zero score
         model.w[12345] = 0.5;
 
-        let mut partial_pos_black = PartialPosition::startpos();
+        let mut pos_black_turn = Position::default();
         // A move that is unlikely to trigger feature 12345, just to change the turn
-        partial_pos_black.piece_set(Square::new(7, 6).unwrap(), Some(Piece::new(PieceKind::Pawn, Color::Black)));
-        partial_pos_black.piece_set(Square::new(7, 7).unwrap(), None);
+        pos_black_turn.do_move(shogi_core::Move::Normal {
+            from: Square::new(7, 7).unwrap(),
+            to: Square::new(7, 6).unwrap(),
+            promote: false,
+        });
         
-        let pos_black_turn = Position::arbitrary_position(partial_pos_black.clone());
+        let mut pos_white_turn = pos_black_turn.clone();
+        pos_white_turn.do_move(shogi_core::Move::Normal {
+            from: Square::new(3, 3).unwrap(),
+            to: Square::new(3, 4).unwrap(),
+            promote: false,
+        });
 
-        let mut partial_pos_white = partial_pos_black;
-        partial_pos_white.side_to_move_set(Color::White);
-        let pos_white_turn = Position::arbitrary_position(partial_pos_white);
 
         // We can't guarantee the features will be the same, because the king position normalization
         // depends on the side to move. The core idea is that the evaluation should be symmetric.

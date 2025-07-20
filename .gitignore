@@ -4,3 +4,4 @@ target/
 *.binary
 *.kif
 learn.sh
+ex_lib/

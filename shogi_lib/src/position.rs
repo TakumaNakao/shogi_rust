@@ -1,7 +1,8 @@
 use crate::bitboard::Bitboard;
 use crate::tables::{ATTACK_TABLE, BETWEEN_TABLE};
 use crate::zobrist::{Key, ZOBRIST_TABLE};
-use shogi_core::{Color, Hand, Move, Piece, PieceKind, Square};
+use shogi_core::{Color, Hand, Move, Piece, PieceKind, Square, ToUsi};
+use std::fmt::{Result as FmtResult, Write};
 
 /// Represents a state of the game with history. This provides the ability to do and undo moves.
 #[derive(Debug, Clone)]
@@ -33,7 +34,8 @@ impl Position {
         let state = State {
             keys,
             captured: None,
-            last_moved: None,
+            last_moved_piece: None,
+            last_move: None,
             attack_info: AttackInfo::new(checkers, &inner),
         };
         Self {
@@ -41,6 +43,17 @@ impl Position {
             states: vec![state],
         }
     }
+
+    pub fn to_sfen_owned(&self) -> String {
+        let mut s = String::new();
+        let _ = self.inner.to_sfen(&mut s);
+        s
+    }
+
+    pub fn last_move(&self) -> Option<Move> {
+        self.state().last_move
+    }
+
     #[inline(always)]
     pub fn side_to_move(&self) -> Color {
         self.inner.side
@@ -98,12 +111,12 @@ impl Position {
         let c = self.side_to_move();
         let is_check = self.is_check_move(m);
         let captured = self.inner.piece_at(m.to());
-        let last_moved;
+        let last_moved_piece;
         let mut keys = self.state().keys;
         let checkers = match m {
             Move::Normal { from, to, promote } => {
                 let piece = self.inner.piece_at(from).unwrap();
-                last_moved = Some(piece);
+                last_moved_piece = Some(piece);
                 if let Some(p) = captured {
                     let pk = p.piece_kind();
                     let pk_unpromoted = pk.unpromote().unwrap_or(pk);
@@ -140,7 +153,7 @@ impl Position {
                 }
             }
             Move::Drop { to, piece } => {
-                last_moved = Some(piece);
+                last_moved_piece = Some(piece);
                 // Update inner state
                 self.inner.xor_piece(to, piece);
                 *self.inner.piece_at_mut(to) = Some(piece);
@@ -169,7 +182,8 @@ impl Position {
         self.states.push(State {
             keys,
             captured,
-            last_moved,
+            last_moved_piece,
+            last_move: Some(m),
             attack_info: AttackInfo::new(checkers, &self.inner),
         });
     }
@@ -181,7 +195,7 @@ impl Position {
                 to,
                 promote: _,
             } => {
-                let last_moved = self.last_moved().unwrap();
+                let last_moved = self.last_moved_piece().unwrap();
                 let captured = self.captured();
                 if let Some(p_cap) = captured {
                     let pk = p_cap.piece_kind();
@@ -232,8 +246,8 @@ impl Position {
         self.state().captured
     }
     #[inline(always)]
-    pub(crate) fn last_moved(&self) -> Option<Piece> {
-        self.state().last_moved
+    pub(crate) fn last_moved_piece(&self) -> Option<Piece> {
+        self.state().last_moved_piece
     }
     #[inline(always)]
     pub(crate) fn checkers(&self) -> Bitboard {
@@ -271,6 +285,39 @@ pub(crate) struct PartialPosition {
 }
 
 impl PartialPosition {
+    /// Write the current position in SFEN notation.
+    pub fn to_sfen<W: Write>(&self, sink: &mut W) -> FmtResult {
+        for i in 0..9 {
+            let mut vacant = 0;
+            for j in 0..9 {
+                // Safety: the index is in range 0..81.
+                let current = self.board[9 * (8 - j) + i];
+                if let Some(occupying) = current {
+                    if vacant > 0 {
+                        write!(sink, "{}", vacant)?;
+                        vacant = 0;
+                    }
+                    occupying.to_usi(sink)?;
+                } else {
+                    vacant += 1;
+                }
+            }
+            if vacant > 0 {
+                write!(sink, "{}", vacant)?;
+            }
+            if i < 8 {
+                write!(sink, "/")?;
+            }
+        }
+        write!(sink, " ")?;
+        self.side.to_usi(sink)?;
+        write!(sink, " ")?;
+        self.hands.to_usi(sink)?;
+        write!(sink, " ")?;
+        write!(sink, "{}", self.ply)?;
+        Ok(())
+    }
+
     #[inline(always)]
     fn xor_piece(&mut self, sq: Square, p: Piece) {
         let single = Bitboard::single(sq);
@@ -341,7 +388,9 @@ struct State {
     /// Piece captured on the last move
     captured: Option<Piece>,
     /// Last moved piece
-    last_moved: Option<Piece>,
+    last_moved_piece: Option<Piece>,
+    /// Last move
+    last_move: Option<Move>,
     attack_info: AttackInfo,
 }
 
@@ -445,8 +494,17 @@ impl AttackInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shogi_core::PartialPosition;
+    use shogi_core::PartialPosition as ShogiCorePartialPosition;
     use shogi_usi_parser::FromUsi;
+
+    #[test]
+    fn sfen() {
+        let pos = Position::default();
+        assert_eq!(
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            pos.to_sfen_owned()
+        );
+    }
 
     #[test]
     fn default() {
@@ -597,7 +655,7 @@ mod tests {
         // +
         {
             let mut pos = Position::new(
-                PartialPosition::from_usi(
+                ShogiCorePartialPosition::from_usi(
                     "sfen R8/2K1S1SSk/4B4/9/9/9/9/9/1L1L1L3 b RBGSNLP3g3n17p 1",
                 )
                 .expect("failed to parse"),
@@ -622,7 +680,7 @@ mod tests {
         // P-00AL
         // +
         let pos = Position::new(
-            PartialPosition::from_usi("sfen 6p1k/9/6P1G/9/8L/9/9/9/9 b RBLrb3g4s4n2l16p 1")
+            ShogiCorePartialPosition::from_usi("sfen 6p1k/9/6P1G/9/8L/9/9/9/9 b RBLrb3g4s4n2l16p 1")
                 .expect("failed to parse"),
         );
         let test_cases = [

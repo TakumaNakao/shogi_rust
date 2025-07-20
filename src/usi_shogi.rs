@@ -2,12 +2,13 @@ use std::io::{self, BufRead};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use shogi_core::{Color, Move, Piece, PieceKind, Position, Square};
+use shogi_core::{Move, Piece};
 use crate::ai::ShogiAI;
 use crate::evaluation::SparseModelEvaluator;
 use std::path::PathBuf;
+use yasai::Position;
 
-use crate::utils::{format_move_usi, parse_square, parse_usi_move};
+use crate::utils::{format_move_usi, parse_usi_move};
 
 
 // --- USI Engine Logic ---
@@ -28,7 +29,7 @@ struct UsiEngine {
 impl UsiEngine {
     fn new() -> Self {
         UsiEngine {
-            position: Position::startpos(),
+            position: Position::default(),
             stop_signal: Arc::new(AtomicBool::new(false)),
             eval_file_path: None,
             max_depth: 30, // Default max depth
@@ -114,14 +115,14 @@ impl UsiEngine {
     }
 
     fn handle_usinewgame(&mut self) {
-        self.position = Position::startpos();
+        self.position = Position::default();
         if let Some(ai_instance) = self.ai.lock().unwrap().as_mut() {
             ai_instance.clear();
         }
     }
 
     fn handle_position(&mut self, tokens: &[&str]) {
-        self.position = Position::startpos();
+        self.position = Position::default();
 
         if let Some(moves_idx) = tokens.iter().position(|&s| s == "moves") {
             for move_str in &tokens[moves_idx + 1..] {
@@ -130,7 +131,7 @@ impl UsiEngine {
                         let colored_piece = Piece::new(piece.piece_kind(), self.position.side_to_move());
                         mv = Move::Drop { piece: colored_piece, to };
                     }
-                    let _ = self.position.make_move(mv);
+                    self.position.do_move(mv);
                 }
             }
         }
@@ -150,7 +151,7 @@ impl UsiEngine {
         self.stop_signal.store(false, Ordering::SeqCst);
 
         let byoyomi = self.search_time_limit;
-        let position = self.position.clone();
+        let mut position = self.position.clone();
         let stop_signal = self.stop_signal.clone();
         let max_depth = self.max_depth;
         let ai = self.ai.clone();
@@ -158,7 +159,7 @@ impl UsiEngine {
         thread::spawn(move || {
             let mut ai_lock = ai.lock().unwrap();
             if let Some(thinking_ai) = ai_lock.as_mut() {
-                if let Some(best_move) = thinking_ai.find_best_move(&position, max_depth, Some(byoyomi)) {
+                if let Some(best_move) = thinking_ai.find_best_move(&mut position, max_depth, Some(byoyomi)) {
                     if !stop_signal.load(Ordering::SeqCst) {
                         println!("bestmove {}", format_move_usi(best_move));
                     }

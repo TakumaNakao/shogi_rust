@@ -3,6 +3,7 @@ use shogi_core::{Color, Move, PieceKind, Square};
 use arrayvec::ArrayVec;
 use crate::position_hash::{ZOBRIST_KEYS, PIECE_KINDS, HAND_PIECE_KINDS, color_to_index};
 use crate::utils::get_piece_value;
+use yasai::Position;
 
 fn hash_move(mv: Move) -> u64 {
     match mv {
@@ -132,7 +133,7 @@ impl MoveOrdering {
     }
 
     /// 指し手にスコアを割り当てます。
-    pub fn score_move(&self, current_move: &Move, position: &shogi_core::Position) -> i32 {
+    pub fn score_move(&self, current_move: &Move, position: &Position) -> i32 {
         let mut score = 0;
 
         let (piece_kind, color) = match current_move {
@@ -173,12 +174,12 @@ impl MoveOrdering {
     }
 
     /// 指し手のリストをスコアに基づいてソートします。
-    pub fn sort_moves(&self, moves: &mut ArrayVec<Move, 593>, position: &shogi_core::Position) {
+    pub fn sort_moves(&self, moves: &mut ArrayVec<Move, 593>, position: &Position) {
         moves.sort_by_key(|m| -self.score_move(m, position));
     }
 
     /// 履歴テーブルを更新します。
-    pub fn update_history(&mut self, good_move: &Move, position: &shogi_core::Position, delta: i32) {
+    pub fn update_history(&mut self, good_move: &Move, position: &Position, delta: i32) {
         let (piece_kind, color) = match good_move {
             Move::Normal { from, .. } => {
                 let piece = position.piece_at(*from).unwrap();

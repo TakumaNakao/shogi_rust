@@ -1,5 +1,5 @@
 use circular_buffer::CircularBuffer;
-use shogi_core::Position;
+use yasai::Position;
 
 use crate::position_hash::PositionHasher;
 
@@ -89,14 +89,14 @@ mod tests {
         for _ in 0..3 {
             let mv1 = Move::Normal { from: Square::new(2, 7).unwrap(), to: Square::new(2, 6).unwrap(), promote: false };
             let mv2 = Move::Normal { from: Square::new(8, 3).unwrap(), to: Square::new(8, 4).unwrap(), promote: false };
-            pos.make_move(mv1).unwrap();
-            pos.make_move(mv2).unwrap();
+            pos.do_move(mv1);
+            pos.do_move(mv2);
             detector.record_position(&pos);
 
             let mv3 = Move::Normal { from: Square::new(2, 6).unwrap(), to: Square::new(2, 7).unwrap(), promote: false };
             let mv4 = Move::Normal { from: Square::new(8, 4).unwrap(), to: Square::new(8, 3).unwrap(), promote: false };
-            pos.make_move(mv3).unwrap();
-            pos.make_move(mv4).unwrap();
+            pos.do_move(mv3);
+            pos.do_move(mv4);
             detector.record_position(&pos);
         }
 
