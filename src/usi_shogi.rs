@@ -16,6 +16,7 @@ use crate::utils::{format_move_usi, parse_usi_move};
 const ENGINE_NAME: &str = "Shogi AI";
 const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
+const OVERWRITE_VALUE: f32 = -50.0;
 
 struct UsiEngine {
     position: Position,
@@ -82,7 +83,7 @@ impl UsiEngine {
                 Some(&"EvalFile") => {
                     if let Some(path_str) = tokens.get(4) {
                         let new_path = PathBuf::from(path_str);
-                        match SparseModelEvaluator::new(&new_path) {
+                        match SparseModelEvaluator::new(&new_path, OVERWRITE_VALUE) {
                             Ok(evaluator) => {
                                 let new_ai = ShogiAI::new(evaluator);
                                 *self.ai.lock().unwrap() = Some(new_ai);

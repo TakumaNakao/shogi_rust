@@ -11,8 +11,8 @@ use shogi_lib::Position;
 fn main() {
     println!("--- ShogiAI 自己対局 ---");
 
-    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights5times.binary")).expect("Failed to create SparseModelEvaluator for Sente");
-    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights5times.binary")).expect("Failed to create SparseModelEvaluator for Gote");
+    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights5times.binary"), -50.0).expect("Failed to create SparseModelEvaluator for Sente");
+    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights5times.binary"), -50.0).expect("Failed to create SparseModelEvaluator for Gote");
 
     const GAME_HISTORY_CAPACITY: usize = 128;
 

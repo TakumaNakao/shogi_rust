@@ -168,7 +168,13 @@ impl SparseModel {
         }
     }
 
-    
+    pub fn zero_weight_overwrite(&mut self, overwrite_value: f32) {
+        for i in 0..MAX_FEATURES {
+            if self.w[i] == 0.0 {
+                self.w[i] = overwrite_value;
+            }
+        }
+    }
 
     pub fn predict(&self, _pos: &shogi_lib::Position, kpp_features: &[usize]) -> f32 {
         let mut prediction = self.bias;
@@ -314,9 +320,10 @@ pub struct SparseModelEvaluator {
 }
 
 impl SparseModelEvaluator {
-    pub fn new(weight_path: &Path) -> Result<Self> {
+    pub fn new(weight_path: &Path, overwrite_value: f32) -> Result<Self> {
         let mut model = SparseModel::new(0.0, 0.0); // eta and lambda are not used in evaluation
         model.load(weight_path)?;
+        model.zero_weight_overwrite(overwrite_value);
         Ok(SparseModelEvaluator { model })
     }
 }
