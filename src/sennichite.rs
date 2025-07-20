@@ -1,5 +1,5 @@
 use circular_buffer::CircularBuffer;
-use yasai::Position;
+use shogi_lib::Position;
 
 use crate::position_hash::PositionHasher;
 

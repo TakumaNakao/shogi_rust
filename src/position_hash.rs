@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use shogi_core::{Color, PieceKind, Square};
-use yasai::Position;
+use shogi_lib::Position;
 
 pub const PIECE_KINDS: [PieceKind; 14] = [
     PieceKind::Pawn, PieceKind::Lance, PieceKind::Knight, PieceKind::Silver,
@@ -147,7 +147,7 @@ mod tests {
         let final_hash = PositionHasher::calculate_hash(&pos);
 
         // Note: The final hash will NOT be the same as the initial hash because the ply count is different.
-        // Zobrist keys in yasai::Position do not account for ply, but the sequence of moves is not a true repetition
+        // Zobrist keys in shogi_lib::Position do not account for ply, but the sequence of moves is not a true repetition
         // in terms of game state if ply is considered. However, for transposition table purposes, this is often desired.
         // The core test here is that the hash function is deterministic.
         

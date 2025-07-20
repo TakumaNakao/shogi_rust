@@ -6,7 +6,7 @@ use shogi_core::{Move, Piece};
 use crate::ai::ShogiAI;
 use crate::evaluation::SparseModelEvaluator;
 use std::path::PathBuf;
-use yasai::Position;
+use shogi_lib::Position;
 
 use crate::utils::{format_move_usi, parse_usi_move};
 

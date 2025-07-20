@@ -8,7 +8,7 @@ use std::time::Instant;
 use rand::prelude::*;
 use plotters::prelude::*;
 use rayon::prelude::*;
-use yasai::Position;
+use shogi_lib::Position;
 
 mod evaluation;
 use evaluation::{SparseModel, extract_kpp_features};
@@ -74,7 +74,7 @@ fn process_csa_file(path: &Path) -> Result<Vec<(Position, Vec<usize>, f32)>> {
         None => return Ok(positions_in_file), // Skip games with no winner
     };
 
-    let mut yasai_pos = Position::default();
+    let mut shogi_lib_pos = Position::default();
     for (index, mv) in record.moves.iter().enumerate() {
         let shogi_move = match &mv.action {
             csa::Action::Move(color, from_csa, to_csa, piece_type_after_csa) => {
@@ -98,7 +98,7 @@ fn process_csa_file(path: &Path) -> Result<Vec<(Position, Vec<usize>, f32)>> {
                         println!("Error from_sq");
                         continue;
                     };
-                    let piece_before = if let Some(p) = yasai_pos.piece_at(from_sq) {
+                    let piece_before = if let Some(p) = shogi_lib_pos.piece_at(from_sq) {
                         p
                     } else {
                         println!("Error piece_before");
@@ -118,16 +118,16 @@ fn process_csa_file(path: &Path) -> Result<Vec<(Position, Vec<usize>, f32)>> {
         let gain = index as f32 / (index as f32 + REWARD_GAIN);
         let label = gain * final_label;
 
-        let turn = yasai_pos.side_to_move();
-        let features = extract_kpp_features(&yasai_pos);
+        let turn = shogi_lib_pos.side_to_move();
+        let features = extract_kpp_features(&shogi_lib_pos);
 
         // 教師ラベルを、その局面の手番の視点に合わせる
         let label_for_turn = if turn == Color::Black { label } else { -label };
 
         if !features.is_empty() {
-            positions_in_file.push((yasai_pos.clone(), features, label_for_turn));
+            positions_in_file.push((shogi_lib_pos.clone(), features, label_for_turn));
         }
-        yasai_pos.do_move(shogi_move);
+        shogi_lib_pos.do_move(shogi_move);
     }
     Ok(positions_in_file)
 }

@@ -6,7 +6,7 @@ use shogi_ai::evaluation::{Evaluator, SparseModelEvaluator};
 use shogi_ai::sennichite::SennichiteStatus;
 use shogi_ai::utils::{draw_evaluation_graph, move_to_kif};
 use shogi_core::Color;
-use yasai::Position;
+use shogi_lib::Position;
 
 fn main() {
     println!("--- ShogiAI 自己対局 ---");

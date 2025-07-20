@@ -1,6 +1,6 @@
 use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use plotters::prelude::*;
-use yasai::Position;
+use shogi_lib::Position;
 
 pub fn get_piece_value(piece_kind: PieceKind) -> i32 {
     use shogi_core::PieceKind::*;

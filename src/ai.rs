@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use shogi_core::{Move};
-use yasai::Position;
+use shogi_lib::Position;
 use crate::evaluation::{Evaluator};
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;

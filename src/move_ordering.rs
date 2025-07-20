@@ -3,7 +3,7 @@ use shogi_core::{Color, Move, PieceKind, Square};
 use arrayvec::ArrayVec;
 use crate::position_hash::{ZOBRIST_KEYS, PIECE_KINDS, HAND_PIECE_KINDS, color_to_index};
 use crate::utils::get_piece_value;
-use yasai::Position;
+use shogi_lib::Position;
 
 fn hash_move(mv: Move) -> u64 {
     match mv {

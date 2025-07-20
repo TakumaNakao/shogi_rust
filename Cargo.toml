@@ -21,7 +21,7 @@ indicatif = "0.17"
 flate2 = "1.0"
 plotters = "0.3.6"
 arrayvec = "0.7.2"
-yasai = { path = "./shogi_lib" }
+shogi_lib = { path = "./shogi_lib" }
 circular-buffer = "0.1.1"
 lazy_static = "1.4.0"
 rand_chacha = "0.3.1"

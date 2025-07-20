@@ -6,11 +6,11 @@ use std::io::{Read, Write};
 use std::path::Path;
 use rand::prelude::*;
 use rand_distr::Distribution;
-use yasai;
+use shogi_lib;
 
 // --- Evaluator Trait ---
 pub trait Evaluator {
-    fn evaluate(&self, position: &yasai::Position) -> f32;
+    fn evaluate(&self, position: &shogi_lib::Position) -> f32;
 }
 
 // --- KPP-based Evaluator ---
@@ -170,7 +170,7 @@ impl SparseModel {
 
     
 
-    pub fn predict(&self, _pos: &yasai::Position, kpp_features: &[usize]) -> f32 {
+    pub fn predict(&self, _pos: &shogi_lib::Position, kpp_features: &[usize]) -> f32 {
         let mut prediction = self.bias;
         for &i in kpp_features {
             if i < MAX_FEATURES {
@@ -180,7 +180,7 @@ impl SparseModel {
         prediction
     }
 
-    pub fn update_batch(&mut self, batch: &[(yasai::Position, Vec<usize>, f32)]) -> f32 {
+    pub fn update_batch(&mut self, batch: &[(shogi_lib::Position, Vec<usize>, f32)]) -> f32 {
         let m = batch.len() as f32;
         if m == 0.0 {
             return 0.0;
@@ -242,7 +242,7 @@ fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color)
     }
 }
 
-pub fn extract_kpp_features(pos: &yasai::Position) -> Vec<usize> {
+pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
     let turn = pos.side_to_move();
 
     let king_sq = match (0..81).find_map(|i| {
@@ -323,7 +323,7 @@ impl SparseModelEvaluator {
 
 
 impl Evaluator for SparseModelEvaluator {
-    fn evaluate(&self, position: &yasai::Position) -> f32 {
+    fn evaluate(&self, position: &shogi_lib::Position) -> f32 {
         let kpp_features = extract_kpp_features(position);
         self.model.predict(position, &kpp_features)
     }
@@ -333,7 +333,7 @@ impl Evaluator for SparseModelEvaluator {
 mod tests {
     use super::*;
     use shogi_core::{PieceKind, Color};
-    use yasai::Position;
+    use shogi_lib::Position;
 
     fn create_test_model() -> SparseModel {
         let mut model = SparseModel::new(0.01, 0.0);
