@@ -31,15 +31,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} --bin usi_engine --bin kpp_learn
-      - name: Rename artifacts
+      - name: Rename artifacts (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           mv target/${{ matrix.target }}/release/${{ matrix.usi_engine_artifact_name }} target/${{ matrix.target }}/release/${{ matrix.usi_engine_artifact_name }}_${{ github.ref_name }}
           mv target/${{ matrix.target }}/release/${{ matrix.kpp_learn_artifact_name }} target/${{ matrix.target }}/release/${{ matrix.kpp_learn_artifact_name }}_${{ github.ref_name }}
+      - name: Rename artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          mv target/${{ matrix.target }}/release/${{ matrix.usi_engine_artifact_name }} target/${{ matrix.target }}/release/usi_engine_${{ github.ref_name }}.exe
+          mv target/${{ matrix.target }}/release/${{ matrix.kpp_learn_artifact_name }} target/${{ matrix.target }}/release/kpp_learn_${{ github.ref_name }}.exe
       - name: Upload to Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            target/${{ matrix.target }}/release/${{ matrix.usi_engine_artifact_name }}_${{ github.ref_name }}
-            target/${{ matrix.target }}/release/${{ matrix.kpp_learn_artifact_name }}_${{ github.ref_name }}
+            target/${{ matrix.target }}/release/usi_engine_${{ github.ref_name }}${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+            target/${{ matrix.target }}/release/kpp_learn_${{ github.ref_name }}${{ matrix.os == 'windows-latest' && '.exe' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
