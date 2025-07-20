@@ -16,7 +16,7 @@ use evaluation::SparseModel;
 
 const KPP_LEARNING_RATE: f32 = 0.01;
 const L2_LAMBDA: f32 = 1e-4;
-const BATCH_SIZE: usize = 1024;
+const BATCH_SIZE: usize = 65536;
 
 fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     match csa_piece_type {
@@ -211,11 +211,6 @@ fn main() -> Result<()> {
                      batch_count, accuracy, elapsed_time_batch);
 
             accuracy_history.push((batch_count, accuracy));
-            if batch_count % 10 == 0 {
-                draw_accuracy_graph(&accuracy_history, accuracy_graph_path)?;
-                model.save(weight_path)?;
-                println!("モデルを保存しました。");
-            }
         }
     }
 

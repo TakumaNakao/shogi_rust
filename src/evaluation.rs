@@ -186,39 +186,6 @@ impl SparseModel {
         prediction
     }
 
-    pub fn update_batch(&mut self, batch: &[(shogi_lib::Position, Vec<usize>, f32)]) -> f32 {
-        let m = batch.len() as f32;
-        if m == 0.0 {
-            return 0.0;
-        }
-        let mut total_loss = 0.0;
-
-        let mut bias_grad = 0.0;
-        let mut w_grads = vec![0.0; MAX_FEATURES];
-
-        for (pos, kpp_features, y_true) in batch.iter() {
-            let y_pred = self.predict(pos, kpp_features);
-            let error = y_pred - y_true;
-            total_loss += error * error;
-            
-            let error_grad = 2.0 * error / m;
-            
-            bias_grad += error_grad;
-            for &i in kpp_features {
-                if i < MAX_FEATURES {
-                    w_grads[i] += error_grad;
-                }
-            }
-        }
-
-        self.bias -= self.kpp_eta * bias_grad;
-        for i in 0..MAX_FEATURES {
-            self.w[i] -= self.kpp_eta * (w_grads[i] + self.l2_lambda * self.w[i]);
-        }
-        
-        total_loss / m
-    }
-
     pub fn update_batch_for_moves(&mut self, batch: &[(shogi_lib::Position, shogi_core::Move)]) -> (usize, usize) {
         let mut correct_predictions = 0;
         let total_samples = batch.len();
