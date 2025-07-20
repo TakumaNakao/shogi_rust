@@ -285,7 +285,7 @@ fn generate_sfen(
     }
 
     // Always 'b' for Black to move, as we normalized to Black's perspective
-    format!("{} {} b 1", sfen_board_str, sfen_hand_str)
+    format!("{} b {} 1", sfen_board_str, sfen_hand_str)
 }
 
 fn main() -> io::Result<()> {
