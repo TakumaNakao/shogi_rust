@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use anyhow::Result;
 use shogi_core::{Color, Piece, PieceKind, Square};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -131,8 +131,7 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
     }) {
         Some(sq) => sq,
         None => {
-            // If black king is not on board, try to find white king and flip the perspective.
-            // This is a fallback for unusual positions, but evaluation should be from a consistent perspective.
+            // If black king is not on board, try to find white king.
             (0..81).find_map(|i| {
                 Square::from_u8(i as u8 + 1).and_then(|sq| {
                     pos.piece_at(sq).and_then(|p| {
@@ -145,7 +144,6 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
                 })
             }).unwrap_or_else(|| {
                 println!("Warning: King not found. Skipping this position.");
-                // Return a default or empty square if no king is found at all.
                 Square::new(5,5).unwrap()
             })
         }
@@ -206,8 +204,6 @@ pub struct SparseModel {
     pub w: Vec<i16>,
     pub bias: i16,
     pub kpp_eta: i16,
-    // L2 regularisation is not used in Bonanza method
-    // pub l2_lambda: f32,
 }
 
 impl SparseModel {
@@ -216,7 +212,6 @@ impl SparseModel {
             w: vec![0; MAX_FEATURES_KPPT],
             bias: 0,
             kpp_eta,
-            // l2_lambda,
         }
     }
 
@@ -318,7 +313,7 @@ impl SparseModel {
                 // The current player wants to find a move that MINIMIZES the opponent's score.
                 let mut best_move_by_model: Option<shogi_core::Move> = None;
                 let mut min_opponent_score = i32::MAX;
-                let mut best_model_features: Vec<usize> = Vec::new();
+                let mut best_model_features: Option<Vec<usize>> = None;
                 let mut teacher_move_features: Option<Vec<usize>> = None;
 
                 for &mv in legal_moves.iter() {
@@ -331,27 +326,30 @@ impl SparseModel {
                     if opponent_score < min_opponent_score {
                         min_opponent_score = opponent_score;
                         best_move_by_model = Some(mv);
-                        best_model_features = features.clone();
+                        best_model_features = Some(features.clone());
                     }
                     if mv == *teacher_move {
                         teacher_move_features = Some(features);
                     }
                 }
 
-                if let Some(model_move) = best_move_by_model {
+                if let (Some(model_move), Some(teacher_features), Some(model_features)) = (best_move_by_model, teacher_move_features, best_model_features) {
                     if model_move == *teacher_move {
                         is_correct = true;
-                    } else if let Some(teacher_features) = teacher_move_features {
+                    } else {
+                        let teacher_set: HashSet<_> = teacher_features.into_iter().collect();
+                        let model_set: HashSet<_> = model_features.into_iter().collect();
+
                         // We want the teacher move to look better from our perspective.
                         // This means the resulting opponent's score should be LOWER.
                         // So, teacher features get a negative gradient.
-                        for &idx in &teacher_features {
+                        for &idx in teacher_set.difference(&model_set) {
                             *sparse_grads.entry(idx).or_insert(0) -= 1;
                         }
                         // We want the model's chosen move to look worse from our perspective.
                         // This means the resulting opponent's score should be HIGHER.
                         // So, model features get a positive gradient.
-                        for &idx in &best_model_features {
+                        for &idx in model_set.difference(&teacher_set) {
                             *sparse_grads.entry(idx).or_insert(0) += 1;
                         }
                     }
@@ -384,11 +382,11 @@ impl SparseModel {
             let mut new_weight = self.w[idx].saturating_add(update_val);
 
             // 2. More robust proportional decay
-            if new_weight != 0 {
-                let sign = new_weight.signum();
-                let decay = (new_weight.abs() >> DECAY_SHIFT) as i16;
-                new_weight -= decay * sign;
-            }
+            // if new_weight != 0 {
+            //     let sign = new_weight.signum();
+            //     let decay = (new_weight.abs() >> DECAY_SHIFT) as i16;
+            //     new_weight -= decay * sign;
+            // }
 
             // 3. Weight clipping
             self.w[idx] = new_weight.clamp(-WEIGHT_LIMIT, WEIGHT_LIMIT);
