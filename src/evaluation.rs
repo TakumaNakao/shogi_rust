@@ -50,7 +50,7 @@ pub const ALL_HAND_PIECES: [PieceKind; 7] = [
 
 // --- Evaluator Trait ---
 pub trait Evaluator {
-    fn evaluate(&self, position: &shogi_lib::Position) -> f32;
+    fn evaluate(&self, position: &shogi_lib::Position) -> i32;
 }
 
 // --- KPP-based Evaluator ---
@@ -185,19 +185,20 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
 
 #[derive(Default)]
 pub struct SparseModel {
-    pub w: Vec<f32>,
-    pub bias: f32,
-    pub kpp_eta: f32,
-    pub l2_lambda: f32,
+    pub w: Vec<i16>,
+    pub bias: i16,
+    pub kpp_eta: i16,
+    // L2 regularisation is not used in Bonanza method
+    // pub l2_lambda: f32,
 }
 
 impl SparseModel {
-    pub fn new(kpp_eta: f32, l2_lambda: f32) -> Self {
+    pub fn new(kpp_eta: i16) -> Self {
         Self {
-            w: vec![0.0; MAX_FEATURES],
-            bias: 0.0,
+            w: vec![0; MAX_FEATURES],
+            bias: 0,
             kpp_eta,
-            l2_lambda,
+            // l2_lambda,
         }
     }
 
@@ -208,22 +209,18 @@ impl SparseModel {
 
         let mut offset = 0;
 
-        self.bias = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
-        offset += 4;
+        self.bias = i16::from_le_bytes(buffer[offset..offset + 2].try_into()?);
+        offset += 2;
 
-        let expected_w_bytes = MAX_FEATURES * 4;
+        let expected_w_bytes = MAX_FEATURES * 2;
         if buffer.len() - offset != expected_w_bytes {
-            return Err(anyhow::anyhow!("File size mismatch for weights. Expected {} bytes, got {}.", expected_w_bytes + 4, buffer.len()));
+            return Err(anyhow::anyhow!("File size mismatch for weights. Expected {} bytes, got {}.", expected_w_bytes + 2, buffer.len()));
         }
 
-        for i in 0..MAX_FEATURES {
-            let start = offset + i * 4;
-            let end = start + 4;
-            if end > buffer.len() {
-                return Err(anyhow::anyhow!("Unexpected end of file while reading weights."));
-            }
-            self.w[i] = f32::from_le_bytes(buffer[start..end].try_into()?);
-        }
+        self.w = buffer[offset..]
+            .chunks_exact(2)
+            .map(|chunk| i16::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
 
         Ok(())
     }
@@ -240,7 +237,8 @@ impl SparseModel {
 
         file.write_all(&buffer)?;
         
-        println!("Max W: {:?}", self.w.iter().cloned().max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)));
+        println!("Max W: {:?}", self.w.iter().max());
+        println!("Min W: {:?}", self.w.iter().min());
 
         Ok(())
     }
@@ -250,24 +248,24 @@ impl SparseModel {
         let dist = rand_distr::Normal::new(0.0, stddev).unwrap();
         for _ in 0..count {
             let i = rng.gen_range(0..MAX_FEATURES);
-            let v = dist.sample(&mut rng) as f32;
+            let v = dist.sample(&mut rng) as i16;
             self.w[i] = v;
         }
     }
 
-    pub fn zero_weight_overwrite(&mut self, overwrite_value: f32) {
+    pub fn zero_weight_overwrite(&mut self, overwrite_value: i16) {
         for i in 0..MAX_FEATURES {
-            if self.w[i] == 0.0 {
+            if self.w[i] == 0 {
                 self.w[i] = overwrite_value;
             }
         }
     }
 
-    pub fn predict(&self, _pos: &shogi_lib::Position, kpp_features: &[usize]) -> f32 {
-        let mut prediction = self.bias;
+    pub fn predict(&self, _pos: &shogi_lib::Position, kpp_features: &[usize]) -> i32 {
+        let mut prediction = self.bias as i32;
         for &i in kpp_features {
             if i < MAX_FEATURES {
-                prediction += self.w[i];
+                prediction += self.w[i] as i32;
             }
         }
         prediction
@@ -282,16 +280,16 @@ impl SparseModel {
             return (0, 0);
         }
 
-        let results: Vec<(bool, HashMap<usize, f32>)> = batch
+        let results: Vec<(bool, Vec<usize>, Vec<usize>)> = batch
             .par_iter()
             .map(|(pos, teacher_move)| {
                 let legal_moves = pos.legal_moves();
                 if legal_moves.is_empty() {
-                    return (false, HashMap::new());
+                    return (false, Vec::new(), Vec::new());
                 }
 
                 let mut best_move_by_model: Option<shogi_core::Move> = None;
-                let mut max_score = -f32::INFINITY;
+                let mut max_score = i32::MIN;
                 let mut best_model_features: Vec<usize> = Vec::new();
                 let mut teacher_move_features: Option<Vec<usize>> = None;
 
@@ -312,48 +310,52 @@ impl SparseModel {
                     }
                 }
 
-                let mut sparse_grads = HashMap::new();
                 let mut is_correct = false;
+                let teacher_features = teacher_move_features.unwrap_or_default();
 
                 if let Some(model_move) = best_move_by_model {
                     if model_move == *teacher_move {
                         is_correct = true;
-                    } else {
-                        if let Some(teacher_features) = teacher_move_features {
-                            for &idx in &teacher_features {
-                                if idx < MAX_FEATURES {
-                                    *sparse_grads.entry(idx).or_insert(0.0) += self.kpp_eta;
-                                }
-                            }
-                            for &idx in &best_model_features {
-                                if idx < MAX_FEATURES {
-                                    *sparse_grads.entry(idx).or_insert(0.0) -= self.kpp_eta;
-                                }
-                            }
-                        }
                     }
                 }
-                (is_correct, sparse_grads)
+                (is_correct, teacher_features, best_model_features)
             })
             .collect();
 
         let mut correct_predictions = 0;
-        let mut w_grads = vec![0.0; MAX_FEATURES];
+        let mut w_grads: HashMap<usize, i32> = HashMap::new();
 
-        for (is_correct, sparse_grad) in results {
+        for (is_correct, teacher_features, model_features) in results {
             if is_correct {
                 correct_predictions += 1;
-            }
-            for (idx, g) in sparse_grad {
-                w_grads[idx] += g;
+            } else {
+                for &idx in &teacher_features {
+                    if idx < MAX_FEATURES {
+                        *w_grads.entry(idx).or_insert(0) += 1;
+                    }
+                }
+                for &idx in &model_features {
+                    if idx < MAX_FEATURES {
+                        *w_grads.entry(idx).or_insert(0) -= 1;
+                    }
+                }
             }
         }
 
-        for i in 0..MAX_FEATURES {
-            if w_grads[i] != 0.0 {
-                self.w[i] +=
-                    w_grads[i] / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.w[i];
+        let mut rng = rand::thread_rng();
+        for (idx, total_grad) in w_grads {
+            let ideal_update = (total_grad as f32 * self.kpp_eta as f32) / total_samples as f32;
+            
+            let integer_part = ideal_update.trunc();
+            let fractional_part = ideal_update.fract();
+
+            let mut update_val = integer_part as i16;
+
+            if rng.gen::<f32>() < fractional_part.abs() {
+                update_val += fractional_part.signum() as i16;
             }
+            
+            self.w[idx] = self.w[idx].saturating_add(update_val);
         }
 
         (correct_predictions, total_samples)
@@ -366,8 +368,8 @@ pub struct SparseModelEvaluator {
 }
 
 impl SparseModelEvaluator {
-    pub fn new(weight_path: &Path, overwrite_value: f32) -> Result<Self> {
-        let mut model = SparseModel::new(0.0, 0.0);
+    pub fn new(weight_path: &Path, overwrite_value: i16) -> Result<Self> {
+        let mut model = SparseModel::new(0);
         model.load(weight_path)?;
         model.zero_weight_overwrite(overwrite_value);
         Ok(SparseModelEvaluator { model })
@@ -376,7 +378,7 @@ impl SparseModelEvaluator {
 
 
 impl Evaluator for SparseModelEvaluator {
-    fn evaluate(&self, position: &shogi_lib::Position) -> f32 {
+    fn evaluate(&self, position: &shogi_lib::Position) -> i32 {
         let kpp_features = extract_kpp_features(position);
         self.model.predict(position, &kpp_features)
     }

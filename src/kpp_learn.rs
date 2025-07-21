@@ -14,8 +14,7 @@ use shogi_lib::Position;
 // evaluationモジュールから公開されたロジックとモデルを使用する
 use shogi_ai::evaluation::SparseModel;
 
-const KPP_LEARNING_RATE: f32 = 0.01;
-const L2_LAMBDA: f32 = 1e-4;
+const KPP_LEARNING_RATE: i16 = 1;
 const BATCH_SIZE: usize = 4096;
 
 fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
@@ -142,7 +141,7 @@ fn main() -> Result<()> {
     let weight_path = Path::new("./policy_weights.binary");
     let accuracy_graph_path = "move_accuracy_graph.png";
 
-    let mut model = SparseModel::new(KPP_LEARNING_RATE, L2_LAMBDA);
+    let mut model = SparseModel::new(KPP_LEARNING_RATE);
 
     if weight_path.exists() {
         println!("重みファイルを読み込んでいます...");

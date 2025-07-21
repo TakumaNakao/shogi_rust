@@ -84,7 +84,7 @@ pub fn piece_value(piece: Piece) -> i32 {
     get_piece_value(piece.piece_kind())
 }
 
-pub fn draw_evaluation_graph(sente_data: &[(usize, f32)], gote_data: &[(usize, f32)], path: &str) -> anyhow::Result<()> {
+pub fn draw_evaluation_graph(sente_data: &[(usize, i32)], gote_data: &[(usize, i32)], path: &str) -> anyhow::Result<()> {
     let root = BitMapBackend::new(path, (1024, 768)).into_drawing_area();
     root.fill(&WHITE)?;
 
@@ -96,7 +96,7 @@ pub fn draw_evaluation_graph(sente_data: &[(usize, f32)], gote_data: &[(usize, f
     let (min_score, max_score) = sente_data
         .iter()
         .chain(gote_data.iter())
-        .fold((f32::MAX, f32::MIN), |(min, max), &(_, score)| {
+        .fold((i32::MAX, i32::MIN), |(min, max), &(_, score)| {
             (min.min(score), max.max(score))
         });
 

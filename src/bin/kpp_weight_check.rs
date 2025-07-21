@@ -148,22 +148,23 @@ fn main() -> io::Result<()> {
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
 
-    let weights: Vec<f32> = buffer[4..]
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+    // Skip bias (2 bytes)
+    let weights: Vec<i16> = buffer[2..]
+        .chunks_exact(2)
+        .map(|chunk| i16::from_le_bytes(chunk.try_into().unwrap()))
         .collect();
 
     println!("Loaded {} weights.", weights.len());
 
-    let mut indexed_weights: Vec<(usize, f32)> = weights.iter().enumerate().map(|(i, &w)| (i, w)).collect();
+    let mut indexed_weights: Vec<(usize, i16)> = weights.iter().enumerate().map(|(i, &w)| (i, w)).collect();
 
-    indexed_weights.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    indexed_weights.sort_by_key(|a| a.1);
 
     println!("\n--- Top 10 Weights ---");
     for i in (indexed_weights.len().saturating_sub(10)..indexed_weights.len()).rev() {
         let (index, weight) = indexed_weights[i];
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
-            println!("Weight: {:.6}, Index: {}", weight, index);
+            println!("Weight: {}, Index: {}", weight, index);
             println!("  King (Normalized): Black at {:?} (Corresponds to White's King at {:?})", king_sq, king_sq.flip());
             println!("  Piece 1: {:?} {:?} at {:?} (Hand: {:?})", p1c, p1k, p1sq, p1hi);
             println!("  Piece 2: {:?} {:?} at {:?} (Hand: {:?})", p2c, p2k, p2sq, p2hi);
@@ -177,7 +178,7 @@ fn main() -> io::Result<()> {
     for i in 0..std::cmp::min(10, indexed_weights.len()) {
         let (index, weight) = indexed_weights[i];
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
-            println!("Weight: {:.6}, Index: {}", weight, index);
+            println!("Weight: {}, Index: {}", weight, index);
             println!("  King (Normalized): Black at {:?} (Corresponds to White's King at {:?})", king_sq, king_sq.flip());
             println!("  Piece 1: {:?} {:?} at {:?} (Hand: {:?})", p1c, p1k, p1sq, p1hi);
             println!("  Piece 2: {:?} {:?} at {:?} (Hand: {:?})", p2c, p2k, p2sq, p2hi);

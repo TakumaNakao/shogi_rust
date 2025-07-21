@@ -16,7 +16,7 @@ use crate::utils::{format_move_usi, parse_usi_move};
 const ENGINE_NAME: &str = "Shogi AI";
 const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
-const OVERWRITE_VALUE: f32 = 0.0;
+const OVERWRITE_VALUE: i16 = 0;
 
 struct UsiEngine {
     position: Position,

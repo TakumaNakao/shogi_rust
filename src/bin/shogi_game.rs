@@ -11,8 +11,8 @@ use shogi_lib::Position;
 fn main() {
     println!("--- ShogiAI 自己対局 ---");
 
-    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights5times.binary"), -50.0).expect("Failed to create SparseModelEvaluator for Sente");
-    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights5times.binary"), -50.0).expect("Failed to create SparseModelEvaluator for Gote");
+    let evaluator_sente = SparseModelEvaluator::new(Path::new("./weights5times.binary"), -50).expect("Failed to create SparseModelEvaluator for Sente");
+    let evaluator_gote = SparseModelEvaluator::new(Path::new("./weights5times.binary"), -50).expect("Failed to create SparseModelEvaluator for Gote");
 
     const GAME_HISTORY_CAPACITY: usize = 128;
 
@@ -30,8 +30,8 @@ fn main() {
     let mut turn = 0;
     let max_turns = 150;
     let mut kif_moves: Vec<String> = Vec::new();
-    let mut sente_evaluation_history: Vec<(usize, f32)> = Vec::new();
-    let mut gote_evaluation_history: Vec<(usize, f32)> = Vec::new();
+    let mut sente_evaluation_history: Vec<(usize, i32)> = Vec::new();
+    let mut gote_evaluation_history: Vec<(usize, i32)> = Vec::new();
 
     ai_sente.sennichite_detector.record_position(&position);
     ai_gote.sennichite_detector.record_position(&position);

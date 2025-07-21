@@ -9,6 +9,7 @@ use crate::utils::{format_move_usi, get_piece_value};
 use std::time::{Duration, Instant};
 
 const MAX_DEPTH: usize = 64;
+const MATE_SCORE: i32 = 30000;
 
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -21,7 +22,7 @@ enum NodeType {
 /// トランスポジションテーブルのエントリ
 #[derive(Clone, Copy, Debug)]
 struct TranspositionEntry {
-    score: f32,
+    score: i32,
     depth: u8,
     node_type: NodeType,
     best_move: Option<Move>,
@@ -167,7 +168,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         is_in_check
     }
 
-    pub fn quiescence_search(&mut self, position: &mut Position, mut alpha: f32, beta: f32) -> Option<(f32, Vec<Move>)> {
+    pub fn quiescence_search(&mut self, position: &mut Position, mut alpha: i32, beta: i32) -> Option<(i32, Vec<Move>)> {
         if self.is_time_up() { return None; }
         self.nodes_searched += 1;
 
@@ -200,8 +201,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             self.sennichite_detector.record_position(position);
             let sennichite_status = self.is_sennichite_internal(position);
             let score_result = match sennichite_status {
-                SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
+                SennichiteStatus::Draw => Some((0, Vec::new())),
+                SennichiteStatus::PerpetualCheckLoss => Some((-MATE_SCORE, Vec::new())),
                 SennichiteStatus::None => self.quiescence_search(position, -beta, -alpha),
             };
             self.sennichite_detector.unrecord_last_position();
@@ -219,7 +220,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         Some((best_score, Vec::new()))
     }
 
-    pub fn alpha_beta_search(&mut self, position: &mut Position, depth: u8, mut alpha: f32, mut beta: f32) -> Option<(f32, Vec<Move>)> {
+    pub fn alpha_beta_search(&mut self, position: &mut Position, depth: u8, mut alpha: i32, mut beta: i32) -> Option<(i32, Vec<Move>)> {
         if self.is_time_up() { return None; }
         if depth == 0 { return self.quiescence_search(position, alpha, beta); }
         self.nodes_searched += 1;
@@ -237,7 +238,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
 
         let moves = position.legal_moves();
-        if moves.is_empty() { return Some((-f32::INFINITY, Vec::new())); }
+        if moves.is_empty() { return Some((-MATE_SCORE, Vec::new())); }
 
         let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|mv| {
             let mut score = self.move_ordering.score_move(mv, position);
@@ -262,7 +263,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
 
-        let mut best_score = -f32::INFINITY;
+        let mut best_score = -MATE_SCORE;
         let mut best_move: Option<Move> = None;
         let mut best_pv = Vec::new();
         let mut node_type = NodeType::UpperBound;
@@ -272,8 +273,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             self.sennichite_detector.record_position(position);
             let sennichite_status = self.is_sennichite_internal(position);
             let search_result = match sennichite_status {
-                SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
+                SennichiteStatus::Draw => Some((0, Vec::new())),
+                SennichiteStatus::PerpetualCheckLoss => Some((-MATE_SCORE, Vec::new())),
                 SennichiteStatus::None => self.alpha_beta_search(position, depth - 1, -beta, -alpha),
             };
             self.sennichite_detector.unrecord_last_position();
@@ -342,10 +343,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
         for depth in 1..=max_depth {
             let mut current_best_move_for_depth: Option<Move> = None;
-            let mut best_eval_for_depth = -f32::INFINITY;
+            let mut best_eval_for_depth = -MATE_SCORE;
             let mut best_pv_for_depth: Vec<Move> = Vec::new();
-            let mut alpha = -f32::INFINITY;
-            let beta = f32::INFINITY;
+            let mut alpha = -MATE_SCORE;
+            let beta = MATE_SCORE;
             let mut search_interrupted = false;
 
             for mv in &sorted_moves {
@@ -360,8 +361,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 self.sennichite_detector.unrecord_last_position();
 
                 let eval_result = match sennichite_status {
-                    SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                    SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
+                    SennichiteStatus::Draw => Some((0, Vec::new())),
+                    SennichiteStatus::PerpetualCheckLoss => Some((-MATE_SCORE, Vec::new())),
                     SennichiteStatus::None => self.alpha_beta_search(position, depth - 1, -beta, -alpha),
                 };
                 position.undo_move(*mv);
@@ -393,7 +394,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 let pv_string = best_pv_for_depth.iter().map(|m| format_move_usi(*m)).collect::<Vec<_>>().join(" ");
                 
                 // 評価値は手番視点に変換する
-                let score_cp = (best_eval_for_depth * 100.0) as i32;
+                let score_cp = best_eval_for_depth;
 
                 println!(
                     "info depth {} score cp {} time {} nodes {} pv {}",
