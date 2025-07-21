@@ -1,11 +1,13 @@
 #![allow(dead_code)]
 use anyhow::Result;
 use shogi_core::{Color, Piece, PieceKind, Square};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use rand::prelude::*;
 use rand_distr::Distribution;
+use rayon::prelude::*;
 use shogi_lib;
 
 // --- Evaluator Trait ---
@@ -186,72 +188,87 @@ impl SparseModel {
         prediction
     }
 
-    pub fn update_batch_for_moves(&mut self, batch: &[(shogi_lib::Position, shogi_core::Move)]) -> (usize, usize) {
-        let mut correct_predictions = 0;
+    pub fn update_batch_for_moves(
+        &mut self,
+        batch: &[(shogi_lib::Position, shogi_core::Move)],
+    ) -> (usize, usize) {
         let total_samples = batch.len();
         if total_samples == 0 {
             return (0, 0);
         }
 
-        // Calculate gradients for the entire batch
-        let mut w_grads = vec![0.0; MAX_FEATURES];
-
-        for (pos, teacher_move) in batch.iter() {
-            let legal_moves = pos.legal_moves();
-            if legal_moves.is_empty() {
-                continue;
-            }
-
-            let mut best_move_by_model: Option<shogi_core::Move> = None;
-            let mut max_score = -f32::INFINITY;
-            let mut best_model_features: Vec<usize> = Vec::new();
-            let mut teacher_move_features: Option<Vec<usize>> = None;
-
-
-            for &mv in legal_moves.iter() {
-                let mut temp_pos = pos.clone();
-                temp_pos.do_move(mv);
-                let features = extract_kpp_features(&temp_pos);
-                let score = self.predict(&temp_pos, &features);
-
-                if score > max_score {
-                    max_score = score;
-                    best_move_by_model = Some(mv);
-                    best_model_features = features.clone();
+        let results: Vec<(bool, HashMap<usize, f32>)> = batch
+            .par_iter()
+            .map(|(pos, teacher_move)| {
+                let legal_moves = pos.legal_moves();
+                if legal_moves.is_empty() {
+                    return (false, HashMap::new());
                 }
 
-                if mv == *teacher_move {
-                    teacher_move_features = Some(features);
-                }
-            }
+                let mut best_move_by_model: Option<shogi_core::Move> = None;
+                let mut max_score = -f32::INFINITY;
+                let mut best_model_features: Vec<usize> = Vec::new();
+                let mut teacher_move_features: Option<Vec<usize>> = None;
 
-            if let Some(model_move) = best_move_by_model {
-                if model_move == *teacher_move {
-                    correct_predictions += 1;
-                } else {
-                    // Update gradients based on the difference between teacher move and model's best move
-                    if let Some(teacher_features) = teacher_move_features {
-                        // Perceptron-like update: encourage teacher_features, discourage model_features
-                        for &idx in &teacher_features {
-                            if idx < MAX_FEATURES {
-                                w_grads[idx] += self.kpp_eta;
+                for &mv in legal_moves.iter() {
+                    let mut temp_pos = pos.clone();
+                    temp_pos.do_move(mv);
+                    let features = extract_kpp_features(&temp_pos);
+                    let score = self.predict(&temp_pos, &features);
+
+                    if score > max_score {
+                        max_score = score;
+                        best_move_by_model = Some(mv);
+                        best_model_features = features.clone();
+                    }
+
+                    if mv == *teacher_move {
+                        teacher_move_features = Some(features);
+                    }
+                }
+
+                let mut sparse_grads = HashMap::new();
+                let mut is_correct = false;
+
+                if let Some(model_move) = best_move_by_model {
+                    if model_move == *teacher_move {
+                        is_correct = true;
+                    } else {
+                        if let Some(teacher_features) = teacher_move_features {
+                            for &idx in &teacher_features {
+                                if idx < MAX_FEATURES {
+                                    *sparse_grads.entry(idx).or_insert(0.0) += self.kpp_eta;
+                                }
                             }
-                        }
-                        for &idx in &best_model_features {
-                            if idx < MAX_FEATURES {
-                                w_grads[idx] -= self.kpp_eta;
+                            for &idx in &best_model_features {
+                                if idx < MAX_FEATURES {
+                                    *sparse_grads.entry(idx).or_insert(0.0) -= self.kpp_eta;
+                                }
                             }
                         }
                     }
                 }
+                (is_correct, sparse_grads)
+            })
+            .collect();
+
+        let mut correct_predictions = 0;
+        let mut w_grads = vec![0.0; MAX_FEATURES];
+
+        for (is_correct, sparse_grad) in results {
+            if is_correct {
+                correct_predictions += 1;
+            }
+            for (idx, g) in sparse_grad {
+                w_grads[idx] += g;
             }
         }
 
         // Apply the batch gradients
         for i in 0..MAX_FEATURES {
             if w_grads[i] != 0.0 {
-                // Apply gradient and L2 regularization
-                self.w[i] += w_grads[i] / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.w[i];
+                self.w[i] +=
+                    w_grads[i] / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.w[i];
             }
         }
 

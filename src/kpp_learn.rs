@@ -16,7 +16,7 @@ use evaluation::SparseModel;
 
 const KPP_LEARNING_RATE: f32 = 0.01;
 const L2_LAMBDA: f32 = 1e-4;
-const BATCH_SIZE: usize = 65536;
+const BATCH_SIZE: usize = 4096;
 
 fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     match csa_piece_type {
