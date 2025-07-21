@@ -157,13 +157,12 @@ fn main() -> io::Result<()> {
 
     println!("Loaded {} weights.", weights.len());
 
-    let mut indexed_weights: Vec<(usize, i16)> = weights.iter().enumerate().map(|(i, &w)| (i, w)).collect();
-
-    indexed_weights.sort_by_key(|a| a.1);
+    let mut indices: Vec<usize> = (0..weights.len()).collect();
+    indices.sort_by_key(|&i| weights[i]);
 
     println!("\n--- Top 10 Weights ---");
-    for i in (indexed_weights.len().saturating_sub(10)..indexed_weights.len()).rev() {
-        let (index, weight) = indexed_weights[i];
+    for &index in indices.iter().rev().take(10) {
+        let weight = weights[index];
         let turn = if index < evaluation::MAX_FEATURES_KPP { Color::Black } else { Color::White };
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
             println!("Weight: {}, Index: {} (Turn: {:?})", weight, index, turn);
@@ -177,8 +176,8 @@ fn main() -> io::Result<()> {
     }
 
     println!("\n--- Bottom 10 Weights ---");
-    for i in 0..std::cmp::min(10, indexed_weights.len()) {
-        let (index, weight) = indexed_weights[i];
+    for &index in indices.iter().take(10) {
+        let weight = weights[index];
         let turn = if index < evaluation::MAX_FEATURES_KPP { Color::Black } else { Color::White };
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
             println!("Weight: {}, Index: {} (Turn: {:?})", weight, index, turn);
