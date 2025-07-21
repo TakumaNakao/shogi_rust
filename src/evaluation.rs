@@ -342,19 +342,14 @@ impl SparseModel {
             }
         }
 
-        let mut rng = rand::thread_rng();
         for (idx, total_grad) in w_grads {
-            let ideal_update = (total_grad as f32 * self.kpp_eta as f32) / total_samples as f32;
-            
-            let integer_part = ideal_update.trunc();
-            let fractional_part = ideal_update.fract();
-
-            let mut update_val = integer_part as i16;
-
-            if rng.gen::<f32>() < fractional_part.abs() {
-                update_val += fractional_part.signum() as i16;
-            }
-            
+            let update_val = if total_grad > 0 {
+                self.kpp_eta
+            } else if total_grad < 0 {
+                -self.kpp_eta
+            } else {
+                0
+            };
             self.w[idx] = self.w[idx].saturating_add(update_val);
         }
 
