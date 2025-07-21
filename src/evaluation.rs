@@ -183,6 +183,9 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
 }
 
 
+const DECAY_SHIFT: u8 = 8; // 256で割るのと同じ
+const WEIGHT_LIMIT: i16 = 16384;
+
 #[derive(Default)]
 pub struct SparseModel {
     pub w: Vec<i16>,
@@ -343,6 +346,7 @@ impl SparseModel {
         }
 
         for (idx, total_grad) in w_grads {
+            // 1. Gradient-based update
             let update_val = if total_grad > 0 {
                 self.kpp_eta
             } else if total_grad < 0 {
@@ -350,7 +354,17 @@ impl SparseModel {
             } else {
                 0
             };
-            self.w[idx] = self.w[idx].saturating_add(update_val);
+            let mut new_weight = self.w[idx].saturating_add(update_val);
+
+            // 2. More robust proportional decay
+            if new_weight != 0 {
+                let sign = new_weight.signum();
+                let decay = (new_weight.abs() >> DECAY_SHIFT) as i16;
+                new_weight -= decay * sign;
+            }
+
+            // 3. Weight clipping
+            self.w[idx] = new_weight.clamp(-WEIGHT_LIMIT, WEIGHT_LIMIT);
         }
 
         (correct_predictions, total_samples)
