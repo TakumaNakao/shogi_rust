@@ -11,8 +11,8 @@ use rayon::prelude::*;
 use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use shogi_lib::Position;
 
-mod evaluation;
-use evaluation::SparseModel;
+// evaluationモジュールから公開されたロジックとモデルを使用する
+use shogi_ai::evaluation::SparseModel;
 
 const KPP_LEARNING_RATE: f32 = 0.01;
 const L2_LAMBDA: f32 = 1e-4;
@@ -38,7 +38,6 @@ fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     }
 }
 
-/// Processes a single CSA file to extract (position, teacher_move) pairs.
 fn process_csa_file(path: &Path) -> Result<Vec<(Position, Move)>> {
     let text = fs::read_to_string(path)?;
     let record = csa::parse_csa(&text)?;
@@ -175,7 +174,7 @@ fn main() -> Result<()> {
     let mut accuracy_history = Vec::new();
     let mut remaining_data: Vec<(Position, Move)> = Vec::new();
 
-    let chunk_size = 1024; // Process files in chunks
+    let chunk_size = 1024;
 
     for (chunk_index, file_chunk) in csa_files.chunks(chunk_size).enumerate() {
         let start_time_chunk = Instant::now();
@@ -214,7 +213,6 @@ fn main() -> Result<()> {
         }
     }
 
-    // Process any remaining data
     if !remaining_data.is_empty() {
         let start_time_batch = Instant::now();
         let (correct_predictions, total_samples) = model.update_batch_for_moves(&remaining_data);

@@ -10,25 +10,19 @@ use rand_distr::Distribution;
 use rayon::prelude::*;
 use shogi_lib;
 
-// --- Evaluator Trait ---
-pub trait Evaluator {
-    fn evaluate(&self, position: &shogi_lib::Position) -> f32;
-}
+// --- Public Constants for KPP Feature Space ---
+pub const NUM_SQUARES: usize = 81;
+pub const NUM_BOARD_PIECE_KINDS: usize = 14;
 
-// --- KPP-based Evaluator ---
+pub const MAX_HAND_PAWNS: usize = 18;
+pub const MAX_HAND_LANCES: usize = 4;
+pub const MAX_HAND_KNIGHTS: usize = 4;
+pub const MAX_HAND_SILVERS: usize = 4;
+pub const MAX_HAND_GOLDS: usize = 4;
+pub const MAX_HAND_BISHOPS: usize = 2;
+pub const MAX_HAND_ROOKS: usize = 2;
 
-const NUM_SQUARES: usize = 81;
-const NUM_BOARD_PIECE_KINDS: usize = 14;
-
-const MAX_HAND_PAWNS: usize = 18;
-const MAX_HAND_LANCES: usize = 4;
-const MAX_HAND_KNIGHTS: usize = 4;
-const MAX_HAND_SILVERS: usize = 4;
-const MAX_HAND_GOLDS: usize = 4;
-const MAX_HAND_BISHOPS: usize = 2;
-const MAX_HAND_ROOKS: usize = 2;
-
-const NUM_HAND_PIECE_SLOTS_PER_PLAYER: usize = MAX_HAND_PAWNS
+pub const NUM_HAND_PIECE_SLOTS_PER_PLAYER: usize = MAX_HAND_PAWNS
     + MAX_HAND_LANCES
     + MAX_HAND_KNIGHTS
     + MAX_HAND_SILVERS
@@ -36,14 +30,14 @@ const NUM_HAND_PIECE_SLOTS_PER_PLAYER: usize = MAX_HAND_PAWNS
     + MAX_HAND_BISHOPS
     + MAX_HAND_ROOKS;
 
-const NUM_PIECE_STATES: usize =
+pub const NUM_PIECE_STATES: usize =
     (NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2) + (NUM_HAND_PIECE_SLOTS_PER_PLAYER * 2);
 
-const NUM_PIECE_PAIRS: usize = NUM_PIECE_STATES * (NUM_PIECE_STATES - 1) / 2;
+pub const NUM_PIECE_PAIRS: usize = NUM_PIECE_STATES * (NUM_PIECE_STATES - 1) / 2;
 
-const MAX_FEATURES: usize = 222_328_476;
+pub const MAX_FEATURES: usize = NUM_SQUARES * NUM_PIECE_PAIRS;
 
-const ALL_HAND_PIECES: [PieceKind; 7] = [
+pub const ALL_HAND_PIECES: [PieceKind; 7] = [
     PieceKind::Pawn,
     PieceKind::Lance,
     PieceKind::Knight,
@@ -54,6 +48,12 @@ const ALL_HAND_PIECES: [PieceKind; 7] = [
 ];
 
 
+// --- Evaluator Trait ---
+pub trait Evaluator {
+    fn evaluate(&self, position: &shogi_lib::Position) -> f32;
+}
+
+// --- KPP-based Evaluator ---
 
 fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
     match kind {
@@ -74,8 +74,6 @@ fn board_kind_to_index(kind: PieceKind) -> Option<usize> {
     }
 }
 
-
-
 fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
     match kind {
         PieceKind::Pawn => Some(0),
@@ -89,6 +87,100 @@ fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
     }
 }
 
+fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color) -> Option<usize> {
+    let normalized_color = if piece.color() == turn { Color::Black } else { Color::White };
+    let color_offset = if normalized_color == Color::Black { 0 } else { 1 };
+
+    if let Some(sq) = sq {
+        let normalized_sq = if turn == Color::Black { sq } else { sq.flip() };
+        if let Some(kind_index) = board_kind_to_index(piece.piece_kind()) {
+            let id = (color_offset * NUM_BOARD_PIECE_KINDS * NUM_SQUARES)
+                + (kind_index * NUM_SQUARES)
+                + ((normalized_sq.index() - 1) as usize);
+            Some(id)
+        } else {
+            None
+        }
+    } else {
+        let board_pieces_total = NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2;
+        if let Some(kind_offset) = hand_kind_to_offset(piece.piece_kind()) {
+            let id = board_pieces_total
+                + (color_offset * NUM_HAND_PIECE_SLOTS_PER_PLAYER)
+                + kind_offset
+                + hand_index;
+            Some(id)
+        } else {
+            None
+        }
+    }
+}
+
+pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
+    let turn = pos.side_to_move();
+
+    let king_sq = match (0..81).find_map(|i| {
+        Square::from_u8(i as u8 + 1).and_then(|sq| {
+            pos.piece_at(sq).and_then(|p| {
+                if p.piece_kind() == PieceKind::King && p.color() == turn {
+                    Some(sq)
+                } else {
+                    None
+                }
+            })
+        })
+    }) {
+        Some(sq) => sq,
+        None => {
+            println!("Warning: King not found for side {:?}. Skipping this position.", turn);
+            return vec![];
+        }
+    };
+
+    let normalized_king_sq = if turn == Color::Black { king_sq } else { king_sq.flip() };
+    let king_sq_index = (normalized_king_sq.index() - 1) as usize;
+
+
+    let mut piece_ids = Vec::with_capacity(40);
+    for i in 0..81 {
+        if let Some(sq) = Square::from_u8(i as u8 + 1) {
+            if let Some(piece) = pos.piece_at(sq) {
+                if piece.piece_kind() == PieceKind::King && piece.color() == turn {
+                    continue; 
+                }
+                if let Some(id) = piece_to_id(piece, Some(sq), 0, turn) {
+                    piece_ids.push(id);
+                }
+            }
+        }
+    }
+    for color in [Color::Black, Color::White] {
+        for kind in ALL_HAND_PIECES.iter() {
+            let count = pos.hand(color).count(*kind).unwrap_or(0);
+            for i in 0..count {
+                if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize, turn) {
+                    piece_ids.push(id);
+                }
+            }
+        }
+    }
+
+    piece_ids.sort_unstable();
+
+    let mut indices = Vec::with_capacity(piece_ids.len() * piece_ids.len() / 2);
+    for i in 0..piece_ids.len() {
+        for j in (i + 1)..piece_ids.len() {
+            let id1 = piece_ids[i];
+            let id2 = piece_ids[j];
+
+            let pair_index = id2 * (id2 - 1) / 2 + id1;
+
+            let final_index = king_sq_index * NUM_PIECE_PAIRS + pair_index;
+            indices.push(final_index);
+        }
+    }
+
+    indices
+}
 
 
 #[derive(Default)]
@@ -121,14 +213,7 @@ impl SparseModel {
 
         let expected_w_bytes = MAX_FEATURES * 4;
         if buffer.len() - offset != expected_w_bytes {
-            // Fallback for old format for compatibility
-            let old_header_size = 4 + (13 * 4) + 4 + 4;
-            if buffer.len() > old_header_size && buffer.len() - old_header_size == expected_w_bytes {
-                 println!("古いフォーマットの重みファイルを読み込んでいます。駒得パラメータは無視されます。");
-                 offset = old_header_size;
-            } else {
-                return Err(anyhow::anyhow!("File size mismatch for weights. Expected {} bytes, got {}.", expected_w_bytes + 4, buffer.len()));
-            }
+            return Err(anyhow::anyhow!("File size mismatch for weights. Expected {} bytes, got {}.", expected_w_bytes + 4, buffer.len()));
         }
 
         for i in 0..MAX_FEATURES {
@@ -264,7 +349,6 @@ impl SparseModel {
             }
         }
 
-        // Apply the batch gradients
         for i in 0..MAX_FEATURES {
             if w_grads[i] != 0.0 {
                 self.w[i] +=
@@ -276,103 +360,6 @@ impl SparseModel {
     }
 }
 
-fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color) -> Option<usize> {
-    let normalized_color = if piece.color() == turn { Color::Black } else { Color::White };
-    let color_offset = if normalized_color == Color::Black { 0 } else { 1 };
-
-    if let Some(sq) = sq {
-        let normalized_sq = if turn == Color::Black { sq } else { sq.flip() };
-        if let Some(kind_index) = board_kind_to_index(piece.piece_kind()) {
-            let id = (color_offset * NUM_BOARD_PIECE_KINDS * NUM_SQUARES)
-                + (kind_index * NUM_SQUARES)
-                + (normalized_sq.index() as usize);
-            Some(id)
-        } else {
-            None
-        }
-    } else {
-        let board_pieces_total = NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2;
-        if let Some(kind_offset) = hand_kind_to_offset(piece.piece_kind()) {
-            let id = board_pieces_total
-                + (color_offset * NUM_HAND_PIECE_SLOTS_PER_PLAYER)
-                + kind_offset
-                + hand_index;
-            Some(id)
-        } else {
-            None
-        }
-    }
-}
-
-pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
-    let turn = pos.side_to_move();
-
-    let king_sq = match (0..81).find_map(|i| {
-        Square::from_u8(i as u8 + 1).and_then(|sq| {
-            pos.piece_at(sq).and_then(|p| {
-                if p.piece_kind() == PieceKind::King && p.color() == turn {
-                    Some(sq)
-                } else {
-                    None
-                }
-            })
-        })
-    }) {
-        Some(sq) => sq,
-        None => {
-            println!("Warning: King not found for side {:?}. Skipping this position.", turn);
-            return vec![];
-        }
-    };
-
-    let normalized_king_sq = if turn == Color::Black { king_sq } else { king_sq.flip() };
-    let king_sq_index = normalized_king_sq.index() as usize;
-
-
-    let mut piece_ids = Vec::with_capacity(40);
-    for i in 0..81 {
-        if let Some(sq) = Square::from_u8(i as u8 + 1) {
-            if let Some(piece) = pos.piece_at(sq) {
-                if piece.piece_kind() == PieceKind::King && piece.color() == turn {
-                    continue; // 王の駒はpiece_idsに追加しない
-                }
-                if let Some(id) = piece_to_id(piece, Some(sq), 0, turn) {
-                    piece_ids.push(id);
-                }
-            }
-        }
-    }
-    for color in [Color::Black, Color::White] {
-        for kind in ALL_HAND_PIECES.iter() {
-            let count = pos.hand(color).count(*kind).unwrap_or(0);
-            for i in 0..count {
-                if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize, turn) {
-                    piece_ids.push(id);
-                }
-            }
-        }
-    }
-
-    let mut indices = Vec::with_capacity(piece_ids.len() * piece_ids.len() / 2);
-    for i in 0..piece_ids.len() {
-        for j in (i + 1)..piece_ids.len() {
-            let (id1, id2) = if piece_ids[i] < piece_ids[j] {
-                (piece_ids[i], piece_ids[j])
-            } else {
-                (piece_ids[j], piece_ids[i])
-            };
-
-            let pair_index = id2 * (id2 - 1) / 2 + id1;
-
-            let final_index = king_sq_index * NUM_PIECE_PAIRS + pair_index;
-            indices.push(final_index);
-        }
-    }
-
-    indices
-}
-
-
 
 pub struct SparseModelEvaluator {
     pub model: SparseModel,
@@ -380,7 +367,7 @@ pub struct SparseModelEvaluator {
 
 impl SparseModelEvaluator {
     pub fn new(weight_path: &Path, overwrite_value: f32) -> Result<Self> {
-        let mut model = SparseModel::new(0.0, 0.0); // eta and lambda are not used in evaluation
+        let mut model = SparseModel::new(0.0, 0.0);
         model.load(weight_path)?;
         model.zero_weight_overwrite(overwrite_value);
         Ok(SparseModelEvaluator { model })
@@ -395,68 +382,77 @@ impl Evaluator for SparseModelEvaluator {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use shogi_lib::Position;
+// --- Decoding functions (moved from kpp_weight_check.rs) ---
 
-    fn create_test_model() -> SparseModel {
-        let mut model = SparseModel::new(0.01, 0.0);
-        model.bias = 0.1;
-        model.w = vec![0.0; MAX_FEATURES];
-        model
+fn index_to_board_kind(index: usize) -> Option<PieceKind> {
+    match index {
+        0 => Some(PieceKind::Pawn), 1 => Some(PieceKind::Lance), 2 => Some(PieceKind::Knight),
+        3 => Some(PieceKind::Silver), 4 => Some(PieceKind::Gold), 5 => Some(PieceKind::Bishop),
+        6 => Some(PieceKind::Rook), 7 => Some(PieceKind::ProPawn), 8 => Some(PieceKind::ProLance),
+        9 => Some(PieceKind::ProKnight), 10 => Some(PieceKind::ProSilver), 11 => Some(PieceKind::ProBishop),
+        12 => Some(PieceKind::ProRook), 13 => Some(PieceKind::King),
+        _ => None,
     }
+}
 
-    #[test]
-    fn test_initial_position_evaluation() {
-        let model = create_test_model();
-        let pos = Position::default();
-        let features = extract_kpp_features(&pos);
-        let score = model.predict(&pos, &features);
-        // With only bias, score should be bias
-        assert!((score - model.bias).abs() < 1e-6, "Initial score should be close to bias, but was {}", score);
+fn index_to_hand_kind_and_offset(index: usize) -> Option<(PieceKind, usize)> {
+    let mut current_offset = 0;
+    if index < MAX_HAND_PAWNS { return Some((PieceKind::Pawn, index)); }
+    current_offset += MAX_HAND_PAWNS;
+    if index < current_offset + MAX_HAND_LANCES { return Some((PieceKind::Lance, index - current_offset)); }
+    current_offset += MAX_HAND_LANCES;
+    if index < current_offset + MAX_HAND_KNIGHTS { return Some((PieceKind::Knight, index - current_offset)); }
+    current_offset += MAX_HAND_KNIGHTS;
+    if index < current_offset + MAX_HAND_SILVERS { return Some((PieceKind::Silver, index - current_offset)); }
+    current_offset += MAX_HAND_SILVERS;
+    if index < current_offset + MAX_HAND_GOLDS { return Some((PieceKind::Gold, index - current_offset)); }
+    current_offset += MAX_HAND_GOLDS;
+    if index < current_offset + MAX_HAND_BISHOPS { return Some((PieceKind::Bishop, index - current_offset)); }
+    current_offset += MAX_HAND_BISHOPS;
+    if index < current_offset + MAX_HAND_ROOKS { return Some((PieceKind::Rook, index - current_offset)); }
+    None
+}
+
+fn id_to_piece_info(id: usize) -> Option<(PieceKind, Option<Square>, Option<usize>, Color)> {
+    let board_pieces_total = NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2;
+    if id < board_pieces_total {
+        let color_offset = id / (NUM_BOARD_PIECE_KINDS * NUM_SQUARES);
+        let remaining_id = id % (NUM_BOARD_PIECE_KINDS * NUM_SQUARES);
+        let kind_index = remaining_id / NUM_SQUARES;
+        let sq_index = remaining_id % NUM_SQUARES;
+        let piece_kind = index_to_board_kind(kind_index)?;
+        let normalized_sq = Square::from_u8(sq_index as u8 + 1)?;
+        let normalized_color = if color_offset == 0 { Color::Black } else { Color::White };
+        Some((piece_kind, Some(normalized_sq), None, normalized_color))
+    } else {
+        let hand_id = id - board_pieces_total;
+        let color_offset = hand_id / NUM_HAND_PIECE_SLOTS_PER_PLAYER;
+        let remaining_hand_id = hand_id % NUM_HAND_PIECE_SLOTS_PER_PLAYER;
+        let (piece_kind, hand_index) = index_to_hand_kind_and_offset(remaining_hand_id)?;
+        let normalized_color = if color_offset == 0 { Color::Black } else { Color::White };
+        Some((piece_kind, None, Some(hand_index), normalized_color))
     }
+}
 
-    #[test]
-    fn test_evaluation_is_from_side_to_move_perspective() {
-        let mut model = create_test_model();
-        // Add a specific feature weight to see a non-zero score
-        model.w[12345] = 0.5;
-
-        let mut pos_black_turn = Position::default();
-        // A move that is unlikely to trigger feature 12345, just to change the turn
-        pos_black_turn.do_move(shogi_core::Move::Normal {
-            from: Square::new(7, 7).unwrap(),
-            to: Square::new(7, 6).unwrap(),
-            promote: false,
-        });
-        
-        let mut pos_white_turn = pos_black_turn.clone();
-        pos_white_turn.do_move(shogi_core::Move::Normal {
-            from: Square::new(3, 3).unwrap(),
-            to: Square::new(3, 4).unwrap(),
-            promote: false,
-        });
-
-
-        // We can't guarantee the features will be the same, because the king position normalization
-        // depends on the side to move. The core idea is that the evaluation should be symmetric.
-        // A perfect test would require mocking extract_kpp_features, which is complex here.
-        // Instead, we check if the scores are roughly opposite for a simple position change.
-        let features_black = extract_kpp_features(&pos_black_turn);
-        model.predict(&pos_black_turn, &features_black);
-
-        let features_white = extract_kpp_features(&pos_white_turn);
-        model.predict(&pos_white_turn, &features_white);
-        
-        // This assertion is not strictly correct anymore because the features themselves change based on whose turn it is.
-        // However, for a symmetric position, we expect the evaluation to be 0.
-        // For a non-symmetric position, we expect score(P) = -score(P_flipped)
-        // The test is imperfect but gives a basic sanity check.
-        // A truly symmetric position (like startpos) should have a score of `bias`.
-        let start_pos = Position::default();
-        let start_features = extract_kpp_features(&start_pos);
-        let start_score = model.predict(&start_pos, &start_features);
-        assert!((start_score - model.bias).abs() < 1e-6, "Startpos score should be bias");
+fn pair_index_to_ids(pair_index: usize) -> Option<(usize, usize)> {
+    let mut id2 = 0;
+    while id2 * (id2 - 1) / 2 <= pair_index {
+        id2 += 1;
     }
+    id2 -= 1;
+    let pair_index_base = id2 * (id2 - 1) / 2;
+    let id1 = pair_index - pair_index_base;
+    if id1 < id2 { Some((id1, id2)) } else { None }
+}
+
+pub type KppInfo = (Square, PieceKind, Option<Square>, Option<usize>, Color, PieceKind, Option<Square>, Option<usize>, Color);
+
+pub fn index_to_kpp_info(index: usize) -> Option<KppInfo> {
+    let king_sq_index = index / NUM_PIECE_PAIRS;
+    let pair_index = index % NUM_PIECE_PAIRS;
+    let king_sq = Square::from_u8((king_sq_index + 1) as u8)?;
+    let (id1, id2) = pair_index_to_ids(pair_index)?;
+    let (p1k, p1sq, p1hi, p1c) = id_to_piece_info(id1)?;
+    let (p2k, p2sq, p2hi, p2c) = id_to_piece_info(id2)?;
+    Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c))
 }
