@@ -163,8 +163,9 @@ fn main() -> io::Result<()> {
     println!("\n--- Top 10 Weights ---");
     for i in (indexed_weights.len().saturating_sub(10)..indexed_weights.len()).rev() {
         let (index, weight) = indexed_weights[i];
+        let turn = if index < evaluation::MAX_FEATURES_KPP { "Black" } else { "White" };
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
-            println!("Weight: {}, Index: {}", weight, index);
+            println!("Weight: {}, Index: {} (Turn: {})", weight, index, turn);
             println!("  King (Normalized): Black at {:?} (Corresponds to White's King at {:?})", king_sq, king_sq.flip());
             println!("  Piece 1: {:?} {:?} at {:?} (Hand: {:?})", p1c, p1k, p1sq, p1hi);
             println!("  Piece 2: {:?} {:?} at {:?} (Hand: {:?})", p2c, p2k, p2sq, p2hi);
@@ -177,8 +178,9 @@ fn main() -> io::Result<()> {
     println!("\n--- Bottom 10 Weights ---");
     for i in 0..std::cmp::min(10, indexed_weights.len()) {
         let (index, weight) = indexed_weights[i];
+        let turn = if index < evaluation::MAX_FEATURES_KPP { "Black" } else { "White" };
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
-            println!("Weight: {}, Index: {}", weight, index);
+            println!("Weight: {}, Index: {} (Turn: {})", weight, index, turn);
             println!("  King (Normalized): Black at {:?} (Corresponds to White's King at {:?})", king_sq, king_sq.flip());
             println!("  Piece 1: {:?} {:?} at {:?} (Hand: {:?})", p1c, p1k, p1sq, p1hi);
             println!("  Piece 2: {:?} {:?} at {:?} (Hand: {:?})", p2c, p2k, p2sq, p2hi);

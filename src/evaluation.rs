@@ -35,7 +35,8 @@ pub const NUM_PIECE_STATES: usize =
 
 pub const NUM_PIECE_PAIRS: usize = NUM_PIECE_STATES * (NUM_PIECE_STATES - 1) / 2;
 
-pub const MAX_FEATURES: usize = NUM_SQUARES * NUM_PIECE_PAIRS;
+pub const MAX_FEATURES_KPP: usize = NUM_SQUARES * NUM_PIECE_PAIRS;
+pub const MAX_FEATURES_KPPT: usize = MAX_FEATURES_KPP * 2;
 
 pub const ALL_HAND_PIECES: [PieceKind; 7] = [
     PieceKind::Pawn,
@@ -166,6 +167,8 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
 
     piece_ids.sort_unstable();
 
+    let turn_offset = if turn == Color::Black { 0 } else { MAX_FEATURES_KPP };
+
     let mut indices = Vec::with_capacity(piece_ids.len() * piece_ids.len() / 2);
     for i in 0..piece_ids.len() {
         for j in (i + 1)..piece_ids.len() {
@@ -174,8 +177,8 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
 
             let pair_index = id2 * (id2 - 1) / 2 + id1;
 
-            let final_index = king_sq_index * NUM_PIECE_PAIRS + pair_index;
-            indices.push(final_index);
+            let kpp_index = king_sq_index * NUM_PIECE_PAIRS + pair_index;
+            indices.push(kpp_index + turn_offset);
         }
     }
 
@@ -198,7 +201,7 @@ pub struct SparseModel {
 impl SparseModel {
     pub fn new(kpp_eta: i16) -> Self {
         Self {
-            w: vec![0; MAX_FEATURES],
+            w: vec![0; MAX_FEATURES_KPPT],
             bias: 0,
             kpp_eta,
             // l2_lambda,
@@ -215,7 +218,7 @@ impl SparseModel {
         self.bias = i16::from_le_bytes(buffer[offset..offset + 2].try_into()?);
         offset += 2;
 
-        let expected_w_bytes = MAX_FEATURES * 2;
+        let expected_w_bytes = MAX_FEATURES_KPPT * 2;
         if buffer.len() - offset != expected_w_bytes {
             return Err(anyhow::anyhow!("File size mismatch for weights. Expected {} bytes, got {}.", expected_w_bytes + 2, buffer.len()));
         }
@@ -250,14 +253,14 @@ impl SparseModel {
         let mut rng = rand::thread_rng();
         let dist = rand_distr::Normal::new(0.0, stddev).unwrap();
         for _ in 0..count {
-            let i = rng.gen_range(0..MAX_FEATURES);
+            let i = rng.gen_range(0..MAX_FEATURES_KPPT);
             let v = dist.sample(&mut rng) as i16;
             self.w[i] = v;
         }
     }
 
     pub fn zero_weight_overwrite(&mut self, overwrite_value: i16) {
-        for i in 0..MAX_FEATURES {
+        for i in 0..MAX_FEATURES_KPPT {
             if self.w[i] == 0 {
                 self.w[i] = overwrite_value;
             }
@@ -267,7 +270,7 @@ impl SparseModel {
     pub fn predict(&self, _pos: &shogi_lib::Position, kpp_features: &[usize]) -> i32 {
         let mut prediction = self.bias as i32;
         for &i in kpp_features {
-            if i < MAX_FEATURES {
+            if i < MAX_FEATURES_KPPT {
                 prediction += self.w[i] as i32;
             }
         }
@@ -333,12 +336,12 @@ impl SparseModel {
                 correct_predictions += 1;
             } else {
                 for &idx in &teacher_features {
-                    if idx < MAX_FEATURES {
+                    if idx < MAX_FEATURES_KPPT {
                         *w_grads.entry(idx).or_insert(0) += 1;
                     }
                 }
                 for &idx in &model_features {
-                    if idx < MAX_FEATURES {
+                    if idx < MAX_FEATURES_KPPT {
                         *w_grads.entry(idx).or_insert(0) -= 1;
                     }
                 }
@@ -459,8 +462,9 @@ fn pair_index_to_ids(pair_index: usize) -> Option<(usize, usize)> {
 pub type KppInfo = (Square, PieceKind, Option<Square>, Option<usize>, Color, PieceKind, Option<Square>, Option<usize>, Color);
 
 pub fn index_to_kpp_info(index: usize) -> Option<KppInfo> {
-    let king_sq_index = index / NUM_PIECE_PAIRS;
-    let pair_index = index % NUM_PIECE_PAIRS;
+    let kpp_index = index % MAX_FEATURES_KPP;
+    let king_sq_index = kpp_index / NUM_PIECE_PAIRS;
+    let pair_index = kpp_index % NUM_PIECE_PAIRS;
     let king_sq = Square::from_u8((king_sq_index + 1) as u8)?;
     let (id1, id2) = pair_index_to_ids(pair_index)?;
     let (p1k, p1sq, p1hi, p1c) = id_to_piece_info(id1)?;
