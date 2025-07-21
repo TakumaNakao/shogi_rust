@@ -88,16 +88,14 @@ fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
     }
 }
 
-fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color) -> Option<usize> {
-    let normalized_color = if piece.color() == turn { Color::Black } else { Color::White };
-    let color_offset = if normalized_color == Color::Black { 0 } else { 1 };
+fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize) -> Option<usize> {
+    let color_offset = if piece.color() == Color::Black { 0 } else { 1 };
 
     if let Some(sq) = sq {
-        let normalized_sq = if turn == Color::Black { sq } else { sq.flip() };
         if let Some(kind_index) = board_kind_to_index(piece.piece_kind()) {
             let id = (color_offset * NUM_BOARD_PIECE_KINDS * NUM_SQUARES)
                 + (kind_index * NUM_SQUARES)
-                + ((normalized_sq.index() - 1) as usize);
+                + ((sq.index() - 1) as usize);
             Some(id)
         } else {
             None
@@ -119,10 +117,11 @@ fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color)
 pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
     let turn = pos.side_to_move();
 
+    // Find the black king's square (always black's perspective)
     let king_sq = match (0..81).find_map(|i| {
         Square::from_u8(i as u8 + 1).and_then(|sq| {
             pos.piece_at(sq).and_then(|p| {
-                if p.piece_kind() == PieceKind::King && p.color() == turn {
+                if p.piece_kind() == PieceKind::King && p.color() == Color::Black {
                     Some(sq)
                 } else {
                     None
@@ -132,23 +131,36 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
     }) {
         Some(sq) => sq,
         None => {
-            println!("Warning: King not found for side {:?}. Skipping this position.", turn);
-            return vec![];
+            // If black king is not on board, try to find white king and flip the perspective.
+            // This is a fallback for unusual positions, but evaluation should be from a consistent perspective.
+            (0..81).find_map(|i| {
+                Square::from_u8(i as u8 + 1).and_then(|sq| {
+                    pos.piece_at(sq).and_then(|p| {
+                        if p.piece_kind() == PieceKind::King && p.color() == Color::White {
+                            Some(sq)
+                        } else {
+                            None
+                        }
+                    })
+                })
+            }).unwrap_or_else(|| {
+                println!("Warning: King not found. Skipping this position.");
+                // Return a default or empty square if no king is found at all.
+                Square::new(5,5).unwrap()
+            })
         }
     };
 
-    let normalized_king_sq = if turn == Color::Black { king_sq } else { king_sq.flip() };
-    let king_sq_index = (normalized_king_sq.index() - 1) as usize;
-
+    let king_sq_index = (king_sq.index() - 1) as usize;
 
     let mut piece_ids = Vec::with_capacity(40);
     for i in 0..81 {
         if let Some(sq) = Square::from_u8(i as u8 + 1) {
             if let Some(piece) = pos.piece_at(sq) {
-                if piece.piece_kind() == PieceKind::King && piece.color() == turn {
+                if piece.piece_kind() == PieceKind::King {
                     continue; 
                 }
-                if let Some(id) = piece_to_id(piece, Some(sq), 0, turn) {
+                if let Some(id) = piece_to_id(piece, Some(sq), 0) {
                     piece_ids.push(id);
                 }
             }
@@ -158,7 +170,7 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
         for kind in ALL_HAND_PIECES.iter() {
             let count = pos.hand(color).count(*kind).unwrap_or(0);
             for i in 0..count {
-                if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize, turn) {
+                if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize) {
                     piece_ids.push(id);
                 }
             }
@@ -267,14 +279,20 @@ impl SparseModel {
         }
     }
 
-    pub fn predict(&self, _pos: &shogi_lib::Position, kpp_features: &[usize]) -> i32 {
+    pub fn predict(&self, pos: &shogi_lib::Position, kpp_features: &[usize]) -> i32 {
         let mut prediction = self.bias as i32;
         for &i in kpp_features {
             if i < MAX_FEATURES_KPPT {
                 prediction += self.w[i] as i32;
             }
         }
-        prediction
+        
+        // Return score from the perspective of the current player to move
+        if pos.side_to_move() == Color::Black {
+            prediction
+        } else {
+            -prediction
+        }
     }
 
     pub fn update_batch_for_moves(
@@ -286,65 +304,71 @@ impl SparseModel {
             return (0, 0);
         }
 
-        let results: Vec<(bool, Vec<usize>, Vec<usize>)> = batch
+        let results: Vec<(bool, HashMap<usize, i32>)> = batch
             .par_iter()
             .map(|(pos, teacher_move)| {
                 let legal_moves = pos.legal_moves();
                 if legal_moves.is_empty() {
-                    return (false, Vec::new(), Vec::new());
+                    return (false, HashMap::new());
                 }
 
+                let mut sparse_grads = HashMap::new();
+                let mut is_correct = false;
+
+                // The current player wants to find a move that MINIMIZES the opponent's score.
                 let mut best_move_by_model: Option<shogi_core::Move> = None;
-                let mut max_score = i32::MIN;
+                let mut min_opponent_score = i32::MAX;
                 let mut best_model_features: Vec<usize> = Vec::new();
                 let mut teacher_move_features: Option<Vec<usize>> = None;
 
                 for &mv in legal_moves.iter() {
                     let mut temp_pos = pos.clone();
-                    temp_pos.do_move(mv);
+                    temp_pos.do_move(mv); // It's now the opponent's turn
                     let features = extract_kpp_features(&temp_pos);
-                    let score = self.predict(&temp_pos, &features);
+                    // predict() now returns the score from the opponent's perspective
+                    let opponent_score = self.predict(&temp_pos, &features);
 
-                    if score > max_score {
-                        max_score = score;
+                    if opponent_score < min_opponent_score {
+                        min_opponent_score = opponent_score;
                         best_move_by_model = Some(mv);
                         best_model_features = features.clone();
                     }
-
                     if mv == *teacher_move {
                         teacher_move_features = Some(features);
                     }
                 }
 
-                let mut is_correct = false;
-                let teacher_features = teacher_move_features.unwrap_or_default();
-
                 if let Some(model_move) = best_move_by_model {
                     if model_move == *teacher_move {
                         is_correct = true;
+                    } else if let Some(teacher_features) = teacher_move_features {
+                        // We want the teacher move to look better from our perspective.
+                        // This means the resulting opponent's score should be LOWER.
+                        // So, teacher features get a negative gradient.
+                        for &idx in &teacher_features {
+                            *sparse_grads.entry(idx).or_insert(0) -= 1;
+                        }
+                        // We want the model's chosen move to look worse from our perspective.
+                        // This means the resulting opponent's score should be HIGHER.
+                        // So, model features get a positive gradient.
+                        for &idx in &best_model_features {
+                            *sparse_grads.entry(idx).or_insert(0) += 1;
+                        }
                     }
                 }
-                (is_correct, teacher_features, best_model_features)
+                (is_correct, sparse_grads)
             })
             .collect();
 
         let mut correct_predictions = 0;
         let mut w_grads: HashMap<usize, i32> = HashMap::new();
 
-        for (is_correct, teacher_features, model_features) in results {
+        for (is_correct, sparse_grad) in results {
             if is_correct {
                 correct_predictions += 1;
-            } else {
-                for &idx in &teacher_features {
-                    if idx < MAX_FEATURES_KPPT {
-                        *w_grads.entry(idx).or_insert(0) += 1;
-                    }
-                }
-                for &idx in &model_features {
-                    if idx < MAX_FEATURES_KPPT {
-                        *w_grads.entry(idx).or_insert(0) -= 1;
-                    }
-                }
+            }
+            for (idx, g) in sparse_grad {
+                *w_grads.entry(idx).or_insert(0) += g;
             }
         }
 

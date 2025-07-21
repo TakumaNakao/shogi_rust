@@ -43,7 +43,8 @@ fn generate_sfen(
     piece2_kind: PieceKind,
     piece2_sq: Option<Square>,
     piece2_hand_idx: Option<usize>,
-    piece2_color: Color // This is the normalized color
+    piece2_color: Color, // This is the normalized color
+    turn: Color,
 ) -> String {
     let mut sfen_board_pieces: Vec<Vec<Option<Piece>>> = vec![vec![None; 9]; 9];
     let mut black_hand_counts = [0; 7];
@@ -131,8 +132,8 @@ fn generate_sfen(
         sfen_hand_str.push('-');
     }
 
-    // Always 'b' for Black to move, as we normalized to Black's perspective
-    format!("{} b {} 1", sfen_board_str, sfen_hand_str)
+    let turn_char = if turn == Color::Black { 'b' } else { 'w' };
+    format!("{} {} {} 1", sfen_board_str, turn_char, sfen_hand_str)
 }
 
 fn main() -> io::Result<()> {
@@ -163,13 +164,13 @@ fn main() -> io::Result<()> {
     println!("\n--- Top 10 Weights ---");
     for i in (indexed_weights.len().saturating_sub(10)..indexed_weights.len()).rev() {
         let (index, weight) = indexed_weights[i];
-        let turn = if index < evaluation::MAX_FEATURES_KPP { "Black" } else { "White" };
+        let turn = if index < evaluation::MAX_FEATURES_KPP { Color::Black } else { Color::White };
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
-            println!("Weight: {}, Index: {} (Turn: {})", weight, index, turn);
+            println!("Weight: {}, Index: {} (Turn: {:?})", weight, index, turn);
             println!("  King (Normalized): Black at {:?} (Corresponds to White's King at {:?})", king_sq, king_sq.flip());
             println!("  Piece 1: {:?} {:?} at {:?} (Hand: {:?})", p1c, p1k, p1sq, p1hi);
             println!("  Piece 2: {:?} {:?} at {:?} (Hand: {:?})", p2c, p2k, p2sq, p2hi);
-            println!("  SFEN (Normalized): {}", generate_sfen(king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c));
+            println!("  SFEN (Normalized): {}", generate_sfen(king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c, turn));
         } else {
             println!("Failed to decode index: {}", index);
         }
@@ -178,13 +179,13 @@ fn main() -> io::Result<()> {
     println!("\n--- Bottom 10 Weights ---");
     for i in 0..std::cmp::min(10, indexed_weights.len()) {
         let (index, weight) = indexed_weights[i];
-        let turn = if index < evaluation::MAX_FEATURES_KPP { "Black" } else { "White" };
+        let turn = if index < evaluation::MAX_FEATURES_KPP { Color::Black } else { Color::White };
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
-            println!("Weight: {}, Index: {} (Turn: {})", weight, index, turn);
+            println!("Weight: {}, Index: {} (Turn: {:?})", weight, index, turn);
             println!("  King (Normalized): Black at {:?} (Corresponds to White's King at {:?})", king_sq, king_sq.flip());
             println!("  Piece 1: {:?} {:?} at {:?} (Hand: {:?})", p1c, p1k, p1sq, p1hi);
             println!("  Piece 2: {:?} {:?} at {:?} (Hand: {:?})", p2c, p2k, p2sq, p2hi);
-            println!("  SFEN (Normalized): {}", generate_sfen(king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c));
+            println!("  SFEN (Normalized): {}", generate_sfen(king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c, turn));
         } else {
             println!("Failed to decode index: {}", index);
         }
