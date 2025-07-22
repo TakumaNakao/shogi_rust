@@ -10,6 +10,40 @@ use rand_distr::Distribution;
 use rayon::prelude::*;
 use shogi_lib;
 
+// --- Piece Values ---
+const PAWN_VALUE: f32 = 100.0;
+const LANCE_VALUE: f32 = 300.0;
+const KNIGHT_VALUE: f32 = 350.0;
+const SILVER_VALUE: f32 = 500.0;
+const GOLD_VALUE: f32 = 550.0;
+const BISHOP_VALUE: f32 = 800.0;
+const ROOK_VALUE: f32 = 1000.0;
+const PRO_PAWN_VALUE: f32 = 400.0;
+const PRO_LANCE_VALUE: f32 = 400.0;
+const PRO_KNIGHT_VALUE: f32 = 400.0;
+const PRO_SILVER_VALUE: f32 = 550.0;
+const PRO_BISHOP_VALUE: f32 = 1000.0;
+const PRO_ROOK_VALUE: f32 = 1200.0;
+
+fn piece_kind_value(kind: PieceKind) -> f32 {
+    match kind {
+        PieceKind::Pawn => PAWN_VALUE,
+        PieceKind::Lance => LANCE_VALUE,
+        PieceKind::Knight => KNIGHT_VALUE,
+        PieceKind::Silver => SILVER_VALUE,
+        PieceKind::Gold => GOLD_VALUE,
+        PieceKind::Bishop => BISHOP_VALUE,
+        PieceKind::Rook => ROOK_VALUE,
+        PieceKind::ProPawn => PRO_PAWN_VALUE,
+        PieceKind::ProLance => PRO_LANCE_VALUE,
+        PieceKind::ProKnight => PRO_KNIGHT_VALUE,
+        PieceKind::ProSilver => PRO_SILVER_VALUE,
+        PieceKind::ProBishop => PRO_BISHOP_VALUE,
+        PieceKind::ProRook => PRO_ROOK_VALUE,
+        PieceKind::King => 0.0, // King value is effectively infinite
+    }
+}
+
 // --- Public Constants for KPP Feature Space ---
 pub const NUM_SQUARES: usize = 81;
 pub const NUM_BOARD_PIECE_KINDS: usize = 14;
@@ -182,11 +216,45 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
     indices
 }
 
+fn calculate_material_advantage(pos: &shogi_lib::Position) -> f32 {
+    let mut material = 0.0;
+    let turn = pos.side_to_move();
+
+    // Board pieces
+    for i in 0..81 {
+        if let Some(sq) = Square::from_u8(i as u8 + 1) {
+            if let Some(piece) = pos.piece_at(sq) {
+                let value = piece_kind_value(piece.piece_kind());
+                if piece.color() == turn {
+                    material += value;
+                } else {
+                    material -= value;
+                }
+            }
+        }
+    }
+
+    // Hand pieces
+    for color in [Color::Black, Color::White] {
+        for &kind in ALL_HAND_PIECES.iter() {
+            let count = pos.hand(color).count(kind).unwrap_or(0) as f32;
+            let value = piece_kind_value(kind);
+            if color == turn {
+                material += count * value;
+            } else {
+                material -= count * value;
+            }
+        }
+    }
+    material
+}
+
 
 #[derive(Default)]
 pub struct SparseModel {
     pub w: Vec<f32>,
     pub bias: f32,
+    pub material_coeff: f32, // New coefficient for material advantage
     pub kpp_eta: f32,
     pub l2_lambda: f32,
 }
@@ -196,6 +264,7 @@ impl SparseModel {
         Self {
             w: vec![0.0; MAX_FEATURES],
             bias: 0.0,
+            material_coeff: 0.0, // Initialize to 0
             kpp_eta,
             l2_lambda,
         }
@@ -211,9 +280,12 @@ impl SparseModel {
         self.bias = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
         offset += 4;
 
+        self.material_coeff = f32::from_le_bytes(buffer[offset..offset + 4].try_into()?);
+        offset += 4;
+
         let expected_w_bytes = MAX_FEATURES * 4;
         if buffer.len() - offset != expected_w_bytes {
-            return Err(anyhow::anyhow!("File size mismatch for weights. Expected {} bytes, got {}.", expected_w_bytes + 4, buffer.len()));
+            return Err(anyhow::anyhow!("File size mismatch for weights. Expected {} bytes, got {}.", expected_w_bytes + 8, buffer.len()));
         }
 
         for i in 0..MAX_FEATURES {
@@ -233,6 +305,7 @@ impl SparseModel {
         let mut buffer = Vec::new();
 
         buffer.extend_from_slice(&self.bias.to_le_bytes());
+        buffer.extend_from_slice(&self.material_coeff.to_le_bytes());
 
         for &v in self.w.iter() {
             buffer.extend_from_slice(&v.to_le_bytes());
@@ -240,7 +313,7 @@ impl SparseModel {
 
         file.write_all(&buffer)?;
         
-        println!("Max W: {:?}", self.w.iter().cloned().max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)));
+        println!("Max W: {:?}, Material Coeff: {}", self.w.iter().cloned().max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)), self.material_coeff);
 
         Ok(())
     }
@@ -253,6 +326,7 @@ impl SparseModel {
             let v = dist.sample(&mut rng) as f32;
             self.w[i] = v;
         }
+        self.material_coeff = dist.sample(&mut rng) as f32;
     }
 
     pub fn zero_weight_overwrite(&mut self, overwrite_value: f32) {
@@ -263,13 +337,14 @@ impl SparseModel {
         }
     }
 
-    pub fn predict(&self, _pos: &shogi_lib::Position, kpp_features: &[usize]) -> f32 {
+    pub fn predict(&self, pos: &shogi_lib::Position, kpp_features: &[usize]) -> f32 {
         let mut prediction = self.bias;
         for &i in kpp_features {
             if i < MAX_FEATURES {
                 prediction += self.w[i];
             }
         }
+        prediction += self.material_coeff * calculate_material_advantage(pos);
         prediction
     }
 
@@ -282,34 +357,39 @@ impl SparseModel {
             return (0, 0);
         }
 
-        let results: Vec<(bool, HashMap<usize, f32>)> = batch
+        let results: Vec<(bool, HashMap<usize, f32>, f32, f32)> = batch
             .par_iter()
             .map(|(pos, teacher_move)| {
                 let legal_moves = pos.legal_moves();
                 if legal_moves.is_empty() {
-                    return (false, HashMap::new());
+                    return (false, HashMap::new(), 0.0, 0.0);
                 }
 
                 let mut best_move_by_model: Option<shogi_core::Move> = None;
                 let mut max_score = -f32::INFINITY;
                 let mut best_model_features: Vec<usize> = Vec::new();
+                let mut best_model_material = 0.0;
                 let mut teacher_move_features: Option<Vec<usize>> = None;
+                let mut teacher_material = 0.0;
 
                 for &mv in legal_moves.iter() {
                     let mut temp_pos = pos.clone();
                     temp_pos.do_move(mv);
                     temp_pos.switch_turn();
                     let features = extract_kpp_features(&temp_pos);
+                    let material = calculate_material_advantage(&temp_pos);
                     let score = self.predict(&temp_pos, &features);
 
                     if score > max_score {
                         max_score = score;
                         best_move_by_model = Some(mv);
                         best_model_features = features.clone();
+                        best_model_material = material;
                     }
 
                     if mv == *teacher_move {
                         teacher_move_features = Some(features);
+                        teacher_material = material;
                     }
                 }
 
@@ -324,31 +404,28 @@ impl SparseModel {
                             let teacher_set: HashSet<_> = teacher_features.into_iter().collect();
                             let model_set: HashSet<_> = best_model_features.into_iter().collect();
 
-                            // We want the teacher move to look better from our perspective.
-                            // This means our score for the resulting position should be HIGHER.
-                            // So, teacher features get a positive gradient.
                             for &idx in teacher_set.difference(&model_set) {
                                 *sparse_grads.entry(idx).or_insert(0.0) += self.kpp_eta;
                             }
-                            // We want the model's chosen move to look worse from our perspective.
-                            // This means our score for the resulting position should be LOWER.
-                            // So, model features get a negative gradient.
                             for &idx in model_set.difference(&teacher_set) {
                                 *sparse_grads.entry(idx).or_insert(0.0) -= self.kpp_eta;
                             }
                         }
                     }
                 }
-                (is_correct, sparse_grads)
+                (is_correct, sparse_grads, teacher_material, best_model_material)
             })
             .collect();
 
         let mut correct_predictions = 0;
         let mut w_grads = vec![0.0; MAX_FEATURES];
+        let mut material_grad = 0.0;
 
-        for (is_correct, sparse_grad) in results {
+        for (is_correct, sparse_grad, teacher_material, model_material) in results {
             if is_correct {
                 correct_predictions += 1;
+            } else {
+                material_grad += self.kpp_eta * (teacher_material - model_material);
             }
             for (idx, g) in sparse_grad {
                 w_grads[idx] += g;
@@ -361,6 +438,8 @@ impl SparseModel {
                     w_grads[i] / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.w[i];
             }
         }
+        self.material_coeff += material_grad / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.material_coeff;
+
 
         (correct_predictions, total_samples)
     }

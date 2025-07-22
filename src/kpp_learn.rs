@@ -242,6 +242,7 @@ fn main() -> Result<()> {
     let sparsity = (non_zero_count as f32 / total_count as f32) * 100.0;
 
     println!("\n--- 学習完了後の重み統計 ---");
+    println!("駒得係数: {:.6}", model.material_coeff);
     println!("最大重み: {:.6}", max_w);
     println!("最小重み: {:.6}", min_w);
     println!("非ゼロ要素の割合: {:.4}% ({}/{})", sparsity, non_zero_count, total_count);

@@ -1,10 +1,10 @@
 use std::env;
-use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self};
 use shogi_core::{Color, Piece, PieceKind, Square};
+use std::path::Path;
 
 // evaluationモジュールから公開された関数と定数を使用する
-use shogi_ai::evaluation::{self, index_to_kpp_info};
+use shogi_ai::evaluation::{self, index_to_kpp_info, SparseModel};
 
 // Helper for SFEN character conversion
 fn is_promoted_piece_kind(kind: PieceKind) -> bool {
@@ -43,7 +43,8 @@ fn generate_sfen(
     piece2_kind: PieceKind,
     piece2_sq: Option<Square>,
     piece2_hand_idx: Option<usize>,
-    piece2_color: Color // This is the normalized color
+    piece2_color: Color, // This is the normalized color
+    turn: Color,
 ) -> String {
     let mut sfen_board_pieces: Vec<Vec<Option<Piece>>> = vec![vec![None; 9]; 9];
     let mut black_hand_counts = [0; 7];
@@ -131,8 +132,8 @@ fn generate_sfen(
         sfen_hand_str.push('-');
     }
 
-    // Always 'b' for Black to move, as we normalized to Black's perspective
-    format!("{} b {} 1", sfen_board_str, sfen_hand_str)
+    let turn_char = if turn == Color::Black { 'b' } else { 'w' };
+    format!("{} {} {} 1", sfen_board_str, turn_char, sfen_hand_str)
 }
 
 fn main() -> io::Result<()> {
@@ -144,15 +145,13 @@ fn main() -> io::Result<()> {
     }
 
     let weight_file_path = &args[1];
-    let mut file = File::open(weight_file_path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
+    let mut model = SparseModel::new(0.0, 0.0);
+    if let Err(e) = model.load(Path::new(weight_file_path)) {
+        eprintln!("Error loading weight file: {}", e);
+        return Ok(());
+    }
 
-    let weights: Vec<f32> = buffer[4..]
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-        .collect();
-
+    let weights = &model.w;
     println!("Loaded {} weights.", weights.len());
 
     let mut indices: Vec<usize> = (0..weights.len()).collect();
@@ -169,17 +168,19 @@ fn main() -> io::Result<()> {
     println!("最大重み: {:.6}", max_w);
     println!("最小重み: {:.6}", min_w);
     println!("非ゼロ要素の割合: {:.4}% ({}/{})", sparsity, non_zero_count, total_count);
+    println!("駒得係数: {:.6}", model.material_coeff);
     // --- End of statistics ---
 
     println!("\n--- Top 10 Weights ---");
     for &index in indices.iter().rev().take(10) {
         let weight = weights[index];
+        let turn = if index < evaluation::MAX_FEATURES / 2 { Color::Black } else { Color::White };
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
-            println!("Weight: {:.6}, Index: {}", weight, index);
+            println!("Weight: {:.6}, Index: {} (Turn: {:?})", weight, index, turn);
             println!("  King (Normalized): Black at {:?} (Corresponds to White's King at {:?})", king_sq, king_sq.flip());
             println!("  Piece 1: {:?} {:?} at {:?} (Hand: {:?})", p1c, p1k, p1sq, p1hi);
             println!("  Piece 2: {:?} {:?} at {:?} (Hand: {:?})", p2c, p2k, p2sq, p2hi);
-            println!("  SFEN (Normalized): {}", generate_sfen(king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c));
+            println!("  SFEN (Normalized): {}", generate_sfen(king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c, turn));
         } else {
             println!("Failed to decode index: {}", index);
         }
@@ -188,12 +189,13 @@ fn main() -> io::Result<()> {
     println!("\n--- Bottom 10 Weights ---");
     for &index in indices.iter().take(10) {
         let weight = weights[index];
+        let turn = if index < evaluation::MAX_FEATURES / 2 { Color::Black } else { Color::White };
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
-            println!("Weight: {:.6}, Index: {}", weight, index);
+            println!("Weight: {:.6}, Index: {} (Turn: {:?})", weight, index, turn);
             println!("  King (Normalized): Black at {:?} (Corresponds to White's King at {:?})", king_sq, king_sq.flip());
             println!("  Piece 1: {:?} {:?} at {:?} (Hand: {:?})", p1c, p1k, p1sq, p1hi);
             println!("  Piece 2: {:?} {:?} at {:?} (Hand: {:?})", p2c, p2k, p2sq, p2hi);
-            println!("  SFEN (Normalized): {}", generate_sfen(king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c));
+            println!("  SFEN (Normalized): {}", generate_sfen(king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c, turn));
         } else {
             println!("Failed to decode index: {}", index);
         }
