@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use anyhow::Result;
 use shogi_core::{Color, Piece, PieceKind, Square};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -298,6 +298,7 @@ impl SparseModel {
                 for &mv in legal_moves.iter() {
                     let mut temp_pos = pos.clone();
                     temp_pos.do_move(mv);
+                    temp_pos.switch_turn();
                     let features = extract_kpp_features(&temp_pos);
                     let score = self.predict(&temp_pos, &features);
 
@@ -320,15 +321,20 @@ impl SparseModel {
                         is_correct = true;
                     } else {
                         if let Some(teacher_features) = teacher_move_features {
-                            for &idx in &teacher_features {
-                                if idx < MAX_FEATURES {
-                                    *sparse_grads.entry(idx).or_insert(0.0) += self.kpp_eta;
-                                }
+                            let teacher_set: HashSet<_> = teacher_features.into_iter().collect();
+                            let model_set: HashSet<_> = best_model_features.into_iter().collect();
+
+                            // We want the teacher move to look better from our perspective.
+                            // This means the resulting opponent's score should be LOWER.
+                            // So, teacher features get a negative gradient.
+                            for &idx in teacher_set.difference(&model_set) {
+                                *sparse_grads.entry(idx).or_insert(0.0) += self.kpp_eta;
                             }
-                            for &idx in &best_model_features {
-                                if idx < MAX_FEATURES {
-                                    *sparse_grads.entry(idx).or_insert(0.0) -= self.kpp_eta;
-                                }
+                            // We want the model's chosen move to look worse from our perspective.
+                            // This means the resulting opponent's score should be HIGHER.
+                            // So, model features get a positive gradient.
+                            for &idx in model_set.difference(&teacher_set) {
+                                *sparse_grads.entry(idx).or_insert(0.0) -= self.kpp_eta;
                             }
                         }
                     }

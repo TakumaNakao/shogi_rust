@@ -155,13 +155,25 @@ fn main() -> io::Result<()> {
 
     println!("Loaded {} weights.", weights.len());
 
-    let mut indexed_weights: Vec<(usize, f32)> = weights.iter().enumerate().map(|(i, &w)| (i, w)).collect();
+    let mut indices: Vec<usize> = (0..weights.len()).collect();
+    indices.sort_by(|&a, &b| weights[a].total_cmp(&weights[b]));
 
-    indexed_weights.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    // --- Display weight statistics ---
+    let max_w = weights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let min_w = weights.iter().cloned().fold(f32::INFINITY, f32::min);
+    let non_zero_count = weights.iter().filter(|&&w| w != 0.0).count();
+    let total_count = weights.len();
+    let sparsity = (non_zero_count as f32 / total_count as f32) * 100.0;
+
+    println!("\n--- 学習完了後の重み統計 ---");
+    println!("最大重み: {:.6}", max_w);
+    println!("最小重み: {:.6}", min_w);
+    println!("非ゼロ要素の割合: {:.4}% ({}/{})", sparsity, non_zero_count, total_count);
+    // --- End of statistics ---
 
     println!("\n--- Top 10 Weights ---");
-    for i in (indexed_weights.len().saturating_sub(10)..indexed_weights.len()).rev() {
-        let (index, weight) = indexed_weights[i];
+    for &index in indices.iter().rev().take(10) {
+        let weight = weights[index];
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
             println!("Weight: {:.6}, Index: {}", weight, index);
             println!("  King (Normalized): Black at {:?} (Corresponds to White's King at {:?})", king_sq, king_sq.flip());
@@ -174,8 +186,8 @@ fn main() -> io::Result<()> {
     }
 
     println!("\n--- Bottom 10 Weights ---");
-    for i in 0..std::cmp::min(10, indexed_weights.len()) {
-        let (index, weight) = indexed_weights[i];
+    for &index in indices.iter().take(10) {
+        let weight = weights[index];
         if let Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c)) = index_to_kpp_info(index) {
             println!("Weight: {:.6}, Index: {}", weight, index);
             println!("  King (Normalized): Black at {:?} (Corresponds to White's King at {:?})", king_sq, king_sq.flip());

@@ -234,6 +234,19 @@ fn main() -> Result<()> {
     let elapsed_time_save = start_time_save.elapsed();
     println!("最終モデル保存完了。処理時間: {:?}", elapsed_time_save);
 
+    // --- Display weight statistics ---
+    let max_w = model.w.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let min_w = model.w.iter().cloned().fold(f32::INFINITY, f32::min);
+    let non_zero_count = model.w.iter().filter(|&&w| w != 0.0).count();
+    let total_count = model.w.len();
+    let sparsity = (non_zero_count as f32 / total_count as f32) * 100.0;
+
+    println!("\n--- 学習完了後の重み統計 ---");
+    println!("最大重み: {:.6}", max_w);
+    println!("最小重み: {:.6}", min_w);
+    println!("非ゼロ要素の割合: {:.4}% ({}/{})", sparsity, non_zero_count, total_count);
+    // --- End of statistics ---
+
     println!("学習完了。");
     Ok(())
 }
