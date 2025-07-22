@@ -325,14 +325,14 @@ impl SparseModel {
                             let model_set: HashSet<_> = best_model_features.into_iter().collect();
 
                             // We want the teacher move to look better from our perspective.
-                            // This means the resulting opponent's score should be LOWER.
-                            // So, teacher features get a negative gradient.
+                            // This means our score for the resulting position should be HIGHER.
+                            // So, teacher features get a positive gradient.
                             for &idx in teacher_set.difference(&model_set) {
                                 *sparse_grads.entry(idx).or_insert(0.0) += self.kpp_eta;
                             }
                             // We want the model's chosen move to look worse from our perspective.
-                            // This means the resulting opponent's score should be HIGHER.
-                            // So, model features get a positive gradient.
+                            // This means our score for the resulting position should be LOWER.
+                            // So, model features get a negative gradient.
                             for &idx in model_set.difference(&teacher_set) {
                                 *sparse_grads.entry(idx).or_insert(0.0) -= self.kpp_eta;
                             }
