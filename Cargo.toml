@@ -23,6 +23,7 @@ circular-buffer = "0.1.1"
 lazy_static = "1.4.0"
 rand_chacha = "0.3.1"
 libc = "0.2"
+shogi_usi_parser = "0.1.0"
 
 [[bin]]
 name = "kpp_learn"
@@ -43,3 +44,7 @@ path = "src/bin/kpp_weight_check.rs"
 [[bin]]
 name = "kpp_self_learn"
 path = "src/bin/kpp_self_learn.rs"
+
+[[bin]]
+name = "sfen_test"
+path = "src/bin/sfen_test.rs"

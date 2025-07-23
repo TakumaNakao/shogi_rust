@@ -920,6 +920,7 @@ dependencies = [
  "serde_json",
  "shogi_core",
  "shogi_lib",
+ "shogi_usi_parser",
 ]
 
 [[package]]
@@ -936,6 +937,15 @@ dependencies = [
  "cfg-if",
  "once_cell",
  "rand",
+ "shogi_core",
+]
+
+[[package]]
+name = "shogi_usi_parser"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f39adab2055cf0bc5c9523b237e14ad9aba385bc7ebf90c9385876a48cef8c62"
+dependencies = [
  "shogi_core",
 ]
 
