@@ -3,12 +3,10 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use shogi_lib::Position;
 use shogi_usi_parser::FromUsi; // FromUsiトレイトをインポート
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
+use std::path::Path;
 
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{
@@ -82,7 +80,6 @@ fn position_from_sfen(sfen_line: &str) -> Option<Position> {
 
 fn main() -> Result<()> {
     let weight_path = Path::new("./policy_weights.binary");
-    let sfen_path = Path::new("./test.sfen");
 
     // 1. モデルの読み込み
     let mut model = SparseModel::new(LEARNING_RATE, L2_LAMBDA);
@@ -95,12 +92,8 @@ fn main() -> Result<()> {
     }
 
     // 2. SFENファイルの読み込み
-    if !sfen_path.exists() {
-        return Err(anyhow!("SFEN file '{}' not found.", sfen_path.display()));
-    }
-    println!("Loading SFENs from {}", sfen_path.display());
-    let file = File::open(sfen_path)?;
-    let sfen_list: Vec<String> = BufReader::new(file).lines().collect::<Result<_, _>>()?;
+    let sfen_content = include_str!("../../records2016_10818.sfen");
+    let sfen_list: Vec<String> = sfen_content.lines().map(String::from).collect();
     let sfen_list_arc = Arc::new(sfen_list);
     println!("Loaded {} positions.", sfen_list_arc.len());
 
@@ -175,3 +168,4 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+

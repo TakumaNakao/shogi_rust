@@ -44,7 +44,3 @@ path = "src/bin/kpp_weight_check.rs"
 [[bin]]
 name = "kpp_self_learn"
 path = "src/bin/kpp_self_learn.rs"
-
-[[bin]]
-name = "sfen_test"
-path = "src/bin/sfen_test.rs"
