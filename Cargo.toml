@@ -39,3 +39,7 @@ path = "src/bin/usi_engine.rs"
 [[bin]]
 name = "kpp_weight_check"
 path = "src/bin/kpp_weight_check.rs"
+
+[[bin]]
+name = "kpp_self_learn"
+path = "src/bin/kpp_self_learn.rs"
