@@ -119,9 +119,12 @@ fn main() -> Result<()> {
             let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
 
             if let Some((score, _)) = ai.alpha_beta_search(&mut position, SEARCH_DEPTH, -f32::INFINITY, f32::INFINITY) {
-                // 計算結果をチャネル経由でMainスレッドに送信
-                if thread_tx.send((position, score)).is_err() {
-                    // Mainスレッドが受信をやめた場合は何もしない
+                // 無限大の評価値は学習データとして不適切なので除外する
+                if !score.is_infinite() {
+                    // 計算結果をチャネル経由でMainスレッドに送信
+                    if thread_tx.send((position, score)).is_err() {
+                        // Mainスレッドが受信をやめた場合は何もしない
+                    }
                 }
             }
         });
