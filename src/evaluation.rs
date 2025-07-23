@@ -541,3 +541,135 @@ pub fn index_to_kpp_info(index: usize) -> Option<KppInfo> {
     let (p2k, p2sq, p2hi, p2c) = id_to_piece_info(id2)?;
     Some((king_sq, p1k, p1sq, p1hi, p1c, p2k, p2sq, p2hi, p2c))
 }
+
+// --- SFEN Generation for KPP (moved from kpp_weight_check.rs) ---
+
+// Helper for SFEN character conversion
+pub fn is_promoted_piece_kind(kind: PieceKind) -> bool {
+    matches!(
+        kind,
+        PieceKind::ProPawn
+            | PieceKind::ProLance
+            | PieceKind::ProKnight
+            | PieceKind::ProSilver
+            | PieceKind::ProBishop
+            | PieceKind::ProRook
+    )
+}
+
+// Helper for SFEN character conversion
+pub fn piece_kind_to_sfen_char_base(kind: PieceKind, color: Color) -> char {
+    match kind {
+        PieceKind::Pawn | PieceKind::ProPawn => if color == Color::Black { 'P' } else { 'p' },
+        PieceKind::Lance | PieceKind::ProLance => if color == Color::Black { 'L' } else { 'l' },
+        PieceKind::Knight | PieceKind::ProKnight => if color == Color::Black { 'N' } else { 'n' },
+        PieceKind::Silver | PieceKind::ProSilver => if color == Color::Black { 'S' } else { 's' },
+        PieceKind::Gold => if color == Color::Black { 'G' } else { 'g' },
+        PieceKind::Bishop | PieceKind::ProBishop => if color == Color::Black { 'B' } else { 'b' },
+        PieceKind::Rook | PieceKind::ProRook => if color == Color::Black { 'R' } else { 'r' },
+        PieceKind::King => if color == Color::Black { 'K' } else { 'k' },
+    }
+}
+
+// Function to generate SFEN from KPP info
+pub fn generate_sfen(
+    king_sq: Square,
+    piece1_kind: PieceKind,
+    piece1_sq: Option<Square>,
+    piece1_hand_idx: Option<usize>,
+    piece1_color: Color, // This is the normalized color
+    piece2_kind: PieceKind,
+    piece2_sq: Option<Square>,
+    piece2_hand_idx: Option<usize>,
+    piece2_color: Color, // This is the normalized color
+    turn: Color,
+) -> String {
+    let mut sfen_board_pieces: Vec<Vec<Option<Piece>>> = vec![vec![None; 9]; 9];
+    let mut black_hand_counts = [0; 7];
+    let mut white_hand_counts = [0; 7];
+
+    // Place king (always Black King in SFEN, as features are normalized to king's perspective)
+    let file = king_sq.file() as usize - 1;
+    let rank = king_sq.rank() as usize - 1;
+    sfen_board_pieces[rank][file] = Some(Piece::new(PieceKind::King, Color::Black));
+
+    // Place piece1
+    if let Some(sq) = piece1_sq {
+        let file = sq.file() as usize - 1;
+        let rank = sq.rank() as usize - 1;
+        sfen_board_pieces[rank][file] = Some(Piece::new(piece1_kind, piece1_color));
+    } else if let Some(_) = piece1_hand_idx {
+        if let Some(idx) = ALL_HAND_PIECES.iter().position(|&k| k == piece1_kind) {
+            if piece1_color == Color::Black {
+                black_hand_counts[idx] += 1;
+            } else {
+                white_hand_counts[idx] += 1;
+            }
+        }
+    }
+
+    // Place piece2
+    if let Some(sq) = piece2_sq {
+        let file = sq.file() as usize - 1;
+        let rank = sq.rank() as usize - 1;
+        sfen_board_pieces[rank][file] = Some(Piece::new(piece2_kind, piece2_color));
+    } else if let Some(_) = piece2_hand_idx {
+        if let Some(idx) = ALL_HAND_PIECES.iter().position(|&k| k == piece2_kind) {
+            if piece2_color == Color::Black {
+                black_hand_counts[idx] += 1;
+            } else {
+                white_hand_counts[idx] += 1;
+            }
+        }
+    }
+
+    // Construct SFEN board string
+    let mut sfen_board_str = String::new();
+    for rank in 0..9 {
+        let mut count = 0;
+        for file in 0..9 {
+            if let Some(piece) = sfen_board_pieces[rank][file] {
+                if count > 0 {
+                    sfen_board_str.push_str(&count.to_string());
+                    count = 0;
+                }
+                if is_promoted_piece_kind(piece.piece_kind()) {
+                    sfen_board_str.push('+');
+                }
+                sfen_board_str.push(piece_kind_to_sfen_char_base(piece.piece_kind(), piece.color()));
+            } else {
+                count += 1;
+            }
+        }
+        if count > 0 {
+            sfen_board_str.push_str(&count.to_string());
+        }
+        if rank < 8 {
+            sfen_board_str.push('/');
+        }
+    }
+
+    let mut sfen_hand_str = String::new();
+    for (i, &kind) in ALL_HAND_PIECES.iter().enumerate() {
+        let black_count = black_hand_counts[i];
+        let white_count = white_hand_counts[i];
+        if black_count > 0 {
+            if black_count > 1 {
+                sfen_hand_str.push_str(&black_count.to_string());
+            }
+            sfen_hand_str.push(piece_kind_to_sfen_char_base(kind, Color::Black));
+        }
+        if white_count > 0 {
+            if white_count > 1 {
+                sfen_hand_str.push_str(&white_count.to_string());
+            }
+            sfen_hand_str.push(piece_kind_to_sfen_char_base(kind, Color::White));
+        }
+    }
+    if sfen_hand_str.is_empty() {
+        sfen_hand_str.push('-');
+    }
+
+    let turn_char = if turn == Color::Black { 'b' } else { 'w' };
+    format!("{} {} {} 1", sfen_board_str, turn_char, sfen_hand_str)
+}
