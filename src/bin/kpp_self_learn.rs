@@ -20,14 +20,11 @@ use shogi_ai::evaluation::{
     extract_kpp_features, SparseModel
 };
 
-const NUM_GAMES: usize = 65536; // 学習に使用する局面数
 const SEARCH_DEPTH: u8 = 5; // 教師信号を生成するための探索深さ
 const LEARNING_RATE: f32 = 0.0001; // 学習率
 const L2_LAMBDA: f32 = 1e-3; // L2正則化
 const BATCH_SIZE: usize = 1024; // バッチサイズ
 const HISTORY_CAPACITY: usize = 128; // 千日手検出用の履歴サイズ
-
-const SAVE_GAME_NUM: usize = 4096;
 
 // modelへの参照を保持する軽量な評価器
 struct SharedModelEvaluator<'a> {
@@ -120,146 +117,120 @@ fn main() -> Result<()> {
     println!("Loaded {} positions.", sfen_list_arc.len());
 
     let start_time = Instant::now();
-    let mut games_done = 0;
 
     let mut log_file = OpenOptions::new()
         .create(true)
-        .write(true)
-        .truncate(true)
+        .append(true)
         .open("log.txt")?;
 
-    // バッチごとにループ
-    while games_done < NUM_GAMES {
-        let current_batch_size = (NUM_GAMES - games_done).min(BATCH_SIZE);
+    let sfen_list_clone = Arc::clone(&sfen_list_arc);
+    let (tx, rx) = mpsc::channel();
 
-        let sfen_list_clone = Arc::clone(&sfen_list_arc);
-        let (tx, rx) = mpsc::channel();
+    // 3. Rayonを使って並列でデータ生成
+    // modelへの参照を各スレッドで共有し、クローンを避ける
+    (0..BATCH_SIZE)
+        .into_par_iter()
+        .for_each(|_| {
+            let thread_sfen_list_arc = Arc::clone(&sfen_list_clone);
+            let thread_tx = tx.clone();
+            let mut rng = thread_rng();
 
-        // 3. Rayonを使って並列でデータ生成
-        // modelへの参照を各スレッドで共有し、クローンを避ける
-        (0..current_batch_size)
-            .into_par_iter()
-            .for_each(|_| {
-                let thread_sfen_list_arc = Arc::clone(&sfen_list_clone);
-                let thread_tx = tx.clone();
-                let mut rng = thread_rng();
-
-                if let Some(sfen_line) = thread_sfen_list_arc.choose(&mut rng) {
-                    if let Some(mut position) = position_from_sfen(sfen_line) {
-                        // ランダムな1〜3手を進める
-                        let num_random_moves = rng.gen_range(1..=3);
-                        for _ in 0..num_random_moves {
-                            let legal_moves = position.legal_moves();
-                            if legal_moves.is_empty() {
-                                break; // 合法手がなければ終了
-                            }
-                            let random_move = *legal_moves.choose(&mut rng).unwrap();
-                            position.do_move(random_move);
+            if let Some(sfen_line) = thread_sfen_list_arc.choose(&mut rng) {
+                if let Some(mut position) = position_from_sfen(sfen_line) {
+                    // ランダムな1〜3手を進める
+                    let num_random_moves = rng.gen_range(1..=3);
+                    for _ in 0..num_random_moves {
+                        let legal_moves = position.legal_moves();
+                        if legal_moves.is_empty() {
+                            break; // 合法手がなければ終了
                         }
+                        let random_move = *legal_moves.choose(&mut rng).unwrap();
+                        position.do_move(random_move);
+                    }
 
-                        // modelへの参照を持つ軽量な評価器を使用
-                        let evaluator = SharedModelEvaluator { model: &model };
-                        let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
+                    // modelへの参照を持つ軽量な評価器を使用
+                    let evaluator = SharedModelEvaluator { model: &model };
+                    let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
 
-                        // 探索を実行して最善手と評価値を取得
-                        if let Some((teacher_score, best_move)) = ai.alpha_beta_search(
-                            &mut position,
-                            SEARCH_DEPTH,
-                            -f32::INFINITY,
-                            f32::INFINITY,
-                        ) {
-                            if !teacher_score.is_infinite() {
-                                // 1. 現在の局面と教師局面の特徴量を計算
-                                let original_features = extract_kpp_features(&position);
-                                let mut teacher_pos = position.clone();
-                                for mv in best_move {
-                                    teacher_pos.do_move(mv);
-                                }
-                                let teacher_features = extract_kpp_features(&teacher_pos);
-
-                                // 2. 共通の特徴量を抽出
-                                let original_set: HashSet<_> = original_features.iter().cloned().collect();
-                                let teacher_set: HashSet<_> = teacher_features.iter().cloned().collect();
-                                let common_features: Vec<_> = original_set.intersection(&teacher_set).cloned().collect();
-
-                                // 3. 誤差と駒得を計算
-                                let predicted_score = model.predict(&position, &original_features);
-                                let error = predicted_score - teacher_score;
-
-                                // 4. 学習データを送信
-                                if thread_tx.send((common_features, error)).is_err() {}
+                    // 探索を実行して最善手と評価値を取得
+                    if let Some((teacher_score, best_move)) = ai.alpha_beta_search(
+                        &mut position,
+                        SEARCH_DEPTH,
+                        -f32::INFINITY,
+                        f32::INFINITY,
+                    ) {
+                        if !teacher_score.is_infinite() {
+                            // 1. 現在の局面と教師局面の特徴量を計算
+                            let original_features = extract_kpp_features(&position);
+                            let mut teacher_pos = position.clone();
+                            for mv in best_move {
+                                teacher_pos.do_move(mv);
                             }
+                            let teacher_features = extract_kpp_features(&teacher_pos);
+
+                            // 2. 共通の特徴量を抽出
+                            let original_set: HashSet<_> = original_features.iter().cloned().collect();
+                            let teacher_set: HashSet<_> = teacher_features.iter().cloned().collect();
+                            let common_features: Vec<_> = original_set.intersection(&teacher_set).cloned().collect();
+
+                            // 3. 誤差と駒得を計算
+                            let predicted_score = model.predict(&position, &original_features);
+                            let error = predicted_score - teacher_score;
+
+                            // 4. 学習データを送信
+                            if thread_tx.send((common_features, error)).is_err() {}
                         }
                     }
                 }
-            });
-
-        let training_batch: Vec<(Vec<usize>, f32)> = rx.iter().take(current_batch_size).collect();
-
-        // MSEの計算 (誤差は既に計算済み)
-        let mut mse_sum = 0.0;
-        if !training_batch.is_empty() {
-            for (_, error) in &training_batch {
-                mse_sum += error * error;
             }
-            let mse = mse_sum / training_batch.len() as f32;
+        });
 
-            update_weights(&mut model, &training_batch);
+    let training_batch: Vec<(Vec<usize>, f32)> = rx.iter().take(BATCH_SIZE).collect();
 
-            games_done += training_batch.len();
+    // MSEの計算 (誤差は既に計算済み)
+    let mut mse_sum = 0.0;
+    if !training_batch.is_empty() {
+        for (_, error) in &training_batch {
+            mse_sum += error * error;
+        }
+        let mse = mse_sum / training_batch.len() as f32;
 
-            let elapsed = start_time.elapsed().as_secs_f32();
-            let games_per_sec = if elapsed > 0.0 { games_done as f32 / elapsed } else { 0.0 };
-            println!(
-                "Game: {}/{}, Batch Trained (size={}). MSE: {:.4}, Games/sec: {:.2}",
-                games_done, NUM_GAMES, training_batch.len(), mse, games_per_sec
-            );
-            // ログファイルに追記
-            let mut min_w = f32::INFINITY;
-            let mut max_w = f32::NEG_INFINITY;
-            for &val in model.w.iter() {
-                if val < min_w {
-                    min_w = val;
-                }
-                if val > max_w {
-                    max_w = val;
-                }
+        update_weights(&mut model, &training_batch);
+
+        let games_done = training_batch.len();
+
+        let elapsed = start_time.elapsed().as_secs_f32();
+        let games_per_sec = if elapsed > 0.0 { games_done as f32 / elapsed } else { 0.0 };
+        println!(
+            "Batch Trained (size={}). MSE: {:.4}, Games/sec: {:.2}",
+            games_done, mse, games_per_sec
+        );
+        // ログファイルに追記
+        let mut min_w = f32::INFINITY;
+        let mut max_w = f32::NEG_INFINITY;
+        for &val in model.w.iter() {
+            if val < min_w {
+                min_w = val;
             }
-            writeln!(
-                log_file,
-                "{},{:.4},{:.4},{:.4},{:.4}",
-                games_done,
-                mse,
-                model.material_coeff,
-                min_w,
-                max_w
-            )?;
-
-            // プロットを生成
-            // plot_metrics(games_done)?;
-
-            if (games_done / SAVE_GAME_NUM) > ((games_done.saturating_sub(training_batch.len())) / SAVE_GAME_NUM) {
-                println!("Saving model at game {}...", games_done);
-                // 駒得係数とKPP重みの最大値・最小値を出力
-                println!("  Material Coeff: {:.4}", model.material_coeff);
-                let mut min_w = f32::INFINITY;
-                let mut max_w = f32::NEG_INFINITY;
-                for &val in model.w.iter() {
-                    if val < min_w {
-                        min_w = val;
-                    }
-                    if val > max_w {
-                        max_w = val;
-                    }
-                }
-                println!("  KPP Weights Min: {:.4}, Max: {:.4}", min_w, max_w);
-                model.save(weight_path)?;
-                println!("Model saved.");
+            if val > max_w {
+                max_w = val;
             }
         }
+        writeln!(
+            log_file,
+            "{},{:.4},{:.4},{:.4},{:.4}",
+            games_done,
+            mse,
+            model.material_coeff,
+            min_w,
+            max_w
+        )?;
+
+        // プロットを生成
+        // plot_metrics(games_done)?;
     }
 
-    println!("Saving final model...");
+    println!("Saving model...");
     // 最終保存時にも出力
     println!("  Material Coeff: {:.4}", model.material_coeff);
     let mut min_w = f32::INFINITY;
@@ -274,12 +245,12 @@ fn main() -> Result<()> {
     }
     println!("  KPP Weights Min: {:.4}, Max: {:.4}", min_w, max_w);
     model.save(weight_path)?;
-    println!("Final model saved successfully to {}.", weight_path.display());
+    println!("Model saved successfully to {}.", weight_path.display());
 
     println!("Self-play learning finished.");
 
     // 最終プロットを生成
-    plot_metrics(NUM_GAMES)?;
+    plot_metrics(BATCH_SIZE)?;
 
     Ok(())
 }
