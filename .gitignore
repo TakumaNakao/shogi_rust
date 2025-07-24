@@ -6,4 +6,3 @@ target/
 learn.sh
 ex_lib/
 *.exe
-*.sfen

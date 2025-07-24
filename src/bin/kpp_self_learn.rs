@@ -4,6 +4,7 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use shogi_lib::Position;
 use shogi_usi_parser::FromUsi; // FromUsiトレイトをインポート
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufRead, Write};
 use plotters::prelude::*;
@@ -16,14 +17,14 @@ use std::path::Path;
 
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{
-    calculate_material_advantage, extract_kpp_features, SparseModel,
+    extract_kpp_features, SparseModel,
     MAX_FEATURES,
 };
 
-const NUM_GAMES: usize = 300; // 学習に使用する局面数
-const SEARCH_DEPTH: u8 = 4; // 教師信号を生成するための探索深さ
-const LEARNING_RATE: f32 = 0.001; // 学習率
-const L2_LAMBDA: f32 = 1e-5; // L2正則化
+const NUM_GAMES: usize = 10000; // 学習に使用する局面数
+const SEARCH_DEPTH: u8 = 5; // 教師信号を生成するための探索深さ
+const LEARNING_RATE: f32 = 0.0001; // 学習率
+const L2_LAMBDA: f32 = 1e-3; // L2正則化
 const BATCH_SIZE: usize = 256; // バッチサイズ
 const HISTORY_CAPACITY: usize = 128; // 千日手検出用の履歴サイズ
 
@@ -42,12 +43,13 @@ impl<'a> Evaluator for SharedModelEvaluator<'a> {
 }
 
 
-// 重み更新のロジック（変更なし）
+// 重み更新のロジックをHashMapベースに変更
 fn update_weights(model: &mut SparseModel, batch: &[(Position, f32)]) {
     if batch.is_empty() {
         return;
     }
 
+    // HashMapを使用してスパースな勾配を計算
     let (w_grad_sum, bias_grad_sum, material_grad_sum) = batch
         .par_iter()
         .map(|(pos, teacher_score)| {
@@ -55,23 +57,23 @@ fn update_weights(model: &mut SparseModel, batch: &[(Position, f32)]) {
             let predicted_score = model.predict(pos, &kpp_features);
             let error = predicted_score - teacher_score;
 
-            let mut w_grad = vec![0.0; MAX_FEATURES];
+            let mut w_grad = HashMap::new();
             for &i in &kpp_features {
                 if i < MAX_FEATURES {
-                    w_grad[i] += error;
+                    *w_grad.entry(i).or_insert(0.0) += error;
                 }
             }
 
             let bias_grad = error;
-            let material_grad = error * calculate_material_advantage(pos);
+            let material_grad = error;
 
             (w_grad, bias_grad, material_grad)
         })
         .reduce(
-            || (vec![0.0; MAX_FEATURES], 0.0, 0.0),
+            || (HashMap::new(), 0.0, 0.0),
             |mut a, b| {
-                for i in 0..MAX_FEATURES {
-                    a.0[i] += b.0[i];
+                for (k, v) in b.0 {
+                    *a.0.entry(k).or_insert(0.0) += v;
                 }
                 a.1 += b.1;
                 a.2 += b.2;
@@ -81,9 +83,18 @@ fn update_weights(model: &mut SparseModel, batch: &[(Position, f32)]) {
 
     let batch_float_size = batch.len() as f32;
 
-    for i in 0..MAX_FEATURES {
-        let avg_grad = w_grad_sum[i] / batch_float_size;
-        model.w[i] -= LEARNING_RATE * (avg_grad + L2_LAMBDA * model.w[i]);
+    // L2正則化（Weight Decay）をすべての重みに適用
+    // w_new = w_old - lr * (grad + lambda * w_old)
+    //       = w_old * (1 - lr * lambda) - lr * grad
+    let decay_factor = 1.0 - LEARNING_RATE * L2_LAMBDA;
+    for w in model.w.iter_mut() {
+        *w *= decay_factor;
+    }
+
+    // バッチ内に現れた特徴の重みだけを勾配で更新
+    for (i, grad_sum) in w_grad_sum {
+        let avg_grad = grad_sum / batch_float_size;
+        model.w[i] -= LEARNING_RATE * avg_grad;
     }
 
     model.bias -= LEARNING_RATE * (bias_grad_sum / batch_float_size);
@@ -121,7 +132,8 @@ fn main() -> Result<()> {
 
     let mut log_file = OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open("log.txt")?;
 
     // バッチごとにループ
@@ -170,6 +182,7 @@ fn main() -> Result<()> {
                     }
                 }
             });
+        
 
         let training_batch: Vec<(Position, f32)> = rx.iter().take(current_batch_size).collect();
 
@@ -180,6 +193,7 @@ fn main() -> Result<()> {
             let predicted_score = model.predict(pos, &kpp_features);
             let error = predicted_score - teacher_score;
             mse_sum += error * error;
+            println!("teacher: {} , predict: {}", teacher_score, predicted_score);
         }
         let mse = mse_sum / training_batch.len() as f32;
 

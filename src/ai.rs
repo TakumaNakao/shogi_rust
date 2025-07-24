@@ -393,7 +393,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 let pv_string = best_pv_for_depth.iter().map(|m| format_move_usi(*m)).collect::<Vec<_>>().join(" ");
                 
                 // 評価値は手番視点に変換する
-                let score_cp = (best_eval_for_depth * 100.0) as i32;
+                let score_cp = best_eval_for_depth as i32;
 
                 println!(
                     "info depth {} score cp {} time {} nodes {} pv {}",
