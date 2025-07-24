@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use shogi_ai::evaluation::Evaluator;
 use rand::prelude::*;
 use rayon::prelude::*;
 use shogi_lib::Position;
@@ -15,11 +16,11 @@ use std::path::Path;
 
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{
-    calculate_material_advantage, extract_kpp_features, SparseModel, SparseModelEvaluator,
+    calculate_material_advantage, extract_kpp_features, SparseModel,
     MAX_FEATURES,
 };
 
-const NUM_GAMES: usize = 100000; // 学習に使用する局面数
+const NUM_GAMES: usize = 300; // 学習に使用する局面数
 const SEARCH_DEPTH: u8 = 4; // 教師信号を生成するための探索深さ
 const LEARNING_RATE: f32 = 0.001; // 学習率
 const L2_LAMBDA: f32 = 1e-5; // L2正則化
@@ -27,6 +28,19 @@ const BATCH_SIZE: usize = 256; // バッチサイズ
 const HISTORY_CAPACITY: usize = 128; // 千日手検出用の履歴サイズ
 
 const SAVE_GAME_NUM: usize = 100;
+
+// modelへの参照を保持する軽量な評価器
+struct SharedModelEvaluator<'a> {
+    model: &'a SparseModel,
+}
+
+impl<'a> Evaluator for SharedModelEvaluator<'a> {
+    fn evaluate(&self, position: &Position) -> f32 {
+        let kpp_features = extract_kpp_features(position);
+        self.model.predict(position, &kpp_features)
+    }
+}
+
 
 // 重み更新のロジック（変更なし）
 fn update_weights(model: &mut SparseModel, batch: &[(Position, f32)]) {
@@ -114,41 +128,48 @@ fn main() -> Result<()> {
     while games_done < NUM_GAMES {
         let current_batch_size = (NUM_GAMES - games_done).min(BATCH_SIZE);
 
-        let model_arc = Arc::new(model.clone());
-        let sfen_list_clone = Arc::clone(&sfen_list_arc); // ループの外でクローン
+        let sfen_list_clone = Arc::clone(&sfen_list_arc);
         let (tx, rx) = mpsc::channel();
 
         // 3. Rayonを使って並列でデータ生成
-        (0..current_batch_size).into_par_iter().for_each(move |_| {
-            let thread_model_arc = Arc::clone(&model_arc);
-            let thread_sfen_list_arc = Arc::clone(&sfen_list_clone); // クローンされたArcをムーブ
-            let thread_tx = tx.clone();
-            let mut rng = thread_rng();
+        // modelへの参照を各スレッドで共有し、クローンを避ける
+        (0..current_batch_size)
+            .into_par_iter()
+            .for_each(|_| {
+                let thread_sfen_list_arc = Arc::clone(&sfen_list_clone);
+                let thread_tx = tx.clone();
+                let mut rng = thread_rng();
 
-            if let Some(sfen_line) = thread_sfen_list_arc.choose(&mut rng) {
-                if let Some(mut position) = position_from_sfen(sfen_line) {
-                    // ランダムな1〜3手を進める
-                    let num_random_moves = rng.gen_range(1..=3);
-                    for _ in 0..num_random_moves {
-                        let legal_moves = position.legal_moves();
-                        if legal_moves.is_empty() {
-                            break; // 合法手がなければ終了
+                if let Some(sfen_line) = thread_sfen_list_arc.choose(&mut rng) {
+                    if let Some(mut position) = position_from_sfen(sfen_line) {
+                        // ランダムな1〜3手を進める
+                        let num_random_moves = rng.gen_range(1..=3);
+                        for _ in 0..num_random_moves {
+                            let legal_moves = position.legal_moves();
+                            if legal_moves.is_empty() {
+                                break; // 合法手がなければ終了
+                            }
+                            let random_move = *legal_moves.choose(&mut rng).unwrap();
+                            position.do_move(random_move);
                         }
-                        let random_move = *legal_moves.choose(&mut rng).unwrap();
-                        position.do_move(random_move);
-                    }
 
-                    let evaluator = SparseModelEvaluator { model: (*thread_model_arc).clone() };
-                    let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
+                        // modelへの参照を持つ軽量な評価器を使用
+                        let evaluator = SharedModelEvaluator { model: &model };
+                        let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
 
-                    if let Some((score, _)) = ai.alpha_beta_search(&mut position, SEARCH_DEPTH, -f32::INFINITY, f32::INFINITY) {
-                        if !score.is_infinite() {
-                            if thread_tx.send((position, score)).is_err() {}
+                        if let Some((score, _)) = ai.alpha_beta_search(
+                            &mut position,
+                            SEARCH_DEPTH,
+                            -f32::INFINITY,
+                            f32::INFINITY,
+                        ) {
+                            if !score.is_infinite() {
+                                if thread_tx.send((position, score)).is_err() {}
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
 
         let training_batch: Vec<(Position, f32)> = rx.iter().take(current_batch_size).collect();
 
