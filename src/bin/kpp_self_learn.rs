@@ -4,7 +4,7 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use shogi_lib::Position;
 use shogi_usi_parser::FromUsi; // FromUsiトレイトをインポート
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{BufRead, Write};
 use plotters::prelude::*;
@@ -17,8 +17,7 @@ use std::path::Path;
 
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{
-    extract_kpp_features, SparseModel,
-    MAX_FEATURES,
+    extract_kpp_features, SparseModel
 };
 
 const NUM_GAMES: usize = 65536; // 学習に使用する局面数
@@ -43,29 +42,24 @@ impl<'a> Evaluator for SharedModelEvaluator<'a> {
 }
 
 
-// 重み更新のロジックをHashMapベースに変更
-fn update_weights(model: &mut SparseModel, batch: &[(Position, f32)]) {
+// 重み更新のロジックを、共通特徴量と誤差をベースに変更
+fn update_weights(model: &mut SparseModel, batch: &[(Vec<usize>, f32)]) {
     if batch.is_empty() {
         return;
     }
 
-    // HashMapを使用してスパースな勾配を計算
+    // スパースな勾配を計算 (共通特徴量と誤差は既に計算済み)
     let (w_grad_sum, bias_grad_sum, material_grad_sum) = batch
         .par_iter()
-        .map(|(pos, teacher_score)| {
-            let kpp_features = extract_kpp_features(pos);
-            let predicted_score = model.predict(pos, &kpp_features);
-            let error = predicted_score - teacher_score;
-
+        .map(|(common_features, error)| {
             let mut w_grad = HashMap::new();
-            for &i in &kpp_features {
-                if i < MAX_FEATURES {
-                    *w_grad.entry(i).or_insert(0.0) += error;
-                }
+            for &i in common_features {
+                // 誤差そのものが勾配となる
+                *w_grad.entry(i).or_insert(0.0) += *error;
             }
 
-            let bias_grad = error;
-            let material_grad = error;
+            let bias_grad = *error;
+            let material_grad = *error;
 
             (w_grad, bias_grad, material_grad)
         })
@@ -83,15 +77,13 @@ fn update_weights(model: &mut SparseModel, batch: &[(Position, f32)]) {
 
     let batch_float_size = batch.len() as f32;
 
-    // L2正則化（Weight Decay）をすべての重みに適用
-    // w_new = w_old - lr * (grad + lambda * w_old)
-    //       = w_old * (1 - lr * lambda) - lr * grad
+    // L2正則化（Weight Decay）
     let decay_factor = 1.0 - LEARNING_RATE * L2_LAMBDA;
     for w in model.w.iter_mut() {
         *w *= decay_factor;
     }
 
-    // バッチ内に現れた特徴の重みだけを勾配で更新
+    // 勾配に基づいて重みを更新
     for (i, grad_sum) in w_grad_sum {
         let avg_grad = grad_sum / batch_float_size;
         model.w[i] -= LEARNING_RATE * avg_grad;
@@ -169,72 +161,60 @@ fn main() -> Result<()> {
                         let evaluator = SharedModelEvaluator { model: &model };
                         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
 
-                        if let Some((score, _)) = ai.alpha_beta_search(
+                        // 探索を実行して最善手と評価値を取得
+                        if let Some((teacher_score, best_move)) = ai.alpha_beta_search(
                             &mut position,
                             SEARCH_DEPTH,
                             -f32::INFINITY,
                             f32::INFINITY,
                         ) {
-                            if !score.is_infinite() {
-                                if thread_tx.send((position, score)).is_err() {}
+                            if !teacher_score.is_infinite() {
+                                // 1. 現在の局面と教師局面の特徴量を計算
+                                let original_features = extract_kpp_features(&position);
+                                let mut teacher_pos = position.clone();
+                                for mv in best_move {
+                                    teacher_pos.do_move(mv);
+                                }
+                                let teacher_features = extract_kpp_features(&teacher_pos);
+
+                                // 2. 共通の特徴量を抽出
+                                let original_set: HashSet<_> = original_features.iter().cloned().collect();
+                                let teacher_set: HashSet<_> = teacher_features.iter().cloned().collect();
+                                let common_features: Vec<_> = original_set.intersection(&teacher_set).cloned().collect();
+
+                                // 3. 誤差と駒得を計算
+                                let predicted_score = model.predict(&position, &original_features);
+                                let error = predicted_score - teacher_score;
+
+                                // 4. 学習データを送信
+                                if thread_tx.send((common_features, error)).is_err() {}
                             }
                         }
                     }
                 }
             });
-        
 
-        let training_batch: Vec<(Position, f32)> = rx.iter().take(current_batch_size).collect();
+        let training_batch: Vec<(Vec<usize>, f32)> = rx.iter().take(current_batch_size).collect();
 
-        // MSEの計算
+        // MSEの計算 (誤差は既に計算済み)
         let mut mse_sum = 0.0;
-        for (pos, teacher_score) in &training_batch {
-            let kpp_features = extract_kpp_features(pos);
-            let predicted_score = model.predict(pos, &kpp_features);
-            let error = predicted_score - teacher_score;
-            mse_sum += error * error;
-        }
-        let mse = mse_sum / training_batch.len() as f32;
-
-        update_weights(&mut model, &training_batch);
-
-        games_done += training_batch.len();
-
-        let elapsed = start_time.elapsed().as_secs_f32();
-        let games_per_sec = if elapsed > 0.0 { games_done as f32 / elapsed } else { 0.0 };
-        println!(
-            "Game: {}/{}, Batch Trained (size={}). Games/sec: {:.2}",
-            games_done, NUM_GAMES, training_batch.len(), games_per_sec
-        );
-
-        // ログファイルに追記
-        let mut min_w = f32::INFINITY;
-        let mut max_w = f32::NEG_INFINITY;
-        for &val in model.w.iter() {
-            if val < min_w {
-                min_w = val;
+        if !training_batch.is_empty() {
+            for (_, error) in &training_batch {
+                mse_sum += error * error;
             }
-            if val > max_w {
-                max_w = val;
-            }
-        }
-        writeln!(
-            log_file,
-            "{},{:.4},{:.4},{:.4},{:.4}",
-            games_done,
-            mse,
-            model.material_coeff,
-            min_w,
-            max_w
-        )?;
+            let mse = mse_sum / training_batch.len() as f32;
 
-        // プロットを生成
-        plot_metrics(games_done)?;
+            update_weights(&mut model, &training_batch);
 
-        if (games_done / SAVE_GAME_NUM) > ((games_done.saturating_sub(training_batch.len())) / SAVE_GAME_NUM) {
-            println!("Saving model at game {}...", games_done);
-            // 駒得係数とKPP重みの最大値・最小値を出力
-            println!("  Material Coeff: {:.4}", model.material_coeff);
+            games_done += training_batch.len();
+
+            let elapsed = start_time.elapsed().as_secs_f32();
+            let games_per_sec = if elapsed > 0.0 { games_done as f32 / elapsed } else { 0.0 };
+            println!(
+                "Game: {}/{}, Batch Trained (size={}). MSE: {:.4}, Games/sec: {:.2}",
+                games_done, NUM_GAMES, training_batch.len(), mse, games_per_sec
+            );
+            // ログファイルに追記
             let mut min_w = f32::INFINITY;
             let mut max_w = f32::NEG_INFINITY;
             for &val in model.w.iter() {
@@ -245,9 +225,37 @@ fn main() -> Result<()> {
                     max_w = val;
                 }
             }
-            println!("  KPP Weights Min: {:.4}, Max: {:.4}", min_w, max_w);
-            model.save(weight_path)?;
-            println!("Model saved.");
+            writeln!(
+                log_file,
+                "{},{:.4},{:.4},{:.4},{:.4}",
+                games_done,
+                mse,
+                model.material_coeff,
+                min_w,
+                max_w
+            )?;
+
+            // プロットを生成
+            // plot_metrics(games_done)?;
+
+            if (games_done / SAVE_GAME_NUM) > ((games_done.saturating_sub(training_batch.len())) / SAVE_GAME_NUM) {
+                println!("Saving model at game {}...", games_done);
+                // 駒得係数とKPP重みの最大値・最小値を出力
+                println!("  Material Coeff: {:.4}", model.material_coeff);
+                let mut min_w = f32::INFINITY;
+                let mut max_w = f32::NEG_INFINITY;
+                for &val in model.w.iter() {
+                    if val < min_w {
+                        min_w = val;
+                    }
+                    if val > max_w {
+                        max_w = val;
+                    }
+                }
+                println!("  KPP Weights Min: {:.4}, Max: {:.4}", min_w, max_w);
+                model.save(weight_path)?;
+                println!("Model saved.");
+            }
         }
     }
 
@@ -277,7 +285,7 @@ fn main() -> Result<()> {
 }
 
 // ログファイルからデータを読み込み、プロットを生成する関数
-fn plot_metrics(current_games_done: usize) -> Result<()> {
+fn plot_metrics(_current_games_done: usize) -> Result<()> {
     let log_path = Path::new("log.txt");
     if !log_path.exists() {
         return Err(anyhow!("log.txt not found for plotting."));
@@ -311,7 +319,7 @@ fn plot_metrics(current_games_done: usize) -> Result<()> {
     let max_games = *games_data.last().unwrap_or(&0);
 
     // MSEのプロット
-    let mse_file_name = format!("mse_plot_{}.png", current_games_done);
+    let mse_file_name = format!("mse_plot.png");
     let root_mse = BitMapBackend::new(&mse_file_name, (800, 600)).into_drawing_area();
     root_mse.fill(&WHITE)?;
     let mut chart_mse = ChartBuilder::on(&root_mse)
@@ -332,7 +340,7 @@ fn plot_metrics(current_games_done: usize) -> Result<()> {
     root_mse.present()?;
 
     // 駒得係数のプロット
-    let material_file_name = format!("material_coeff_plot_{}.png", current_games_done);
+    let material_file_name = format!("material_coeff_plot.png");
     let root_material = BitMapBackend::new(&material_file_name, (800, 600)).into_drawing_area();
     root_material.fill(&WHITE)?;
     let mut chart_material = ChartBuilder::on(&root_material)
@@ -353,7 +361,7 @@ fn plot_metrics(current_games_done: usize) -> Result<()> {
     root_material.present()?;
 
     // KPP重みの最大値・最小値のプロット
-    let kpp_file_name = format!("kpp_weights_plot_{}.png", current_games_done);
+    let kpp_file_name = format!("kpp_weights_plot.png");
     let root_kpp = BitMapBackend::new(&kpp_file_name, (800, 600)).into_drawing_area();
     root_kpp.fill(&WHITE)?;
     let mut chart_kpp = ChartBuilder::on(&root_kpp)
@@ -373,7 +381,7 @@ fn plot_metrics(current_games_done: usize) -> Result<()> {
     chart_kpp.draw_series(LineSeries::new(
         games_data.iter().zip(max_w_data.iter()).map(|(&x, &y)| (x as i32, y)),
         &BLUE,
-    ))?.label(r#"Max Weight"#).legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
+    ))?.label("Max Weight").legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
 
     chart_kpp.configure_series_labels().background_style(&WHITE.mix(0.8)).border_style(&BLACK).draw()?;
     root_kpp.present()?;
