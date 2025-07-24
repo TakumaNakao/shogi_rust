@@ -216,7 +216,7 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
     indices
 }
 
-fn calculate_material_advantage(pos: &shogi_lib::Position) -> f32 {
+pub fn calculate_material_advantage(pos: &shogi_lib::Position) -> f32 {
     let mut material = 0.0;
     let turn = pos.side_to_move();
 
@@ -250,7 +250,7 @@ fn calculate_material_advantage(pos: &shogi_lib::Position) -> f32 {
 }
 
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SparseModel {
     pub w: Vec<f32>,
     pub bias: f32,

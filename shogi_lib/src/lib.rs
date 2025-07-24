@@ -1,6 +1,6 @@
 mod bitboard;
 mod movegen;
-mod position;
+pub mod position;
 mod tables;
 mod zobrist;
 
