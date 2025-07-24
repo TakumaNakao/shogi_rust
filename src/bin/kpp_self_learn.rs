@@ -21,14 +21,14 @@ use shogi_ai::evaluation::{
     MAX_FEATURES,
 };
 
-const NUM_GAMES: usize = 10000; // 学習に使用する局面数
+const NUM_GAMES: usize = 65536; // 学習に使用する局面数
 const SEARCH_DEPTH: u8 = 5; // 教師信号を生成するための探索深さ
 const LEARNING_RATE: f32 = 0.0001; // 学習率
 const L2_LAMBDA: f32 = 1e-3; // L2正則化
-const BATCH_SIZE: usize = 256; // バッチサイズ
+const BATCH_SIZE: usize = 1024; // バッチサイズ
 const HISTORY_CAPACITY: usize = 128; // 千日手検出用の履歴サイズ
 
-const SAVE_GAME_NUM: usize = 100;
+const SAVE_GAME_NUM: usize = 4096;
 
 // modelへの参照を保持する軽量な評価器
 struct SharedModelEvaluator<'a> {
@@ -193,7 +193,6 @@ fn main() -> Result<()> {
             let predicted_score = model.predict(pos, &kpp_features);
             let error = predicted_score - teacher_score;
             mse_sum += error * error;
-            println!("teacher: {} , predict: {}", teacher_score, predicted_score);
         }
         let mse = mse_sum / training_batch.len() as f32;
 
