@@ -126,6 +126,8 @@ fn main() -> Result<()> {
     let sfen_list_clone = Arc::clone(&sfen_list_arc);
     let (tx, rx) = mpsc::channel();
 
+    println!("Generating training data with {} threads...", BATCH_SIZE);
+
     // 3. Rayonを使って並列でデータ生成
     // modelへの参照を各スレッドで共有し、クローンを避ける
     (0..BATCH_SIZE)
@@ -185,7 +187,13 @@ fn main() -> Result<()> {
             }
         });
 
-    let training_batch: Vec<(Vec<usize>, f32)> = rx.iter().take(BATCH_SIZE).collect();
+    // メインスレッドが持つ送信側(tx)を破棄する。
+    // これにより、受信側(rx)はこれ以上データが来ないことを知り、ブロックを解除できる。
+    drop(tx);
+
+    println!("Collecting generated data...");
+    let training_batch: Vec<(Vec<usize>, f32)> = rx.iter().collect();
+    println!("Collected {} data points.", training_batch.len());
 
     // MSEの計算 (誤差は既に計算済み)
     let mut mse_sum = 0.0;
