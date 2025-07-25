@@ -4,7 +4,7 @@ use rand::prelude::*;
 use rayon::prelude::*;
 use shogi_lib::Position;
 use shogi_usi_parser::FromUsi; // FromUsiトレイトをインポート
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufRead, Write};
 use plotters::prelude::*;
@@ -20,11 +20,12 @@ use shogi_ai::evaluation::{
     extract_kpp_features, SparseModel
 };
 
-const SEARCH_DEPTH: u8 = 5; // 教師信号を生成するための探索深さ
+const SEARCH_DEPTH: u8 = 7; // 教師信号を生成するための探索深さ
 const LEARNING_RATE: f32 = 0.0001; // 学習率
 const L2_LAMBDA: f32 = 1e-3; // L2正則化
 const BATCH_SIZE: usize = 1024; // バッチサイズ
 const HISTORY_CAPACITY: usize = 128; // 千日手検出用の履歴サイズ
+const WIN_RATE_SCALING_FACTOR: f32 = 600.0; // 勝率変換のためのスケーリング係数
 
 // modelへの参照を保持する軽量な評価器
 struct SharedModelEvaluator<'a> {
@@ -38,25 +39,31 @@ impl<'a> Evaluator for SharedModelEvaluator<'a> {
     }
 }
 
+// Sigmoid function to convert evaluation score to win rate
+fn sigmoid(x: f32, k: f32) -> f32 {
+    1.0 / (1.0 + (-x / k).exp())
+}
 
-// 重み更新のロジックを、共通特徴量と誤差をベースに変更
-fn update_weights(model: &mut SparseModel, batch: &[(Vec<usize>, f32)]) {
+// 重みを勝率の差に基づいて更新する
+fn update_weights(model: &mut SparseModel, batch: &[(Vec<usize>, f32, f32)]) {
     if batch.is_empty() {
         return;
     }
 
-    // スパースな勾配を計算 (共通特徴量と誤差は既に計算済み)
+    // スパースな勾配を計算
     let (w_grad_sum, bias_grad_sum, material_grad_sum) = batch
         .par_iter()
-        .map(|(common_features, error)| {
+        .map(|(features, p, q)| {
+            // error is the difference between predicted win rate (p) and teacher win rate (q)
+            let error = p - q;
             let mut w_grad = HashMap::new();
-            for &i in common_features {
-                // 誤差そのものが勾配となる
-                *w_grad.entry(i).or_insert(0.0) += *error;
+            for &i in features {
+                // The gradient for each active feature is the error
+                *w_grad.entry(i).or_insert(0.0) += error;
             }
 
-            let bias_grad = *error;
-            let material_grad = *error;
+            let bias_grad = error;
+            let material_grad = error;
 
             (w_grad, bias_grad, material_grad)
         })
@@ -90,6 +97,7 @@ fn update_weights(model: &mut SparseModel, batch: &[(Vec<usize>, f32)]) {
     model.material_coeff -=
         LEARNING_RATE * (material_grad_sum / batch_float_size + L2_LAMBDA * model.material_coeff);
 }
+
 
 // SFEN文字列から局面を生成する関数
 fn position_from_sfen(sfen: &str) -> Option<Position> {
@@ -154,33 +162,24 @@ fn main() -> Result<()> {
                     let evaluator = SharedModelEvaluator { model: &model };
                     let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
 
-                    // 探索を実行して最善手と評価値を取得
-                    if let Some((teacher_score, best_move)) = ai.alpha_beta_search(
+                    // 探索を実行して教師評価値を取得
+                    if let Some((teacher_score, _best_move)) = ai.alpha_beta_search(
                         &mut position,
                         SEARCH_DEPTH,
                         -f32::INFINITY,
                         f32::INFINITY,
                     ) {
                         if !teacher_score.is_infinite() {
-                            // 1. 現在の局面と教師局面の特徴量を計算
+                            // 1. 現在の局面の特徴量を計算
                             let original_features = extract_kpp_features(&position);
-                            let mut teacher_pos = position.clone();
-                            for mv in best_move {
-                                teacher_pos.do_move(mv);
-                            }
-                            let teacher_features = extract_kpp_features(&teacher_pos);
 
-                            // 2. 共通の特徴量を抽出
-                            let original_set: HashSet<_> = original_features.iter().cloned().collect();
-                            let teacher_set: HashSet<_> = teacher_features.iter().cloned().collect();
-                            let common_features: Vec<_> = original_set.intersection(&teacher_set).cloned().collect();
-
-                            // 3. 誤差と駒得を計算
+                            // 2. 予測スコアと教師スコアを勝率に変換
                             let predicted_score = model.predict(&position, &original_features);
-                            let error = predicted_score - teacher_score;
+                            let p = sigmoid(predicted_score, WIN_RATE_SCALING_FACTOR);
+                            let q = sigmoid(teacher_score, WIN_RATE_SCALING_FACTOR);
 
-                            // 4. 学習データを送信
-                            if thread_tx.send((common_features, error)).is_err() {}
+                            // 3. 学習データを送信 (特徴量, 予測勝率, 教師勝率)
+                            if thread_tx.send((original_features, p, q)).is_err() {}
                         }
                     }
                 }
@@ -192,16 +191,18 @@ fn main() -> Result<()> {
     drop(tx);
 
     println!("Collecting generated data...");
-    let training_batch: Vec<(Vec<usize>, f32)> = rx.iter().collect();
+    let training_batch: Vec<(Vec<usize>, f32, f32)> = rx.iter().collect();
     println!("Collected {} data points.", training_batch.len());
 
-    // MSEの計算 (誤差は既に計算済み)
-    let mut mse_sum = 0.0;
+    // 交差エントロピー損失の計算
+    let mut cross_entropy_loss_sum = 0.0;
     if !training_batch.is_empty() {
-        for (_, error) in &training_batch {
-            mse_sum += error * error;
+        for (_, p, q) in &training_batch {
+            let epsilon = 1e-7;
+            let p_clipped = p.max(epsilon).min(1.0 - epsilon);
+            cross_entropy_loss_sum -= q * p_clipped.ln() + (1.0 - q) * (1.0 - p_clipped).ln();
         }
-        let mse = mse_sum / training_batch.len() as f32;
+        let avg_loss = cross_entropy_loss_sum / training_batch.len() as f32;
 
         update_weights(&mut model, &training_batch);
 
@@ -210,8 +211,8 @@ fn main() -> Result<()> {
         let elapsed = start_time.elapsed().as_secs_f32();
         let games_per_sec = if elapsed > 0.0 { games_done as f32 / elapsed } else { 0.0 };
         println!(
-            "Batch Trained (size={}). MSE: {:.4}, Games/sec: {:.2}",
-            games_done, mse, games_per_sec
+            "Batch Trained (size={}). Cross-Entropy Loss: {:.4}, Games/sec: {:.2}",
+            games_done, avg_loss, games_per_sec
         );
         // ログファイルに追記
         let mut min_w = f32::INFINITY;
@@ -228,7 +229,7 @@ fn main() -> Result<()> {
             log_file,
             "{},{:.4},{:.4},{:.4},{:.4}",
             games_done,
-            mse,
+            avg_loss, // MSEから変更
             model.material_coeff,
             min_w,
             max_w
@@ -274,7 +275,7 @@ fn plot_metrics(_current_games_done: usize) -> Result<()> {
     let reader = BufReader::new(file);
 
     let mut games_data = Vec::new();
-    let mut mse_data = Vec::new();
+    let mut loss_data = Vec::new();
     let mut material_coeff_data = Vec::new();
     let mut min_w_data = Vec::new();
     let mut max_w_data = Vec::new();
@@ -284,7 +285,7 @@ fn plot_metrics(_current_games_done: usize) -> Result<()> {
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() == 5 {
             games_data.push(parts[0].parse::<usize>()?);
-            mse_data.push(parts[1].parse::<f32>()?);
+            loss_data.push(parts[1].parse::<f32>()?);
             material_coeff_data.push(parts[2].parse::<f32>()?);
             min_w_data.push(parts[3].parse::<f32>()?);
             max_w_data.push(parts[4].parse::<f32>()?);
@@ -297,26 +298,26 @@ fn plot_metrics(_current_games_done: usize) -> Result<()> {
 
     let max_games = *games_data.last().unwrap_or(&0);
 
-    // MSEのプロット
-    let mse_file_name = format!("mse_plot.png");
-    let root_mse = BitMapBackend::new(&mse_file_name, (800, 600)).into_drawing_area();
-    root_mse.fill(&WHITE)?;
-    let mut chart_mse = ChartBuilder::on(&root_mse)
-        .caption("MSE over Games", ("sans-serif", 50).into_font())
+    // 交差エントロピー損失のプロット
+    let loss_file_name = format!("loss_plot.png");
+    let root_loss = BitMapBackend::new(&loss_file_name, (800, 600)).into_drawing_area();
+    root_loss.fill(&WHITE)?;
+    let mut chart_loss = ChartBuilder::on(&root_loss)
+        .caption("Cross-Entropy Loss over Games", ("sans-serif", 50).into_font())
         .margin(5)
         .x_label_area_size(30)
         .y_label_area_size(30)
-        .build_cartesian_2d(0..max_games as i32, 0f32..mse_data.iter().cloned().fold(f32::NEG_INFINITY, f32::max) * 1.1)?;
+        .build_cartesian_2d(0..max_games as i32, 0f32..loss_data.iter().cloned().fold(f32::NEG_INFINITY, f32::max) * 1.1)?;
 
-    chart_mse.configure_mesh().draw()?;
+    chart_loss.configure_mesh().draw()?;
 
-    chart_mse.draw_series(LineSeries::new(
-        games_data.iter().zip(mse_data.iter()).map(|(&x, &y)| (x as i32, y)),
+    chart_loss.draw_series(LineSeries::new(
+        games_data.iter().zip(loss_data.iter()).map(|(&x, &y)| (x as i32, y)),
         &RED,
-    ))?.label("MSE").legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
+    ))?.label("Loss").legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
 
-    chart_mse.configure_series_labels().background_style(&WHITE.mix(0.8)).border_style(&BLACK).draw()?;
-    root_mse.present()?;
+    chart_loss.configure_series_labels().background_style(&WHITE.mix(0.8)).border_style(&BLACK).draw()?;
+    root_loss.present()?;
 
     // 駒得係数のプロット
     let material_file_name = format!("material_coeff_plot.png");
