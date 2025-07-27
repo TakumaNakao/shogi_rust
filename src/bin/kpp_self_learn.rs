@@ -20,7 +20,7 @@ use shogi_ai::evaluation::{
     extract_kpp_features, SparseModel
 };
 
-const SEARCH_DEPTH: u8 = 6; // 教師信号を生成するための探索深さ
+const SEARCH_DEPTH: u8 = 7; // 教師信号を生成するための探索深さ
 const LEARNING_RATE: f32 = 0.1; // 学習率
 const L2_LAMBDA: f32 = 1e-6; // L2正則化
 const BATCH_SIZE: usize = 256; // バッチサイズ
