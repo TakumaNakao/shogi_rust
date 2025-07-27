@@ -21,9 +21,9 @@ use shogi_ai::evaluation::{
 };
 
 const SEARCH_DEPTH: u8 = 6; // 教師信号を生成するための探索深さ
-const LEARNING_RATE: f32 = 0.001; // 学習率
-const L2_LAMBDA: f32 = 1e-4; // L2正則化
-const BATCH_SIZE: usize = 512; // バッチサイズ
+const LEARNING_RATE: f32 = 0.1; // 学習率
+const L2_LAMBDA: f32 = 1e-6; // L2正則化
+const BATCH_SIZE: usize = 256; // バッチサイズ
 const HISTORY_CAPACITY: usize = 128; // 千日手検出用の履歴サイズ
 const WIN_RATE_SCALING_FACTOR: f32 = 600.0; // 勝率変換のためのスケーリング係数
 
@@ -169,18 +169,14 @@ fn main() -> Result<()> {
                         -f32::INFINITY,
                         f32::INFINITY,
                     ) {
-                        if !teacher_score.is_infinite() {
-                            // 1. 現在の局面の特徴量を計算
-                            let original_features = extract_kpp_features(&position);
-
-                            // 2. 予測スコアと教師スコアを勝率に変換
-                            let predicted_score = model.predict(&position, &original_features);
-                            let p = sigmoid(predicted_score, WIN_RATE_SCALING_FACTOR);
-                            let q = sigmoid(teacher_score, WIN_RATE_SCALING_FACTOR);
-
-                            // 3. 学習データを送信 (特徴量, 予測勝率, 教師勝率)
-                            if thread_tx.send((original_features, p, q)).is_err() {}
-                        }
+                        // 1. 現在の局面の特徴量を計算
+                        let original_features = extract_kpp_features(&position);
+                        // 2. 予測スコアと教師スコアを勝率に変換
+                        let predicted_score = model.predict(&position, &original_features);
+                        let p = sigmoid(predicted_score, WIN_RATE_SCALING_FACTOR);
+                        let q = sigmoid(teacher_score, WIN_RATE_SCALING_FACTOR);
+                        // 3. 学習データを送信 (特徴量, 予測勝率, 教師勝率)
+                        if thread_tx.send((original_features, p, q)).is_err() {}
                     }
                 }
             }
