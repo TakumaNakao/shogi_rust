@@ -23,7 +23,7 @@ use shogi_ai::evaluation::{
 const SEARCH_DEPTH: u8 = 7; // 教師信号を生成するための探索深さ
 const LEARNING_RATE: f32 = 0.1; // 学習率
 const L2_LAMBDA: f32 = 1e-6; // L2正則化
-const BATCH_SIZE: usize = 256; // バッチサイズ
+const BATCH_SIZE: usize = 16; // バッチサイズ
 const HISTORY_CAPACITY: usize = 128; // 千日手検出用の履歴サイズ
 const WIN_RATE_SCALING_FACTOR: f32 = 600.0; // 勝率変換のためのスケーリング係数
 
