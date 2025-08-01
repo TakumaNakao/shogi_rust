@@ -344,7 +344,7 @@ impl SparseModel {
                 prediction += self.w[i];
             }
         }
-        prediction += self.material_coeff * calculate_material_advantage(pos);
+        // prediction += self.material_coeff * calculate_material_advantage(pos);
         prediction
     }
 
@@ -377,19 +377,19 @@ impl SparseModel {
                     temp_pos.do_move(mv);
                     temp_pos.switch_turn();
                     let features = extract_kpp_features(&temp_pos);
-                    let material = calculate_material_advantage(&temp_pos);
+                    // let material = calculate_material_advantage(&temp_pos);
                     let score = self.predict(&temp_pos, &features);
 
                     if score > max_score {
                         max_score = score;
                         best_move_by_model = Some(mv);
                         best_model_features = features.clone();
-                        best_model_material = material;
+                        // best_model_material = material;
                     }
 
                     if mv == *teacher_move {
                         teacher_move_features = Some(features);
-                        teacher_material = material;
+                        // teacher_material = material;
                     }
                 }
 
@@ -418,30 +418,159 @@ impl SparseModel {
             .collect();
 
         let mut correct_predictions = 0;
-        let mut w_grads = vec![0.0; MAX_FEATURES];
+        let mut w_grads = HashMap::new();
         let mut material_grad = 0.0;
 
         for (is_correct, sparse_grad, teacher_material, model_material) in results {
             if is_correct {
                 correct_predictions += 1;
             } else {
-                material_grad += self.kpp_eta * (teacher_material - model_material);
+                // material_grad += self.kpp_eta * (teacher_material - model_material);
             }
             for (idx, g) in sparse_grad {
-                w_grads[idx] += g;
+                *w_grads.entry(idx).or_insert(0.0) += g;
             }
         }
 
-        for i in 0..MAX_FEATURES {
-            if w_grads[i] != 0.0 {
-                self.w[i] +=
-                    w_grads[i] / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.w[i];
-            }
+        let decay_factor = 1.0 - self.kpp_eta * self.l2_lambda;
+        for w in self.w.iter_mut() {
+            *w *= decay_factor;
         }
-        self.material_coeff += material_grad / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.material_coeff;
+
+        for (i, g) in w_grads {
+            self.w[i] += g / total_samples as f32;
+        }
+
+        // self.material_coeff += material_grad / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.material_coeff;
 
 
         (correct_predictions, total_samples)
+    }
+
+    pub fn update_batch_with_cross_entropy(
+        &mut self,
+        batch: &[(shogi_lib::Position, shogi_core::Move)],
+    ) -> (f32, usize) {
+        let total_samples = batch.len();
+        if total_samples == 0 {
+            return (0.0, 0);
+        }
+
+        let results: Vec<(
+            HashMap<usize, f32>,
+            f32,
+            f32,
+            f32,
+            bool,
+            Option<Vec<usize>>,
+        )> = batch
+            .par_iter()
+            .map(|(pos, teacher_move)| {
+                let legal_moves = pos.legal_moves();
+                if legal_moves.is_empty() {
+                    return (HashMap::new(), 0.0, 0.0, 0.0, false, None);
+                }
+
+                let move_data: Vec<_> = legal_moves
+                    .iter()
+                    .map(|&mv| {
+                        let mut temp_pos = pos.clone();
+                        temp_pos.do_move(mv);
+                        temp_pos.switch_turn();
+                        let features = extract_kpp_features(&temp_pos);
+                        let material = calculate_material_advantage(&temp_pos);
+                        let score = self.predict(&temp_pos, &features);
+                        (mv, features, material, score)
+                    })
+                    .collect();
+
+                let total_score = move_data.iter().map(|d| d.3.exp()).sum::<f32>();
+                let probabilities: Vec<_> = move_data
+                    .iter()
+                    .map(|d| (d.0, d.3.exp() / total_score))
+                    .collect();
+
+                let mut sparse_grads = HashMap::new();
+                let mut material_grad = 0.0;
+                let mut teacher_move_found = false;
+                let mut teacher_move_features = None;
+
+                if let Some((_, teacher_prob)) =
+                    probabilities.iter().find(|(m, _)| m == teacher_move)
+                {
+                    teacher_move_found = true;
+                    let teacher_data = move_data
+                        .iter()
+                        .find(|(m, _, _, _)| m == teacher_move)
+                        .unwrap();
+                    teacher_move_features = Some(teacher_data.1.clone());
+
+                    for (mv, prob) in probabilities.iter() {
+                        let data = move_data.iter().find(|(m, _, _, _)| m == mv).unwrap();
+                        let features = &data.1;
+                        let material = data.2;
+
+                        let delta = if mv == teacher_move {
+                            prob - 1.0
+                        } else {
+                            *prob
+                        };
+
+                        for &idx in features {
+                            *sparse_grads.entry(idx).or_insert(0.0) += delta;
+                        }
+                        material_grad += delta * material;
+                    }
+                }
+
+                (
+                    sparse_grads,
+                    material_grad,
+                    0.0,
+                    0.0,
+                    teacher_move_found,
+                    teacher_move_features,
+                )
+            })
+            .collect();
+
+        let mut w_grads = vec![0.0; MAX_FEATURES];
+        let mut material_grad_total = 0.0;
+        let mut loss = 0.0;
+        let mut correct_predictions = 0;
+
+        for (i, (sparse_grad, material_grad, _, _, teacher_found, teacher_features)) in
+            results.iter().enumerate()
+        {
+            if *teacher_found {
+                if let Some(features) = teacher_features {
+                    let mut temp_pos = batch[i].0.clone();
+                    temp_pos.do_move(batch[i].1);
+                    temp_pos.switch_turn();
+                    let score = self.predict(&temp_pos, features);
+                    loss -= score.ln();
+                }
+
+                for (idx, g) in sparse_grad {
+                    w_grads[*idx] += g;
+                }
+                material_grad_total += material_grad;
+            }
+        }
+
+        let avg_loss = loss / total_samples as f32;
+
+        for i in 0..MAX_FEATURES {
+            if w_grads[i] != 0.0 {
+                self.w[i] -=
+                    self.kpp_eta * (w_grads[i] / total_samples as f32 + self.l2_lambda * self.w[i]);
+            }
+        }
+        self.material_coeff -= self.kpp_eta
+            * (material_grad_total / total_samples as f32
+                + self.l2_lambda * self.material_coeff);
+
+        (avg_loss, total_samples)
     }
 }
 

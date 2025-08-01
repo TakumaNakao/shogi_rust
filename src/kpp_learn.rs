@@ -14,9 +14,9 @@ use shogi_lib::Position;
 // evaluationモジュールから公開されたロジックとモデルを使用する
 use shogi_ai::evaluation::SparseModel;
 
-const KPP_LEARNING_RATE: f32 = 0.01;
-const L2_LAMBDA: f32 = 1e-4;
-const BATCH_SIZE: usize = 4096;
+const KPP_LEARNING_RATE: f32 = 0.1;
+const L2_LAMBDA: f32 = 1e-5;
+const BATCH_SIZE: usize = 1024;
 
 fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     match csa_piece_type {
