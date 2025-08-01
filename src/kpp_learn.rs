@@ -150,6 +150,7 @@ fn main() -> Result<()> {
         println!("重みファイルを読み込みました。");
     } else {
         println!("新しい重みファイルを作成します。");
+        model.save(weight_path)?;
     }
 
     let mut csa_files: Vec<_> = fs::read_dir(data_dir)?

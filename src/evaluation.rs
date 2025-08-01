@@ -264,7 +264,7 @@ impl SparseModel {
         Self {
             w: vec![0.0; MAX_FEATURES],
             bias: 0.0,
-            material_coeff: 0.0, // Initialize to 0
+            material_coeff: 1.0, // Initialize to 0
             kpp_eta,
             l2_lambda,
         }
@@ -344,7 +344,7 @@ impl SparseModel {
                 prediction += self.w[i];
             }
         }
-        // prediction += self.material_coeff * calculate_material_advantage(pos);
+        prediction += self.material_coeff * calculate_material_advantage(pos);
         prediction
     }
 
