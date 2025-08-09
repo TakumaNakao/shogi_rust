@@ -24,6 +24,7 @@ lazy_static = "1.4.0"
 rand_chacha = "0.3.1"
 libc = "0.2"
 shogi_usi_parser = "0.1.0"
+clap = { version = "4.5.43", features = ["derive"] }
 
 [[bin]]
 name = "kpp_learn"
