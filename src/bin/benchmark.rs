@@ -31,6 +31,8 @@ struct Args {
     time_limit_ms: Option<u64>,
     #[arg(long, default_value_t = 200)]
     max_plies: usize,
+    #[arg(long, default_value_t = false)]
+    adjudicate_at_max_plies: bool,
     #[arg(long, default_value_t = 0)]
     seed: u64,
     #[arg(long, default_value_t = false)]
@@ -92,6 +94,7 @@ fn play_game(
     depth: u8,
     time_limit_ms: Option<u64>,
     max_plies: usize,
+    adjudicate_at_max_plies: bool,
 ) -> GameResult {
     let mut position = start_position.clone();
     let mut new_ai = ShogiAI::<_, HISTORY_CAPACITY>::new(SharedModelEvaluator { model: new_model });
@@ -147,7 +150,24 @@ fn play_game(
         }
     }
 
-    GameResult::Draw
+    if adjudicate_at_max_plies {
+        let baseline_score = baseline_model.predict(&position, &extract_kpp_features(&position));
+        let baseline_score_for_new = match position.side_to_move() {
+            Color::Black if new_is_black => baseline_score,
+            Color::White if !new_is_black => baseline_score,
+            _ => -baseline_score,
+        };
+
+        if baseline_score_for_new > 0.0 {
+            GameResult::NewWin
+        } else if baseline_score_for_new < 0.0 {
+            GameResult::BaselineWin
+        } else {
+            GameResult::Draw
+        }
+    } else {
+        GameResult::Draw
+    }
 }
 
 fn wilson_interval(successes: usize, trials: usize, z: f64) -> Option<(f64, f64)> {
@@ -192,6 +212,7 @@ fn main() -> Result<()> {
             args.depth,
             args.time_limit_ms,
             args.max_plies,
+            args.adjudicate_at_max_plies,
         );
         (game_index, new_is_black, result)
     };
