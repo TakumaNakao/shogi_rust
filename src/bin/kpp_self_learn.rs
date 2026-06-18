@@ -1,9 +1,10 @@
 use anyhow::{anyhow, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use plotters::prelude::*;
 use rand::prelude::*;
 use rayon::prelude::*;
 use shogi_ai::evaluation::Evaluator;
+use shogi_core::Move;
 use shogi_lib::Position;
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
@@ -30,7 +31,20 @@ const DEFAULT_SAVE_INTERVAL: usize = DEFAULT_BATCH_SIZE * 2; // 中間重みの�
 const HISTORY_CAPACITY: usize = 128; // 千日手検出用の履歴サイズ
 const WIN_RATE_SCALING_FACTOR: f32 = 600.0; // 勝率変換のためのスケーリング係数
 
-type TrainingSample = (Vec<usize>, f32, f32, f32);
+type ValueTrainingSample = (Vec<usize>, f32, f32, f32);
+type PolicyTrainingSample = (Position, Move);
+
+#[derive(Clone)]
+enum TrainingSample {
+    Value(ValueTrainingSample),
+    Policy(PolicyTrainingSample),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum TrainingMode {
+    Value,
+    Policy,
+}
 
 #[derive(Parser, Debug)]
 #[command(about = "Self-play training for KPP + material weights")]
@@ -55,6 +69,8 @@ struct Args {
     save_interval: usize,
     #[arg(long, default_value = "log.txt")]
     log_path: std::path::PathBuf,
+    #[arg(long, value_enum, default_value_t = TrainingMode::Policy)]
+    training_mode: TrainingMode,
 }
 
 // modelへの参照を保持する軽量な評価器
@@ -75,7 +91,7 @@ fn sigmoid(x: f32, k: f32) -> f32 {
 }
 
 // 重みを勝率の差に基づいて更新する
-fn update_weights(model: &mut SparseModel, batch: &[TrainingSample]) {
+fn update_value_weights(model: &mut SparseModel, batch: &[ValueTrainingSample]) {
     if batch.is_empty() {
         return;
     }
@@ -209,35 +225,51 @@ fn main() -> Result<()> {
                         position.do_move(random_move);
                     }
 
-                    // 1. 現在の局面の特徴量を計算
                     let original_features = extract_kpp_features(&position);
                     let material = calculate_material_advantage(&position);
                     let predicted_score = model.predict(&position, &original_features);
 
-                    let teacher_score = if predicted_score.abs() >= args.resign_score_threshold {
-                        predicted_score.signum() * args.resign_score_threshold
-                    } else {
-                        // modelへの参照を持つ軽量な評価器を使用
+                    let needs_search = args.training_mode == TrainingMode::Policy
+                        || predicted_score.abs() < args.resign_score_threshold;
+                    let search_result = if needs_search {
                         let evaluator = SharedModelEvaluator { model: &model };
                         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
-
-                        // 探索を実行して教師評価値を取得
-                        match ai.alpha_beta_search(
+                        ai.alpha_beta_search(
                             &mut position,
                             args.depth,
                             -f32::INFINITY,
                             f32::INFINITY,
-                        ) {
-                            Some((teacher_score, _best_move)) => teacher_score,
-                            None => return,
-                        }
+                        )
+                    } else {
+                        None
                     };
 
-                    // 2. 予測スコアと教師スコアを勝率に変換
-                    let p = sigmoid(predicted_score, WIN_RATE_SCALING_FACTOR);
-                    let q = sigmoid(teacher_score, WIN_RATE_SCALING_FACTOR);
-                    // 3. 学習データを送信 (特徴量, 予測勝率, 教師勝率, 駒得値)
-                    if thread_tx.send((original_features, p, q, material)).is_err() {}
+                    match args.training_mode {
+                        TrainingMode::Value => {
+                            let teacher_score =
+                                if predicted_score.abs() >= args.resign_score_threshold {
+                                    predicted_score.signum() * args.resign_score_threshold
+                                } else if let Some((teacher_score, _)) = search_result {
+                                    teacher_score
+                                } else {
+                                    return;
+                                };
+                            let p = sigmoid(predicted_score, WIN_RATE_SCALING_FACTOR);
+                            let q = sigmoid(teacher_score, WIN_RATE_SCALING_FACTOR);
+                            let sample = TrainingSample::Value((original_features, p, q, material));
+                            if thread_tx.send(sample).is_err() {}
+                        }
+                        TrainingMode::Policy => {
+                            let Some((_, pv)) = search_result else {
+                                return;
+                            };
+                            let Some(&teacher_move) = pv.first() else {
+                                return;
+                            };
+                            let sample = TrainingSample::Policy((position, teacher_move));
+                            if thread_tx.send(sample).is_err() {}
+                        }
+                    }
                 }
             }
         });
@@ -248,15 +280,6 @@ fn main() -> Result<()> {
         let training_batch: Vec<TrainingSample> = rx.iter().collect();
 
         if !training_batch.is_empty() {
-            // 交差エントロピー損失の計算
-            let mut cross_entropy_loss_sum = 0.0;
-            for (_, p, q, _) in &training_batch {
-                let epsilon = 1e-7;
-                let p_clipped = p.max(epsilon).min(1.0 - epsilon);
-                cross_entropy_loss_sum -= q * p_clipped.ln() + (1.0 - q) * (1.0 - p_clipped).ln();
-            }
-            let avg_loss = cross_entropy_loss_sum / training_batch.len() as f32;
-
             for sample in training_batch.iter().cloned() {
                 if replay_buffer.len() == replay_buffer_capacity {
                     replay_buffer.pop_front();
@@ -275,7 +298,38 @@ fn main() -> Result<()> {
                     .cloned(),
             );
 
-            update_weights(&mut model, &update_batch);
+            let avg_loss = match args.training_mode {
+                TrainingMode::Value => {
+                    let value_batch: Vec<_> = update_batch
+                        .iter()
+                        .filter_map(|sample| match sample {
+                            TrainingSample::Value(value_sample) => Some(value_sample.clone()),
+                            TrainingSample::Policy(_) => None,
+                        })
+                        .collect();
+                    let mut cross_entropy_loss_sum = 0.0;
+                    for (_, p, q, _) in &value_batch {
+                        let epsilon = 1e-7;
+                        let p_clipped = p.max(epsilon).min(1.0 - epsilon);
+                        cross_entropy_loss_sum -=
+                            q * p_clipped.ln() + (1.0 - q) * (1.0 - p_clipped).ln();
+                    }
+                    let avg_loss = cross_entropy_loss_sum / value_batch.len() as f32;
+                    update_value_weights(&mut model, &value_batch);
+                    avg_loss
+                }
+                TrainingMode::Policy => {
+                    let policy_batch: Vec<_> = update_batch
+                        .iter()
+                        .filter_map(|sample| match sample {
+                            TrainingSample::Value(_) => None,
+                            TrainingSample::Policy(policy_sample) => Some(policy_sample.clone()),
+                        })
+                        .collect();
+                    let (avg_loss, _) = model.update_batch_with_cross_entropy(&policy_batch);
+                    avg_loss
+                }
+            };
 
             games_done += training_batch.len();
 

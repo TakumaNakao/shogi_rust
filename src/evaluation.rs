@@ -456,19 +456,14 @@ impl SparseModel {
             return (0.0, 0);
         }
 
-        let results: Vec<(
-            HashMap<usize, f32>,
-            f32,
-            f32,
-            f32,
-            bool,
-            Option<Vec<usize>>,
-        )> = batch
+        const SOFTMAX_TEMPERATURE: f32 = 600.0;
+
+        let results: Vec<(HashMap<usize, f32>, f32, f32, bool)> = batch
             .par_iter()
             .map(|(pos, teacher_move)| {
                 let legal_moves = pos.legal_moves();
                 if legal_moves.is_empty() {
-                    return (HashMap::new(), 0.0, 0.0, 0.0, false, None);
+                    return (HashMap::new(), 0.0, 0.0, false);
                 }
 
                 let move_data: Vec<_> = legal_moves
@@ -484,89 +479,75 @@ impl SparseModel {
                     })
                     .collect();
 
-                let total_score = move_data.iter().map(|d| d.3.exp()).sum::<f32>();
-                let probabilities: Vec<_> = move_data
+                let max_score = move_data
                     .iter()
-                    .map(|d| (d.0, d.3.exp() / total_score))
+                    .map(|d| d.3)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let exp_scores: Vec<f32> = move_data
+                    .iter()
+                    .map(|d| ((d.3 - max_score) / SOFTMAX_TEMPERATURE).exp())
                     .collect();
+                let total_score = exp_scores.iter().sum::<f32>();
 
                 let mut sparse_grads = HashMap::new();
                 let mut material_grad = 0.0;
-                let mut teacher_move_found = false;
-                let mut teacher_move_features = None;
+                let mut loss = 0.0;
 
-                if probabilities.iter().any(|(m, _)| m == teacher_move) {
-                    teacher_move_found = true;
-                    let teacher_data = move_data
-                        .iter()
-                        .find(|(m, _, _, _)| m == teacher_move)
-                        .unwrap();
-                    teacher_move_features = Some(teacher_data.1.clone());
-
-                    for (mv, prob) in probabilities.iter() {
-                        let data = move_data.iter().find(|(m, _, _, _)| m == mv).unwrap();
-                        let features = &data.1;
-                        let material = data.2;
+                if move_data.iter().any(|(m, _, _, _)| m == teacher_move) {
+                    for (i, (mv, features, material, _)) in move_data.iter().enumerate() {
+                        let prob = exp_scores[i] / total_score;
+                        if mv == teacher_move {
+                            loss = -prob.max(1e-7).ln();
+                        }
 
                         let delta = if mv == teacher_move {
                             prob - 1.0
                         } else {
-                            *prob
-                        };
+                            prob
+                        } / SOFTMAX_TEMPERATURE;
 
                         for &idx in features {
                             *sparse_grads.entry(idx).or_insert(0.0) += delta;
                         }
-                        material_grad += delta * material;
+                        material_grad += delta * *material;
                     }
+                    return (sparse_grads, material_grad, loss, true);
                 }
 
-                (
-                    sparse_grads,
-                    material_grad,
-                    0.0,
-                    0.0,
-                    teacher_move_found,
-                    teacher_move_features,
-                )
+                (sparse_grads, material_grad, 0.0, false)
             })
             .collect();
 
-        let mut w_grads = vec![0.0; MAX_FEATURES];
+        let mut w_grads = HashMap::new();
         let mut material_grad_total = 0.0;
         let mut loss = 0.0;
-        for (i, (sparse_grad, material_grad, _, _, teacher_found, teacher_features)) in
-            results.iter().enumerate()
-        {
-            if *teacher_found {
-                if let Some(features) = teacher_features {
-                    let mut temp_pos = batch[i].0.clone();
-                    temp_pos.do_move(batch[i].1);
-                    temp_pos.switch_turn();
-                    let score = self.predict(&temp_pos, features);
-                    loss -= score.ln();
-                }
-
+        let mut valid_samples = 0;
+        for (sparse_grad, material_grad, sample_loss, teacher_found) in results {
+            if teacher_found {
+                valid_samples += 1;
+                loss += sample_loss;
                 for (idx, g) in sparse_grad {
-                    w_grads[*idx] += g;
+                    *w_grads.entry(idx).or_insert(0.0) += g;
                 }
                 material_grad_total += material_grad;
             }
         }
 
-        let avg_loss = loss / total_samples as f32;
+        if valid_samples == 0 {
+            return (0.0, 0);
+        }
 
-        for i in 0..MAX_FEATURES {
-            if w_grads[i] != 0.0 {
-                self.w[i] -=
-                    self.kpp_eta * (w_grads[i] / total_samples as f32 + self.l2_lambda * self.w[i]);
-            }
+        let avg_loss = loss / valid_samples as f32;
+
+        for (i, grad) in w_grads {
+            self.w[i] -=
+                self.kpp_eta * (grad / valid_samples as f32 + self.l2_lambda * self.w[i]);
         }
         self.material_coeff -= self.kpp_eta
-            * (material_grad_total / total_samples as f32
+            * (material_grad_total / valid_samples as f32
                 + self.l2_lambda * self.material_coeff);
 
-        (avg_loss, total_samples)
+        (avg_loss, valid_samples)
     }
 }
 
