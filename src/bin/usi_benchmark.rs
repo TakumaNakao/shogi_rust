@@ -278,6 +278,20 @@ fn wilson_interval(successes: usize, trials: usize, z: f64) -> Option<(f64, f64)
     Some((center - margin, center + margin))
 }
 
+fn total_score_interval(new_wins: usize, baseline_wins: usize, draws: usize, z: f64) -> Option<(f64, f64)> {
+    let games = new_wins + baseline_wins + draws;
+    if games == 0 {
+        return None;
+    }
+
+    let n = games as f64;
+    let mean = (new_wins as f64 + draws as f64 * 0.5) / n;
+    let second_moment = (new_wins as f64 + draws as f64 * 0.25) / n;
+    let variance = (second_moment - mean * mean).max(0.0);
+    let margin = z * (variance / n).sqrt();
+    Some(((mean - margin).max(0.0), (mean + margin).min(1.0)))
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     if args.games == 0 {
@@ -373,6 +387,13 @@ fn main() -> Result<()> {
     if let Some((low, high)) = wilson_interval(new_wins, decisive_games, 1.96) {
         println!(
             "decisive win rate 95% CI: {:.2}%..{:.2}%",
+            low * 100.0,
+            high * 100.0
+        );
+    }
+    if let Some((low, high)) = total_score_interval(new_wins, baseline_wins, draws, 1.96) {
+        println!(
+            "total score rate 95% CI: {:.2}%..{:.2}%",
             low * 100.0,
             high * 100.0
         );
