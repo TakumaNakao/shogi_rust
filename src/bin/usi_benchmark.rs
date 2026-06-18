@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
+use shogi_ai::evaluation::{extract_kpp_features, SparseModel};
 use shogi_ai::sennichite::{SennichiteDetector, SennichiteStatus};
 use shogi_ai::utils::{parse_usi_move, position_from_sfen_or_usi};
 use shogi_core::{Color, Move, Piece};
@@ -34,6 +35,8 @@ struct Args {
     time_limit_ms: u64,
     #[arg(long, default_value_t = 200)]
     max_plies: usize,
+    #[arg(long, default_value_t = false)]
+    adjudicate_at_max_plies: bool,
     #[arg(long, default_value_t = 0)]
     seed: u64,
 }
@@ -154,6 +157,14 @@ fn load_positions(path: &Path) -> Result<Vec<String>> {
     Ok(positions)
 }
 
+fn load_model(path: &Path) -> Result<SparseModel> {
+    let mut model = SparseModel::new(0.0, 0.0);
+    model
+        .load(path)
+        .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
+    Ok(model)
+}
+
 fn parse_engine_move(position: &Position, bestmove: &str) -> Option<Move> {
     if bestmove == "resign" {
         return None;
@@ -171,6 +182,7 @@ fn parse_engine_move(position: &Position, bestmove: &str) -> Option<Move> {
 fn play_game(
     new_engine: &mut EngineProcess,
     baseline_engine: &mut EngineProcess,
+    adjudication_model: Option<&SparseModel>,
     start_sfen: &str,
     new_is_black: bool,
     max_plies: usize,
@@ -228,7 +240,24 @@ fn play_game(
         }
     }
 
-    Ok(GameResult::Draw)
+    if let Some(model) = adjudication_model {
+        let score = model.predict(&position, &extract_kpp_features(&position));
+        let score_for_new = match position.side_to_move() {
+            Color::Black if new_is_black => score,
+            Color::White if !new_is_black => score,
+            _ => -score,
+        };
+
+        if score_for_new > 0.0 {
+            Ok(GameResult::NewWin)
+        } else if score_for_new < 0.0 {
+            Ok(GameResult::BaselineWin)
+        } else {
+            Ok(GameResult::Draw)
+        }
+    } else {
+        Ok(GameResult::Draw)
+    }
 }
 
 fn wilson_interval(successes: usize, trials: usize, z: f64) -> Option<(f64, f64)> {
@@ -254,6 +283,11 @@ fn main() -> Result<()> {
     let mut positions = load_positions(&args.positions)?;
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
     positions.shuffle(&mut rng);
+    let adjudication_model = if args.adjudicate_at_max_plies {
+        Some(load_model(&args.baseline_weights)?)
+    } else {
+        None
+    };
 
     let mut new_engine = EngineProcess::start(
         &args.new_engine,
@@ -278,6 +312,7 @@ fn main() -> Result<()> {
         let result = play_game(
             &mut new_engine,
             &mut baseline_engine,
+            adjudication_model.as_ref(),
             start_sfen,
             new_is_black,
             args.max_plies,
