@@ -107,47 +107,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
         position.undo_move(mv); // 盤面を元に戻す（自分の手番に戻る）
 
-
-        // 2. 相手の直前の手による脅威に対応しているかチェック
-        if let Some(last_move) = position.last_move() {
-            if let Move::Normal { to: attacker_sq, .. } = last_move {
-                // 相手の手番に切り替えて、脅威となる手（駒を取る手）を探す
-                position.switch_turn();
-                let threats = position.legal_moves();
-                position.switch_turn(); // すぐに手番を元に戻す
-
-                for threat in threats {
-                    if let Move::Normal { from, to: victim_sq, .. } = threat {
-                        // 相手が直前に動かした駒(attacker_sq)からの脅威か？
-                        // そして、その手で駒を取れるか？
-                        if from == attacker_sq && position.piece_at(victim_sq).is_some() {
-                            // 脅威を発見！
-                            // この脅威に対応する手（mv）にボーナスを与える
-                            
-                            // a. 脅威となっている相手の駒(attacker_sq)を取る手か？
-                            if mv.to() == attacker_sq {
-                                score += 10000;
-                            } 
-                            // b. 取られそうな自分の駒(victim_sq)を動かす手か？
-                            else if mv.from() == Some(victim_sq) {
-                                score += 8000;
-                            }
-                            // c. (発展) 間に駒を打って合駒する手か？
-                            //    これは少し複雑なので、まずはa, bから実装するのがおすすめです。
-
-                            // 重要な駒が取られる脅威ほど高く評価したい場合、
-                            // victimの価値をスコアに加えることもできます。
-                            // if let Some(victim_piece) = position.piece_at(victim_sq) {
-                            //     score += get_piece_value(victim_piece.piece_kind()) as i32 * 10;
-                            // }
-
-                            // 脅威を一つ見つけたら、他の脅威は一旦無視してループを抜ける
-                            break;
-                        }
-                    }
-                }
-            }
-        }
         score
     }
 
