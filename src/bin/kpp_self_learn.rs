@@ -72,6 +72,8 @@ struct Args {
     resign_score_threshold: f32,
     #[arg(long, default_value_t = 80)]
     self_play_plies: usize,
+    #[arg(long, default_value_t = false)]
+    skip_drawn_result_samples: bool,
     #[arg(long, default_value_t = DEFAULT_SAVE_INTERVAL)]
     save_interval: usize,
     #[arg(long, default_value = "log.txt")]
@@ -82,6 +84,10 @@ struct Args {
     policy_learning_rate: f32,
     #[arg(long, default_value_t = true)]
     freeze_policy_material: bool,
+    #[arg(long, default_value_t = LEARNING_RATE)]
+    value_learning_rate: f32,
+    #[arg(long, default_value_t = false)]
+    freeze_value_material: bool,
 }
 
 // modelへの参照を保持する軽量な評価器
@@ -102,7 +108,12 @@ fn sigmoid(x: f32, k: f32) -> f32 {
 }
 
 // 重みを勝率の差に基づいて更新する
-fn update_value_weights(model: &mut SparseModel, batch: &[ValueTrainingSample]) {
+fn update_value_weights(
+    model: &mut SparseModel,
+    batch: &[ValueTrainingSample],
+    learning_rate: f32,
+    freeze_material: bool,
+) {
     if batch.is_empty() {
         return;
     }
@@ -139,7 +150,7 @@ fn update_value_weights(model: &mut SparseModel, batch: &[ValueTrainingSample]) 
     let batch_float_size = batch.len() as f32;
 
     // L2正則化（Weight Decay）
-    let decay_factor = 1.0 - LEARNING_RATE * L2_LAMBDA;
+    let decay_factor = 1.0 - learning_rate * L2_LAMBDA;
     for w in model.w.iter_mut() {
         *w *= decay_factor;
     }
@@ -147,12 +158,14 @@ fn update_value_weights(model: &mut SparseModel, batch: &[ValueTrainingSample]) 
     // 勾配に基づいて重みを更新
     for (i, grad_sum) in w_grad_sum {
         let avg_grad = grad_sum / batch_float_size;
-        model.w[i] -= LEARNING_RATE * avg_grad;
+        model.w[i] -= learning_rate * avg_grad;
     }
 
-    model.bias -= LEARNING_RATE * (bias_grad_sum / batch_float_size);
-    model.material_coeff -=
-        LEARNING_RATE * (material_grad_sum / batch_float_size + L2_LAMBDA * model.material_coeff);
+    model.bias -= learning_rate * (bias_grad_sum / batch_float_size);
+    if !freeze_material {
+        model.material_coeff -= learning_rate
+            * (material_grad_sum / batch_float_size + L2_LAMBDA * model.material_coeff);
+    }
 }
 
 fn generate_result_value_samples(
@@ -161,6 +174,7 @@ fn generate_result_value_samples(
     depth: u8,
     max_plies: usize,
     resign_score_threshold: f32,
+    skip_drawn_samples: bool,
 ) -> Vec<TrainingSample> {
     use shogi_ai::evaluation::calculate_material_advantage;
     use shogi_core::Color;
@@ -212,6 +226,10 @@ fn generate_result_value_samples(
         } else if final_score <= -resign_score_threshold {
             winner = Some(position.side_to_move().flip());
         }
+    }
+
+    if winner.is_none() && skip_drawn_samples {
+        return Vec::new();
     }
 
     trajectory
@@ -378,6 +396,7 @@ fn main() -> Result<()> {
                                 args.depth,
                                 args.self_play_plies,
                                 args.resign_score_threshold,
+                                args.skip_drawn_result_samples,
                             ) {
                                 if thread_tx.send(sample).is_err() {
                                     break;
@@ -433,7 +452,12 @@ fn main() -> Result<()> {
                                 q * p_clipped.ln() + (1.0 - q) * (1.0 - p_clipped).ln();
                         }
                         let avg_loss = cross_entropy_loss_sum / value_batch.len() as f32;
-                        update_value_weights(&mut model, &value_batch);
+                        update_value_weights(
+                            &mut model,
+                            &value_batch,
+                            args.value_learning_rate,
+                            args.freeze_value_material,
+                        );
                         avg_loss
                     }
                 }
