@@ -62,6 +62,8 @@ struct Args {
     batch_size: usize,
     #[arg(long, default_value_t = DEFAULT_SEARCH_DEPTH)]
     depth: u8,
+    #[arg(long)]
+    teacher_time_limit_ms: Option<u64>,
     #[arg(long, default_value_t = DEFAULT_REPLAY_MULTIPLIER)]
     replay_multiplier: usize,
     #[arg(long)]
@@ -323,12 +325,23 @@ fn main() -> Result<()> {
                     let search_result = if needs_search {
                         let evaluator = SharedModelEvaluator { model: &model };
                         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
-                        ai.alpha_beta_search(
-                            &mut position,
-                            args.depth,
-                            -f32::INFINITY,
-                            f32::INFINITY,
-                        )
+                        ai.set_emit_info(false);
+                        if let Some(time_limit_ms) = args.teacher_time_limit_ms.filter(|_| {
+                            matches!(
+                                args.training_mode,
+                                TrainingMode::Policy | TrainingMode::PolicyMargin
+                            )
+                        }) {
+                            ai.find_best_move(&mut position, args.depth, Some(time_limit_ms))
+                                .map(|mv| (0.0, vec![mv]))
+                        } else {
+                            ai.alpha_beta_search(
+                                &mut position,
+                                args.depth,
+                                -f32::INFINITY,
+                                f32::INFINITY,
+                            )
+                        }
                     } else {
                         None
                     };
