@@ -377,19 +377,19 @@ impl SparseModel {
                     temp_pos.do_move(mv);
                     temp_pos.switch_turn();
                     let features = extract_kpp_features(&temp_pos);
-                    // let material = calculate_material_advantage(&temp_pos);
+                    let material = calculate_material_advantage(&temp_pos);
                     let score = self.predict(&temp_pos, &features);
 
                     if score > max_score {
                         max_score = score;
                         best_move_by_model = Some(mv);
                         best_model_features = features.clone();
-                        // best_model_material = material;
+                        best_model_material = material;
                     }
 
                     if mv == *teacher_move {
                         teacher_move_features = Some(features);
-                        // teacher_material = material;
+                        teacher_material = material;
                     }
                 }
 
@@ -425,7 +425,7 @@ impl SparseModel {
             if is_correct {
                 correct_predictions += 1;
             } else {
-                // material_grad += self.kpp_eta * (teacher_material - model_material);
+                material_grad += self.kpp_eta * (teacher_material - model_material);
             }
             for (idx, g) in sparse_grad {
                 *w_grads.entry(idx).or_insert(0.0) += g;
@@ -441,7 +441,7 @@ impl SparseModel {
             self.w[i] += g / total_samples as f32;
         }
 
-        // self.material_coeff += material_grad / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.material_coeff;
+        self.material_coeff += material_grad / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.material_coeff;
 
 
         (correct_predictions, total_samples)
@@ -495,9 +495,7 @@ impl SparseModel {
                 let mut teacher_move_found = false;
                 let mut teacher_move_features = None;
 
-                if let Some((_, teacher_prob)) =
-                    probabilities.iter().find(|(m, _)| m == teacher_move)
-                {
+                if probabilities.iter().any(|(m, _)| m == teacher_move) {
                     teacher_move_found = true;
                     let teacher_data = move_data
                         .iter()
@@ -537,8 +535,6 @@ impl SparseModel {
         let mut w_grads = vec![0.0; MAX_FEATURES];
         let mut material_grad_total = 0.0;
         let mut loss = 0.0;
-        let mut correct_predictions = 0;
-
         for (i, (sparse_grad, material_grad, _, _, teacher_found, teacher_features)) in
             results.iter().enumerate()
         {

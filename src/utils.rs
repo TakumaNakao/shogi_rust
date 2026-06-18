@@ -1,6 +1,7 @@
-use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use plotters::prelude::*;
+use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use shogi_lib::Position;
+use shogi_usi_parser::FromUsi;
 
 pub fn get_piece_value(piece_kind: PieceKind) -> i32 {
     use shogi_core::PieceKind::*;
@@ -127,6 +128,10 @@ pub fn draw_evaluation_graph(sente_data: &[(usize, f32)], gote_data: &[(usize, f
 
 // --- USI Parsing/Formatting Helpers ---
 pub fn parse_usi_move(s: &str) -> Option<Move> {
+    parse_usi_move_for_color(s, Color::Black)
+}
+
+pub fn parse_usi_move_for_color(s: &str, color: Color) -> Option<Move> {
     if s.len() < 4 || s.len() > 5 { return None; }
     if s.chars().nth(1) == Some('*') {
         let piece_char = s.chars().nth(0)?;
@@ -137,13 +142,39 @@ pub fn parse_usi_move(s: &str) -> Option<Move> {
             _ => return None,
         };
         let to_sq = parse_square(&s[2..4])?;
-        return Some(Move::Drop { piece: Piece::new(piece_kind, Color::Black), to: to_sq });
+        return Some(Move::Drop { piece: Piece::new(piece_kind, color), to: to_sq });
     }
     let from_sq = parse_square(&s[0..2])?;
     let to_sq = parse_square(&s[2..4])?;
     let promote = s.len() == 5 && s.chars().nth(4) == Some('+');
     Some(Move::Normal { from: from_sq, to: to_sq, promote })
 }
+
+pub fn position_from_sfen_or_usi(line: &str) -> Option<Position> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    if line == "startpos" || line.starts_with("startpos moves ") {
+        let mut position = Position::default();
+        if let Some(moves_part) = line.strip_prefix("startpos moves ") {
+            for token in moves_part.split_whitespace() {
+                let mv = parse_usi_move_for_color(token, position.side_to_move())?;
+                if !position.legal_moves().contains(&mv) {
+                    return None;
+                }
+                position.do_move(mv);
+            }
+        }
+        return Some(position);
+    }
+
+    let sfen = line.strip_prefix("sfen ").unwrap_or(line);
+    let partial_pos = shogi_core::PartialPosition::from_usi(&format!("sfen {}", sfen)).ok()?;
+    Some(Position::new(partial_pos))
+}
+
 pub fn parse_square(s: &str) -> Option<Square> {
     let file = s.chars().nth(0)?.to_digit(10)? as u8;
     let rank_char = s.chars().nth(1)?;
