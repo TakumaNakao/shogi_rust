@@ -332,13 +332,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 position.do_move(*mv);
                 self.sennichite_detector.record_position(position);
                 let sennichite_status = self.is_sennichite_internal(position);
-                self.sennichite_detector.unrecord_last_position();
 
                 let eval_result = match sennichite_status {
                     SennichiteStatus::Draw => Some((0.0, Vec::new())),
                     SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
                     SennichiteStatus::None => self.alpha_beta_search(position, depth - 1, -beta, -alpha),
                 };
+                self.sennichite_detector.unrecord_last_position();
                 position.undo_move(*mv);
 
                 if let Some((eval, pv)) = eval_result {
