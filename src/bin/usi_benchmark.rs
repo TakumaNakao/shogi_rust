@@ -54,9 +54,20 @@ enum GameResult {
     Draw,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GameEndReason {
+    Resign,
+    IllegalMove,
+    RepetitionDraw,
+    PerpetualCheckLoss,
+    MaxPliesAdjudication,
+    MaxPliesDraw,
+}
+
 #[derive(Debug)]
 struct PlayedGame {
     result: GameResult,
+    reason: GameEndReason,
     moves: Vec<String>,
 }
 
@@ -267,6 +278,7 @@ fn play_game(
                 } else {
                     GameResult::NewWin
                 },
+                reason: GameEndReason::Resign,
                 moves,
             });
         };
@@ -278,6 +290,7 @@ fn play_game(
                 } else {
                     GameResult::NewWin
                 },
+                reason: GameEndReason::IllegalMove,
                 moves,
             });
         }
@@ -290,6 +303,7 @@ fn play_game(
             SennichiteStatus::Draw => {
                 return Ok(PlayedGame {
                     result: GameResult::Draw,
+                    reason: GameEndReason::RepetitionDraw,
                     moves,
                 });
             }
@@ -300,6 +314,7 @@ fn play_game(
                     } else {
                         GameResult::NewWin
                     },
+                    reason: GameEndReason::PerpetualCheckLoss,
                     moves,
                 });
             }
@@ -318,22 +333,26 @@ fn play_game(
         if score_for_new > 0.0 {
             Ok(PlayedGame {
                 result: GameResult::NewWin,
+                reason: GameEndReason::MaxPliesAdjudication,
                 moves,
             })
         } else if score_for_new < 0.0 {
             Ok(PlayedGame {
                 result: GameResult::BaselineWin,
+                reason: GameEndReason::MaxPliesAdjudication,
                 moves,
             })
         } else {
             Ok(PlayedGame {
                 result: GameResult::Draw,
+                reason: GameEndReason::MaxPliesAdjudication,
                 moves,
             })
         }
     } else {
         Ok(PlayedGame {
             result: GameResult::Draw,
+            reason: GameEndReason::MaxPliesDraw,
             moves,
         })
     }
@@ -357,6 +376,7 @@ fn write_game_record(
 
     let mut content = String::new();
     content.push_str(&format!("result {:?}\n", game.result));
+    content.push_str(&format!("reason {:?}\n", game.reason));
     content.push_str(&format!("new_as {}\n", side_label));
     content.push_str(&format!("start_sfen {}\n", start_sfen));
     content.push_str(&build_position_command(start_sfen, &game.moves));
@@ -478,9 +498,10 @@ fn main() -> Result<()> {
         }
 
         println!(
-            "game {:>3}: {:?} (new as {})",
+            "game {:>3}: {:?} by {:?} (new as {})",
             game_index + 1,
             game.result,
+            game.reason,
             if new_is_black { "black" } else { "white" }
         );
     }
