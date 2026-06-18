@@ -137,7 +137,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         if moves.is_empty() { return Some((stand_pat_score, Vec::new())); }
 
         let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|&mv| (mv, self.move_ordering.score_move(&mv, position))).collect();
-        scored_moves.sort_by_key(|a| -a.1);
+        scored_moves.sort_unstable_by_key(|a| -a.1);
 
         let mut best_score = stand_pat_score;
         for (mv, _) in scored_moves {
@@ -198,7 +198,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
             (*mv, score)
         }).collect();
-        scored_moves.sort_by_key(|a| -a.1);
+        scored_moves.sort_unstable_by_key(|a| -a.1);
         let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
 
         if (depth as usize) < MAX_DEPTH {
@@ -303,7 +303,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
             (*mv, score)
         }).collect();
-        scored_moves.sort_by_key(|a| -a.1);
+        scored_moves.sort_unstable_by_key(|a| -a.1);
         let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
         let root_hash = PositionHasher::calculate_hash(position);
         if let Some(tt_move) = self.transposition_table.get(&root_hash).and_then(|entry| entry.best_move) {

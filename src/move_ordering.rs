@@ -225,7 +225,7 @@ impl MoveOrdering {
 
     /// 指し手のリストをスコアに基づいてソートします。
     pub fn sort_moves(&self, moves: &mut ArrayVec<Move, 593>, position: &Position) {
-        moves.sort_by_key(|m| -self.score_move(m, position));
+        moves.sort_unstable_by_key(|m| -self.score_move(m, position));
     }
 
     /// 履歴テーブルを更新します。
