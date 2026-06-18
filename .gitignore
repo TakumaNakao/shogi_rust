@@ -2,6 +2,7 @@ csa_files/
 target/
 *.png
 *.binary
+log_*.txt
 *.kif
 learn.sh
 ex_lib/
