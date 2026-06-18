@@ -78,6 +78,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.emit_info = emit_info;
     }
 
+    pub fn nodes_searched(&self) -> u64 {
+        self.nodes_searched
+    }
+
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
         let d = depth as usize;
         if d < MAX_DEPTH {
