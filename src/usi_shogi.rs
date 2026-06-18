@@ -1,15 +1,14 @@
+use crate::ai::ShogiAI;
+use crate::evaluation::SparseModelEvaluator;
+use shogi_core::{Move, Piece};
+use shogi_lib::Position;
 use std::io::{self, BufRead};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use shogi_core::{Move, Piece};
-use crate::ai::ShogiAI;
-use crate::evaluation::SparseModelEvaluator;
-use std::path::PathBuf;
-use shogi_lib::Position;
 
-use crate::utils::{format_move_usi, parse_usi_move};
-
+use crate::utils::{format_move_usi, parse_usi_move, position_from_sfen_or_usi};
 
 // --- USI Engine Logic ---
 
@@ -33,7 +32,7 @@ impl UsiEngine {
             position: Position::default(),
             stop_signal: Arc::new(AtomicBool::new(false)),
             eval_file_path: None,
-            max_depth: 30, // Default max depth
+            max_depth: 30,            // Default max depth
             search_time_limit: 10000, // Default time limit in ms
             ai: Arc::new(Mutex::new(None)),
         }
@@ -45,7 +44,7 @@ impl UsiEngine {
             if io::stdin().lock().read_line(&mut input).is_err() {
                 break;
             }
-            
+
             let tokens: Vec<&str> = input.trim().split_whitespace().collect();
 
             if let Some(&command) = tokens.get(0) {
@@ -68,8 +67,14 @@ impl UsiEngine {
         println!("id name {}", ENGINE_NAME);
         println!("id author {}", ENGINE_AUTHOR);
         println!("option name EvalFile type string default");
-        println!("option name MaxDepth type spin default {} min 1 max 100", self.max_depth);
-        println!("option name SearchTimeLimit type spin default {} min 100 max 300000", self.search_time_limit);
+        println!(
+            "option name MaxDepth type spin default {} min 1 max 100",
+            self.max_depth
+        );
+        println!(
+            "option name SearchTimeLimit type spin default {} min 100 max 300000",
+            self.search_time_limit
+        );
         println!("usiok");
     }
 
@@ -123,14 +128,27 @@ impl UsiEngine {
     }
 
     fn handle_position(&mut self, tokens: &[&str]) {
-        self.position = Position::default();
+        self.position = if tokens.get(1) == Some(&"sfen") {
+            let moves_idx = tokens
+                .iter()
+                .position(|&s| s == "moves")
+                .unwrap_or(tokens.len());
+            let sfen = tokens[2..moves_idx].join(" ");
+            position_from_sfen_or_usi(&sfen).unwrap_or_else(Position::default)
+        } else {
+            Position::default()
+        };
 
         if let Some(moves_idx) = tokens.iter().position(|&s| s == "moves") {
             for move_str in &tokens[moves_idx + 1..] {
                 if let Some(mut mv) = parse_usi_move(move_str) {
                     if let Move::Drop { piece, to } = mv {
-                        let colored_piece = Piece::new(piece.piece_kind(), self.position.side_to_move());
-                        mv = Move::Drop { piece: colored_piece, to };
+                        let colored_piece =
+                            Piece::new(piece.piece_kind(), self.position.side_to_move());
+                        mv = Move::Drop {
+                            piece: colored_piece,
+                            to,
+                        };
                     }
                     self.position.do_move(mv);
                 }
@@ -160,7 +178,9 @@ impl UsiEngine {
         thread::spawn(move || {
             let mut ai_lock = ai.lock().unwrap();
             if let Some(thinking_ai) = ai_lock.as_mut() {
-                if let Some(best_move) = thinking_ai.find_best_move(&mut position, max_depth, Some(byoyomi)) {
+                if let Some(best_move) =
+                    thinking_ai.find_best_move(&mut position, max_depth, Some(byoyomi))
+                {
                     if !stop_signal.load(Ordering::SeqCst) {
                         println!("bestmove {}", format_move_usi(best_move));
                     }
