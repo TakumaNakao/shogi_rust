@@ -58,67 +58,85 @@ fn hash_move(mv: Move) -> u64 {
 }
 
 /// `PieceToHistory`テーブル
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct PieceToHistory {
-    history: HashMap<u64, i32>,
+    history: [[[i32; 2]; 81]; 14],
+}
+
+impl Default for PieceToHistory {
+    fn default() -> Self {
+        Self {
+            history: [[[0; 2]; 81]; 14],
+        }
+    }
 }
 
 impl PieceToHistory {
     fn get_score(&self, piece_kind: PieceKind, to_sq: Square, color: Color) -> i32 {
         let to_idx = (to_sq.index() - 1) as usize;
         let piece_idx = board_piece_kind_index(piece_kind);
-        let key = ZOBRIST_KEYS.board[piece_idx][to_idx][color_to_index(color)];
-        *self.history.get(&key).unwrap_or(&0)
+        self.history[piece_idx][to_idx][color_to_index(color)]
     }
 
     fn update_score(&mut self, piece_kind: PieceKind, to_sq: Square, color: Color, delta: i32) {
         let to_idx = (to_sq.index() - 1) as usize;
         let piece_idx = board_piece_kind_index(piece_kind);
-        let key = ZOBRIST_KEYS.board[piece_idx][to_idx][color_to_index(color)];
-        *self.history.entry(key).or_insert(0) += delta;
+        self.history[piece_idx][to_idx][color_to_index(color)] += delta;
     }
 
     fn clear(&mut self) {
-        self.history.clear();
+        self.history = [[[0; 2]; 81]; 14];
     }
 
     fn decay(&mut self) {
-        for score in self.history.values_mut() {
-            *score /= 2;
+        for piece_table in self.history.iter_mut() {
+            for square_table in piece_table.iter_mut() {
+                for score in square_table.iter_mut() {
+                    *score /= 2;
+                }
+            }
         }
     }
 }
 
 /// `ButterflyHistory`テーブル
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ButterflyHistory {
-    history: HashMap<u64, i32>,
+    history: [[[i32; 2]; 81]; 81],
+}
+
+impl Default for ButterflyHistory {
+    fn default() -> Self {
+        Self {
+            history: [[[0; 2]; 81]; 81],
+        }
+    }
 }
 
 impl ButterflyHistory {
     fn get_score(&self, from_sq: Square, to_sq: Square, color: Color) -> i32 {
         let from_idx = (from_sq.index() - 1) as usize;
         let to_idx = (to_sq.index() - 1) as usize;
-        let key = ZOBRIST_KEYS.board[0][from_idx][color_to_index(color)] 
-                ^ ZOBRIST_KEYS.board[1][to_idx][color_to_index(color)];
-        *self.history.get(&key).unwrap_or(&0)
+        self.history[from_idx][to_idx][color_to_index(color)]
     }
 
     fn update_score(&mut self, from_sq: Square, to_sq: Square, color: Color, delta: i32) {
         let from_idx = (from_sq.index() - 1) as usize;
         let to_idx = (to_sq.index() - 1) as usize;
-        let key = ZOBRIST_KEYS.board[0][from_idx][color_to_index(color)] 
-                ^ ZOBRIST_KEYS.board[1][to_idx][color_to_index(color)];
-        *self.history.entry(key).or_insert(0) += delta;
+        self.history[from_idx][to_idx][color_to_index(color)] += delta;
     }
 
     fn clear(&mut self) {
-        self.history.clear();
+        self.history = [[[0; 2]; 81]; 81];
     }
 
     fn decay(&mut self) {
-        for score in self.history.values_mut() {
-            *score /= 2;
+        for from_table in self.history.iter_mut() {
+            for to_table in from_table.iter_mut() {
+                for score in to_table.iter_mut() {
+                    *score /= 2;
+                }
+            }
         }
     }
 }
