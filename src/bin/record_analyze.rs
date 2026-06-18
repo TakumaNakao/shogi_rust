@@ -26,6 +26,7 @@ struct Record {
     result: String,
     reason: Option<String>,
     new_as: Option<Color>,
+    start_sfen: Option<String>,
     final_position: Position,
     plies: usize,
 }
@@ -105,6 +106,7 @@ fn load_record(path: &Path) -> Result<Record> {
     let mut result = None;
     let mut reason = None;
     let mut new_as = None;
+    let mut start_sfen = None;
     let mut final_position = None;
     let mut plies = 0;
 
@@ -115,6 +117,8 @@ fn load_record(path: &Path) -> Result<Record> {
             reason = Some(rest.trim().to_string());
         } else if let Some(rest) = line.strip_prefix("new_as ") {
             new_as = parse_side(rest.trim());
+        } else if let Some(rest) = line.strip_prefix("start_sfen ") {
+            start_sfen = Some(rest.trim().to_string());
         } else if line.starts_with("position ") {
             let (position, move_count) = parse_position_command(line)?;
             final_position = Some(position);
@@ -127,6 +131,7 @@ fn load_record(path: &Path) -> Result<Record> {
         result: result.unwrap_or_else(|| "Unknown".to_string()),
         reason,
         new_as,
+        start_sfen,
         final_position: final_position
             .ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
         plies,
@@ -178,6 +183,7 @@ fn main() -> Result<()> {
     let mut baseline_win_scored = 0usize;
     let mut score_result_mismatches = 0usize;
     let mut reason_counts = BTreeMap::<String, usize>::new();
+    let mut paired_results = BTreeMap::<String, (usize, usize, usize)>::new();
 
     for path in paths {
         let record = load_record(&path)?;
@@ -191,6 +197,15 @@ fn main() -> Result<()> {
             "BaselineWin" => baseline_wins += 1,
             "Draw" => draws += 1,
             _ => {}
+        }
+        if let Some(start_sfen) = &record.start_sfen {
+            let entry = paired_results.entry(start_sfen.clone()).or_insert((0, 0, 0));
+            match record.result.as_str() {
+                "NewWin" => entry.0 += 1,
+                "BaselineWin" => entry.1 += 1,
+                "Draw" => entry.2 += 1,
+                _ => {}
+            }
         }
         let raw_score = score_for_new(&model, &record);
         if let Some(score) = raw_score {
@@ -243,6 +258,28 @@ fn main() -> Result<()> {
         for (reason, count) in reason_counts {
             println!("  {}: {}", reason, count);
         }
+    }
+    if !paired_results.is_empty() {
+        let mut new_sweeps = 0usize;
+        let mut baseline_sweeps = 0usize;
+        let mut splits = 0usize;
+        let mut draw_pairs = 0usize;
+        for (_, (new_pair_wins, baseline_pair_wins, pair_draws)) in paired_results {
+            if new_pair_wins > 0 && baseline_pair_wins == 0 && pair_draws == 0 {
+                new_sweeps += 1;
+            } else if baseline_pair_wins > 0 && new_pair_wins == 0 && pair_draws == 0 {
+                baseline_sweeps += 1;
+            } else if new_pair_wins > 0 && baseline_pair_wins > 0 {
+                splits += 1;
+            } else {
+                draw_pairs += 1;
+            }
+        }
+        println!("paired starts:");
+        println!("  new sweeps: {}", new_sweeps);
+        println!("  baseline sweeps: {}", baseline_sweeps);
+        println!("  splits: {}", splits);
+        println!("  draw/mixed pairs: {}", draw_pairs);
     }
     if scored_records > 0 {
         println!(
