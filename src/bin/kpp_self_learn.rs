@@ -46,6 +46,7 @@ enum TrainingMode {
     Value,
     Policy,
     PolicyMargin,
+    ResultValue,
 }
 
 #[derive(Parser, Debug)]
@@ -67,6 +68,8 @@ struct Args {
     replay_sample_size: Option<usize>,
     #[arg(long, default_value_t = DEFAULT_RESIGN_SCORE_THRESHOLD)]
     resign_score_threshold: f32,
+    #[arg(long, default_value_t = 80)]
+    self_play_plies: usize,
     #[arg(long, default_value_t = DEFAULT_SAVE_INTERVAL)]
     save_interval: usize,
     #[arg(long, default_value = "log.txt")]
@@ -150,6 +153,78 @@ fn update_value_weights(model: &mut SparseModel, batch: &[ValueTrainingSample]) 
         LEARNING_RATE * (material_grad_sum / batch_float_size + L2_LAMBDA * model.material_coeff);
 }
 
+fn generate_result_value_samples(
+    model: &SparseModel,
+    mut position: Position,
+    depth: u8,
+    max_plies: usize,
+    resign_score_threshold: f32,
+) -> Vec<TrainingSample> {
+    use shogi_ai::evaluation::calculate_material_advantage;
+    use shogi_core::Color;
+
+    let mut trajectory: Vec<(Vec<usize>, f32, f32, Color)> = Vec::new();
+    let mut winner: Option<Color> = None;
+
+    for _ in 0..max_plies {
+        let side_to_move = position.side_to_move();
+        let features = extract_kpp_features(&position);
+        let material = calculate_material_advantage(&position);
+        let predicted_score = model.predict(&position, &features);
+
+        if predicted_score >= resign_score_threshold {
+            winner = Some(side_to_move);
+            break;
+        }
+        if predicted_score <= -resign_score_threshold {
+            winner = Some(side_to_move.flip());
+            break;
+        }
+
+        let legal_moves = position.legal_moves();
+        if legal_moves.is_empty() {
+            winner = Some(side_to_move.flip());
+            break;
+        }
+
+        trajectory.push((
+            features,
+            sigmoid(predicted_score, WIN_RATE_SCALING_FACTOR),
+            material,
+            side_to_move,
+        ));
+
+        let evaluator = SharedModelEvaluator { model };
+        let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
+        let best_move = ai
+            .alpha_beta_search(&mut position, depth, -f32::INFINITY, f32::INFINITY)
+            .and_then(|(_, pv)| pv.first().copied())
+            .unwrap_or(legal_moves[0]);
+        position.do_move(best_move);
+    }
+
+    if winner.is_none() {
+        let final_score = model.predict(&position, &extract_kpp_features(&position));
+        if final_score >= resign_score_threshold {
+            winner = Some(position.side_to_move());
+        } else if final_score <= -resign_score_threshold {
+            winner = Some(position.side_to_move().flip());
+        }
+    }
+
+    trajectory
+        .into_iter()
+        .map(|(features, p, material, side_to_move)| {
+            let q = match winner {
+                Some(winner) if winner == side_to_move => 1.0,
+                Some(_) => 0.0,
+                None => 0.5,
+            };
+            TrainingSample::Value((features, p, q, material))
+        })
+        .collect()
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     if args.games == 0 {
@@ -163,7 +238,10 @@ fn main() -> Result<()> {
 
     // 1. モデルの読み込み
     let mut model = SparseModel::new(LEARNING_RATE, L2_LAMBDA);
-    if matches!(args.training_mode, TrainingMode::Policy | TrainingMode::PolicyMargin) {
+    if matches!(
+        args.training_mode,
+        TrainingMode::Policy | TrainingMode::PolicyMargin
+    ) {
         model.kpp_eta = args.policy_learning_rate;
     }
     if args.weight_path.exists() {
@@ -241,8 +319,7 @@ fn main() -> Result<()> {
                     let needs_search = matches!(
                         args.training_mode,
                         TrainingMode::Policy | TrainingMode::PolicyMargin
-                    )
-                        || predicted_score.abs() < args.resign_score_threshold;
+                    ) || predicted_score.abs() < args.resign_score_threshold;
                     let search_result = if needs_search {
                         let evaluator = SharedModelEvaluator { model: &model };
                         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
@@ -281,6 +358,19 @@ fn main() -> Result<()> {
                             let sample = TrainingSample::Policy((position, teacher_move));
                             if thread_tx.send(sample).is_err() {}
                         }
+                        TrainingMode::ResultValue => {
+                            for sample in generate_result_value_samples(
+                                &model,
+                                position,
+                                args.depth,
+                                args.self_play_plies,
+                                args.resign_score_threshold,
+                            ) {
+                                if thread_tx.send(sample).is_err() {
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -311,7 +401,7 @@ fn main() -> Result<()> {
             );
 
             let avg_loss = match args.training_mode {
-                TrainingMode::Value => {
+                TrainingMode::Value | TrainingMode::ResultValue => {
                     let value_batch: Vec<_> = update_batch
                         .iter()
                         .filter_map(|sample| match sample {
@@ -319,16 +409,20 @@ fn main() -> Result<()> {
                             TrainingSample::Policy(_) => None,
                         })
                         .collect();
-                    let mut cross_entropy_loss_sum = 0.0;
-                    for (_, p, q, _) in &value_batch {
-                        let epsilon = 1e-7;
-                        let p_clipped = p.max(epsilon).min(1.0 - epsilon);
-                        cross_entropy_loss_sum -=
-                            q * p_clipped.ln() + (1.0 - q) * (1.0 - p_clipped).ln();
+                    if value_batch.is_empty() {
+                        0.0
+                    } else {
+                        let mut cross_entropy_loss_sum = 0.0;
+                        for (_, p, q, _) in &value_batch {
+                            let epsilon = 1e-7;
+                            let p_clipped = p.max(epsilon).min(1.0 - epsilon);
+                            cross_entropy_loss_sum -=
+                                q * p_clipped.ln() + (1.0 - q) * (1.0 - p_clipped).ln();
+                        }
+                        let avg_loss = cross_entropy_loss_sum / value_batch.len() as f32;
+                        update_value_weights(&mut model, &value_batch);
+                        avg_loss
                     }
-                    let avg_loss = cross_entropy_loss_sum / value_batch.len() as f32;
-                    update_value_weights(&mut model, &value_batch);
-                    avg_loss
                 }
                 TrainingMode::Policy => {
                     let policy_batch: Vec<_> = update_batch
