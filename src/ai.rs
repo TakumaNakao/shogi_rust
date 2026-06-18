@@ -286,7 +286,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.time_limit = time_limit_ms.map(Duration::from_millis);
         self.nodes_searched = 0;
 
-        let mut best_move: Option<Move> = None;
         let moves = position.legal_moves();
         if moves.is_empty() { return None; }
 
@@ -301,6 +300,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }).collect();
         scored_moves.sort_by_key(|a| -a.1);
         let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
+        let mut best_move: Option<Move> = sorted_moves.first().copied();
 
         for depth in 1..=max_depth {
             if let Some(previous_best) = best_move {
