@@ -22,6 +22,7 @@ use shogi_ai::utils::position_from_sfen_or_usi;
 
 const DEFAULT_SEARCH_DEPTH: u8 = 5; // 教師信号を生成するための探索深さ（CPU負荷低減）
 const LEARNING_RATE: f32 = 0.0001; // 学習率
+const DEFAULT_POLICY_LEARNING_RATE: f32 = 0.1; // 探索手方策蒸留の学習率
 const L2_LAMBDA: f32 = 1e-3; // L2正則化
 const DEFAULT_BATCH_SIZE: usize = 256; // バッチサイズ
 const DEFAULT_NUM_GAMES: usize = 2560; // 自己対局学習の総対局数
@@ -71,6 +72,8 @@ struct Args {
     log_path: std::path::PathBuf,
     #[arg(long, value_enum, default_value_t = TrainingMode::Policy)]
     training_mode: TrainingMode,
+    #[arg(long, default_value_t = DEFAULT_POLICY_LEARNING_RATE)]
+    policy_learning_rate: f32,
 }
 
 // modelへの参照を保持する軽量な評価器
@@ -157,6 +160,9 @@ fn main() -> Result<()> {
 
     // 1. モデルの読み込み
     let mut model = SparseModel::new(LEARNING_RATE, L2_LAMBDA);
+    if args.training_mode == TrainingMode::Policy {
+        model.kpp_eta = args.policy_learning_rate;
+    }
     if args.weight_path.exists() {
         println!(
             "Loading existing weights from {}...",
