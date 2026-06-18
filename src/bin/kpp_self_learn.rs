@@ -74,6 +74,8 @@ struct Args {
     training_mode: TrainingMode,
     #[arg(long, default_value_t = DEFAULT_POLICY_LEARNING_RATE)]
     policy_learning_rate: f32,
+    #[arg(long, default_value_t = true)]
+    freeze_policy_material: bool,
 }
 
 // modelへの参照を保持する軽量な評価器
@@ -332,7 +334,11 @@ fn main() -> Result<()> {
                             TrainingSample::Policy(policy_sample) => Some(policy_sample.clone()),
                         })
                         .collect();
+                    let material_coeff_before = model.material_coeff;
                     let (avg_loss, _) = model.update_batch_with_cross_entropy(&policy_batch);
+                    if args.freeze_policy_material {
+                        model.material_coeff = material_coeff_before;
+                    }
                     avg_loss
                 }
             };
