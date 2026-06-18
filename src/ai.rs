@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 const MAX_DEPTH: usize = 64;
 const TRANSPOSITION_TABLE_MAX_ENTRIES: usize = 1_000_000;
+const ASPIRATION_WINDOW: f32 = 300.0;
 
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -312,6 +313,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
         let mut best_move: Option<Move> = sorted_moves.first().copied();
+        let mut previous_eval: Option<f32> = None;
 
         for depth in 1..=max_depth {
             if let Some(previous_best) = best_move {
@@ -323,8 +325,11 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let mut current_best_move_for_depth: Option<Move> = None;
             let mut best_eval_for_depth = -f32::INFINITY;
             let mut best_pv_for_depth: Vec<Move> = Vec::new();
-            let mut alpha = -f32::INFINITY;
-            let beta = f32::INFINITY;
+            let (mut alpha, mut beta) = previous_eval
+                .map(|eval| (eval - ASPIRATION_WINDOW, eval + ASPIRATION_WINDOW))
+                .unwrap_or((-f32::INFINITY, f32::INFINITY));
+            let aspiration_alpha = alpha;
+            let aspiration_beta = beta;
             let mut search_interrupted = false;
 
             for mv in &sorted_moves {
@@ -374,7 +379,54 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
 
             if !search_interrupted {
+                if best_eval_for_depth <= aspiration_alpha || best_eval_for_depth >= aspiration_beta {
+                    alpha = -f32::INFINITY;
+                    beta = f32::INFINITY;
+                    current_best_move_for_depth = None;
+                    best_eval_for_depth = -f32::INFINITY;
+                    best_pv_for_depth.clear();
+
+                    for mv in &sorted_moves {
+                        if self.is_time_up() {
+                            search_interrupted = true;
+                            break;
+                        }
+
+                        position.do_move(*mv);
+                        self.sennichite_detector.record_position(position);
+                        let sennichite_status = self.is_sennichite_internal(position);
+
+                        let eval_result = match sennichite_status {
+                            SennichiteStatus::Draw => Some((0.0, Vec::new())),
+                            SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
+                            SennichiteStatus::None => {
+                                self.alpha_beta_search(position, depth - 1, -beta, -alpha)
+                            }
+                        };
+                        self.sennichite_detector.unrecord_last_position();
+                        position.undo_move(*mv);
+
+                        if let Some((eval, pv)) = eval_result {
+                            let current_eval = -eval;
+                            if current_eval > best_eval_for_depth {
+                                best_eval_for_depth = current_eval;
+                                current_best_move_for_depth = Some(*mv);
+                                let mut current_pv = vec![*mv];
+                                current_pv.extend(pv);
+                                best_pv_for_depth = current_pv;
+                            }
+                            alpha = alpha.max(current_eval);
+                        } else {
+                            search_interrupted = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !search_interrupted {
                 best_move = current_best_move_for_depth;
+                previous_eval = Some(best_eval_for_depth);
                 if let Some(bm) = best_move {
                     self.move_ordering.update_history(&bm, position, depth as i32 * 20);
                 }
