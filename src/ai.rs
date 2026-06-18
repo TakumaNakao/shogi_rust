@@ -184,6 +184,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.nodes_searched += 1;
 
         let hash = PositionHasher::calculate_hash(position);
+        let tt_best_move = self.transposition_table.get(&hash).and_then(|entry| entry.best_move);
         if let Some(entry) = self.transposition_table.get(&hash) {
             if entry.depth >= depth {
                 match entry.node_type {
@@ -218,6 +219,12 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     let mv = sorted_moves.remove(pos);
                     sorted_moves.insert(0, mv);
                 }
+            }
+        }
+        if let Some(tt_move) = tt_best_move {
+            if let Some(pos) = sorted_moves.iter().position(|&m| m == tt_move) {
+                let mv = sorted_moves.remove(pos);
+                sorted_moves.insert(0, mv);
             }
         }
 
@@ -297,9 +304,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             (*mv, score)
         }).collect();
         scored_moves.sort_by_key(|a| -a.1);
-        let sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
+        let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
 
         for depth in 1..=max_depth {
+            if let Some(previous_best) = best_move {
+                if let Some(pos) = sorted_moves.iter().position(|&m| m == previous_best) {
+                    let mv = sorted_moves.remove(pos);
+                    sorted_moves.insert(0, mv);
+                }
+            }
             let mut current_best_move_for_depth: Option<Move> = None;
             let mut best_eval_for_depth = -f32::INFINITY;
             let mut best_pv_for_depth: Vec<Move> = Vec::new();
