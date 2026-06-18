@@ -37,6 +37,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     start_time: Option<Instant>,
     time_limit: Option<Duration>,
     nodes_searched: u64,
+    emit_info: bool,
 }
 
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
@@ -50,6 +51,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             start_time: None,
             time_limit: None,
             nodes_searched: 0,
+            emit_info: true,
         }
     }
 
@@ -66,6 +68,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn decay_history(&mut self) {
         self.move_ordering.decay();
+    }
+
+    pub fn set_emit_info(&mut self, emit_info: bool) {
+        self.emit_info = emit_info;
     }
 
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
@@ -340,14 +346,16 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 // 評価値は手番視点に変換する
                 let score_cp = best_eval_for_depth as i32;
 
-                println!(
-                    "info depth {} score cp {} time {} nodes {} pv {}",
-                    depth,
-                    score_cp,
-                    elapsed_time,
-                    self.nodes_searched,
-                    pv_string
-                );
+                if self.emit_info {
+                    println!(
+                        "info depth {} score cp {} time {} nodes {} pv {}",
+                        depth,
+                        score_cp,
+                        elapsed_time,
+                        self.nodes_searched,
+                        pv_string
+                    );
+                }
                 // --- ここまで ---
 
             } else {

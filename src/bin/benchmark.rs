@@ -27,6 +27,8 @@ struct Args {
     games: usize,
     #[arg(long, default_value_t = 5)]
     depth: u8,
+    #[arg(long)]
+    time_limit_ms: Option<u64>,
     #[arg(long, default_value_t = 200)]
     max_plies: usize,
     #[arg(long, default_value_t = 0)]
@@ -87,15 +89,21 @@ fn choose_move(
     position: &mut Position,
     history: &[Position],
     depth: u8,
+    time_limit_ms: Option<u64>,
 ) -> Option<shogi_core::Move> {
     let evaluator = SharedModelEvaluator { model };
     let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
+    ai.set_emit_info(false);
     for past_position in history {
         ai.sennichite_detector.record_position(past_position);
     }
 
-    ai.alpha_beta_search(position, depth, -f32::INFINITY, f32::INFINITY)
-        .and_then(|(_, pv)| pv.first().copied())
+    if let Some(time_limit_ms) = time_limit_ms {
+        ai.find_best_move(position, depth, Some(time_limit_ms))
+    } else {
+        ai.alpha_beta_search(position, depth, -f32::INFINITY, f32::INFINITY)
+            .and_then(|(_, pv)| pv.first().copied())
+    }
 }
 
 fn play_game(
@@ -104,6 +112,7 @@ fn play_game(
     start_position: &Position,
     new_is_black: bool,
     depth: u8,
+    time_limit_ms: Option<u64>,
     max_plies: usize,
 ) -> GameResult {
     let mut position = start_position.clone();
@@ -120,7 +129,7 @@ fn play_game(
             baseline_model
         };
 
-        let Some(best_move) = choose_move(model, &mut position, &history, depth) else {
+        let Some(best_move) = choose_move(model, &mut position, &history, depth, time_limit_ms) else {
             return if new_to_move {
                 GameResult::BaselineWin
             } else {
@@ -192,6 +201,7 @@ fn main() -> Result<()> {
             start_position,
             new_is_black,
             args.depth,
+            args.time_limit_ms,
             args.max_plies,
         );
         (game_index, new_is_black, result)
