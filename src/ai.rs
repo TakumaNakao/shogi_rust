@@ -6,6 +6,8 @@ use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
 use crate::utils::{format_move_usi, get_piece_value};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MAX_DEPTH: usize = 64;
@@ -46,6 +48,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     quiescence_see_skips: u64,
     emit_info: bool,
     search_generation: u32,
+    stop_signal: Option<Arc<AtomicBool>>,
 }
 
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
@@ -65,6 +68,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             quiescence_see_skips: 0,
             emit_info: true,
             search_generation: 0,
+            stop_signal: None,
         }
     }
 
@@ -85,6 +89,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn set_emit_info(&mut self, emit_info: bool) {
         self.emit_info = emit_info;
+    }
+
+    pub fn set_stop_signal(&mut self, stop_signal: Option<Arc<AtomicBool>>) {
+        self.stop_signal = stop_signal;
     }
 
     pub fn nodes_searched(&self) -> u64 {
@@ -126,6 +134,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     fn is_time_up(&self) -> bool {
+        if self
+            .stop_signal
+            .as_ref()
+            .is_some_and(|stop_signal| stop_signal.load(Ordering::SeqCst))
+        {
+            return true;
+        }
         if let (Some(start), Some(limit)) = (self.start_time, self.time_limit) {
             start.elapsed() >= limit
         } else {

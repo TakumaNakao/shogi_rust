@@ -178,13 +178,14 @@ impl UsiEngine {
         thread::spawn(move || {
             let mut ai_lock = ai.lock().unwrap();
             if let Some(thinking_ai) = ai_lock.as_mut() {
+                thinking_ai.set_stop_signal(Some(stop_signal.clone()));
                 if let Some(best_move) =
                     thinking_ai.find_best_move(&mut position, max_depth, Some(byoyomi))
                 {
-                    if !stop_signal.load(Ordering::SeqCst) {
-                        println!("bestmove {}", format_move_usi(best_move));
-                    }
+                    thinking_ai.set_stop_signal(None);
+                    println!("bestmove {}", format_move_usi(best_move));
                 } else {
+                    thinking_ai.set_stop_signal(None);
                     println!("bestmove resign");
                 }
             }
