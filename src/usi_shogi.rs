@@ -1,8 +1,8 @@
 use crate::ai::ShogiAI;
 use crate::evaluation::SparseModelEvaluator;
-use shogi_core::{Move, Piece};
+use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,6 +16,12 @@ const ENGINE_NAME: &str = "Shogi AI";
 const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
 const OVERWRITE_VALUE: f32 = 0.0;
+
+#[derive(Clone, Copy)]
+struct SearchLimits {
+    max_depth: u8,
+    time_limit_ms: Option<u64>,
+}
 
 struct UsiEngine {
     position: Position,
@@ -156,7 +162,75 @@ impl UsiEngine {
         }
     }
 
-    fn handle_go(&mut self, _tokens: &[&str]) {
+    fn parse_go_limits(&self, tokens: &[&str]) -> SearchLimits {
+        let mut max_depth = self.max_depth;
+        let mut movetime: Option<u64> = None;
+        let mut byoyomi: Option<u64> = None;
+        let mut black_time: Option<u64> = None;
+        let mut white_time: Option<u64> = None;
+        let mut infinite = false;
+
+        let mut i = 1;
+        while i < tokens.len() {
+            match tokens[i] {
+                "depth" => {
+                    if let Some(value) = tokens.get(i + 1).and_then(|value| value.parse().ok()) {
+                        max_depth = value;
+                    }
+                    i += 2;
+                }
+                "movetime" => {
+                    movetime = tokens.get(i + 1).and_then(|value| value.parse().ok());
+                    i += 2;
+                }
+                "byoyomi" => {
+                    byoyomi = tokens.get(i + 1).and_then(|value| value.parse().ok());
+                    i += 2;
+                }
+                "btime" => {
+                    black_time = tokens.get(i + 1).and_then(|value| value.parse().ok());
+                    i += 2;
+                }
+                "wtime" => {
+                    white_time = tokens.get(i + 1).and_then(|value| value.parse().ok());
+                    i += 2;
+                }
+                "infinite" => {
+                    infinite = true;
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+
+        let time_limit_ms = if infinite {
+            None
+        } else if let Some(movetime) = movetime {
+            Some(movetime)
+        } else {
+            let side_time = match self.position.side_to_move() {
+                Color::Black => black_time,
+                Color::White => white_time,
+            };
+            match (side_time, byoyomi) {
+                (Some(main_time), Some(byoyomi)) => {
+                    let main_slice = main_time / 30;
+                    let byoyomi_slice = byoyomi.saturating_mul(8) / 10;
+                    Some((main_slice + byoyomi_slice).clamp(100, self.search_time_limit))
+                }
+                (Some(main_time), None) => Some((main_time / 30).clamp(100, self.search_time_limit)),
+                (None, Some(byoyomi)) => Some(byoyomi.clamp(100, self.search_time_limit)),
+                (None, None) => Some(self.search_time_limit),
+            }
+        };
+
+        SearchLimits {
+            max_depth,
+            time_limit_ms,
+        }
+    }
+
+    fn handle_go(&mut self, tokens: &[&str]) {
         if self.ai.lock().unwrap().is_none() {
             println!("info string Error: Evaluation file is not set. Use 'setoption name EvalFile value <path>'");
             return;
@@ -169,24 +243,26 @@ impl UsiEngine {
 
         self.stop_signal.store(false, Ordering::SeqCst);
 
-        let byoyomi = self.search_time_limit;
+        let limits = self.parse_go_limits(tokens);
         let mut position = self.position.clone();
         let stop_signal = self.stop_signal.clone();
-        let max_depth = self.max_depth;
         let ai = self.ai.clone();
 
         thread::spawn(move || {
             let mut ai_lock = ai.lock().unwrap();
             if let Some(thinking_ai) = ai_lock.as_mut() {
                 thinking_ai.set_stop_signal(Some(stop_signal.clone()));
-                if let Some(best_move) =
-                    thinking_ai.find_best_move(&mut position, max_depth, Some(byoyomi))
-                {
+                thinking_ai.set_emit_info(false);
+                let best_move =
+                    thinking_ai.find_best_move(&mut position, limits.max_depth, limits.time_limit_ms);
+                if let Some(best_move) = best_move {
                     thinking_ai.set_stop_signal(None);
                     println!("bestmove {}", format_move_usi(best_move));
+                    let _ = io::stdout().flush();
                 } else {
                     thinking_ai.set_stop_signal(None);
                     println!("bestmove resign");
+                    let _ = io::stdout().flush();
                 }
             }
         });

@@ -504,6 +504,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 }
                 // --- ここまで ---
 
+                if depth == max_depth {
+                    break;
+                }
             } else {
                 break;
             }
