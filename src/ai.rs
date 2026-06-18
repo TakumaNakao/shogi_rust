@@ -40,6 +40,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     start_time: Option<Instant>,
     time_limit: Option<Duration>,
     nodes_searched: u64,
+    quiescence_nodes_searched: u64,
     emit_info: bool,
     search_generation: u32,
 }
@@ -55,6 +56,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             start_time: None,
             time_limit: None,
             nodes_searched: 0,
+            quiescence_nodes_searched: 0,
             emit_info: true,
             search_generation: 0,
         }
@@ -81,6 +83,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn nodes_searched(&self) -> u64 {
         self.nodes_searched
+    }
+
+    pub fn quiescence_nodes_searched(&self) -> u64 {
+        self.quiescence_nodes_searched
     }
 
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
@@ -119,6 +125,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     pub fn quiescence_search(&mut self, position: &mut Position, mut alpha: f32, beta: f32) -> Option<(f32, Vec<Move>)> {
         if self.is_time_up() { return None; }
         self.nodes_searched += 1;
+        self.quiescence_nodes_searched += 1;
 
         let stand_pat_score = self.evaluator.evaluate(position);
         if stand_pat_score >= beta { return Some((beta, Vec::new())); }
@@ -291,6 +298,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.start_time = Some(Instant::now());
         self.time_limit = time_limit_ms.map(Duration::from_millis);
         self.nodes_searched = 0;
+        self.quiescence_nodes_searched = 0;
 
         let moves = position.legal_moves();
         if moves.is_empty() { return None; }
