@@ -340,7 +340,19 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 let eval_result = match sennichite_status {
                     SennichiteStatus::Draw => Some((0.0, Vec::new())),
                     SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
-                    SennichiteStatus::None => self.alpha_beta_search(position, depth - 1, -beta, -alpha),
+                    SennichiteStatus::None => {
+                        if current_best_move_for_depth.is_some() && alpha.is_finite() {
+                            match self.alpha_beta_search(position, depth - 1, -alpha - 1.0, -alpha)
+                            {
+                                Some((score, _)) if -score > alpha => {
+                                    self.alpha_beta_search(position, depth - 1, -beta, -alpha)
+                                }
+                                narrow_result => narrow_result,
+                            }
+                        } else {
+                            self.alpha_beta_search(position, depth - 1, -beta, -alpha)
+                        }
+                    }
                 };
                 self.sennichite_detector.unrecord_last_position();
                 position.undo_move(*mv);
