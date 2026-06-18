@@ -185,6 +185,7 @@ impl MoveOrdering {
     /// 指し手にスコアを割り当てます。
     pub fn score_move(&self, current_move: &Move, position: &Position) -> i32 {
         let mut score = 0;
+        let side_to_move = position.side_to_move();
 
         let (piece_kind, color) = match current_move {
             Move::Normal { from, .. } => {
@@ -197,7 +198,7 @@ impl MoveOrdering {
         score += self.piece_to_history.get_score(piece_kind, current_move.to(), color);
 
         if let Some(from_sq) = current_move.from() {
-            score += self.butterfly_history.get_score(from_sq, current_move.to(), position.side_to_move());
+            score += self.butterfly_history.get_score(from_sq, current_move.to(), side_to_move);
         }
 
         if let Some(op_move) = position.last_move() {
