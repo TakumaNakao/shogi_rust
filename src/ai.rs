@@ -145,19 +145,27 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.nodes_searched += 1;
         self.quiescence_nodes_searched += 1;
 
-        let stand_pat_score = self.evaluator.evaluate(position);
-        if stand_pat_score >= beta { return Some((beta, Vec::new())); }
-        alpha = alpha.max(stand_pat_score);
+        let in_check = position.in_check();
+        let stand_pat_score = if in_check {
+            -f32::INFINITY
+        } else {
+            let score = self.evaluator.evaluate(position);
+            if score >= beta { return Some((beta, Vec::new())); }
+            alpha = alpha.max(score);
+            score
+        };
 
         let mut moves = position.legal_moves();
         
-        moves.retain(|m| {
-            if let Move::Normal { to, .. } = *m {
-                position.piece_at(to).is_some() || self.is_check(position, *m)
-            } else {
-                self.is_check(position, *m)
-            }
-        });
+        if !in_check {
+            moves.retain(|m| {
+                if let Move::Normal { to, .. } = *m {
+                    position.piece_at(to).is_some() || self.is_check(position, *m)
+                } else {
+                    self.is_check(position, *m)
+                }
+            });
+        }
 
         if moves.is_empty() { return Some((stand_pat_score, Vec::new())); }
         self.quiescence_moves_considered += moves.len() as u64;
@@ -167,7 +175,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
         let mut best_score = stand_pat_score;
         for (mv, _) in scored_moves {
-            if self.see(position, mv) < 0 {
+            if !in_check && self.see(position, mv) < 0 {
                 self.quiescence_see_skips += 1;
                 continue;
             }
