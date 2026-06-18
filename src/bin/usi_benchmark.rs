@@ -4,7 +4,7 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
-use shogi_ai::evaluation::{extract_kpp_features, SparseModel};
+use shogi_ai::evaluation::SparseModel;
 use shogi_ai::sennichite::{SennichiteDetector, SennichiteStatus};
 use shogi_ai::utils::{parse_usi_move, position_from_sfen_or_usi};
 use shogi_core::{Color, Move, Piece};
@@ -245,7 +245,7 @@ fn play_game(
     }
 
     if let Some(model) = adjudication_model {
-        let score = model.predict(&position, &extract_kpp_features(&position));
+        let score = model.predict_from_position(&position);
         let score_for_new = match position.side_to_move() {
             Color::Black if new_is_black => score,
             Color::White if !new_is_black => score,

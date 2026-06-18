@@ -4,7 +4,7 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use shogi_ai::ai::ShogiAI;
-use shogi_ai::evaluation::{extract_kpp_features, Evaluator, SparseModel};
+use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::sennichite::SennichiteStatus;
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_core::Color;
@@ -194,7 +194,7 @@ fn play_game(
     }
 
     if adjudicate_at_max_plies {
-        let baseline_score = baseline_model.predict(&position, &extract_kpp_features(&position));
+        let baseline_score = baseline_model.predict_from_position(&position);
         let baseline_score_for_new = match position.side_to_move() {
             Color::Black if new_is_black => baseline_score,
             Color::White if !new_is_black => baseline_score,
