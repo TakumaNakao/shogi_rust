@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
+use rayon::prelude::*;
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{extract_kpp_features, Evaluator, SparseModel};
 use shogi_ai::sennichite::SennichiteStatus;
@@ -30,6 +31,8 @@ struct Args {
     max_plies: usize,
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    #[arg(long, default_value_t = false)]
+    serial: bool,
 }
 
 struct SharedModelEvaluator<'a> {
@@ -150,8 +153,9 @@ fn wilson_interval(successes: usize, trials: usize, z: f64) -> Option<(f64, f64)
     let n = trials as f64;
     let p = successes as f64 / n;
     let z2 = z * z;
-    let center = (p + z2 / (2.0 * n)) / (1.0 + z2 / n);
-    let margin = z * ((p * (1.0 - p) / n + z2 / (4.0 * n * n)) / (1.0 + z2 / n)).sqrt();
+    let denominator = 1.0 + z2 / n;
+    let center = (p + z2 / (2.0 * n)) / denominator;
+    let margin = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denominator;
     Some((center - margin, center + margin))
 }
 
@@ -172,7 +176,7 @@ fn main() -> Result<()> {
     let mut baseline_wins = 0usize;
     let mut draws = 0usize;
 
-    for game_index in 0..args.games {
+    let play_one = |game_index: usize| {
         let start_position = &positions[(game_index / 2) % positions.len()];
         let new_is_black = game_index % 2 == 0;
         let result = play_game(
@@ -183,7 +187,17 @@ fn main() -> Result<()> {
             args.depth,
             args.max_plies,
         );
+        (game_index, new_is_black, result)
+    };
 
+    let mut results: Vec<_> = if args.serial {
+        (0..args.games).map(play_one).collect()
+    } else {
+        (0..args.games).into_par_iter().map(play_one).collect()
+    };
+    results.sort_by_key(|(game_index, _, _)| *game_index);
+
+    for (game_index, new_is_black, result) in results {
         match result {
             GameResult::NewWin => new_wins += 1,
             GameResult::BaselineWin => baseline_wins += 1,
