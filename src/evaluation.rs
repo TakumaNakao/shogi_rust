@@ -154,7 +154,12 @@ fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color)
 }
 
 pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
+    extract_kpp_features_and_material(pos).0
+}
+
+pub fn extract_kpp_features_and_material(pos: &shogi_lib::Position) -> (Vec<usize>, f32) {
     let turn = pos.side_to_move();
+    let mut material = 0.0;
 
     let king_sq = match BOARD_SQUARES.iter().find_map(|&sq| {
         pos.piece_at(sq).and_then(|p| {
@@ -168,7 +173,7 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
         Some(sq) => sq,
         None => {
             println!("Warning: King not found for side {:?}. Skipping this position.", turn);
-            return vec![];
+            return (vec![], 0.0);
         }
     };
 
@@ -179,6 +184,12 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
     let mut piece_ids = Vec::with_capacity(40);
     for &sq in BOARD_SQUARES.iter() {
         if let Some(piece) = pos.piece_at(sq) {
+            let value = piece_kind_value(piece.piece_kind());
+            if piece.color() == turn {
+                material += value;
+            } else {
+                material -= value;
+            }
             if piece.piece_kind() == PieceKind::King && piece.color() == turn {
                 continue;
             }
@@ -190,6 +201,12 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
     for color in [Color::Black, Color::White] {
         for kind in ALL_HAND_PIECES.iter() {
             let count = pos.hand(color).count(*kind).unwrap_or(0);
+            let value = piece_kind_value(*kind);
+            if color == turn {
+                material += count as f32 * value;
+            } else {
+                material -= count as f32 * value;
+            }
             for i in 0..count {
                 if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize, turn) {
                     piece_ids.push(id);
@@ -213,7 +230,7 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
         }
     }
 
-    indices
+    (indices, material)
 }
 
 pub fn calculate_material_advantage(pos: &shogi_lib::Position) -> f32 {
@@ -336,14 +353,24 @@ impl SparseModel {
     }
 
     pub fn predict(&self, pos: &shogi_lib::Position, kpp_features: &[usize]) -> f32 {
+        let material = calculate_material_advantage(pos);
+        self.predict_with_material(kpp_features, material)
+    }
+
+    pub fn predict_with_material(&self, kpp_features: &[usize], material: f32) -> f32 {
         let mut prediction = self.bias;
         for &i in kpp_features {
             if i < MAX_FEATURES {
                 prediction += self.w[i];
             }
         }
-        prediction += self.material_coeff * calculate_material_advantage(pos);
+        prediction += self.material_coeff * material;
         prediction
+    }
+
+    pub fn predict_from_position(&self, pos: &shogi_lib::Position) -> f32 {
+        let (features, material) = extract_kpp_features_and_material(pos);
+        self.predict_with_material(&features, material)
     }
 
     pub fn update_batch_for_moves(
@@ -566,8 +593,7 @@ impl SparseModelEvaluator {
 
 impl Evaluator for SparseModelEvaluator {
     fn evaluate(&self, position: &shogi_lib::Position) -> f32 {
-        let kpp_features = extract_kpp_features(position);
-        self.model.predict(position, &kpp_features)
+        self.model.predict_from_position(position)
     }
 }
 

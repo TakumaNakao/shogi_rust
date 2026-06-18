@@ -3,7 +3,7 @@ use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use shogi_ai::ai::ShogiAI;
-use shogi_ai::evaluation::{extract_kpp_features, Evaluator, SparseModel};
+use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_lib::Position;
 use std::fs;
@@ -35,8 +35,7 @@ struct SharedModelEvaluator<'a> {
 
 impl Evaluator for SharedModelEvaluator<'_> {
     fn evaluate(&self, position: &Position) -> f32 {
-        let features = extract_kpp_features(position);
-        self.model.predict(position, &features)
+        self.model.predict_from_position(position)
     }
 }
 

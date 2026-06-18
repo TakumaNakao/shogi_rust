@@ -97,8 +97,7 @@ struct SharedModelEvaluator<'a> {
 
 impl<'a> Evaluator for SharedModelEvaluator<'a> {
     fn evaluate(&self, position: &Position) -> f32 {
-        let kpp_features = extract_kpp_features(position);
-        self.model.predict(position, &kpp_features)
+        self.model.predict_from_position(position)
     }
 }
 
