@@ -300,6 +300,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }).collect();
         scored_moves.sort_by_key(|a| -a.1);
         let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
+        let root_hash = PositionHasher::calculate_hash(position);
+        if let Some(tt_move) = self.transposition_table.get(&root_hash).and_then(|entry| entry.best_move) {
+            if let Some(pos) = sorted_moves.iter().position(|&m| m == tt_move) {
+                let mv = sorted_moves.remove(pos);
+                sorted_moves.insert(0, mv);
+            }
+        }
         let mut best_move: Option<Move> = sorted_moves.first().copied();
 
         for depth in 1..=max_depth {
