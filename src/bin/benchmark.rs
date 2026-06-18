@@ -33,6 +33,10 @@ struct Args {
     seed: u64,
     #[arg(long, default_value_t = false)]
     serial: bool,
+    #[arg(long)]
+    new_material_override: Option<f32>,
+    #[arg(long)]
+    baseline_material_override: Option<f32>,
 }
 
 struct SharedModelEvaluator<'a> {
@@ -53,11 +57,14 @@ enum GameResult {
     Draw,
 }
 
-fn load_model(path: &Path) -> Result<SparseModel> {
+fn load_model(path: &Path, material_override: Option<f32>) -> Result<SparseModel> {
     let mut model = SparseModel::new(0.0, 0.0);
     model
         .load(path)
         .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
+    if let Some(material_coeff) = material_override {
+        model.material_coeff = material_coeff;
+    }
     Ok(model)
 }
 
@@ -165,8 +172,8 @@ fn main() -> Result<()> {
         return Err(anyhow!("--games must be greater than zero"));
     }
 
-    let new_model = load_model(&args.new_weights)?;
-    let baseline_model = load_model(&args.baseline_weights)?;
+    let new_model = load_model(&args.new_weights, args.new_material_override)?;
+    let baseline_model = load_model(&args.baseline_weights, args.baseline_material_override)?;
     let mut positions = load_positions(&args.positions)?;
 
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
