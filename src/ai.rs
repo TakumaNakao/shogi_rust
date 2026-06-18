@@ -174,8 +174,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.nodes_searched += 1;
 
         let hash = PositionHasher::calculate_hash(position);
-        let tt_best_move = self.transposition_table.get(&hash).and_then(|entry| entry.best_move);
-        if let Some(entry) = self.transposition_table.get(&hash) {
+        let tt_entry = self.transposition_table.get(&hash).copied();
+        let tt_best_move = tt_entry.and_then(|entry| entry.best_move);
+        if let Some(entry) = tt_entry {
             if entry.generation == self.search_generation && entry.depth >= depth {
                 match entry.node_type {
                     NodeType::Exact => return Some((entry.score, entry.best_move.map_or(Vec::new(), |m| vec![m]))),
