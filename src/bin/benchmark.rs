@@ -100,6 +100,7 @@ fn choose_move(
 
     if let Some(time_limit_ms) = time_limit_ms {
         ai.find_best_move(position, depth, Some(time_limit_ms))
+            .or_else(|| position.legal_moves().first().copied())
     } else {
         ai.alpha_beta_search(position, depth, -f32::INFINITY, f32::INFINITY)
             .and_then(|(_, pv)| pv.first().copied())
