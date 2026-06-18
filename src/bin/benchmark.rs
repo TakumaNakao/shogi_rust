@@ -84,29 +84,6 @@ fn load_positions(path: &Path) -> Result<Vec<Position>> {
     Ok(positions)
 }
 
-fn choose_move(
-    model: &SparseModel,
-    position: &mut Position,
-    history: &[Position],
-    depth: u8,
-    time_limit_ms: Option<u64>,
-) -> Option<shogi_core::Move> {
-    let evaluator = SharedModelEvaluator { model };
-    let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
-    ai.set_emit_info(false);
-    for past_position in history {
-        ai.sennichite_detector.record_position(past_position);
-    }
-
-    if let Some(time_limit_ms) = time_limit_ms {
-        ai.find_best_move(position, depth, Some(time_limit_ms))
-            .or_else(|| position.legal_moves().first().copied())
-    } else {
-        ai.alpha_beta_search(position, depth, -f32::INFINITY, f32::INFINITY)
-            .and_then(|(_, pv)| pv.first().copied())
-    }
-}
-
 fn play_game(
     new_model: &SparseModel,
     baseline_model: &SparseModel,
@@ -117,20 +94,35 @@ fn play_game(
     max_plies: usize,
 ) -> GameResult {
     let mut position = start_position.clone();
-    let mut history = vec![position.clone()];
+    let mut new_ai = ShogiAI::<_, HISTORY_CAPACITY>::new(SharedModelEvaluator { model: new_model });
+    let mut baseline_ai =
+        ShogiAI::<_, HISTORY_CAPACITY>::new(SharedModelEvaluator { model: baseline_model });
+    new_ai.set_emit_info(false);
+    baseline_ai.set_emit_info(false);
+    new_ai.sennichite_detector.record_position(&position);
+    baseline_ai.sennichite_detector.record_position(&position);
 
     for _ in 0..max_plies {
         let new_to_move = match position.side_to_move() {
             Color::Black => new_is_black,
             Color::White => !new_is_black,
         };
-        let model = if new_to_move {
-            new_model
+        let current_ai = if new_to_move {
+            &mut new_ai
         } else {
-            baseline_model
+            &mut baseline_ai
         };
 
-        let Some(best_move) = choose_move(model, &mut position, &history, depth, time_limit_ms) else {
+        current_ai.decay_history();
+        let best_move = if let Some(time_limit_ms) = time_limit_ms {
+            current_ai.find_best_move(&mut position, depth, Some(time_limit_ms))
+        } else {
+            current_ai
+                .alpha_beta_search(&mut position, depth, -f32::INFINITY, f32::INFINITY)
+                .and_then(|(_, pv)| pv.first().copied())
+        };
+
+        let Some(best_move) = best_move.or_else(|| position.legal_moves().first().copied()) else {
             return if new_to_move {
                 GameResult::BaselineWin
             } else {
@@ -139,14 +131,10 @@ fn play_game(
         };
 
         position.do_move(best_move);
-        history.push(position.clone());
+        new_ai.sennichite_detector.record_position(&position);
+        baseline_ai.sennichite_detector.record_position(&position);
 
-        let evaluator = SharedModelEvaluator { model };
-        let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
-        for past_position in &history {
-            ai.sennichite_detector.record_position(past_position);
-        }
-        match ai.is_sennichite_internal(&position) {
+        match new_ai.is_sennichite_internal(&position) {
             SennichiteStatus::Draw => return GameResult::Draw,
             SennichiteStatus::PerpetualCheckLoss => {
                 return if new_to_move {
