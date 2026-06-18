@@ -1,9 +1,41 @@
 use std::collections::HashMap;
 use shogi_core::{Color, Move, PieceKind, Square};
 use arrayvec::ArrayVec;
-use crate::position_hash::{ZOBRIST_KEYS, PIECE_KINDS, HAND_PIECE_KINDS, color_to_index};
+use crate::position_hash::{color_to_index, ZOBRIST_KEYS};
 use crate::utils::get_piece_value;
 use shogi_lib::Position;
+
+fn board_piece_kind_index(kind: PieceKind) -> usize {
+    match kind {
+        PieceKind::Pawn => 0,
+        PieceKind::Lance => 1,
+        PieceKind::Knight => 2,
+        PieceKind::Silver => 3,
+        PieceKind::Gold => 4,
+        PieceKind::Bishop => 5,
+        PieceKind::Rook => 6,
+        PieceKind::King => 7,
+        PieceKind::ProPawn => 8,
+        PieceKind::ProLance => 9,
+        PieceKind::ProKnight => 10,
+        PieceKind::ProSilver => 11,
+        PieceKind::ProBishop => 12,
+        PieceKind::ProRook => 13,
+    }
+}
+
+fn hand_piece_kind_index(kind: PieceKind) -> usize {
+    match kind {
+        PieceKind::Pawn => 0,
+        PieceKind::Lance => 1,
+        PieceKind::Knight => 2,
+        PieceKind::Silver => 3,
+        PieceKind::Gold => 4,
+        PieceKind::Bishop => 5,
+        PieceKind::Rook => 6,
+        _ => 0,
+    }
+}
 
 fn hash_move(mv: Move) -> u64 {
     match mv {
@@ -17,7 +49,7 @@ fn hash_move(mv: Move) -> u64 {
         }
         Move::Drop { piece, to } => {
             let to_idx = (to.index() - 1) as usize;
-            let piece_idx = HAND_PIECE_KINDS.iter().position(|&k| k == piece.piece_kind()).unwrap_or(0);
+            let piece_idx = hand_piece_kind_index(piece.piece_kind());
             let drop_key = ZOBRIST_KEYS.hand[piece_idx][1][color_to_index(piece.color())];
             let to_key = ZOBRIST_KEYS.board[1][to_idx][1];
             drop_key ^ to_key
@@ -34,14 +66,14 @@ struct PieceToHistory {
 impl PieceToHistory {
     fn get_score(&self, piece_kind: PieceKind, to_sq: Square, color: Color) -> i32 {
         let to_idx = (to_sq.index() - 1) as usize;
-        let piece_idx = PIECE_KINDS.iter().position(|&k| k == piece_kind).unwrap();
+        let piece_idx = board_piece_kind_index(piece_kind);
         let key = ZOBRIST_KEYS.board[piece_idx][to_idx][color_to_index(color)];
         *self.history.get(&key).unwrap_or(&0)
     }
 
     fn update_score(&mut self, piece_kind: PieceKind, to_sq: Square, color: Color, delta: i32) {
         let to_idx = (to_sq.index() - 1) as usize;
-        let piece_idx = PIECE_KINDS.iter().position(|&k| k == piece_kind).unwrap();
+        let piece_idx = board_piece_kind_index(piece_kind);
         let key = ZOBRIST_KEYS.board[piece_idx][to_idx][color_to_index(color)];
         *self.history.entry(key).or_insert(0) += delta;
     }
