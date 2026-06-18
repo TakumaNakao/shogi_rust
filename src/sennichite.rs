@@ -50,7 +50,7 @@ impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
     pub fn check_sennichite(&self, position: &Position) -> SennichiteStatus {
         let count = self.get_position_count(position);
         if count >= 4 {
-            if self.is_perpetual_check_placeholder() {
+            if position.in_check() {
                 SennichiteStatus::PerpetualCheckLoss
             } else {
                 SennichiteStatus::Draw
@@ -58,12 +58,6 @@ impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
         } else {
             SennichiteStatus::None
         }
-    }
-
-    /// 連続王手チェックのプレースホルダー関数。
-    pub fn is_perpetual_check_placeholder(&self) -> bool {
-        // ここに実際の連続王手チェックロジックを実装します。
-        false
     }
 
     /// 履歴をクリアします。
@@ -76,6 +70,7 @@ impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
 mod tests {
     use super::*;
     use shogi_core::{Move, Square};
+    use shogi_usi_parser::FromUsi;
 
     #[test]
     fn test_is_sennichite_detection_with_hash() {
@@ -104,5 +99,26 @@ mod tests {
         let initial_pos = Position::default();
         assert_eq!(detector.get_position_count(&initial_pos), 4);
         assert_eq!(detector.check_sennichite(&initial_pos), SennichiteStatus::Draw);
+    }
+
+    #[test]
+    fn test_checked_repetition_is_perpetual_check_loss() {
+        const TEST_CAPACITY: usize = 8;
+        let mut detector = SennichiteDetector::<TEST_CAPACITY>::new();
+        let partial = shogi_core::PartialPosition::from_usi(
+            "sfen 4r3k/9/9/9/9/9/9/9/4K4 b - 1",
+        )
+        .unwrap();
+        let pos = Position::new(partial);
+        assert!(pos.in_check());
+
+        for _ in 0..4 {
+            detector.record_position(&pos);
+        }
+
+        assert_eq!(
+            detector.check_sennichite(&pos),
+            SennichiteStatus::PerpetualCheckLoss
+        );
     }
 }

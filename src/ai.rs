@@ -178,7 +178,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let sennichite_status = self.is_sennichite_internal(position);
             let score_result = match sennichite_status {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
+                SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
                 SennichiteStatus::None => self.quiescence_search(position, -beta, -alpha),
             };
             self.sennichite_detector.unrecord_last_position();
@@ -257,7 +257,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let sennichite_status = self.is_sennichite_internal(position);
             let search_result = match sennichite_status {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
+                SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
                 SennichiteStatus::None => self.alpha_beta_search(position, depth - 1, -beta, -alpha),
             };
             self.sennichite_detector.unrecord_last_position();
@@ -377,7 +377,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                 let eval_result = match sennichite_status {
                     SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                    SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
+                    SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
                     SennichiteStatus::None => {
                         if current_best_move_for_depth.is_some() && alpha.is_finite() {
                             match self.alpha_beta_search(position, depth - 1, -alpha - 1.0, -alpha)
@@ -431,7 +431,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                         let eval_result = match sennichite_status {
                             SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                            SennichiteStatus::PerpetualCheckLoss => Some((-f32::INFINITY, Vec::new())),
+                            SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
                             SennichiteStatus::None => {
                                 self.alpha_beta_search(position, depth - 1, -beta, -alpha)
                             }
