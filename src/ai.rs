@@ -86,31 +86,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         0
     }
 
-    fn evaluate_move_safety(&self, position: &mut Position, mv: Move) -> i32 {
-        let mut score = 0;
-
-        // 1. 自分の手がタダ捨てになっていないかチェック
-        position.do_move(mv);
-        // 相手の手番にして合法手を生成
-        let opponent_moves = position.legal_moves();
-        for opponent_move in opponent_moves {
-            if let Move::Normal { to, .. } = opponent_move {
-                // mvで動かした駒が取り返されるか
-                if to == mv.to() {
-                    // 相手が取り返す手で駒損しないかチェック
-                    if self.see(position, opponent_move) > 0 {
-                        score -= 10000; // 大きなペナルティ
-                        break;
-                    }
-                }
-            }
-        }
-        position.undo_move(mv); // 盤面を元に戻す（自分の手番に戻る）
-
-        score
-    }
-
-
     fn is_time_up(&self) -> bool {
         if let (Some(start), Some(limit)) = (self.start_time, self.time_limit) {
             start.elapsed() >= limit
@@ -201,7 +176,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
         let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|mv| {
             let mut score = self.move_ordering.score_move(mv, position);
-            score += self.evaluate_move_safety(position, *mv);
             if let Move::Normal { promote, .. } = mv {
                 if *promote {
                     score += 4000;
@@ -295,7 +269,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
         let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|mv| {
             let mut score = self.move_ordering.score_move(mv, position);
-            score += self.evaluate_move_safety(position, *mv);
             if let Move::Normal { promote, .. } = mv {
                 if *promote {
                     score += 4000;
