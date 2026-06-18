@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 const MAX_DEPTH: usize = 64;
 const TRANSPOSITION_TABLE_MAX_ENTRIES: usize = 1_000_000;
 const ASPIRATION_WINDOW: f32 = 300.0;
+const CHECK_MOVE_BONUS: i32 = 2_000;
 
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -233,15 +234,19 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let moves = position.legal_moves();
         if moves.is_empty() { return Some((-f32::INFINITY, Vec::new())); }
 
-        let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|mv| {
+        let mut scored_moves = Vec::with_capacity(moves.len());
+        for mv in moves.iter() {
             let mut score = self.move_ordering.score_move(mv, position);
             if let Move::Normal { promote, .. } = mv {
                 if *promote {
                     score += 4000;
                 }
             }
-            (*mv, score)
-        }).collect();
+            if self.is_check(position, *mv) {
+                score += CHECK_MOVE_BONUS;
+            }
+            scored_moves.push((*mv, score));
+        }
         scored_moves.sort_unstable_by_key(|a| -a.1);
         let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
 
@@ -342,15 +347,19 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let moves = position.legal_moves();
         if moves.is_empty() { return None; }
 
-        let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|mv| {
+        let mut scored_moves = Vec::with_capacity(moves.len());
+        for mv in moves.iter() {
             let mut score = self.move_ordering.score_move(mv, position);
             if let Move::Normal { promote, .. } = mv {
                 if *promote {
                     score += 4000;
                 }
             }
-            (*mv, score)
-        }).collect();
+            if self.is_check(position, *mv) {
+                score += CHECK_MOVE_BONUS;
+            }
+            scored_moves.push((*mv, score));
+        }
         scored_moves.sort_unstable_by_key(|a| -a.1);
         let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
         let root_hash = PositionHasher::calculate_hash(position);
