@@ -160,28 +160,9 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
 pub fn extract_kpp_features_and_material(pos: &shogi_lib::Position) -> (Vec<usize>, f32) {
     let turn = pos.side_to_move();
     let mut material = 0.0;
-
-    let king_sq = match BOARD_SQUARES.iter().find_map(|&sq| {
-        pos.piece_at(sq).and_then(|p| {
-            if p.piece_kind() == PieceKind::King && p.color() == turn {
-                Some(sq)
-            } else {
-                None
-            }
-        })
-    }) {
-        Some(sq) => sq,
-        None => {
-            println!("Warning: King not found for side {:?}. Skipping this position.", turn);
-            return (vec![], 0.0);
-        }
-    };
-
-    let normalized_king_sq = if turn == Color::Black { king_sq } else { king_sq.flip() };
-    let king_sq_index = (normalized_king_sq.index() - 1) as usize;
-
-
     let mut piece_ids = Vec::with_capacity(40);
+    let mut king_sq = None;
+
     for &sq in BOARD_SQUARES.iter() {
         if let Some(piece) = pos.piece_at(sq) {
             let value = piece_kind_value(piece.piece_kind());
@@ -191,6 +172,7 @@ pub fn extract_kpp_features_and_material(pos: &shogi_lib::Position) -> (Vec<usiz
                 material -= value;
             }
             if piece.piece_kind() == PieceKind::King && piece.color() == turn {
+                king_sq = Some(sq);
                 continue;
             }
             if let Some(id) = piece_to_id(piece, Some(sq), 0, turn) {
@@ -198,6 +180,17 @@ pub fn extract_kpp_features_and_material(pos: &shogi_lib::Position) -> (Vec<usiz
             }
         }
     }
+
+    let king_sq = match king_sq {
+        Some(sq) => sq,
+        None => {
+            println!("Warning: King not found for side {:?}. Skipping this position.", turn);
+            return (vec![], 0.0);
+        }
+    };
+    let normalized_king_sq = if turn == Color::Black { king_sq } else { king_sq.flip() };
+    let king_sq_index = (normalized_king_sq.index() - 1) as usize;
+
     for color in [Color::Black, Color::White] {
         for kind in ALL_HAND_PIECES.iter() {
             let count = pos.hand(color).count(*kind).unwrap_or(0);
