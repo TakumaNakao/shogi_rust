@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::LazyLock;
 use rand::prelude::*;
 use rand_distr::Distribution;
 use rayon::prelude::*;
@@ -81,6 +82,9 @@ pub const ALL_HAND_PIECES: [PieceKind; 7] = [
     PieceKind::Rook,
 ];
 
+static BOARD_SQUARES: LazyLock<[Square; NUM_SQUARES]> = LazyLock::new(|| {
+    std::array::from_fn(|i| Square::from_u8(i as u8 + 1).expect("valid board square"))
+});
 
 // --- Evaluator Trait ---
 pub trait Evaluator {
@@ -152,15 +156,13 @@ fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color)
 pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
     let turn = pos.side_to_move();
 
-    let king_sq = match (0..81).find_map(|i| {
-        Square::from_u8(i as u8 + 1).and_then(|sq| {
-            pos.piece_at(sq).and_then(|p| {
-                if p.piece_kind() == PieceKind::King && p.color() == turn {
-                    Some(sq)
-                } else {
-                    None
-                }
-            })
+    let king_sq = match BOARD_SQUARES.iter().find_map(|&sq| {
+        pos.piece_at(sq).and_then(|p| {
+            if p.piece_kind() == PieceKind::King && p.color() == turn {
+                Some(sq)
+            } else {
+                None
+            }
         })
     }) {
         Some(sq) => sq,
@@ -175,15 +177,13 @@ pub fn extract_kpp_features(pos: &shogi_lib::Position) -> Vec<usize> {
 
 
     let mut piece_ids = Vec::with_capacity(40);
-    for i in 0..81 {
-        if let Some(sq) = Square::from_u8(i as u8 + 1) {
-            if let Some(piece) = pos.piece_at(sq) {
-                if piece.piece_kind() == PieceKind::King && piece.color() == turn {
-                    continue; 
-                }
-                if let Some(id) = piece_to_id(piece, Some(sq), 0, turn) {
-                    piece_ids.push(id);
-                }
+    for &sq in BOARD_SQUARES.iter() {
+        if let Some(piece) = pos.piece_at(sq) {
+            if piece.piece_kind() == PieceKind::King && piece.color() == turn {
+                continue;
+            }
+            if let Some(id) = piece_to_id(piece, Some(sq), 0, turn) {
+                piece_ids.push(id);
             }
         }
     }
@@ -221,15 +221,13 @@ pub fn calculate_material_advantage(pos: &shogi_lib::Position) -> f32 {
     let turn = pos.side_to_move();
 
     // Board pieces
-    for i in 0..81 {
-        if let Some(sq) = Square::from_u8(i as u8 + 1) {
-            if let Some(piece) = pos.piece_at(sq) {
-                let value = piece_kind_value(piece.piece_kind());
-                if piece.color() == turn {
-                    material += value;
-                } else {
-                    material -= value;
-                }
+    for &sq in BOARD_SQUARES.iter() {
+        if let Some(piece) = pos.piece_at(sq) {
+            let value = piece_kind_value(piece.piece_kind());
+            if piece.color() == turn {
+                material += value;
+            } else {
+                material -= value;
             }
         }
     }
