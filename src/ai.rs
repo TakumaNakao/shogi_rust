@@ -41,6 +41,9 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     time_limit: Option<Duration>,
     nodes_searched: u64,
     quiescence_nodes_searched: u64,
+    quiescence_moves_considered: u64,
+    quiescence_moves_searched: u64,
+    quiescence_see_skips: u64,
     emit_info: bool,
     search_generation: u32,
 }
@@ -57,6 +60,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             time_limit: None,
             nodes_searched: 0,
             quiescence_nodes_searched: 0,
+            quiescence_moves_considered: 0,
+            quiescence_moves_searched: 0,
+            quiescence_see_skips: 0,
             emit_info: true,
             search_generation: 0,
         }
@@ -87,6 +93,18 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn quiescence_nodes_searched(&self) -> u64 {
         self.quiescence_nodes_searched
+    }
+
+    pub fn quiescence_moves_considered(&self) -> u64 {
+        self.quiescence_moves_considered
+    }
+
+    pub fn quiescence_moves_searched(&self) -> u64 {
+        self.quiescence_moves_searched
+    }
+
+    pub fn quiescence_see_skips(&self) -> u64 {
+        self.quiescence_see_skips
     }
 
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
@@ -142,6 +160,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         });
 
         if moves.is_empty() { return Some((stand_pat_score, Vec::new())); }
+        self.quiescence_moves_considered += moves.len() as u64;
 
         let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|&mv| (mv, self.move_ordering.score_move(&mv, position))).collect();
         scored_moves.sort_unstable_by_key(|a| -a.1);
@@ -149,9 +168,11 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let mut best_score = stand_pat_score;
         for (mv, _) in scored_moves {
             if self.see(position, mv) < 0 {
+                self.quiescence_see_skips += 1;
                 continue;
             }
 
+            self.quiescence_moves_searched += 1;
             position.do_move(mv);
             self.sennichite_detector.record_position(position);
             let sennichite_status = self.is_sennichite_internal(position);
@@ -299,6 +320,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.time_limit = time_limit_ms.map(Duration::from_millis);
         self.nodes_searched = 0;
         self.quiescence_nodes_searched = 0;
+        self.quiescence_moves_considered = 0;
+        self.quiescence_moves_searched = 0;
+        self.quiescence_see_skips = 0;
 
         let moves = position.legal_moves();
         if moves.is_empty() { return None; }
