@@ -9,6 +9,7 @@ use crate::utils::{format_move_usi, get_piece_value};
 use std::time::{Duration, Instant};
 
 const MAX_DEPTH: usize = 64;
+const TRANSPOSITION_TABLE_MAX_ENTRIES: usize = 1_000_000;
 
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -25,6 +26,7 @@ struct TranspositionEntry {
     depth: u8,
     node_type: NodeType,
     best_move: Option<Move>,
+    generation: u32,
 }
 
 /// 将棋のアルファベータ探索を管理する構造体
@@ -38,6 +40,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     time_limit: Option<Duration>,
     nodes_searched: u64,
     emit_info: bool,
+    search_generation: u32,
 }
 
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
@@ -52,6 +55,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             time_limit: None,
             nodes_searched: 0,
             emit_info: true,
+            search_generation: 0,
         }
     }
 
@@ -167,7 +171,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let hash = PositionHasher::calculate_hash(position);
         let tt_best_move = self.transposition_table.get(&hash).and_then(|entry| entry.best_move);
         if let Some(entry) = self.transposition_table.get(&hash) {
-            if entry.depth >= depth {
+            if entry.generation == self.search_generation && entry.depth >= depth {
                 match entry.node_type {
                     NodeType::Exact => return Some((entry.score, entry.best_move.map_or(Vec::new(), |m| vec![m]))),
                     NodeType::LowerBound => alpha = alpha.max(entry.score),
@@ -253,7 +257,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             final_pv.extend(best_pv);
         }
 
-        let entry = TranspositionEntry { score: best_score, depth, node_type, best_move };
+        let entry = TranspositionEntry {
+            score: best_score,
+            depth,
+            node_type,
+            best_move,
+            generation: self.search_generation,
+        };
         self.transposition_table.insert(hash, entry);
         Some((best_score, final_pv))
     }
@@ -263,7 +273,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     pub fn find_best_move(&mut self, position: &mut Position, max_depth: u8, time_limit_ms: Option<u64>) -> Option<Move> {
-        self.transposition_table.clear();
+        if self.transposition_table.len() > TRANSPOSITION_TABLE_MAX_ENTRIES {
+            self.transposition_table.clear();
+        }
+        self.search_generation = self.search_generation.wrapping_add(1);
+        if self.search_generation == 0 {
+            self.search_generation = 1;
+            self.transposition_table.clear();
+        }
         self.clear_killer_moves();
         self.start_time = Some(Instant::now());
         self.time_limit = time_limit_ms.map(Duration::from_millis);
