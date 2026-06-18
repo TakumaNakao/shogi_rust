@@ -45,6 +45,7 @@ enum TrainingSample {
 enum TrainingMode {
     Value,
     Policy,
+    PolicyMargin,
 }
 
 #[derive(Parser, Debug)]
@@ -162,7 +163,7 @@ fn main() -> Result<()> {
 
     // 1. モデルの読み込み
     let mut model = SparseModel::new(LEARNING_RATE, L2_LAMBDA);
-    if args.training_mode == TrainingMode::Policy {
+    if matches!(args.training_mode, TrainingMode::Policy | TrainingMode::PolicyMargin) {
         model.kpp_eta = args.policy_learning_rate;
     }
     if args.weight_path.exists() {
@@ -237,7 +238,10 @@ fn main() -> Result<()> {
                     let material = calculate_material_advantage(&position);
                     let predicted_score = model.predict(&position, &original_features);
 
-                    let needs_search = args.training_mode == TrainingMode::Policy
+                    let needs_search = matches!(
+                        args.training_mode,
+                        TrainingMode::Policy | TrainingMode::PolicyMargin
+                    )
                         || predicted_score.abs() < args.resign_score_threshold;
                     let search_result = if needs_search {
                         let evaluator = SharedModelEvaluator { model: &model };
@@ -267,7 +271,7 @@ fn main() -> Result<()> {
                             let sample = TrainingSample::Value((original_features, p, q, material));
                             if thread_tx.send(sample).is_err() {}
                         }
-                        TrainingMode::Policy => {
+                        TrainingMode::Policy | TrainingMode::PolicyMargin => {
                             let Some((_, pv)) = search_result else {
                                 return;
                             };
@@ -341,6 +345,25 @@ fn main() -> Result<()> {
                     }
                     avg_loss
                 }
+                TrainingMode::PolicyMargin => {
+                    let policy_batch: Vec<_> = update_batch
+                        .iter()
+                        .filter_map(|sample| match sample {
+                            TrainingSample::Value(_) => None,
+                            TrainingSample::Policy(policy_sample) => Some(policy_sample.clone()),
+                        })
+                        .collect();
+                    let material_coeff_before = model.material_coeff;
+                    let (correct, total) = model.update_batch_for_moves(&policy_batch);
+                    if args.freeze_policy_material {
+                        model.material_coeff = material_coeff_before;
+                    }
+                    if total == 0 {
+                        0.0
+                    } else {
+                        1.0 - correct as f32 / total as f32
+                    }
+                }
             };
 
             games_done += training_batch.len();
@@ -352,7 +375,7 @@ fn main() -> Result<()> {
                 0.0
             };
             println!(
-                "Batch Trained (size={}). Cross-Entropy Loss: {:.4}, Games/sec: {:.2}",
+                "Batch Trained (size={}). Training metric: {:.4}, Games/sec: {:.2}",
                 training_batch.len(),
                 avg_loss,
                 games_per_sec
