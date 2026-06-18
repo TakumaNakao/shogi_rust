@@ -6,7 +6,7 @@ use rayon::prelude::*;
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::sennichite::SennichiteStatus;
-use shogi_ai::utils::position_from_sfen_or_usi;
+use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
 use shogi_core::Color;
 use shogi_lib::Position;
 use std::fs;
@@ -45,6 +45,8 @@ struct Args {
     new_stateless: bool,
     #[arg(long, default_value_t = false)]
     baseline_stateless: bool,
+    #[arg(long)]
+    record_dir: Option<PathBuf>,
 }
 
 struct SharedModelEvaluator<'a> {
@@ -62,6 +64,12 @@ enum GameResult {
     NewWin,
     BaselineWin,
     Draw,
+}
+
+#[derive(Debug)]
+struct PlayedGame {
+    result: GameResult,
+    moves: Vec<String>,
 }
 
 fn load_model(path: &Path, material_override: Option<f32>) -> Result<SparseModel> {
@@ -122,9 +130,10 @@ fn play_game(
     adjudicate_at_max_plies: bool,
     new_stateless: bool,
     baseline_stateless: bool,
-) -> GameResult {
+) -> PlayedGame {
     let mut position = start_position.clone();
     let mut history = vec![position.clone()];
+    let mut moves = Vec::new();
     let mut new_ai = ShogiAI::<_, HISTORY_CAPACITY>::new(SharedModelEvaluator { model: new_model });
     let mut baseline_ai =
         ShogiAI::<_, HISTORY_CAPACITY>::new(SharedModelEvaluator { model: baseline_model });
@@ -168,25 +177,37 @@ fn play_game(
         };
 
         let Some(best_move) = best_move.or_else(|| position.legal_moves().first().copied()) else {
-            return if new_to_move {
-                GameResult::BaselineWin
-            } else {
-                GameResult::NewWin
+            return PlayedGame {
+                result: if new_to_move {
+                    GameResult::BaselineWin
+                } else {
+                    GameResult::NewWin
+                },
+                moves,
             };
         };
 
+        moves.push(format_move_usi(best_move));
         position.do_move(best_move);
         history.push(position.clone());
         new_ai.sennichite_detector.record_position(&position);
         baseline_ai.sennichite_detector.record_position(&position);
 
         match new_ai.is_sennichite_internal(&position) {
-            SennichiteStatus::Draw => return GameResult::Draw,
+            SennichiteStatus::Draw => {
+                return PlayedGame {
+                    result: GameResult::Draw,
+                    moves,
+                };
+            }
             SennichiteStatus::PerpetualCheckLoss => {
-                return if new_to_move {
-                    GameResult::BaselineWin
-                } else {
-                    GameResult::NewWin
+                return PlayedGame {
+                    result: if new_to_move {
+                        GameResult::BaselineWin
+                    } else {
+                        GameResult::NewWin
+                    },
+                    moves,
                 };
             }
             SennichiteStatus::None => {}
@@ -202,15 +223,60 @@ fn play_game(
         };
 
         if baseline_score_for_new > 0.0 {
-            GameResult::NewWin
+            PlayedGame {
+                result: GameResult::NewWin,
+                moves,
+            }
         } else if baseline_score_for_new < 0.0 {
-            GameResult::BaselineWin
+            PlayedGame {
+                result: GameResult::BaselineWin,
+                moves,
+            }
         } else {
-            GameResult::Draw
+            PlayedGame {
+                result: GameResult::Draw,
+                moves,
+            }
         }
     } else {
-        GameResult::Draw
+        PlayedGame {
+            result: GameResult::Draw,
+            moves,
+        }
     }
+}
+
+fn write_game_record(
+    record_dir: &Path,
+    game_index: usize,
+    new_is_black: bool,
+    start_position: &Position,
+    game: &PlayedGame,
+) -> Result<()> {
+    let side_label = if new_is_black { "black" } else { "white" };
+    let result_label = format!("{:?}", game.result);
+    let path = record_dir.join(format!(
+        "game_{:03}_new_{}_{}.usi",
+        game_index + 1,
+        side_label,
+        result_label
+    ));
+
+    let mut content = String::new();
+    let start_sfen = start_position.to_sfen_owned();
+    content.push_str(&format!("result {:?}\n", game.result));
+    content.push_str(&format!("new_as {}\n", side_label));
+    content.push_str(&format!("start_sfen {}\n", start_sfen));
+    content.push_str("position sfen ");
+    content.push_str(&start_sfen);
+    if !game.moves.is_empty() {
+        content.push_str(" moves ");
+        content.push_str(&game.moves.join(" "));
+    }
+    content.push('\n');
+
+    fs::write(path, content)?;
+    Ok(())
 }
 
 fn wilson_interval(successes: usize, trials: usize, z: f64) -> Option<(f64, f64)> {
@@ -258,13 +324,17 @@ fn main() -> Result<()> {
     let mut baseline_wins = 0usize;
     let mut draws = 0usize;
 
+    if let Some(record_dir) = &args.record_dir {
+        fs::create_dir_all(record_dir)?;
+    }
+
     let play_one = |game_index: usize| {
-        let start_position = &positions[(game_index / 2) % positions.len()];
+        let start_position = positions[(game_index / 2) % positions.len()].clone();
         let new_is_black = game_index % 2 == 0;
-        let result = play_game(
+        let game = play_game(
             &new_model,
             &baseline_model,
-            start_position,
+            &start_position,
             new_is_black,
             args.depth,
             args.time_limit_ms,
@@ -273,7 +343,7 @@ fn main() -> Result<()> {
             args.new_stateless,
             args.baseline_stateless,
         );
-        (game_index, new_is_black, result)
+        (game_index, new_is_black, start_position, game)
     };
 
     let mut results: Vec<_> = if args.serial {
@@ -281,19 +351,23 @@ fn main() -> Result<()> {
     } else {
         (0..args.games).into_par_iter().map(play_one).collect()
     };
-    results.sort_by_key(|(game_index, _, _)| *game_index);
+    results.sort_by_key(|(game_index, _, _, _)| *game_index);
 
-    for (game_index, new_is_black, result) in results {
-        match result {
+    for (game_index, new_is_black, start_position, game) in results {
+        match game.result {
             GameResult::NewWin => new_wins += 1,
             GameResult::BaselineWin => baseline_wins += 1,
             GameResult::Draw => draws += 1,
         }
 
+        if let Some(record_dir) = &args.record_dir {
+            write_game_record(record_dir, game_index, new_is_black, &start_position, &game)?;
+        }
+
         println!(
             "game {:>3}: {:?} (new as {})",
             game_index + 1,
-            result,
+            game.result,
             if new_is_black { "black" } else { "white" }
         );
     }
