@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use clap::Parser;
 use plotters::prelude::*;
 use rand::prelude::*;
 use rayon::prelude::*;
@@ -18,19 +19,43 @@ use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{extract_kpp_features, SparseModel};
 use shogi_ai::utils::position_from_sfen_or_usi;
 
-const SEARCH_DEPTH: u8 = 5; // 教師信号を生成するための探索深さ（CPU負荷低減）
+const DEFAULT_SEARCH_DEPTH: u8 = 5; // 教師信号を生成するための探索深さ（CPU負荷低減）
 const LEARNING_RATE: f32 = 0.0001; // 学習率
 const L2_LAMBDA: f32 = 1e-3; // L2正則化
-const BATCH_SIZE: usize = 256; // バッチサイズ
-const NUM_GAMES: usize = 2560; // 自己対局学習の総対局数
-const REPLAY_BUFFER_CAPACITY: usize = BATCH_SIZE * 8; // 経験再生バッファの最大サンプル数
-const REPLAY_SAMPLE_SIZE: usize = BATCH_SIZE; // 各更新で再利用する過去サンプル数
-const RESIGN_SCORE_THRESHOLD: f32 = 3000.0; // 決着相当局面では深い探索を省略する
-const SAVE_INTERVAL: usize = BATCH_SIZE * 2; // 中間重みの保存間隔
+const DEFAULT_BATCH_SIZE: usize = 256; // バッチサイズ
+const DEFAULT_NUM_GAMES: usize = 2560; // 自己対局学習の総対局数
+const DEFAULT_REPLAY_MULTIPLIER: usize = 8; // 経験再生バッファをバッチ何個分持つか
+const DEFAULT_RESIGN_SCORE_THRESHOLD: f32 = 3000.0; // 決着相当局面では深い探索を省略する
+const DEFAULT_SAVE_INTERVAL: usize = DEFAULT_BATCH_SIZE * 2; // 中間重みの保存間隔
 const HISTORY_CAPACITY: usize = 128; // 千日手検出用の履歴サイズ
 const WIN_RATE_SCALING_FACTOR: f32 = 600.0; // 勝率変換のためのスケーリング係数
 
 type TrainingSample = (Vec<usize>, f32, f32, f32);
+
+#[derive(Parser, Debug)]
+#[command(about = "Self-play training for KPP + material weights")]
+struct Args {
+    #[arg(long, default_value = "./policy_weights.binary")]
+    weight_path: std::path::PathBuf,
+    #[arg(long)]
+    output_path: Option<std::path::PathBuf>,
+    #[arg(long, default_value_t = DEFAULT_NUM_GAMES)]
+    games: usize,
+    #[arg(long, default_value_t = DEFAULT_BATCH_SIZE)]
+    batch_size: usize,
+    #[arg(long, default_value_t = DEFAULT_SEARCH_DEPTH)]
+    depth: u8,
+    #[arg(long, default_value_t = DEFAULT_REPLAY_MULTIPLIER)]
+    replay_multiplier: usize,
+    #[arg(long)]
+    replay_sample_size: Option<usize>,
+    #[arg(long, default_value_t = DEFAULT_RESIGN_SCORE_THRESHOLD)]
+    resign_score_threshold: f32,
+    #[arg(long, default_value_t = DEFAULT_SAVE_INTERVAL)]
+    save_interval: usize,
+    #[arg(long, default_value = "log.txt")]
+    log_path: std::path::PathBuf,
+}
 
 // modelへの参照を保持する軽量な評価器
 struct SharedModelEvaluator<'a> {
@@ -104,18 +129,29 @@ fn update_weights(model: &mut SparseModel, batch: &[TrainingSample]) {
 }
 
 fn main() -> Result<()> {
-    let weight_path = Path::new("./policy_weights.binary");
+    let args = Args::parse();
+    if args.games == 0 {
+        return Err(anyhow!("--games must be greater than zero"));
+    }
+    if args.batch_size == 0 {
+        return Err(anyhow!("--batch-size must be greater than zero"));
+    }
+
+    let output_path = args.output_path.as_deref().unwrap_or(&args.weight_path);
 
     // 1. モデルの読み込み
     let mut model = SparseModel::new(LEARNING_RATE, L2_LAMBDA);
-    if weight_path.exists() {
-        println!("Loading existing weights from {}...", weight_path.display());
-        model.load(weight_path)?;
+    if args.weight_path.exists() {
+        println!(
+            "Loading existing weights from {}...",
+            args.weight_path.display()
+        );
+        model.load(&args.weight_path)?;
         println!("Weights loaded successfully.");
     } else {
         return Err(anyhow!(
             "Weight file '{}' not found. Please run kpp_learn first.",
-            weight_path.display()
+            args.weight_path.display()
         ));
     }
 
@@ -129,26 +165,28 @@ fn main() -> Result<()> {
 
     let start_time = Instant::now();
     let mut games_done = 0;
-    let mut next_save_at = SAVE_INTERVAL;
+    let replay_sample_size = args.replay_sample_size.unwrap_or(args.batch_size);
+    let replay_buffer_capacity = args.batch_size * args.replay_multiplier;
+    let mut next_save_at = args.save_interval;
     let mut replay_buffer: VecDeque<TrainingSample> =
-        VecDeque::with_capacity(REPLAY_BUFFER_CAPACITY);
+        VecDeque::with_capacity(replay_buffer_capacity);
 
     let mut log_file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
-        .open("log.txt")?;
+        .open(&args.log_path)?;
 
     use shogi_ai::evaluation::calculate_material_advantage;
 
-    while games_done < NUM_GAMES {
-        let current_batch_size = (NUM_GAMES - games_done).min(BATCH_SIZE);
+    while games_done < args.games {
+        let current_batch_size = (args.games - games_done).min(args.batch_size);
         let sfen_list_clone = Arc::clone(&sfen_list_arc);
         let (tx, rx) = mpsc::channel();
 
         println!(
             "Generating training data (Game {}/{})...",
-            games_done, NUM_GAMES
+            games_done, args.games
         );
 
         // 3. Rayonを使って並列でデータ生成
@@ -176,8 +214,8 @@ fn main() -> Result<()> {
                     let material = calculate_material_advantage(&position);
                     let predicted_score = model.predict(&position, &original_features);
 
-                    let teacher_score = if predicted_score.abs() >= RESIGN_SCORE_THRESHOLD {
-                        predicted_score.signum() * RESIGN_SCORE_THRESHOLD
+                    let teacher_score = if predicted_score.abs() >= args.resign_score_threshold {
+                        predicted_score.signum() * args.resign_score_threshold
                     } else {
                         // modelへの参照を持つ軽量な評価器を使用
                         let evaluator = SharedModelEvaluator { model: &model };
@@ -186,7 +224,7 @@ fn main() -> Result<()> {
                         // 探索を実行して教師評価値を取得
                         match ai.alpha_beta_search(
                             &mut position,
-                            SEARCH_DEPTH,
+                            args.depth,
                             -f32::INFINITY,
                             f32::INFINITY,
                         ) {
@@ -220,7 +258,7 @@ fn main() -> Result<()> {
             let avg_loss = cross_entropy_loss_sum / training_batch.len() as f32;
 
             for sample in training_batch.iter().cloned() {
-                if replay_buffer.len() == REPLAY_BUFFER_CAPACITY {
+                if replay_buffer.len() == replay_buffer_capacity {
                     replay_buffer.pop_front();
                 }
                 replay_buffer.push_back(sample);
@@ -228,7 +266,7 @@ fn main() -> Result<()> {
 
             let mut update_batch = training_batch.clone();
             let mut rng = thread_rng();
-            let replay_sample_count = REPLAY_SAMPLE_SIZE.min(replay_buffer.len());
+            let replay_sample_count = replay_sample_size.min(replay_buffer.len());
             update_batch.extend(
                 replay_buffer
                     .iter()
@@ -270,11 +308,11 @@ fn main() -> Result<()> {
                 games_done, avg_loss, model.material_coeff, min_w, max_w
             )?;
 
-            if games_done >= next_save_at {
+            if args.save_interval > 0 && games_done >= next_save_at {
                 let checkpoint_path = format!("policy_weights_iter{}.binary", games_done);
                 model.save(Path::new(&checkpoint_path))?;
                 println!("Checkpoint saved to {}.", checkpoint_path);
-                next_save_at += SAVE_INTERVAL;
+                next_save_at += args.save_interval;
             }
         }
     }
@@ -293,25 +331,24 @@ fn main() -> Result<()> {
         }
     }
     println!("  KPP Weights Min: {:.4}, Max: {:.4}", min_w, max_w);
-    model.save(weight_path)?;
+    model.save(output_path)?;
     println!(
         "Final model saved successfully to {}.",
-        weight_path.display()
+        output_path.display()
     );
 
     println!("Self-play learning finished.");
 
     // 最終プロットを生成
-    plot_metrics(NUM_GAMES)?;
+    plot_metrics(&args.log_path, args.games)?;
 
     Ok(())
 }
 
 // ログファイルからデータを読み込み、プロットを生成する関数
-fn plot_metrics(_current_games_done: usize) -> Result<()> {
-    let log_path = Path::new("log.txt");
+fn plot_metrics(log_path: &Path, _current_games_done: usize) -> Result<()> {
     if !log_path.exists() {
-        return Err(anyhow!("log.txt not found for plotting."));
+        return Err(anyhow!("{} not found for plotting.", log_path.display()));
     }
 
     let file = File::open(log_path)?;
