@@ -184,6 +184,14 @@ impl MoveOrdering {
 
     /// 指し手にスコアを割り当てます。
     pub fn score_move(&self, current_move: &Move, position: &Position) -> i32 {
+        self.score_move_with_counter(current_move, position, true)
+    }
+
+    pub fn score_move_without_counter(&self, current_move: &Move, position: &Position) -> i32 {
+        self.score_move_with_counter(current_move, position, false)
+    }
+
+    fn score_move_with_counter(&self, current_move: &Move, position: &Position, include_counter: bool) -> i32 {
         let mut score = 0;
         let side_to_move = position.side_to_move();
 
@@ -201,8 +209,10 @@ impl MoveOrdering {
             score += self.butterfly_history.get_score(from_sq, current_move.to(), side_to_move);
         }
 
-        if let Some(op_move) = position.last_move() {
-            score += self.counter_move_history.get_score(op_move, *current_move);
+        if include_counter {
+            if let Some(op_move) = position.last_move() {
+                score += self.counter_move_history.get_score(op_move, *current_move);
+            }
         }
 
         if let Move::Normal { from, to, .. } = current_move {
