@@ -16,6 +16,8 @@ struct Args {
     weights: PathBuf,
     #[arg(long)]
     record_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 8)]
+    tail_plies: usize,
     #[arg(required_unless_present = "record_dir")]
     records: Vec<PathBuf>,
 }
@@ -28,6 +30,7 @@ struct Record {
     new_as: Option<Color>,
     start_sfen: Option<String>,
     final_position: Position,
+    positions: Vec<Position>,
     plies: usize,
 }
 
@@ -57,7 +60,7 @@ fn parse_move_for_position(position: &Position, move_text: &str) -> Option<Move>
     })
 }
 
-fn parse_position_command(command: &str) -> Result<(Position, usize)> {
+fn parse_position_command(command: &str) -> Result<Vec<Position>> {
     let rest = command
         .trim()
         .strip_prefix("position ")
@@ -88,6 +91,7 @@ fn parse_position_command(command: &str) -> Result<(Position, usize)> {
 
     let mut position = position_from_sfen_or_usi(&start_text)
         .ok_or_else(|| anyhow!("invalid start position: {}", start_text))?;
+    let mut positions = vec![position.clone()];
     for move_text in move_tokens {
         let mv = parse_move_for_position(&position, move_text)
             .ok_or_else(|| anyhow!("invalid move '{}' in {}", move_text, command))?;
@@ -95,9 +99,10 @@ fn parse_position_command(command: &str) -> Result<(Position, usize)> {
             return Err(anyhow!("illegal move '{}' in {}", move_text, command));
         }
         position.do_move(mv);
+        positions.push(position.clone());
     }
 
-    Ok((position, move_tokens.len()))
+    Ok(positions)
 }
 
 fn load_record(path: &Path) -> Result<Record> {
@@ -108,6 +113,7 @@ fn load_record(path: &Path) -> Result<Record> {
     let mut new_as = None;
     let mut start_sfen = None;
     let mut final_position = None;
+    let mut positions = None;
     let mut plies = 0;
 
     for line in content.lines() {
@@ -120,9 +126,10 @@ fn load_record(path: &Path) -> Result<Record> {
         } else if let Some(rest) = line.strip_prefix("start_sfen ") {
             start_sfen = Some(rest.trim().to_string());
         } else if line.starts_with("position ") {
-            let (position, move_count) = parse_position_command(line)?;
-            final_position = Some(position);
-            plies = move_count;
+            let parsed_positions = parse_position_command(line)?;
+            plies = parsed_positions.len().saturating_sub(1);
+            final_position = parsed_positions.last().cloned();
+            positions = Some(parsed_positions);
         }
     }
 
@@ -134,6 +141,7 @@ fn load_record(path: &Path) -> Result<Record> {
         start_sfen,
         final_position: final_position
             .ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
+        positions: positions.ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
         plies,
     })
 }
@@ -157,14 +165,49 @@ fn collect_records(args: &Args) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn score_for_new(model: &SparseModel, record: &Record) -> Option<f32> {
-    let new_as = record.new_as?;
-    let score = model.predict_from_position(&record.final_position);
-    let new_to_move = match record.final_position.side_to_move() {
+fn score_for_new_position(model: &SparseModel, position: &Position, new_as: Color) -> f32 {
+    let score = model.predict_from_position(position);
+    let new_to_move = match position.side_to_move() {
         Color::Black => new_as == Color::Black,
         Color::White => new_as == Color::White,
     };
-    Some(if new_to_move { score } else { -score })
+    if new_to_move { score } else { -score }
+}
+
+fn score_for_new(model: &SparseModel, record: &Record) -> Option<f32> {
+    let new_as = record.new_as?;
+    Some(score_for_new_position(model, &record.final_position, new_as))
+}
+
+fn tail_score_summary(model: &SparseModel, record: &Record, tail_plies: usize) -> Option<String> {
+    let new_as = record.new_as?;
+    if tail_plies == 0 || record.positions.is_empty() {
+        return None;
+    }
+
+    let start = record.positions.len().saturating_sub(tail_plies + 1);
+    let mut scores = Vec::new();
+    for (ply, position) in record.positions.iter().enumerate().skip(start) {
+        scores.push((ply, score_for_new_position(model, position, new_as)));
+    }
+
+    let mut worst_drop: Option<(usize, f32)> = None;
+    for window in scores.windows(2) {
+        let drop = window[0].1 - window[1].1;
+        if drop > 0.0 && worst_drop.map(|(_, best)| drop > best).unwrap_or(true) {
+            worst_drop = Some((window[1].0, drop));
+        }
+    }
+
+    let compact_scores = scores
+        .iter()
+        .map(|(ply, score)| format!("{ply}:{score:.0}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let worst_drop = worst_drop
+        .map(|(ply, drop)| format!(" worst_drop=ply{ply}:{drop:.0}"))
+        .unwrap_or_default();
+    Some(format!("tail_scores=[{}]{}", compact_scores, worst_drop))
 }
 
 fn main() -> Result<()> {
@@ -232,8 +275,10 @@ fn main() -> Result<()> {
         let score = raw_score
             .map(|score| format!("{score:.1}"))
             .unwrap_or_else(|| "n/a".to_string());
+        let tail_summary = tail_score_summary(&model, &record, args.tail_plies)
+            .unwrap_or_else(|| "tail_scores=n/a".to_string());
         println!(
-            "{} result={} reason={} new_as={} plies={} final_score_for_new={}",
+            "{} result={} reason={} new_as={} plies={} final_score_for_new={} {}",
             record
                 .path
                 .file_name()
@@ -246,7 +291,8 @@ fn main() -> Result<()> {
                 .map(|side| if side == Color::Black { "black" } else { "white" })
                 .unwrap_or("unknown"),
             record.plies,
-            score
+            score,
+            tail_summary
         );
     }
 
