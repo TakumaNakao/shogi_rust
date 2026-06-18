@@ -5,6 +5,7 @@ use shogi_ai::evaluation::SparseModel;
 use shogi_ai::utils::{parse_usi_move, position_from_sfen_or_usi};
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,7 @@ struct Args {
 struct Record {
     path: PathBuf,
     result: String,
+    reason: Option<String>,
     new_as: Option<Color>,
     final_position: Position,
     plies: usize,
@@ -101,6 +103,7 @@ fn load_record(path: &Path) -> Result<Record> {
     let content =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut result = None;
+    let mut reason = None;
     let mut new_as = None;
     let mut final_position = None;
     let mut plies = 0;
@@ -108,6 +111,8 @@ fn load_record(path: &Path) -> Result<Record> {
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("result ") {
             result = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("reason ") {
+            reason = Some(rest.trim().to_string());
         } else if let Some(rest) = line.strip_prefix("new_as ") {
             new_as = parse_side(rest.trim());
         } else if line.starts_with("position ") {
@@ -120,6 +125,7 @@ fn load_record(path: &Path) -> Result<Record> {
     Ok(Record {
         path: path.to_path_buf(),
         result: result.unwrap_or_else(|| "Unknown".to_string()),
+        reason,
         new_as,
         final_position: final_position
             .ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
@@ -171,9 +177,15 @@ fn main() -> Result<()> {
     let mut baseline_win_score_sum = 0.0f32;
     let mut baseline_win_scored = 0usize;
     let mut score_result_mismatches = 0usize;
+    let mut reason_counts = BTreeMap::<String, usize>::new();
 
     for path in paths {
         let record = load_record(&path)?;
+        let reason = record
+            .reason
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
+        *reason_counts.entry(reason.clone()).or_insert(0) += 1;
         match record.result.as_str() {
             "NewWin" => new_wins += 1,
             "BaselineWin" => baseline_wins += 1,
@@ -206,13 +218,14 @@ fn main() -> Result<()> {
             .map(|score| format!("{score:.1}"))
             .unwrap_or_else(|| "n/a".to_string());
         println!(
-            "{} result={} new_as={} plies={} final_score_for_new={}",
+            "{} result={} reason={} new_as={} plies={} final_score_for_new={}",
             record
                 .path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("<unknown>"),
             record.result,
+            reason,
             record
                 .new_as
                 .map(|side| if side == Color::Black { "black" } else { "white" })
@@ -225,6 +238,12 @@ fn main() -> Result<()> {
     println!("new wins: {}", new_wins);
     println!("baseline wins: {}", baseline_wins);
     println!("draws: {}", draws);
+    if !reason_counts.is_empty() {
+        println!("end reasons:");
+        for (reason, count) in reason_counts {
+            println!("  {}: {}", reason, count);
+        }
+    }
     if scored_records > 0 {
         println!(
             "average final score for new: {:.1}",
