@@ -43,6 +43,8 @@ struct Args {
     jobs: usize,
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    #[arg(long)]
+    record_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +54,12 @@ enum GameResult {
     Draw,
 }
 
+#[derive(Debug)]
+struct PlayedGame {
+    result: GameResult,
+    moves: Vec<String>,
+}
+
 struct EngineProcess {
     child: Child,
     stdin: ChildStdin,
@@ -59,7 +67,12 @@ struct EngineProcess {
 }
 
 impl EngineProcess {
-    fn start(engine_path: &Path, weights_path: &Path, depth: u8, time_limit_ms: u64) -> Result<Self> {
+    fn start(
+        engine_path: &Path,
+        weights_path: &Path,
+        depth: u8,
+        time_limit_ms: u64,
+    ) -> Result<Self> {
         let mut child = Command::new(engine_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -68,7 +81,10 @@ impl EngineProcess {
             .with_context(|| format!("failed to spawn {}", engine_path.display()))?;
 
         let stdin = child.stdin.take().context("engine stdin is unavailable")?;
-        let stdout = child.stdout.take().context("engine stdout is unavailable")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("engine stdout is unavailable")?;
         let mut engine = Self {
             child,
             stdin,
@@ -117,18 +133,18 @@ impl EngineProcess {
     }
 
     fn bestmove(&mut self, sfen: &str, moves: &[String]) -> Result<String> {
-        let mut command = format!("position sfen {}", sfen);
-        if !moves.is_empty() {
-            command.push_str(" moves ");
-            command.push_str(&moves.join(" "));
-        }
+        let command = build_position_command(sfen, moves);
         self.send(&command)?;
         self.send("go")?;
 
         loop {
             let line = self.read_line()?;
             if let Some(rest) = line.strip_prefix("bestmove ") {
-                return Ok(rest.split_whitespace().next().unwrap_or("resign").to_string());
+                return Ok(rest
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("resign")
+                    .to_string());
             }
         }
     }
@@ -144,6 +160,39 @@ impl Drop for EngineProcess {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn build_position_command(start_position: &str, moves: &[String]) -> String {
+    let start_position = start_position.trim();
+    let (base, opening_moves) =
+        if let Some(opening_moves) = start_position.strip_prefix("startpos moves ") {
+            ("startpos".to_string(), Some(opening_moves))
+        } else if start_position == "startpos" {
+            ("startpos".to_string(), None)
+        } else {
+            let sfen = start_position
+                .strip_prefix("sfen ")
+                .unwrap_or(start_position);
+            if let Some((sfen, opening_moves)) = sfen.split_once(" moves ") {
+                (format!("sfen {}", sfen), Some(opening_moves))
+            } else {
+                (format!("sfen {}", sfen), None)
+            }
+        };
+
+    let mut command = format!("position {}", base);
+    if opening_moves.is_some() || !moves.is_empty() {
+        command.push_str(" moves");
+        if let Some(opening_moves) = opening_moves {
+            command.push(' ');
+            command.push_str(opening_moves);
+        }
+        if !moves.is_empty() {
+            command.push(' ');
+            command.push_str(&moves.join(" "));
+        }
+    }
+    command
 }
 
 fn load_positions(path: &Path) -> Result<Vec<String>> {
@@ -190,7 +239,7 @@ fn play_game(
     start_sfen: &str,
     new_is_black: bool,
     max_plies: usize,
-) -> Result<GameResult> {
+) -> Result<PlayedGame> {
     let mut position = position_from_sfen_or_usi(start_sfen)
         .ok_or_else(|| anyhow!("invalid start sfen: {}", start_sfen))?;
     let mut moves = Vec::new();
@@ -212,18 +261,24 @@ fn play_game(
 
         let bestmove = engine.bestmove(start_sfen, &moves)?;
         let Some(mv) = parse_engine_move(&position, &bestmove) else {
-            return Ok(if new_to_move {
-                GameResult::BaselineWin
-            } else {
-                GameResult::NewWin
+            return Ok(PlayedGame {
+                result: if new_to_move {
+                    GameResult::BaselineWin
+                } else {
+                    GameResult::NewWin
+                },
+                moves,
             });
         };
 
         if !position.legal_moves().contains(&mv) {
-            return Ok(if new_to_move {
-                GameResult::BaselineWin
-            } else {
-                GameResult::NewWin
+            return Ok(PlayedGame {
+                result: if new_to_move {
+                    GameResult::BaselineWin
+                } else {
+                    GameResult::NewWin
+                },
+                moves,
             });
         }
 
@@ -232,12 +287,20 @@ fn play_game(
         detector.record_position(&position);
 
         match detector.check_sennichite(&position) {
-            SennichiteStatus::Draw => return Ok(GameResult::Draw),
+            SennichiteStatus::Draw => {
+                return Ok(PlayedGame {
+                    result: GameResult::Draw,
+                    moves,
+                });
+            }
             SennichiteStatus::PerpetualCheckLoss => {
-                return Ok(if new_to_move {
-                    GameResult::BaselineWin
-                } else {
-                    GameResult::NewWin
+                return Ok(PlayedGame {
+                    result: if new_to_move {
+                        GameResult::BaselineWin
+                    } else {
+                        GameResult::NewWin
+                    },
+                    moves,
                 });
             }
             SennichiteStatus::None => {}
@@ -253,15 +316,54 @@ fn play_game(
         };
 
         if score_for_new > 0.0 {
-            Ok(GameResult::NewWin)
+            Ok(PlayedGame {
+                result: GameResult::NewWin,
+                moves,
+            })
         } else if score_for_new < 0.0 {
-            Ok(GameResult::BaselineWin)
+            Ok(PlayedGame {
+                result: GameResult::BaselineWin,
+                moves,
+            })
         } else {
-            Ok(GameResult::Draw)
+            Ok(PlayedGame {
+                result: GameResult::Draw,
+                moves,
+            })
         }
     } else {
-        Ok(GameResult::Draw)
+        Ok(PlayedGame {
+            result: GameResult::Draw,
+            moves,
+        })
     }
+}
+
+fn write_game_record(
+    record_dir: &Path,
+    game_index: usize,
+    new_is_black: bool,
+    start_sfen: &str,
+    game: &PlayedGame,
+) -> Result<()> {
+    let side_label = if new_is_black { "black" } else { "white" };
+    let result_label = format!("{:?}", game.result);
+    let path = record_dir.join(format!(
+        "game_{:03}_new_{}_{}.usi",
+        game_index + 1,
+        side_label,
+        result_label
+    ));
+
+    let mut content = String::new();
+    content.push_str(&format!("result {:?}\n", game.result));
+    content.push_str(&format!("new_as {}\n", side_label));
+    content.push_str(&format!("start_sfen {}\n", start_sfen));
+    content.push_str(&build_position_command(start_sfen, &game.moves));
+    content.push('\n');
+
+    fs::write(path, content)?;
+    Ok(())
 }
 
 fn wilson_interval(successes: usize, trials: usize, z: f64) -> Option<(f64, f64)> {
@@ -278,7 +380,12 @@ fn wilson_interval(successes: usize, trials: usize, z: f64) -> Option<(f64, f64)
     Some((center - margin, center + margin))
 }
 
-fn total_score_interval(new_wins: usize, baseline_wins: usize, draws: usize, z: f64) -> Option<(f64, f64)> {
+fn total_score_interval(
+    new_wins: usize,
+    baseline_wins: usize,
+    draws: usize,
+    z: f64,
+) -> Option<(f64, f64)> {
     let games = new_wins + baseline_wins + draws;
     if games == 0 {
         return None;
@@ -314,8 +421,12 @@ fn main() -> Result<()> {
     let mut baseline_wins = 0usize;
     let mut draws = 0usize;
 
-    let play_one = |game_index: usize| -> Result<(usize, bool, GameResult)> {
-        let start_sfen = &positions[(game_index / 2) % positions.len()];
+    if let Some(record_dir) = &args.record_dir {
+        fs::create_dir_all(record_dir)?;
+    }
+
+    let play_one = |game_index: usize| -> Result<(usize, bool, String, PlayedGame)> {
+        let start_sfen = positions[(game_index / 2) % positions.len()].clone();
         let new_is_black = game_index % 2 == 0;
         let mut new_engine = EngineProcess::start(
             &args.new_engine,
@@ -333,11 +444,11 @@ fn main() -> Result<()> {
             &mut new_engine,
             &mut baseline_engine,
             adjudication_model.as_ref(),
-            start_sfen,
+            &start_sfen,
             new_is_black,
             args.max_plies,
         )?;
-        Ok((game_index, new_is_black, result))
+        Ok((game_index, new_is_black, start_sfen, result))
     };
 
     let mut results: Vec<_> = if args.jobs == 1 {
@@ -353,19 +464,23 @@ fn main() -> Result<()> {
                     .collect::<Result<Vec<_>>>()
             })?
     };
-    results.sort_by_key(|(game_index, _, _)| *game_index);
+    results.sort_by_key(|(game_index, _, _, _)| *game_index);
 
-    for (game_index, new_is_black, result) in results {
-        match result {
+    for (game_index, new_is_black, start_sfen, game) in results {
+        match game.result {
             GameResult::NewWin => new_wins += 1,
             GameResult::BaselineWin => baseline_wins += 1,
             GameResult::Draw => draws += 1,
         }
 
+        if let Some(record_dir) = &args.record_dir {
+            write_game_record(record_dir, game_index, new_is_black, &start_sfen, &game)?;
+        }
+
         println!(
             "game {:>3}: {:?} (new as {})",
             game_index + 1,
-            result,
+            game.result,
             if new_is_black { "black" } else { "white" }
         );
     }
