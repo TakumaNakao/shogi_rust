@@ -2,6 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
+use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 use shogi_ai::evaluation::{extract_kpp_features, SparseModel};
 use shogi_ai::sennichite::{SennichiteDetector, SennichiteStatus};
 use shogi_ai::utils::{parse_usi_move, position_from_sfen_or_usi};
@@ -37,6 +39,8 @@ struct Args {
     max_plies: usize,
     #[arg(long, default_value_t = false)]
     adjudicate_at_max_plies: bool,
+    #[arg(long, default_value_t = 1)]
+    jobs: usize,
     #[arg(long, default_value_t = 0)]
     seed: u64,
 }
@@ -279,6 +283,9 @@ fn main() -> Result<()> {
     if args.games == 0 {
         return Err(anyhow!("--games must be greater than zero"));
     }
+    if args.jobs == 0 {
+        return Err(anyhow!("--jobs must be greater than zero"));
+    }
 
     let mut positions = load_positions(&args.positions)?;
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
@@ -289,26 +296,25 @@ fn main() -> Result<()> {
         None
     };
 
-    let mut new_engine = EngineProcess::start(
-        &args.new_engine,
-        &args.new_weights,
-        args.depth,
-        args.time_limit_ms,
-    )?;
-    let mut baseline_engine = EngineProcess::start(
-        &args.baseline_engine,
-        &args.baseline_weights,
-        args.depth,
-        args.time_limit_ms,
-    )?;
-
     let mut new_wins = 0usize;
     let mut baseline_wins = 0usize;
     let mut draws = 0usize;
 
-    for game_index in 0..args.games {
+    let play_one = |game_index: usize| -> Result<(usize, bool, GameResult)> {
         let start_sfen = &positions[(game_index / 2) % positions.len()];
         let new_is_black = game_index % 2 == 0;
+        let mut new_engine = EngineProcess::start(
+            &args.new_engine,
+            &args.new_weights,
+            args.depth,
+            args.time_limit_ms,
+        )?;
+        let mut baseline_engine = EngineProcess::start(
+            &args.baseline_engine,
+            &args.baseline_weights,
+            args.depth,
+            args.time_limit_ms,
+        )?;
         let result = play_game(
             &mut new_engine,
             &mut baseline_engine,
@@ -317,7 +323,25 @@ fn main() -> Result<()> {
             new_is_black,
             args.max_plies,
         )?;
+        Ok((game_index, new_is_black, result))
+    };
 
+    let mut results: Vec<_> = if args.jobs == 1 {
+        (0..args.games).map(play_one).collect::<Result<Vec<_>>>()?
+    } else {
+        ThreadPoolBuilder::new()
+            .num_threads(args.jobs)
+            .build()?
+            .install(|| {
+                (0..args.games)
+                    .into_par_iter()
+                    .map(play_one)
+                    .collect::<Result<Vec<_>>>()
+            })?
+    };
+    results.sort_by_key(|(game_index, _, _)| *game_index);
+
+    for (game_index, new_is_black, result) in results {
         match result {
             GameResult::NewWin => new_wins += 1,
             GameResult::BaselineWin => baseline_wins += 1,
