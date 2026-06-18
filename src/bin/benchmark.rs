@@ -41,6 +41,10 @@ struct Args {
     new_material_override: Option<f32>,
     #[arg(long)]
     baseline_material_override: Option<f32>,
+    #[arg(long, default_value_t = false)]
+    new_stateless: bool,
+    #[arg(long, default_value_t = false)]
+    baseline_stateless: bool,
 }
 
 struct SharedModelEvaluator<'a> {
@@ -86,6 +90,28 @@ fn load_positions(path: &Path) -> Result<Vec<Position>> {
     Ok(positions)
 }
 
+fn choose_move_stateless(
+    model: &SparseModel,
+    position: &mut Position,
+    history: &[Position],
+    depth: u8,
+    time_limit_ms: Option<u64>,
+) -> Option<shogi_core::Move> {
+    let evaluator = SharedModelEvaluator { model };
+    let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
+    ai.set_emit_info(false);
+    for past_position in history {
+        ai.sennichite_detector.record_position(past_position);
+    }
+
+    if let Some(time_limit_ms) = time_limit_ms {
+        ai.find_best_move(position, depth, Some(time_limit_ms))
+    } else {
+        ai.alpha_beta_search(position, depth, -f32::INFINITY, f32::INFINITY)
+            .and_then(|(_, pv)| pv.first().copied())
+    }
+}
+
 fn play_game(
     new_model: &SparseModel,
     baseline_model: &SparseModel,
@@ -95,8 +121,11 @@ fn play_game(
     time_limit_ms: Option<u64>,
     max_plies: usize,
     adjudicate_at_max_plies: bool,
+    new_stateless: bool,
+    baseline_stateless: bool,
 ) -> GameResult {
     let mut position = start_position.clone();
+    let mut history = vec![position.clone()];
     let mut new_ai = ShogiAI::<_, HISTORY_CAPACITY>::new(SharedModelEvaluator { model: new_model });
     let mut baseline_ai =
         ShogiAI::<_, HISTORY_CAPACITY>::new(SharedModelEvaluator { model: baseline_model });
@@ -110,19 +139,33 @@ fn play_game(
             Color::Black => new_is_black,
             Color::White => !new_is_black,
         };
-        let current_ai = if new_to_move {
-            &mut new_ai
+        let stateless = if new_to_move {
+            new_stateless
         } else {
-            &mut baseline_ai
+            baseline_stateless
         };
-
-        current_ai.decay_history();
-        let best_move = if let Some(time_limit_ms) = time_limit_ms {
-            current_ai.find_best_move(&mut position, depth, Some(time_limit_ms))
+        let best_move = if stateless {
+            let model = if new_to_move {
+                new_model
+            } else {
+                baseline_model
+            };
+            choose_move_stateless(model, &mut position, &history, depth, time_limit_ms)
         } else {
-            current_ai
-                .alpha_beta_search(&mut position, depth, -f32::INFINITY, f32::INFINITY)
-                .and_then(|(_, pv)| pv.first().copied())
+            let current_ai = if new_to_move {
+                &mut new_ai
+            } else {
+                &mut baseline_ai
+            };
+
+            current_ai.decay_history();
+            if let Some(time_limit_ms) = time_limit_ms {
+                current_ai.find_best_move(&mut position, depth, Some(time_limit_ms))
+            } else {
+                current_ai
+                    .alpha_beta_search(&mut position, depth, -f32::INFINITY, f32::INFINITY)
+                    .and_then(|(_, pv)| pv.first().copied())
+            }
         };
 
         let Some(best_move) = best_move.or_else(|| position.legal_moves().first().copied()) else {
@@ -134,6 +177,7 @@ fn play_game(
         };
 
         position.do_move(best_move);
+        history.push(position.clone());
         new_ai.sennichite_detector.record_position(&position);
         baseline_ai.sennichite_detector.record_position(&position);
 
@@ -213,6 +257,8 @@ fn main() -> Result<()> {
             args.time_limit_ms,
             args.max_plies,
             args.adjudicate_at_max_plies,
+            args.new_stateless,
+            args.baseline_stateless,
         );
         (game_index, new_is_black, result)
     };
