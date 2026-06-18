@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 const MAX_DEPTH: usize = 64;
 const TRANSPOSITION_TABLE_MAX_ENTRIES: usize = 1_000_000;
-const EVAL_CACHE_MAX_ENTRIES: usize = 1_000_000;
 
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -36,7 +35,6 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     pub evaluator: E,
     pub sennichite_detector: SennichiteDetector<HISTORY_CAPACITY>,
     transposition_table: HashMap<u64, TranspositionEntry>,
-    eval_cache: HashMap<u64, f32>,
     killer_moves: [[Option<Move>; 2]; MAX_DEPTH],
     start_time: Option<Instant>,
     time_limit: Option<Duration>,
@@ -52,7 +50,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             evaluator,
             sennichite_detector: SennichiteDetector::new(),
             transposition_table: HashMap::new(),
-            eval_cache: HashMap::new(),
             killer_moves: [[None; 2]; MAX_DEPTH],
             start_time: None,
             time_limit: None,
@@ -66,7 +63,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.move_ordering.clear();
         self.sennichite_detector.clear();
         self.transposition_table.clear();
-        self.eval_cache.clear();
         self.clear_killer_moves();
     }
 
@@ -119,24 +115,11 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         is_in_check
     }
 
-    fn evaluate_cached(&mut self, position: &Position) -> f32 {
-        let hash = PositionHasher::calculate_hash(position);
-        if let Some(score) = self.eval_cache.get(&hash) {
-            return *score;
-        }
-        if self.eval_cache.len() > EVAL_CACHE_MAX_ENTRIES {
-            self.eval_cache.clear();
-        }
-        let score = self.evaluator.evaluate(position);
-        self.eval_cache.insert(hash, score);
-        score
-    }
-
     pub fn quiescence_search(&mut self, position: &mut Position, mut alpha: f32, beta: f32) -> Option<(f32, Vec<Move>)> {
         if self.is_time_up() { return None; }
         self.nodes_searched += 1;
 
-        let stand_pat_score = self.evaluate_cached(position);
+        let stand_pat_score = self.evaluator.evaluate(position);
         if stand_pat_score >= beta { return Some((beta, Vec::new())); }
         alpha = alpha.max(stand_pat_score);
 
