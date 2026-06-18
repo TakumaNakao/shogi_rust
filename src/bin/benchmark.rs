@@ -142,6 +142,19 @@ fn play_game(
     GameResult::Draw
 }
 
+fn wilson_interval(successes: usize, trials: usize, z: f64) -> Option<(f64, f64)> {
+    if trials == 0 {
+        return None;
+    }
+
+    let n = trials as f64;
+    let p = successes as f64 / n;
+    let z2 = z * z;
+    let center = (p + z2 / (2.0 * n)) / (1.0 + z2 / n);
+    let margin = z * ((p * (1.0 - p) / n + z2 / (4.0 * n * n)) / (1.0 + z2 / n)).sqrt();
+    Some((center - margin, center + margin))
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     if args.games == 0 {
@@ -191,11 +204,23 @@ fn main() -> Result<()> {
     } else {
         new_wins as f32 / decisive_games as f32 * 100.0
     };
+    let total_score = new_wins as f64 + draws as f64 * 0.5;
+    let total_score_rate = total_score / args.games as f64 * 100.0;
 
     println!("new wins: {}", new_wins);
     println!("baseline wins: {}", baseline_wins);
     println!("draws: {}", draws);
     println!("new decisive win rate: {:.2}%", win_rate);
+    println!("new total score rate: {:.2}%", total_score_rate);
+    if let Some((lo, hi)) = wilson_interval(new_wins, decisive_games, 1.96) {
+        println!(
+            "decisive win rate 95% CI: {:.2}%..{:.2}%",
+            lo * 100.0,
+            hi * 100.0
+        );
+    } else {
+        println!("decisive win rate 95% CI: n/a");
+    }
 
     Ok(())
 }
