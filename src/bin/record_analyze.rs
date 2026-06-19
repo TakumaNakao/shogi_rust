@@ -26,6 +26,12 @@ struct Args {
     export_drops: Option<PathBuf>,
     #[arg(long)]
     export_mismatches: Option<PathBuf>,
+    #[arg(long)]
+    export_baseline_win_tails: Option<PathBuf>,
+    #[arg(long, default_value_t = 12)]
+    baseline_win_tail_plies: usize,
+    #[arg(long)]
+    export_baseline_sweep_starts: Option<PathBuf>,
     #[arg(required_unless_present = "record_dir")]
     records: Vec<PathBuf>,
 }
@@ -303,6 +309,20 @@ fn write_sfen_file(path: &Path, positions: &[String]) -> Result<()> {
     fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
 }
 
+fn tail_position_sfens(record: &Record, tail_plies: usize) -> Vec<String> {
+    if record.positions.is_empty() {
+        return Vec::new();
+    }
+    let start = record.positions.len().saturating_sub(tail_plies + 1);
+    record
+        .positions
+        .iter()
+        .skip(start)
+        .filter(|position| !position.legal_moves().is_empty())
+        .map(|position| position.to_sfen_owned())
+        .collect()
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let model = load_model(&args.weights)?;
@@ -324,6 +344,7 @@ fn main() -> Result<()> {
     let mut paired_results = BTreeMap::<String, (usize, usize, usize)>::new();
     let mut drop_records = Vec::new();
     let mut mismatch_records = Vec::new();
+    let mut baseline_win_tail_positions = Vec::new();
 
     for path in paths {
         let record = load_record(&path)?;
@@ -337,6 +358,10 @@ fn main() -> Result<()> {
             "BaselineWin" => baseline_wins += 1,
             "Draw" => draws += 1,
             _ => {}
+        }
+        if record.result == "BaselineWin" && args.export_baseline_win_tails.is_some() {
+            baseline_win_tail_positions
+                .extend(tail_position_sfens(&record, args.baseline_win_tail_plies));
         }
         if let Some(start_sfen) = &record.start_sfen {
             let entry = paired_results
@@ -480,12 +505,12 @@ fn main() -> Result<()> {
         let mut baseline_sweeps = 0usize;
         let mut splits = 0usize;
         let mut draw_pairs = 0usize;
-        for (_, (new_pair_wins, baseline_pair_wins, pair_draws)) in paired_results {
-            if new_pair_wins > 0 && baseline_pair_wins == 0 && pair_draws == 0 {
+        for (new_pair_wins, baseline_pair_wins, pair_draws) in paired_results.values() {
+            if *new_pair_wins > 0 && *baseline_pair_wins == 0 && *pair_draws == 0 {
                 new_sweeps += 1;
-            } else if baseline_pair_wins > 0 && new_pair_wins == 0 && pair_draws == 0 {
+            } else if *baseline_pair_wins > 0 && *new_pair_wins == 0 && *pair_draws == 0 {
                 baseline_sweeps += 1;
-            } else if new_pair_wins > 0 && baseline_pair_wins > 0 {
+            } else if *new_pair_wins > 0 && *baseline_pair_wins > 0 {
                 splits += 1;
             } else {
                 draw_pairs += 1;
@@ -496,6 +521,28 @@ fn main() -> Result<()> {
         println!("  baseline sweeps: {}", baseline_sweeps);
         println!("  splits: {}", splits);
         println!("  draw/mixed pairs: {}", draw_pairs);
+    }
+    if let Some(path) = &args.export_baseline_sweep_starts {
+        let mut positions = paired_results
+            .iter()
+            .filter_map(
+                |(start_sfen, (new_pair_wins, baseline_pair_wins, pair_draws))| {
+                    if *baseline_pair_wins > 0 && *new_pair_wins == 0 && *pair_draws == 0 {
+                        Some(start_sfen.clone())
+                    } else {
+                        None
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        positions.sort();
+        positions.dedup();
+        write_sfen_file(path, &positions)?;
+        println!(
+            "exported baseline sweep starts: {} to {}",
+            positions.len(),
+            path.display()
+        );
     }
     if scored_records > 0 {
         println!(
@@ -533,6 +580,16 @@ fn main() -> Result<()> {
         println!(
             "exported tail drop positions: {} to {}",
             positions.len(),
+            path.display()
+        );
+    }
+    if let Some(path) = &args.export_baseline_win_tails {
+        baseline_win_tail_positions.sort();
+        baseline_win_tail_positions.dedup();
+        write_sfen_file(path, &baseline_win_tail_positions)?;
+        println!(
+            "exported baseline win tail positions: {} to {}",
+            baseline_win_tail_positions.len(),
             path.display()
         );
     }
