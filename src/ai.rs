@@ -594,8 +594,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
 
             if !search_interrupted {
-                best_move = current_best_move_for_depth;
-                previous_eval = Some(best_eval_for_depth);
+                if let Some(current_best_move) = current_best_move_for_depth {
+                    best_move = Some(current_best_move);
+                    previous_eval = Some(best_eval_for_depth);
+                }
                 if let Some(bm) = best_move {
                     self.move_ordering
                         .update_history(&bm, position, depth as i32 * 20);
@@ -635,6 +637,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::position_from_sfen_or_usi;
+
+    struct ZeroEvaluator;
+
+    impl Evaluator for ZeroEvaluator {
+        fn evaluate(&self, _position: &Position) -> f32 {
+            0.0
+        }
+    }
 
     #[test]
     fn usi_display_score_keeps_small_values() {
@@ -654,5 +665,20 @@ mod tests {
         assert_eq!(-four_thousand, usi_display_score_cp(-4000.0));
         assert_eq!(USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::INFINITY));
         assert_eq!(-USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::NEG_INFINITY));
+    }
+
+    #[test]
+    fn find_best_move_keeps_legal_fallback_when_all_lines_lose() {
+        let mut position = position_from_sfen_or_usi(
+            "l6nl/7+R1/4k4/p1P+bp1n1p/3K1p3/P3P1S1P/ls2BP3/s3G4/9 b R2GS2NL9Pg 131",
+        )
+        .expect("valid sfen");
+        assert!(!position.legal_moves().is_empty());
+
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_emit_info(false);
+        ai.sennichite_detector.record_position(&position);
+
+        assert!(ai.find_best_move(&mut position, 5, None).is_some());
     }
 }
