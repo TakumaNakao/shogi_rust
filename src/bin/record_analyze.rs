@@ -236,6 +236,18 @@ fn score_for_new(model: &SparseModel, record: &Record) -> Option<f32> {
     ))
 }
 
+fn terminal_result_for_new(record: &Record, final_legal_moves: usize) -> Option<&'static str> {
+    if final_legal_moves > 0 {
+        return None;
+    }
+    let new_as = record.new_as?;
+    if record.final_position.side_to_move() == new_as {
+        Some("BaselineWin")
+    } else {
+        Some("NewWin")
+    }
+}
+
 fn tail_score_summary(
     model: &SparseModel,
     record: &Record,
@@ -306,6 +318,8 @@ fn main() -> Result<()> {
     let mut baseline_win_score_sum = 0.0f32;
     let mut baseline_win_scored = 0usize;
     let mut score_result_mismatches = 0usize;
+    let mut terminal_final_positions = 0usize;
+    let mut terminal_result_mismatches = 0usize;
     let mut reason_counts = BTreeMap::<String, usize>::new();
     let mut paired_results = BTreeMap::<String, (usize, usize, usize)>::new();
     let mut drop_records = Vec::new();
@@ -339,13 +353,21 @@ fn main() -> Result<()> {
         if let Some(score) = raw_score {
             scored_records += 1;
             score_sum += score;
+            let final_moves = record.final_position.legal_moves();
+            let final_legal_moves = final_moves.len();
+            let final_is_terminal = final_legal_moves == 0;
+            if let Some(expected_result) = terminal_result_for_new(&record, final_legal_moves) {
+                terminal_final_positions += 1;
+                if record.result != expected_result {
+                    terminal_result_mismatches += 1;
+                }
+            }
             match record.result.as_str() {
                 "NewWin" => {
                     new_win_scored += 1;
                     new_win_score_sum += score;
-                    if score < 0.0 {
+                    if !final_is_terminal && score < 0.0 {
                         score_result_mismatches += 1;
-                        let final_moves = record.final_position.legal_moves();
                         let final_checking_moves = final_moves
                             .iter()
                             .filter(|&&mv| record.final_position.is_check_move(mv))
@@ -360,7 +382,7 @@ fn main() -> Result<()> {
                             final_score: score,
                             last_move: record.moves.last().cloned(),
                             final_in_check: record.final_position.in_check(),
-                            final_legal_moves: final_moves.len(),
+                            final_legal_moves,
                             final_checking_moves,
                             final_sfen: record.final_position.to_sfen_owned(),
                         });
@@ -369,9 +391,8 @@ fn main() -> Result<()> {
                 "BaselineWin" => {
                     baseline_win_scored += 1;
                     baseline_win_score_sum += score;
-                    if score > 0.0 {
+                    if !final_is_terminal && score > 0.0 {
                         score_result_mismatches += 1;
-                        let final_moves = record.final_position.legal_moves();
                         let final_checking_moves = final_moves
                             .iter()
                             .filter(|&&mv| record.final_position.is_check_move(mv))
@@ -386,7 +407,7 @@ fn main() -> Result<()> {
                             final_score: score,
                             last_move: record.moves.last().cloned(),
                             final_in_check: record.final_position.in_check(),
-                            final_legal_moves: final_moves.len(),
+                            final_legal_moves,
                             final_checking_moves,
                             final_sfen: record.final_position.to_sfen_owned(),
                         });
@@ -541,7 +562,12 @@ fn main() -> Result<()> {
             }
         }
     }
-    println!("score/result sign mismatches: {}", score_result_mismatches);
+    println!("terminal final positions: {}", terminal_final_positions);
+    println!("terminal result mismatches: {}", terminal_result_mismatches);
+    println!(
+        "non-terminal score/result sign mismatches: {}",
+        score_result_mismatches
+    );
     if (args.top_mismatches > 0 || args.export_mismatches.is_some()) && !mismatch_records.is_empty()
     {
         mismatch_records.sort_by(|a, b| {
