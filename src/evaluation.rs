@@ -362,8 +362,74 @@ impl SparseModel {
     }
 
     pub fn predict_from_position(&self, pos: &shogi_lib::Position) -> f32 {
-        let (features, material) = extract_kpp_features_and_material(pos);
-        self.predict_with_material(&features, material)
+        let turn = pos.side_to_move();
+        let mut material = 0.0;
+        let mut piece_ids = Vec::with_capacity(40);
+        let mut king_sq = None;
+
+        for &sq in BOARD_SQUARES.iter() {
+            if let Some(piece) = pos.piece_at(sq) {
+                let value = piece_kind_value(piece.piece_kind());
+                if piece.color() == turn {
+                    material += value;
+                } else {
+                    material -= value;
+                }
+                if piece.piece_kind() == PieceKind::King && piece.color() == turn {
+                    king_sq = Some(sq);
+                    continue;
+                }
+                if let Some(id) = piece_to_id(piece, Some(sq), 0, turn) {
+                    piece_ids.push(id);
+                }
+            }
+        }
+
+        let king_sq = match king_sq {
+            Some(sq) => sq,
+            None => {
+                println!(
+                    "Warning: King not found for side {:?}. Skipping this position.",
+                    turn
+                );
+                return 0.0;
+            }
+        };
+        let normalized_king_sq = if turn == Color::Black { king_sq } else { king_sq.flip() };
+        let king_sq_index = (normalized_king_sq.index() - 1) as usize;
+
+        for color in [Color::Black, Color::White] {
+            for kind in ALL_HAND_PIECES.iter() {
+                let count = pos.hand(color).count(*kind).unwrap_or(0);
+                let value = piece_kind_value(*kind);
+                if color == turn {
+                    material += count as f32 * value;
+                } else {
+                    material -= count as f32 * value;
+                }
+                for i in 0..count {
+                    if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize, turn) {
+                        piece_ids.push(id);
+                    }
+                }
+            }
+        }
+
+        piece_ids.sort_unstable();
+
+        let mut prediction = self.bias;
+        for i in 0..piece_ids.len() {
+            for j in (i + 1)..piece_ids.len() {
+                let id1 = piece_ids[i];
+                let id2 = piece_ids[j];
+                let pair_index = id2 * (id2 - 1) / 2 + id1;
+                let final_index = king_sq_index * NUM_PIECE_PAIRS + pair_index;
+                if final_index < MAX_FEATURES {
+                    prediction += self.w[final_index];
+                }
+            }
+        }
+        prediction + self.material_coeff * material
     }
 
     pub fn update_batch_for_moves(
