@@ -53,6 +53,8 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     quiescence_see_skips: u64,
     null_move_attempts: u64,
     null_move_cutoffs: u64,
+    null_move_attempts_by_depth: [u64; MAX_DEPTH],
+    null_move_cutoffs_by_depth: [u64; MAX_DEPTH],
     emit_info: bool,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
@@ -75,6 +77,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             quiescence_see_skips: 0,
             null_move_attempts: 0,
             null_move_cutoffs: 0,
+            null_move_attempts_by_depth: [0; MAX_DEPTH],
+            null_move_cutoffs_by_depth: [0; MAX_DEPTH],
             emit_info: true,
             search_generation: 0,
             stop_signal: None,
@@ -130,6 +134,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn null_move_cutoffs(&self) -> u64 {
         self.null_move_cutoffs
+    }
+
+    pub fn null_move_attempts_by_depth(&self) -> &[u64; MAX_DEPTH] {
+        &self.null_move_attempts_by_depth
+    }
+
+    pub fn null_move_cutoffs_by_depth(&self) -> &[u64; MAX_DEPTH] {
+        &self.null_move_cutoffs_by_depth
     }
 
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
@@ -316,6 +328,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let static_eval = self.evaluator.evaluate(position);
             if static_eval >= beta + NULL_MOVE_EVAL_MARGIN {
                 self.null_move_attempts += 1;
+                if (depth as usize) < MAX_DEPTH {
+                    self.null_move_attempts_by_depth[depth as usize] += 1;
+                }
                 position.do_null_move();
                 self.sennichite_detector.record_position(position);
                 let null_result = self.alpha_beta_search_inner(
@@ -331,6 +346,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 if let Some((score, _)) = null_result {
                     if -score >= beta {
                         self.null_move_cutoffs += 1;
+                        if (depth as usize) < MAX_DEPTH {
+                            self.null_move_cutoffs_by_depth[depth as usize] += 1;
+                        }
                         return Some((beta, Vec::new()));
                     }
                 } else {
@@ -454,6 +472,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_see_skips = 0;
         self.null_move_attempts = 0;
         self.null_move_cutoffs = 0;
+        self.null_move_attempts_by_depth = [0; MAX_DEPTH];
+        self.null_move_cutoffs_by_depth = [0; MAX_DEPTH];
 
         let moves = position.legal_moves();
         if moves.is_empty() {

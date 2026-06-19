@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const HISTORY_CAPACITY: usize = 256;
+const PROFILE_MAX_DEPTH: usize = 64;
 
 #[derive(Parser, Debug)]
 #[command(about = "Profile search speed on SFEN positions")]
@@ -79,6 +80,8 @@ fn main() -> Result<()> {
     let mut total_quiescence_see_skips = 0u64;
     let mut total_null_move_attempts = 0u64;
     let mut total_null_move_cutoffs = 0u64;
+    let mut total_null_move_attempts_by_depth = [0u64; PROFILE_MAX_DEPTH];
+    let mut total_null_move_cutoffs_by_depth = [0u64; PROFILE_MAX_DEPTH];
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -95,6 +98,12 @@ fn main() -> Result<()> {
         total_quiescence_see_skips += ai.quiescence_see_skips();
         total_null_move_attempts += ai.null_move_attempts();
         total_null_move_cutoffs += ai.null_move_cutoffs();
+        for (depth, attempts) in ai.null_move_attempts_by_depth().iter().enumerate() {
+            total_null_move_attempts_by_depth[depth] += attempts;
+        }
+        for (depth, cutoffs) in ai.null_move_cutoffs_by_depth().iter().enumerate() {
+            total_null_move_cutoffs_by_depth[depth] += cutoffs;
+        }
     }
 
     let elapsed = start.elapsed();
@@ -141,6 +150,20 @@ fn main() -> Result<()> {
         "null move cutoff rate: {:.2}%",
         total_null_move_cutoffs as f64 / total_null_move_attempts.max(1) as f64 * 100.0
     );
+    println!("null move by depth:");
+    for depth in 0..PROFILE_MAX_DEPTH {
+        let attempts = total_null_move_attempts_by_depth[depth];
+        let cutoffs = total_null_move_cutoffs_by_depth[depth];
+        if attempts > 0 || cutoffs > 0 {
+            println!(
+                "  depth {}: attempts {} cutoffs {} rate {:.2}%",
+                depth,
+                attempts,
+                cutoffs,
+                cutoffs as f64 / attempts.max(1) as f64 * 100.0
+            );
+        }
+    }
 
     Ok(())
 }
