@@ -77,6 +77,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     quiescence_moves_discarded: u64,
     quiescence_moves_searched: u64,
     quiescence_see_skips: u64,
+    quiescence_negative_see_check_rescues: u64,
     quiescence_terminal_mates: u64,
     check_evasion_extensions: u64,
     aspiration_fail_lows: u64,
@@ -104,6 +105,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             quiescence_moves_discarded: 0,
             quiescence_moves_searched: 0,
             quiescence_see_skips: 0,
+            quiescence_negative_see_check_rescues: 0,
             quiescence_terminal_mates: 0,
             check_evasion_extensions: 0,
             aspiration_fail_lows: 0,
@@ -164,6 +166,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn quiescence_see_skips(&self) -> u64 {
         self.quiescence_see_skips
+    }
+
+    pub fn quiescence_negative_see_check_rescues(&self) -> u64 {
+        self.quiescence_negative_see_check_rescues
     }
 
     pub fn quiescence_terminal_mates(&self) -> u64 {
@@ -283,8 +289,12 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let mut best_score = stand_pat_score;
         for (mv, _) in scored_moves {
             if self.see(position, mv) < 0 {
-                self.quiescence_see_skips += 1;
-                continue;
+                if position.is_check_move(mv) {
+                    self.quiescence_negative_see_check_rescues += 1;
+                } else {
+                    self.quiescence_see_skips += 1;
+                    continue;
+                }
             }
 
             self.quiescence_moves_searched += 1;
@@ -491,6 +501,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_moves_discarded = 0;
         self.quiescence_moves_searched = 0;
         self.quiescence_see_skips = 0;
+        self.quiescence_negative_see_check_rescues = 0;
         self.quiescence_terminal_mates = 0;
         self.check_evasion_extensions = 0;
         self.aspiration_fail_lows = 0;
