@@ -35,7 +35,7 @@ struct SharedModelEvaluator<'a> {
 
 impl Evaluator for SharedModelEvaluator<'_> {
     fn evaluate(&self, position: &Position) -> f32 {
-        self.model.predict_from_position(position)
+        self.model.predict_search_from_position(position)
     }
 }
 
@@ -104,12 +104,21 @@ fn main() -> Result<()> {
     println!("samples: {}", args.samples);
     println!("total nodes: {}", total_nodes);
     println!("quiescence nodes: {}", total_quiescence_nodes);
-    println!("quiescence moves considered: {}", total_quiescence_moves_considered);
-    println!("quiescence moves searched: {}", total_quiescence_moves_searched);
+    println!(
+        "quiescence moves considered: {}",
+        total_quiescence_moves_considered
+    );
+    println!(
+        "quiescence moves searched: {}",
+        total_quiescence_moves_searched
+    );
     println!("quiescence see skips: {}", total_quiescence_see_skips);
     println!("elapsed ms: {:.2}", elapsed_secs * 1000.0);
     println!("nodes/sec: {:.2}", nps);
-    println!("avg nodes/sample: {:.2}", total_nodes as f64 / args.samples as f64);
+    println!(
+        "avg nodes/sample: {:.2}",
+        total_nodes as f64 / args.samples as f64
+    );
     println!(
         "quiescence node rate: {:.2}%",
         total_quiescence_nodes as f64 / total_nodes.max(1) as f64 * 100.0

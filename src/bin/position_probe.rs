@@ -29,11 +29,16 @@ struct Args {
 
 struct SharedModelEvaluator<'a> {
     model: &'a SparseModel,
+    use_search_eval: bool,
 }
 
 impl Evaluator for SharedModelEvaluator<'_> {
     fn evaluate(&self, position: &Position) -> f32 {
-        self.model.predict_from_position(position)
+        if self.use_search_eval {
+            self.model.predict_search_from_position(position)
+        } else {
+            self.model.predict_from_position(position)
+        }
     }
 }
 
@@ -97,17 +102,24 @@ fn main() -> Result<()> {
         probed += 1;
 
         let static_eval = model.predict_from_position(&position);
+        let search_static_eval = model.predict_search_from_position(&position);
         let legal_moves = position.legal_moves();
         let legal_count = legal_moves.len();
         let checking_count = checking_moves(&position, &legal_moves);
 
-        let evaluator = SharedModelEvaluator { model: &model };
+        let evaluator = SharedModelEvaluator {
+            model: &model,
+            use_search_eval: true,
+        };
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
         ai.set_emit_info(false);
         ai.sennichite_detector.record_position(&position);
         let best_move = ai.find_best_move(&mut position, args.depth, args.time_limit_ms);
 
-        let search_evaluator = SharedModelEvaluator { model: &model };
+        let search_evaluator = SharedModelEvaluator {
+            model: &model,
+            use_search_eval: true,
+        };
         let mut search_ai = ShogiAI::<_, HISTORY_CAPACITY>::new(search_evaluator);
         search_ai.set_emit_info(false);
         search_ai.sennichite_detector.record_position(&position);
@@ -137,13 +149,14 @@ fn main() -> Result<()> {
         }
 
         println!(
-            "idx={} side={} in_check={} legal_moves={} checking_moves={} static_eval={:.1} search_score={} search_pv={} bestmove={} nodes={} qnodes={} search_nodes={} search_qnodes={} {}",
+            "idx={} side={} in_check={} legal_moves={} checking_moves={} static_eval={:.1} search_static_eval={:.1} search_score={} search_pv={} bestmove={} nodes={} qnodes={} search_nodes={} search_qnodes={} {}",
             probed,
             side_text(position.side_to_move()),
             position.in_check(),
             legal_count,
             checking_count,
             static_eval,
+            search_static_eval,
             search_score,
             search_pv,
             best_move.map(format_move_usi).unwrap_or_else(|| "none".to_string()),

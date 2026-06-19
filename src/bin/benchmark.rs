@@ -55,7 +55,7 @@ struct SharedModelEvaluator<'a> {
 
 impl Evaluator for SharedModelEvaluator<'_> {
     fn evaluate(&self, position: &Position) -> f32 {
-        self.model.predict_from_position(position)
+        self.model.predict_search_from_position(position)
     }
 }
 
@@ -135,8 +135,9 @@ fn play_game(
     let mut history = vec![position.clone()];
     let mut moves = Vec::new();
     let mut new_ai = ShogiAI::<_, HISTORY_CAPACITY>::new(SharedModelEvaluator { model: new_model });
-    let mut baseline_ai =
-        ShogiAI::<_, HISTORY_CAPACITY>::new(SharedModelEvaluator { model: baseline_model });
+    let mut baseline_ai = ShogiAI::<_, HISTORY_CAPACITY>::new(SharedModelEvaluator {
+        model: baseline_model,
+    });
     new_ai.set_emit_info(false);
     baseline_ai.set_emit_info(false);
     new_ai.sennichite_detector.record_position(&position);
@@ -293,7 +294,12 @@ fn wilson_interval(successes: usize, trials: usize, z: f64) -> Option<(f64, f64)
     Some((center - margin, center + margin))
 }
 
-fn total_score_interval(new_wins: usize, baseline_wins: usize, draws: usize, z: f64) -> Option<(f64, f64)> {
+fn total_score_interval(
+    new_wins: usize,
+    baseline_wins: usize,
+    draws: usize,
+    z: f64,
+) -> Option<(f64, f64)> {
     let games = new_wins + baseline_wins + draws;
     if games == 0 {
         return None;
