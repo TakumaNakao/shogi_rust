@@ -26,6 +26,25 @@ impl Position {
         av
     }
 
+    pub fn legal_quiescence_moves(&self) -> ArrayVec<Move, MAX_LEGAL_MOVES> {
+        self.legal_quiescence_moves_with_generated_count().0
+    }
+
+    pub fn legal_quiescence_moves_with_generated_count(
+        &self,
+    ) -> (ArrayVec<Move, MAX_LEGAL_MOVES>, usize) {
+        let mut av = self.legal_moves();
+        let generated = av.len();
+        av.retain(|m| {
+            if let Move::Normal { to, .. } = *m {
+                self.piece_at(to).is_some() || self.is_check_move(*m)
+            } else {
+                self.is_check_move(*m)
+            }
+        });
+        (av, generated)
+    }
+
     pub fn has_legal_evasion(&self) -> bool {
         if !self.in_check() {
             return true;
@@ -475,10 +494,52 @@ mod tests {
     use shogi_core::PartialPosition;
     use shogi_usi_parser::FromUsi;
 
+    fn quiescence_reference_moves(pos: &Position) -> ArrayVec<Move, MAX_LEGAL_MOVES> {
+        let mut moves = pos.legal_moves();
+        moves.retain(|m| {
+            if let Move::Normal { to, .. } = *m {
+                pos.piece_at(to).is_some() || pos.is_check_move(*m)
+            } else {
+                pos.is_check_move(*m)
+            }
+        });
+        moves
+    }
+
+    fn sorted_move_debug(moves: ArrayVec<Move, MAX_LEGAL_MOVES>) -> Vec<String> {
+        let mut moves = moves
+            .into_iter()
+            .map(|mv| format!("{:?}", mv))
+            .collect::<Vec<_>>();
+        moves.sort();
+        moves
+    }
+
     #[test]
     fn from_default() {
         let pos = Position::default();
         assert_eq!(30, pos.legal_moves().len());
+    }
+
+    #[test]
+    fn legal_quiescence_moves_match_reference_filter() {
+        let sfens = [
+            "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "sfen 7g1/1R5+bs/2nps2pk/p1P1pp1Pp/9/1P1P1B2P/N2K2+R2/9/L8 w 3GS2N3L2Ps5p 140",
+            "sfen +B5B1l/3s2+R1k/p5lp1/2ppp1p1p/1P5P1/PSPPP1PS1/1K1G3SP/3G3g1/LN6L w RG2N3Pn 110",
+            "sfen l6nl/1r1sg1gk1/p1np2sp1/2p1ppp1p/1p5P1/P1PPPP2P/1PSG2P+b1/2G2S1R1/LNK4NL b b 51",
+        ];
+
+        for sfen in sfens {
+            let sfen = sfen.strip_prefix("sfen ").unwrap_or(sfen);
+            let pos = Position::new(PartialPosition::from_usi(sfen).expect("valid sfen"));
+            assert_eq!(
+                sorted_move_debug(quiescence_reference_moves(&pos)),
+                sorted_move_debug(pos.legal_quiescence_moves()),
+                "sfen: {}",
+                sfen
+            );
+        }
     }
 
     #[test]

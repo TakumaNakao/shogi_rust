@@ -260,16 +260,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
         alpha = alpha.max(stand_pat_score);
 
-        let mut moves = position.legal_moves();
-        let generated_moves = moves.len();
-
-        moves.retain(|m| {
-            if let Move::Normal { to, .. } = *m {
-                position.piece_at(to).is_some() || position.is_check_move(*m)
-            } else {
-                position.is_check_move(*m)
-            }
-        });
+        let (moves, generated_moves) = position.legal_quiescence_moves_with_generated_count();
 
         self.quiescence_moves_generated += generated_moves as u64;
         self.quiescence_moves_discarded += (generated_moves - moves.len()) as u64;
