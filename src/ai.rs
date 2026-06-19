@@ -329,26 +329,32 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             return Some((-f32::INFINITY, Vec::new()));
         }
 
-        let mut scored_moves = Vec::with_capacity(moves.len());
-        for mv in moves.iter() {
-            scored_moves.push((*mv, self.search_ordering_score(position, *mv)));
-        }
-        scored_moves.sort_unstable_by_key(|a| -a.1);
-        let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
+        let mut sorted_moves: Vec<Move> = if moves.len() == 1 {
+            moves.into_iter().collect()
+        } else {
+            let mut scored_moves = Vec::with_capacity(moves.len());
+            for mv in moves.iter() {
+                scored_moves.push((*mv, self.search_ordering_score(position, *mv)));
+            }
+            scored_moves.sort_unstable_by_key(|a| -a.1);
+            scored_moves.into_iter().map(|(mv, _)| mv).collect()
+        };
 
-        if (depth as usize) < MAX_DEPTH {
-            let killers = self.killer_moves[depth as usize];
-            for &killer in killers.iter().flatten().rev() {
-                if let Some(pos) = sorted_moves.iter().position(|&m| m == killer) {
+        if sorted_moves.len() > 1 {
+            if (depth as usize) < MAX_DEPTH {
+                let killers = self.killer_moves[depth as usize];
+                for &killer in killers.iter().flatten().rev() {
+                    if let Some(pos) = sorted_moves.iter().position(|&m| m == killer) {
+                        let mv = sorted_moves.remove(pos);
+                        sorted_moves.insert(0, mv);
+                    }
+                }
+            }
+            if let Some(tt_move) = tt_best_move {
+                if let Some(pos) = sorted_moves.iter().position(|&m| m == tt_move) {
                     let mv = sorted_moves.remove(pos);
                     sorted_moves.insert(0, mv);
                 }
-            }
-        }
-        if let Some(tt_move) = tt_best_move {
-            if let Some(pos) = sorted_moves.iter().position(|&m| m == tt_move) {
-                let mv = sorted_moves.remove(pos);
-                sorted_moves.insert(0, mv);
             }
         }
 
@@ -461,21 +467,27 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             return None;
         }
 
-        let mut scored_moves = Vec::with_capacity(moves.len());
-        for mv in moves.iter() {
-            scored_moves.push((*mv, self.search_ordering_score(position, *mv)));
-        }
-        scored_moves.sort_unstable_by_key(|a| -a.1);
-        let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
-        let root_hash = PositionHasher::calculate_hash(position);
-        if let Some(tt_move) = self
-            .transposition_table
-            .get(&root_hash)
-            .and_then(|entry| entry.best_move)
-        {
-            if let Some(pos) = sorted_moves.iter().position(|&m| m == tt_move) {
-                let mv = sorted_moves.remove(pos);
-                sorted_moves.insert(0, mv);
+        let mut sorted_moves: Vec<Move> = if moves.len() == 1 {
+            moves.into_iter().collect()
+        } else {
+            let mut scored_moves = Vec::with_capacity(moves.len());
+            for mv in moves.iter() {
+                scored_moves.push((*mv, self.search_ordering_score(position, *mv)));
+            }
+            scored_moves.sort_unstable_by_key(|a| -a.1);
+            scored_moves.into_iter().map(|(mv, _)| mv).collect()
+        };
+        if sorted_moves.len() > 1 {
+            let root_hash = PositionHasher::calculate_hash(position);
+            if let Some(tt_move) = self
+                .transposition_table
+                .get(&root_hash)
+                .and_then(|entry| entry.best_move)
+            {
+                if let Some(pos) = sorted_moves.iter().position(|&m| m == tt_move) {
+                    let mv = sorted_moves.remove(pos);
+                    sorted_moves.insert(0, mv);
+                }
             }
         }
         let mut best_move: Option<Move> = sorted_moves.first().copied();
