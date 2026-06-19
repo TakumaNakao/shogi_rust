@@ -67,6 +67,9 @@ struct MismatchRecord {
     plies: usize,
     final_score: f32,
     last_move: Option<String>,
+    final_in_check: bool,
+    final_legal_moves: usize,
+    final_checking_moves: usize,
     final_sfen: String,
 }
 
@@ -321,6 +324,11 @@ fn main() -> Result<()> {
                     new_win_score_sum += score;
                     if score < 0.0 {
                         score_result_mismatches += 1;
+                        let final_moves = record.final_position.legal_moves();
+                        let final_checking_moves = final_moves
+                            .iter()
+                            .filter(|&&mv| record.final_position.is_check_move(mv))
+                            .count();
                         mismatch_records.push(MismatchRecord {
                             margin: -score,
                             path: record.path.clone(),
@@ -330,6 +338,9 @@ fn main() -> Result<()> {
                             plies: record.plies,
                             final_score: score,
                             last_move: record.moves.last().cloned(),
+                            final_in_check: record.final_position.in_check(),
+                            final_legal_moves: final_moves.len(),
+                            final_checking_moves,
                             final_sfen: record.final_position.to_sfen_owned(),
                         });
                     }
@@ -339,6 +350,11 @@ fn main() -> Result<()> {
                     baseline_win_score_sum += score;
                     if score > 0.0 {
                         score_result_mismatches += 1;
+                        let final_moves = record.final_position.legal_moves();
+                        let final_checking_moves = final_moves
+                            .iter()
+                            .filter(|&&mv| record.final_position.is_check_move(mv))
+                            .count();
                         mismatch_records.push(MismatchRecord {
                             margin: score,
                             path: record.path.clone(),
@@ -348,6 +364,9 @@ fn main() -> Result<()> {
                             plies: record.plies,
                             final_score: score,
                             last_move: record.moves.last().cloned(),
+                            final_in_check: record.final_position.in_check(),
+                            final_legal_moves: final_moves.len(),
+                            final_checking_moves,
                             final_sfen: record.final_position.to_sfen_owned(),
                         });
                     }
@@ -495,7 +514,7 @@ fn main() -> Result<()> {
         println!("largest score/result mismatches:");
         for record in mismatch_records.iter().take(args.top_mismatches) {
             println!(
-                "  {} margin={:.1} result={} reason={} new_as={} plies={} final_score_for_new={:.1} last_move={}",
+                "  {} margin={:.1} result={} reason={} new_as={} plies={} final_score_for_new={:.1} last_move={} final_in_check={} legal_moves={} checking_moves={}",
                 record
                     .path
                     .file_name()
@@ -510,7 +529,10 @@ fn main() -> Result<()> {
                     .unwrap_or("unknown"),
                 record.plies,
                 record.final_score,
-                record.last_move.as_deref().unwrap_or("n/a")
+                record.last_move.as_deref().unwrap_or("n/a"),
+                record.final_in_check,
+                record.final_legal_moves,
+                record.final_checking_moves
             );
             println!("    final sfen {}", record.final_sfen);
         }
