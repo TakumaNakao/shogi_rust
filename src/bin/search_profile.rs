@@ -79,6 +79,9 @@ fn main() -> Result<()> {
     let mut total_quiescence_see_skips = 0u64;
     let mut total_quiescence_terminal_mates = 0u64;
     let mut total_check_evasion_extensions = 0u64;
+    let mut total_aspiration_fail_lows = 0u64;
+    let mut total_aspiration_fail_highs = 0u64;
+    let mut total_aspiration_researches = 0u64;
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -95,6 +98,9 @@ fn main() -> Result<()> {
         total_quiescence_see_skips += ai.quiescence_see_skips();
         total_quiescence_terminal_mates += ai.quiescence_terminal_mates();
         total_check_evasion_extensions += ai.check_evasion_extensions();
+        total_aspiration_fail_lows += ai.aspiration_fail_lows();
+        total_aspiration_fail_highs += ai.aspiration_fail_highs();
+        total_aspiration_researches += ai.aspiration_researches();
     }
 
     let elapsed = start.elapsed();
@@ -125,6 +131,9 @@ fn main() -> Result<()> {
         "check evasion extensions: {}",
         total_check_evasion_extensions
     );
+    println!("aspiration fail lows: {}", total_aspiration_fail_lows);
+    println!("aspiration fail highs: {}", total_aspiration_fail_highs);
+    println!("aspiration researches: {}", total_aspiration_researches);
     println!("elapsed ms: {:.2}", elapsed_secs * 1000.0);
     println!("nodes/sec: {:.2}", nps);
     println!(
