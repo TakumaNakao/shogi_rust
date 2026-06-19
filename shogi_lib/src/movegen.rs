@@ -25,6 +25,27 @@ impl Position {
         }
         av
     }
+
+    pub fn legal_moves_count_up_to(&self, limit: usize) -> usize {
+        let mut av = ArrayVec::new();
+        if self.in_check() {
+            self.generate_evasions(&mut av);
+        } else {
+            self.generate_all(&mut av);
+        }
+
+        let mut count = 0;
+        for mv in av {
+            if self.is_legal(mv) {
+                count += 1;
+                if count >= limit {
+                    break;
+                }
+            }
+        }
+        count
+    }
+
     /// Generate moves.
     fn generate_all(&self, av: &mut ArrayVec<Move, MAX_LEGAL_MOVES>) {
         let target = !self.player_bitboard(self.side_to_move());
@@ -413,6 +434,8 @@ mod tests {
     fn from_default() {
         let pos = Position::default();
         assert_eq!(30, pos.legal_moves().len());
+        assert_eq!(4, pos.legal_moves_count_up_to(4));
+        assert_eq!(30, pos.legal_moves_count_up_to(usize::MAX));
     }
 
     #[test]
@@ -464,6 +487,8 @@ mod tests {
                 .expect("failed to parse"),
         );
         assert_eq!(593, pos.legal_moves().len());
+        assert_eq!(4, pos.legal_moves_count_up_to(4));
+        assert_eq!(593, pos.legal_moves_count_up_to(usize::MAX));
     }
 
     #[test]
@@ -488,6 +513,7 @@ mod tests {
         );
         let moves = pos.legal_moves();
         assert_eq!(1, moves.len());
+        assert_eq!(1, pos.legal_moves_count_up_to(4));
         assert_eq!(Square::SQ_2I, moves[0].to());
     }
 

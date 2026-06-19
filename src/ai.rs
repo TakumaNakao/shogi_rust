@@ -370,7 +370,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     if depth == 1
                         && check_evasion_extension_budget > 0
                         && position.in_check()
-                        && position.legal_moves().len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES
+                        && position.legal_moves_count_up_to(CHECK_EVASION_EXTENSION_MAX_REPLIES + 1)
+                            <= CHECK_EVASION_EXTENSION_MAX_REPLIES
                     {
                         child_depth = 1;
                         child_extension_budget -= 1;
