@@ -25,6 +25,8 @@ struct Args {
     limit: usize,
     #[arg(long, default_value_t = false)]
     show_legal: bool,
+    #[arg(long, default_value_t = false)]
+    summary: bool,
 }
 
 struct SharedModelEvaluator<'a> {
@@ -75,6 +77,68 @@ fn pv_text(pv: &[Move]) -> String {
     }
 }
 
+#[derive(Default)]
+struct ProbeSummary {
+    total: usize,
+    in_check: usize,
+    low_legal_in_check: usize,
+    terminal: usize,
+    search_win: usize,
+    search_loss: usize,
+    legal_without_bestmove: usize,
+    bestmove_gives_check: usize,
+    bestmove_limits_reply: usize,
+}
+
+impl ProbeSummary {
+    fn record(
+        &mut self,
+        position: &Position,
+        legal_count: usize,
+        search_score: Option<f32>,
+        best_move: Option<Move>,
+        after_legal_count: Option<usize>,
+    ) {
+        self.total += 1;
+        if position.in_check() {
+            self.in_check += 1;
+            if (1..=3).contains(&legal_count) {
+                self.low_legal_in_check += 1;
+            }
+        }
+        if legal_count == 0 {
+            self.terminal += 1;
+        }
+        match search_score {
+            Some(score) if score == f32::INFINITY => self.search_win += 1,
+            Some(score) if score == -f32::INFINITY => self.search_loss += 1,
+            _ => {}
+        }
+        if legal_count > 0 && best_move.is_none() {
+            self.legal_without_bestmove += 1;
+        }
+        if best_move.is_some_and(|mv| position.is_check_move(mv)) {
+            self.bestmove_gives_check += 1;
+        }
+        if after_legal_count.is_some_and(|count| count <= 3) {
+            self.bestmove_limits_reply += 1;
+        }
+    }
+
+    fn print(&self) {
+        println!("summary:");
+        println!("  total: {}", self.total);
+        println!("  in_check: {}", self.in_check);
+        println!("  low_legal_in_check: {}", self.low_legal_in_check);
+        println!("  terminal: {}", self.terminal);
+        println!("  search_win: {}", self.search_win);
+        println!("  search_loss: {}", self.search_loss);
+        println!("  legal_without_bestmove: {}", self.legal_without_bestmove);
+        println!("  bestmove_gives_check: {}", self.bestmove_gives_check);
+        println!("  bestmove_limits_reply: {}", self.bestmove_limits_reply);
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let model = load_model(&args.weights)?;
@@ -82,6 +146,7 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow!("failed to read {}: {}", args.positions.display(), e))?;
 
     let mut probed = 0usize;
+    let mut summary = ProbeSummary::default();
     for (line_index, line) in content.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -117,14 +182,17 @@ fn main() -> Result<()> {
             -f32::INFINITY,
             f32::INFINITY,
         );
+        let search_score_value = search_result.as_ref().map(|(score, _)| *score);
         let (search_score, search_pv) = search_result
             .map(|(score, pv)| (format!("{score:.1}"), pv_text(&pv)))
             .unwrap_or_else(|| ("interrupted".to_string(), "none".to_string()));
 
         let mut after_text = "after_best=n/a".to_string();
+        let mut after_legal_count = None;
         if let Some(best_move) = best_move {
             position.do_move(best_move);
             let after_legal = position.legal_moves();
+            after_legal_count = Some(after_legal.len());
             let after_eval = model.predict_from_position(&position);
             after_text = format!(
                 "after_best_in_check={} after_best_legal_moves={} after_best_checking_moves={} after_best_static_eval_for_opponent={:.1}",
@@ -135,6 +203,14 @@ fn main() -> Result<()> {
             );
             position.undo_move(best_move);
         }
+
+        summary.record(
+            &position,
+            legal_count,
+            search_score_value,
+            best_move,
+            after_legal_count,
+        );
 
         println!(
             "idx={} side={} in_check={} legal_moves={} checking_moves={} static_eval={:.1} search_score={} search_pv={} bestmove={} nodes={} qnodes={} search_nodes={} search_qnodes={} {}",
@@ -157,6 +233,10 @@ fn main() -> Result<()> {
             println!("  legal {}", move_list_text(&legal_moves));
         }
         println!("  sfen {}", position.to_sfen_owned());
+    }
+
+    if args.summary {
+        summary.print();
     }
 
     Ok(())
