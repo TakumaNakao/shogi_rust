@@ -497,6 +497,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let aspiration_alpha = alpha;
             let aspiration_beta = beta;
             let mut search_interrupted = false;
+            let mut depth_root_scores: Vec<(Move, f32)> = Vec::with_capacity(sorted_moves.len());
 
             for mv in &sorted_moves {
                 if self.is_time_up() {
@@ -530,6 +531,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                 if let Some((eval, pv)) = eval_result {
                     let current_eval = -eval;
+                    depth_root_scores.push((*mv, current_eval));
                     if current_eval > best_eval_for_depth {
                         best_eval_for_depth = current_eval;
                         current_best_move_for_depth = Some(*mv);
@@ -552,6 +554,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     current_best_move_for_depth = None;
                     best_eval_for_depth = -f32::INFINITY;
                     best_pv_for_depth.clear();
+                    depth_root_scores.clear();
 
                     for mv in &sorted_moves {
                         if self.is_time_up() {
@@ -577,6 +580,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                         if let Some((eval, pv)) = eval_result {
                             let current_eval = -eval;
+                            depth_root_scores.push((*mv, current_eval));
                             if current_eval > best_eval_for_depth {
                                 best_eval_for_depth = current_eval;
                                 current_best_move_for_depth = Some(*mv);
@@ -599,6 +603,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 if let Some(bm) = best_move {
                     self.move_ordering
                         .update_history(&bm, position, depth as i32 * 20);
+                }
+                if depth_root_scores.len() == sorted_moves.len() {
+                    depth_root_scores.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+                    sorted_moves = depth_root_scores
+                        .iter()
+                        .map(|(mv, _)| *mv)
+                        .collect::<Vec<_>>();
                 }
 
                 // --- infoコマンド出力 ---
