@@ -3,6 +3,7 @@ use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
 use crate::utils::{format_move_usi, get_piece_value};
+use arrayvec::ArrayVec;
 use shogi_core::Move;
 use shogi_lib::Position;
 use std::collections::HashMap;
@@ -17,6 +18,7 @@ const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
 const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 3;
+const MAX_LEGAL_MOVES: usize = 593;
 const USI_SCORE_CP_LIMIT: i32 = 2_000;
 const USI_SCORE_CP_SOFT_START: i32 = 1_000;
 
@@ -287,7 +289,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         alpha: f32,
         beta: f32,
     ) -> Option<(f32, Vec<Move>)> {
-        self.alpha_beta_search_internal(position, depth, alpha, beta, 1)
+        self.alpha_beta_search_internal(position, depth, alpha, beta, 1, None)
     }
 
     fn alpha_beta_search_internal(
@@ -297,6 +299,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         mut alpha: f32,
         mut beta: f32,
         check_evasion_extension_budget: u8,
+        precomputed_moves: Option<ArrayVec<Move, MAX_LEGAL_MOVES>>,
     ) -> Option<(f32, Vec<Move>)> {
         if self.is_time_up() {
             return None;
@@ -324,7 +327,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
 
-        let moves = position.legal_moves();
+        let moves = precomputed_moves.unwrap_or_else(|| position.legal_moves());
         if moves.is_empty() {
             return Some((-f32::INFINITY, Vec::new()));
         }
@@ -367,14 +370,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 SennichiteStatus::None => {
                     let mut child_depth = depth - 1;
                     let mut child_extension_budget = check_evasion_extension_budget;
-                    if depth == 1
-                        && check_evasion_extension_budget > 0
-                        && position.in_check()
-                        && position.legal_moves().len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES
-                    {
-                        child_depth = 1;
-                        child_extension_budget -= 1;
-                        self.check_evasion_extensions += 1;
+                    let mut child_precomputed_moves = None;
+                    if depth == 1 && check_evasion_extension_budget > 0 && position.in_check() {
+                        let reply_moves = position.legal_moves();
+                        if reply_moves.len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES {
+                            child_depth = 1;
+                            child_extension_budget -= 1;
+                            self.check_evasion_extensions += 1;
+                            child_precomputed_moves = Some(reply_moves);
+                        }
                     }
                     self.alpha_beta_search_internal(
                         position,
@@ -382,6 +386,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         -beta,
                         -alpha,
                         child_extension_budget,
+                        child_precomputed_moves,
                     )
                 }
             };
