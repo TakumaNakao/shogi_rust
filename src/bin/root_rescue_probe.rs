@@ -57,6 +57,9 @@ struct ProbeRecord {
     improvement: f32,
     actual_score: f32,
     best_score: f32,
+    strong: bool,
+    actual_forced_loss: bool,
+    best_avoids_forced_loss: bool,
     ply: usize,
     actual_move: String,
     best_move: String,
@@ -215,6 +218,26 @@ fn score_text(score: f32) -> String {
     }
 }
 
+fn is_forced_loss(score: f32) -> bool {
+    score == -f32::INFINITY || score <= -1000.0
+}
+
+fn avoids_forced_loss(score: f32) -> bool {
+    score > -1000.0
+}
+
+fn is_strong_rescue(
+    actual_score: f32,
+    best_score: f32,
+    improvement: f32,
+    best_move: Option<Move>,
+) -> bool {
+    best_move.is_some()
+        && is_forced_loss(actual_score)
+        && avoids_forced_loss(best_score)
+        && improvement >= 300.0
+}
+
 fn search_position(
     model: &SparseModel,
     position: &Position,
@@ -299,10 +322,14 @@ fn main() -> Result<()> {
                 child.legal_moves().len()
             });
             let improvement = best_score - actual_score;
+            let strong = is_strong_rescue(actual_score, best_score, improvement, best_move);
             rescue_candidates.push(ProbeRecord {
                 improvement,
                 actual_score,
                 best_score,
+                strong,
+                actual_forced_loss: is_forced_loss(actual_score),
+                best_avoids_forced_loss: avoids_forced_loss(best_score),
                 ply,
                 actual_move: record.moves[ply].clone(),
                 best_move: best_move
@@ -325,29 +352,33 @@ fn main() -> Result<()> {
             .unwrap_or(Ordering::Equal)
     });
 
+    let actual_forced_losses = rescue_candidates
+        .iter()
+        .filter(|record| record.actual_forced_loss)
+        .count();
     let strong_candidates = rescue_candidates
         .iter()
-        .filter(|record| {
-            (record.actual_score <= -1000.0 || record.actual_score == -f32::INFINITY)
-                && record.improvement >= 300.0
-                && record.best_move != "none"
-        })
+        .filter(|record| record.strong)
         .count();
 
     println!("records probed positions: {}", probed_positions);
     println!("same as root best: {}", same_best);
     println!("candidate positions: {}", rescue_candidates.len());
+    println!("actual forced-loss moves: {}", actual_forced_losses);
     println!("strong root-rescuable candidates: {}", strong_candidates);
     println!("top root rescue candidates:");
     for record in rescue_candidates.iter().take(args.top) {
         println!(
-            "  {} ply={} improvement={} actual={} score={} best={} best_score={} legal={} checking={} actual_replies={} best_replies={} pv={}",
+            "  {} ply={} strong={} actual_forced_loss={} best_avoids_forced_loss={} improvement={} actual={} score={} best={} best_score={} legal={} checking={} actual_replies={} best_replies={} pv={}",
             record
                 .path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("<unknown>"),
             record.ply,
+            record.strong,
+            record.actual_forced_loss,
+            record.best_avoids_forced_loss,
             score_text(record.improvement),
             record.actual_move,
             score_text(record.actual_score),
