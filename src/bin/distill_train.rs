@@ -19,6 +19,8 @@ struct Args {
     train: PathBuf,
     #[arg(long)]
     valid: PathBuf,
+    #[arg(long, value_name = "LABEL=PATH")]
+    extra_valid: Vec<String>,
     #[arg(long)]
     output: PathBuf,
     #[arg(long, default_value_t = 1)]
@@ -64,6 +66,11 @@ struct Sample {
     position: Position,
     teacher_move: Move,
     teacher_scores: Vec<TeacherScore>,
+}
+
+struct NamedBatch {
+    label: String,
+    samples: Vec<Sample>,
 }
 
 fn parse_move_for_position(position: &Position, move_text: &str) -> Option<Move> {
@@ -172,6 +179,19 @@ fn load_batch(
         return Err(anyhow!("{} contains no samples", path.display()));
     }
     Ok(batch)
+}
+
+fn parse_extra_valid(spec: &str) -> Result<(String, PathBuf)> {
+    let (label, path) = spec
+        .split_once('=')
+        .ok_or_else(|| anyhow!("--extra-valid must use LABEL=PATH: {spec}"))?;
+    if label.trim().is_empty() {
+        return Err(anyhow!("--extra-valid label must not be empty: {spec}"));
+    }
+    if path.trim().is_empty() {
+        return Err(anyhow!("--extra-valid path must not be empty: {spec}"));
+    }
+    Ok((label.trim().to_string(), PathBuf::from(path.trim())))
 }
 
 fn evaluate_policy(
@@ -384,6 +404,15 @@ fn main() -> Result<()> {
 
     let train = load_batch(&args.train, args.min_teacher_gap, args.max_teacher_gap)?;
     let valid = load_batch(&args.valid, args.min_teacher_gap, args.max_teacher_gap)?;
+    let extra_valid = args
+        .extra_valid
+        .iter()
+        .map(|spec| {
+            let (label, path) = parse_extra_valid(spec)?;
+            let samples = load_batch(&path, args.min_teacher_gap, args.max_teacher_gap)?;
+            Ok(NamedBatch { label, samples })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut model = SparseModel::new(args.learning_rate, 0.0);
     model.load(&args.weights)?;
     model.kpp_eta = args.learning_rate;
@@ -409,6 +438,18 @@ fn main() -> Result<()> {
         "baseline valid samples={} ce={:.6} top1={:.4}",
         valid_valid, base_valid_loss, base_valid_accuracy
     );
+    for batch in &extra_valid {
+        let (loss, accuracy, count) = evaluate_policy(
+            &model,
+            &batch.samples,
+            args.softmax_temperature,
+            args.teacher_temperature,
+        );
+        println!(
+            "baseline extra_valid[{}] samples={} ce={:.6} top1={:.4}",
+            batch.label, count, loss, accuracy
+        );
+    }
     if args.dry_run {
         return Ok(());
     }
@@ -450,6 +491,18 @@ fn main() -> Result<()> {
             valid_accuracy,
             model.material_coeff
         );
+        for batch in &extra_valid {
+            let (loss, accuracy, count) = evaluate_policy(
+                &model,
+                &batch.samples,
+                args.softmax_temperature,
+                args.teacher_temperature,
+            );
+            println!(
+                "epoch {} extra_valid[{}] samples={} ce={:.6} top1={:.4}",
+                epoch, batch.label, count, loss, accuracy
+            );
+        }
     }
 
     if model.w.iter().any(|value| !value.is_finite())
