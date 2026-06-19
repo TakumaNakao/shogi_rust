@@ -15,9 +15,13 @@ impl Position {
             self.generate_all(&mut av);
         }
 
+        let c = self.side_to_move();
+        let king = [Piece::B_K, Piece::W_K][c.array_index()];
+        let king_sq = self.king_position(c);
+        let pinned = self.pinned(c);
         let mut i = 0;
         while i != av.len() {
-            if self.is_legal(av[i]) {
+            if self.is_legal_with_context(av[i], c, king, king_sq, &pinned) {
                 i += 1;
             } else {
                 av.swap_remove(i);
@@ -321,10 +325,15 @@ impl Position {
         }
     }
     // Checks if the move isn't illegal: king's suicidal moves and moving pinned piece away.
-    fn is_legal(&self, m: Move) -> bool {
+    fn is_legal_with_context(
+        &self,
+        m: Move,
+        c: Color,
+        king: Piece,
+        king_sq: Option<Square>,
+        pinned: &Bitboard,
+    ) -> bool {
         if let Some(from) = m.from() {
-            let c = self.side_to_move();
-            let king = [Piece::B_K, Piece::W_K][c.array_index()];
             // 玉が相手の攻撃範囲内に動いてしまう指し手は除外
             if self.piece_at(from) == Some(king)
                 && !self
@@ -334,8 +343,8 @@ impl Position {
                 return false;
             }
             // 飛び駒から守っている駒が直線上から外れてしまう指し手は除外
-            if self.pinned(c).contains(from) {
-                if let Some(sq) = self.king_position(c) {
+            if pinned.contains(from) {
+                if let Some(sq) = king_sq {
                     if !(BETWEEN_TABLE[sq.array_index()][from.array_index()].contains(m.to())
                         || BETWEEN_TABLE[sq.array_index()][m.to().array_index()].contains(from))
                     {
