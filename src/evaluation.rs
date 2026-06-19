@@ -467,9 +467,7 @@ impl SparseModel {
                 let id2 = piece_ids[j];
                 let pair_index = id2 * (id2 - 1) / 2 + id1;
                 let final_index = king_sq_index * NUM_PIECE_PAIRS + pair_index;
-                if final_index < MAX_FEATURES {
-                    prediction += self.w[final_index];
-                }
+                prediction += self.w[final_index];
             }
         }
         prediction + self.material_coeff * material
