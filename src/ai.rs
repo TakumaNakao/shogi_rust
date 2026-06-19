@@ -3,6 +3,7 @@ use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
 use crate::utils::{format_move_usi, get_piece_value};
+use arrayvec::ArrayVec;
 use shogi_core::Move;
 use shogi_lib::Position;
 use std::collections::HashMap;
@@ -17,6 +18,7 @@ const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
 const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 3;
+const MAX_LEGAL_MOVES: usize = 593;
 const USI_SCORE_CP_LIMIT: i32 = 2_000;
 const USI_SCORE_CP_SOFT_START: i32 = 1_000;
 
@@ -187,7 +189,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
     }
 
-    fn search_ordering_score(&mut self, position: &mut Position, mv: Move) -> i32 {
+    fn search_ordering_score(&self, position: &Position, mv: Move) -> i32 {
         let mut score = self.move_ordering.score_move(&mv, position);
         if let Move::Normal { promote, .. } = mv {
             if promote {
@@ -234,7 +236,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
         self.quiescence_moves_considered += moves.len() as u64;
 
-        let mut scored_moves: Vec<(Move, i32)> = moves
+        let mut scored_moves: ArrayVec<(Move, i32), MAX_LEGAL_MOVES> = moves
             .iter()
             .map(|&mv| {
                 (
@@ -329,12 +331,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             return Some((-f32::INFINITY, Vec::new()));
         }
 
-        let mut scored_moves = Vec::with_capacity(moves.len());
-        for mv in moves.iter() {
-            scored_moves.push((*mv, self.search_ordering_score(position, *mv)));
-        }
+        let mut scored_moves: ArrayVec<(Move, i32), MAX_LEGAL_MOVES> = moves
+            .iter()
+            .map(|&mv| (mv, self.search_ordering_score(position, mv)))
+            .collect();
         scored_moves.sort_unstable_by_key(|a| -a.1);
-        let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
+        let mut sorted_moves: ArrayVec<Move, MAX_LEGAL_MOVES> =
+            scored_moves.into_iter().map(|(mv, _)| mv).collect();
 
         if (depth as usize) < MAX_DEPTH {
             let killers = self.killer_moves[depth as usize];
@@ -461,12 +464,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             return None;
         }
 
-        let mut scored_moves = Vec::with_capacity(moves.len());
-        for mv in moves.iter() {
-            scored_moves.push((*mv, self.search_ordering_score(position, *mv)));
-        }
+        let mut scored_moves: ArrayVec<(Move, i32), MAX_LEGAL_MOVES> = moves
+            .iter()
+            .map(|&mv| (mv, self.search_ordering_score(position, mv)))
+            .collect();
         scored_moves.sort_unstable_by_key(|a| -a.1);
-        let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
+        let mut sorted_moves: ArrayVec<Move, MAX_LEGAL_MOVES> =
+            scored_moves.into_iter().map(|(mv, _)| mv).collect();
         let root_hash = PositionHasher::calculate_hash(position);
         if let Some(tt_move) = self
             .transposition_table
