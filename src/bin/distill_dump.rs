@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
+use rayon::prelude::*;
 use serde::Serialize;
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{Evaluator, SparseModel};
@@ -34,6 +35,8 @@ struct Args {
     valid_percent: u8,
     #[arg(long)]
     max_positions: Option<usize>,
+    #[arg(long, default_value_t = 0)]
+    jobs: usize,
 }
 
 #[derive(Serialize)]
@@ -42,6 +45,12 @@ struct DistillRecord {
     teacher_move: String,
     depth: u8,
     legal_moves: usize,
+}
+
+struct DumpedRecord {
+    index: usize,
+    line: String,
+    is_valid: bool,
 }
 
 struct SharedModelEvaluator<'a> {
@@ -86,6 +95,12 @@ fn main() -> Result<()> {
     if args.valid_percent > 90 {
         return Err(anyhow!("--valid-percent must be 0..=90"));
     }
+    if args.jobs > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(args.jobs)
+            .build_global()
+            .map_err(|e| anyhow!("failed to configure rayon thread pool: {e}"))?;
+    }
 
     let mut positions = load_positions(&args.input)?;
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
@@ -93,54 +108,60 @@ fn main() -> Result<()> {
     if let Some(max_positions) = args.max_positions {
         positions.truncate(max_positions);
     }
+    let total_positions = positions.len();
     let mut model = SparseModel::new(0.0, 0.0);
     model.load(&args.weights)?;
 
-    let mut train_writer = create_writer(&args.train_output)?;
-    let mut valid_writer = create_writer(&args.valid_output)?;
     let valid_stride = if args.valid_percent == 0 {
         usize::MAX
     } else {
         (100 / args.valid_percent as usize).max(1)
     };
 
+    let mut dumped = positions
+        .into_par_iter()
+        .enumerate()
+        .filter_map(|(idx, mut position)| {
+            let legal_moves = position.legal_moves();
+            if legal_moves.is_empty() {
+                return None;
+            }
+
+            let evaluator = SharedModelEvaluator { model: &model };
+            let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
+            ai.set_emit_info(false);
+            ai.sennichite_detector.record_position(&position);
+            let best_move = ai.find_best_move(&mut position, args.depth, args.time_limit_ms)?;
+            if !legal_moves.contains(&best_move) {
+                return None;
+            }
+
+            let record = DistillRecord {
+                sfen: position.to_sfen_owned(),
+                teacher_move: format_move_usi(best_move),
+                depth: args.depth,
+                legal_moves: legal_moves.len(),
+            };
+            let line = serde_json::to_string(&record).ok()?;
+            Some(DumpedRecord {
+                index: idx,
+                line,
+                is_valid: valid_stride != usize::MAX && idx % valid_stride == 0,
+            })
+        })
+        .collect::<Vec<_>>();
+    dumped.sort_unstable_by_key(|record| record.index);
+
+    let mut train_writer = create_writer(&args.train_output)?;
+    let mut valid_writer = create_writer(&args.valid_output)?;
     let mut train_count = 0usize;
     let mut valid_count = 0usize;
-    let mut skipped = 0usize;
-
-    for (idx, mut position) in positions.into_iter().enumerate() {
-        let legal_moves = position.legal_moves();
-        if legal_moves.is_empty() {
-            skipped += 1;
-            continue;
-        }
-
-        let evaluator = SharedModelEvaluator { model: &model };
-        let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
-        ai.set_emit_info(false);
-        ai.sennichite_detector.record_position(&position);
-        let Some(best_move) = ai.find_best_move(&mut position, args.depth, args.time_limit_ms)
-        else {
-            skipped += 1;
-            continue;
-        };
-        if !legal_moves.contains(&best_move) {
-            skipped += 1;
-            continue;
-        }
-
-        let record = DistillRecord {
-            sfen: position.to_sfen_owned(),
-            teacher_move: format_move_usi(best_move),
-            depth: args.depth,
-            legal_moves: legal_moves.len(),
-        };
-        let line = serde_json::to_string(&record)?;
-        if valid_stride != usize::MAX && idx % valid_stride == 0 {
-            writeln!(valid_writer, "{line}")?;
+    for record in &dumped {
+        if record.is_valid {
+            writeln!(valid_writer, "{}", record.line)?;
             valid_count += 1;
         } else {
-            writeln!(train_writer, "{line}")?;
+            writeln!(train_writer, "{}", record.line)?;
             train_count += 1;
         }
     }
@@ -149,6 +170,9 @@ fn main() -> Result<()> {
     valid_writer.flush()?;
     println!("train records: {train_count}");
     println!("valid records: {valid_count}");
-    println!("skipped positions: {skipped}");
+    println!(
+        "skipped positions: {}",
+        total_positions.saturating_sub(train_count + valid_count)
+    );
     Ok(())
 }
