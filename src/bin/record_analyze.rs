@@ -18,6 +18,8 @@ struct Args {
     record_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 8)]
     tail_plies: usize,
+    #[arg(long, default_value_t = 0)]
+    top_drops: usize,
     #[arg(required_unless_present = "record_dir")]
     records: Vec<PathBuf>,
 }
@@ -32,6 +34,22 @@ struct Record {
     final_position: Position,
     positions: Vec<Position>,
     plies: usize,
+}
+
+#[derive(Debug)]
+struct TailSummary {
+    text: String,
+    worst_drop: Option<(usize, f32)>,
+}
+
+#[derive(Debug)]
+struct DropRecord {
+    drop: f32,
+    ply: usize,
+    path: PathBuf,
+    result: String,
+    reason: String,
+    final_score: Option<f32>,
 }
 
 fn load_model(path: &Path) -> Result<SparseModel> {
@@ -179,7 +197,11 @@ fn score_for_new(model: &SparseModel, record: &Record) -> Option<f32> {
     Some(score_for_new_position(model, &record.final_position, new_as))
 }
 
-fn tail_score_summary(model: &SparseModel, record: &Record, tail_plies: usize) -> Option<String> {
+fn tail_score_summary(
+    model: &SparseModel,
+    record: &Record,
+    tail_plies: usize,
+) -> Option<TailSummary> {
     let new_as = record.new_as?;
     if tail_plies == 0 || record.positions.is_empty() {
         return None;
@@ -204,10 +226,13 @@ fn tail_score_summary(model: &SparseModel, record: &Record, tail_plies: usize) -
         .map(|(ply, score)| format!("{ply}:{score:.0}"))
         .collect::<Vec<_>>()
         .join(",");
-    let worst_drop = worst_drop
+    let worst_drop_text = worst_drop
         .map(|(ply, drop)| format!(" worst_drop=ply{ply}:{drop:.0}"))
         .unwrap_or_default();
-    Some(format!("tail_scores=[{}]{}", compact_scores, worst_drop))
+    Some(TailSummary {
+        text: format!("tail_scores=[{}]{}", compact_scores, worst_drop_text),
+        worst_drop,
+    })
 }
 
 fn main() -> Result<()> {
@@ -227,6 +252,7 @@ fn main() -> Result<()> {
     let mut score_result_mismatches = 0usize;
     let mut reason_counts = BTreeMap::<String, usize>::new();
     let mut paired_results = BTreeMap::<String, (usize, usize, usize)>::new();
+    let mut drop_records = Vec::new();
 
     for path in paths {
         let record = load_record(&path)?;
@@ -275,7 +301,21 @@ fn main() -> Result<()> {
         let score = raw_score
             .map(|score| format!("{score:.1}"))
             .unwrap_or_else(|| "n/a".to_string());
-        let tail_summary = tail_score_summary(&model, &record, args.tail_plies)
+        let tail_summary = tail_score_summary(&model, &record, args.tail_plies);
+        if let Some(summary) = &tail_summary {
+            if let Some((ply, drop)) = summary.worst_drop {
+                drop_records.push(DropRecord {
+                    drop,
+                    ply,
+                    path: record.path.clone(),
+                    result: record.result.clone(),
+                    reason: reason.clone(),
+                    final_score: raw_score,
+                });
+            }
+        }
+        let tail_text = tail_summary
+            .map(|summary| summary.text)
             .unwrap_or_else(|| "tail_scores=n/a".to_string());
         println!(
             "{} result={} reason={} new_as={} plies={} final_score_for_new={} {}",
@@ -292,7 +332,7 @@ fn main() -> Result<()> {
                 .unwrap_or("unknown"),
             record.plies,
             score,
-            tail_summary
+            tail_text
         );
     }
 
@@ -344,6 +384,33 @@ fn main() -> Result<()> {
             "average final score for BaselineWin: {:.1}",
             baseline_win_score_sum / baseline_win_scored as f32
         );
+    }
+    if args.top_drops > 0 && !drop_records.is_empty() {
+        drop_records.sort_by(|a, b| {
+            b.drop
+                .partial_cmp(&a.drop)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        println!("largest tail drops:");
+        for record in drop_records.iter().take(args.top_drops) {
+            let final_score = record
+                .final_score
+                .map(|score| format!("{score:.1}"))
+                .unwrap_or_else(|| "n/a".to_string());
+            println!(
+                "  {} drop=ply{}:{:.0} result={} reason={} final_score_for_new={}",
+                record
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("<unknown>"),
+                record.ply,
+                record.drop,
+                record.result,
+                record.reason,
+                final_score
+            );
+        }
     }
     println!("score/result sign mismatches: {}", score_result_mismatches);
 
