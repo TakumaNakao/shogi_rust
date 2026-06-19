@@ -6,6 +6,7 @@ use crate::utils::{format_move_usi, get_piece_value};
 use shogi_core::Move;
 use shogi_lib::Position;
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -616,6 +617,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         "info depth {} score cp {} time {} nodes {} pv {}",
                         depth, score_cp, elapsed_time, self.nodes_searched, pv_string
                     );
+                    let _ = io::stdout().flush();
                 }
                 // --- ここまで ---
 

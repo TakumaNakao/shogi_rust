@@ -252,7 +252,7 @@ impl UsiEngine {
             let mut ai_lock = ai.lock().unwrap();
             if let Some(thinking_ai) = ai_lock.as_mut() {
                 thinking_ai.set_stop_signal(Some(stop_signal.clone()));
-                thinking_ai.set_emit_info(false);
+                thinking_ai.set_emit_info(true);
                 let best_move =
                     thinking_ai.find_best_move(&mut position, limits.max_depth, limits.time_limit_ms);
                 if let Some(best_move) = best_move {
