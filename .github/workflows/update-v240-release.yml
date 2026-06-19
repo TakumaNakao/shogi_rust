@@ -1,0 +1,29 @@
+name: Update v2.4.0 Release Metadata
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  update-release:
+    if: contains(github.event.head_commit.message, 'Update v2.4.0 release metadata')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Update release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit v2.4.0 --notes-file .github/release-notes/v2.4.0.md
+
+      - name: Attach unchanged v2.1.0 weight
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v2.1.0 --pattern policy_weights.binary --dir /tmp/v240-weight
+          sha256sum /tmp/v240-weight/policy_weights.binary
+          gh release upload v2.4.0 /tmp/v240-weight/policy_weights.binary --clobber
