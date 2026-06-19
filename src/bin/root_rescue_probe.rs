@@ -7,7 +7,7 @@ use shogi_ai::utils::{format_move_usi, parse_usi_move, position_from_sfen_or_usi
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
 use std::path::{Path, PathBuf};
-use std::{cmp::Ordering, fs};
+use std::fs;
 
 const HISTORY_CAPACITY: usize = 256;
 
@@ -218,6 +218,14 @@ fn score_text(score: f32) -> String {
     }
 }
 
+fn score_delta(best_score: f32, actual_score: f32) -> f32 {
+    if best_score == actual_score && !best_score.is_finite() {
+        0.0
+    } else {
+        best_score - actual_score
+    }
+}
+
 fn is_forced_loss(score: f32) -> bool {
     score == -f32::INFINITY || score <= -1000.0
 }
@@ -321,7 +329,7 @@ fn main() -> Result<()> {
                 child.do_move(mv);
                 child.legal_moves().len()
             });
-            let improvement = best_score - actual_score;
+            let improvement = score_delta(best_score, actual_score);
             let strong = is_strong_rescue(actual_score, best_score, improvement, best_move);
             rescue_candidates.push(ProbeRecord {
                 improvement,
@@ -348,8 +356,9 @@ fn main() -> Result<()> {
 
     rescue_candidates.sort_by(|a, b| {
         b.improvement
-            .partial_cmp(&a.improvement)
-            .unwrap_or(Ordering::Equal)
+            .total_cmp(&a.improvement)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.ply.cmp(&b.ply))
     });
 
     let actual_forced_losses = rescue_candidates
