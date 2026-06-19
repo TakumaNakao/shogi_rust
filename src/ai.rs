@@ -30,6 +30,7 @@ enum NodeType {
 struct TranspositionEntry {
     score: f32,
     depth: u8,
+    extension_budget: u8,
     node_type: NodeType,
     best_move: Option<Move>,
     generation: u32,
@@ -50,6 +51,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     quiescence_moves_searched: u64,
     quiescence_see_skips: u64,
     check_evasion_extensions: u64,
+    tt_extension_budget_rejects: u64,
     emit_info: bool,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
@@ -71,6 +73,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             quiescence_moves_searched: 0,
             quiescence_see_skips: 0,
             check_evasion_extensions: 0,
+            tt_extension_budget_rejects: 0,
             emit_info: true,
             search_generation: 0,
             stop_signal: None,
@@ -122,6 +125,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn check_evasion_extensions(&self) -> u64 {
         self.check_evasion_extensions
+    }
+
+    pub fn tt_extension_budget_rejects(&self) -> u64 {
+        self.tt_extension_budget_rejects
     }
 
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
@@ -284,7 +291,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let tt_entry = self.transposition_table.get(&hash).copied();
         let tt_best_move = tt_entry.and_then(|entry| entry.best_move);
         if let Some(entry) = tt_entry {
-            if entry.generation == self.search_generation && entry.depth >= depth {
+            if entry.generation == self.search_generation
+                && entry.depth >= depth
+                && entry.extension_budget >= check_evasion_extension_budget
+            {
                 match entry.node_type {
                     NodeType::Exact => {
                         return Some((entry.score, entry.best_move.map_or(Vec::new(), |m| vec![m])))
@@ -295,6 +305,11 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 if alpha >= beta {
                     return Some((entry.score, entry.best_move.map_or(Vec::new(), |m| vec![m])));
                 }
+            } else if entry.generation == self.search_generation
+                && entry.depth >= depth
+                && entry.extension_budget < check_evasion_extension_budget
+            {
+                self.tt_extension_budget_rejects += 1;
             }
         }
 
@@ -394,6 +409,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let entry = TranspositionEntry {
             score: best_score,
             depth,
+            extension_budget: check_evasion_extension_budget,
             node_type,
             best_move,
             generation: self.search_generation,
@@ -429,6 +445,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_moves_searched = 0;
         self.quiescence_see_skips = 0;
         self.check_evasion_extensions = 0;
+        self.tt_extension_budget_rejects = 0;
 
         let moves = position.legal_moves();
         if moves.is_empty() {
