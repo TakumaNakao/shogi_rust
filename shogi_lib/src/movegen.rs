@@ -25,6 +25,72 @@ impl Position {
         }
         av
     }
+
+    pub fn has_legal_evasion(&self) -> bool {
+        if !self.in_check() {
+            return true;
+        }
+
+        let c = self.side_to_move();
+        let king = self.king_position(c).unwrap();
+        let occupied = self.occupied_bitboard();
+        let mut checkers_attacks = Bitboard::empty();
+        let mut checkers_count = 0;
+        for ch in self.checkers() {
+            let pk = self.piece_at(ch).unwrap().piece_kind();
+            if pk == PieceKind::ProRook && ch.file() != king.file() && ch.rank() != king.rank() {
+                checkers_attacks |= ATTACK_TABLE.hi.attack(ch, &occupied);
+            } else {
+                checkers_attacks |= ATTACK_TABLE.pseudo_attack(pk, ch, c.flip());
+            }
+            checkers_count += 1;
+        }
+
+        let mut av = ArrayVec::new();
+        for to in ATTACK_TABLE.ou.attack(king, c) & !self.player_bitboard(c) & !checkers_attacks {
+            av.push(Move::Normal {
+                from: king,
+                to,
+                promote: false,
+            });
+        }
+        if av.iter().any(|&mv| self.is_legal(mv)) {
+            return true;
+        }
+        if checkers_count > 1 {
+            return false;
+        }
+
+        let ch = self.checkers().into_iter().next().unwrap();
+        let target_drop = BETWEEN_TABLE[ch.array_index()][king.array_index()];
+        let target_move = target_drop | self.checkers();
+
+        macro_rules! generate_and_check {
+            ($generator:ident, $target:expr) => {{
+                av.clear();
+                self.$generator(&mut av, $target);
+                if av.iter().any(|&mv| self.is_legal(mv)) {
+                    return true;
+                }
+            }};
+        }
+
+        generate_and_check!(generate_for_fu, &target_move);
+        generate_and_check!(generate_for_ky, &target_move);
+        generate_and_check!(generate_for_ke, &target_move);
+        generate_and_check!(generate_for_gi, &target_move);
+        generate_and_check!(generate_for_ka, &target_move);
+        generate_and_check!(generate_for_hi, &target_move);
+        generate_and_check!(generate_for_ki, &target_move);
+        generate_and_check!(generate_for_um, &target_move);
+        generate_and_check!(generate_for_ry, &target_move);
+        if !target_drop.is_empty() {
+            generate_and_check!(generate_drop, &target_drop);
+        }
+
+        false
+    }
+
     /// Generate moves.
     fn generate_all(&self, av: &mut ArrayVec<Move, MAX_LEGAL_MOVES>) {
         let target = !self.player_bitboard(self.side_to_move());
@@ -718,6 +784,25 @@ mod tests {
         ];
         for (i, (pos, sq, expected)) in test_cases.into_iter().enumerate() {
             assert_eq!(expected, pos.is_pawn_drop_mate(sq), "failed at {i}");
+        }
+    }
+
+    #[test]
+    fn has_legal_evasion_matches_legal_moves_on_checked_positions() {
+        let sfens = [
+            "l6nl/7+R1/4k4/p1P+bp1n1p/3K1p3/P3P1S1P/ls2BP3/s3G4/9 b R2GS2NL9Pg 131",
+            "l1+N5l/3+r5/5+N+PGk/p6pp/7P1/5P2P/P3GK1+s1/5G2+b/9 w RNL2Pbg3snl8p 192",
+            "+B4R2+P/2k6/3pps2+L/p1p3p2/1p1PPp1+r1/P1P6/1PS1KP1G1/2s1g2G1/LN1sN4 b GN2L2Pbn2p 131",
+            "ln1g4l/6k2/3pp1+Pp1/p2s4p/2p1P2P1/P1P5P/2NP1P3/+r1G1K1R2/2S2G1NL w GL2b2sn4p 72",
+        ];
+
+        for sfen in sfens {
+            let pos = Position::new(
+                PartialPosition::from_usi(&format!("sfen {sfen}"))
+                    .expect("failed to parse checked position"),
+            );
+            assert!(pos.in_check());
+            assert_eq!(!pos.legal_moves().is_empty(), pos.has_legal_evasion());
         }
     }
 }

@@ -77,6 +77,7 @@ fn main() -> Result<()> {
     let mut total_quiescence_moves_considered = 0u64;
     let mut total_quiescence_moves_searched = 0u64;
     let mut total_quiescence_see_skips = 0u64;
+    let mut total_quiescence_terminal_mates = 0u64;
     let mut total_check_evasion_extensions = 0u64;
     let start = Instant::now();
 
@@ -92,6 +93,7 @@ fn main() -> Result<()> {
         total_quiescence_moves_considered += ai.quiescence_moves_considered();
         total_quiescence_moves_searched += ai.quiescence_moves_searched();
         total_quiescence_see_skips += ai.quiescence_see_skips();
+        total_quiescence_terminal_mates += ai.quiescence_terminal_mates();
         total_check_evasion_extensions += ai.check_evasion_extensions();
     }
 
@@ -115,6 +117,10 @@ fn main() -> Result<()> {
         total_quiescence_moves_searched
     );
     println!("quiescence see skips: {}", total_quiescence_see_skips);
+    println!(
+        "quiescence terminal mates: {}",
+        total_quiescence_terminal_mates
+    );
     println!(
         "check evasion extensions: {}",
         total_check_evasion_extensions

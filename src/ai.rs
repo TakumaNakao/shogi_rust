@@ -75,6 +75,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     quiescence_moves_considered: u64,
     quiescence_moves_searched: u64,
     quiescence_see_skips: u64,
+    quiescence_terminal_mates: u64,
     check_evasion_extensions: u64,
     emit_info: bool,
     search_generation: u32,
@@ -96,6 +97,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             quiescence_moves_considered: 0,
             quiescence_moves_searched: 0,
             quiescence_see_skips: 0,
+            quiescence_terminal_mates: 0,
             check_evasion_extensions: 0,
             emit_info: true,
             search_generation: 0,
@@ -144,6 +146,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn quiescence_see_skips(&self) -> u64 {
         self.quiescence_see_skips
+    }
+
+    pub fn quiescence_terminal_mates(&self) -> u64 {
+        self.quiescence_terminal_mates
     }
 
     pub fn check_evasion_extensions(&self) -> u64 {
@@ -212,6 +218,11 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
         self.nodes_searched += 1;
         self.quiescence_nodes_searched += 1;
+
+        if position.in_check() && !position.has_legal_evasion() {
+            self.quiescence_terminal_mates += 1;
+            return Some((-f32::INFINITY, Vec::new()));
+        }
 
         let stand_pat_score = self.evaluator.evaluate(position);
         if stand_pat_score >= beta {
@@ -454,6 +465,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_moves_considered = 0;
         self.quiescence_moves_searched = 0;
         self.quiescence_see_skips = 0;
+        self.quiescence_terminal_mates = 0;
         self.check_evasion_extensions = 0;
 
         let moves = position.legal_moves();
