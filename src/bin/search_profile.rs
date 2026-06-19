@@ -77,6 +77,8 @@ fn main() -> Result<()> {
     let mut total_quiescence_moves_considered = 0u64;
     let mut total_quiescence_moves_searched = 0u64;
     let mut total_quiescence_see_skips = 0u64;
+    let mut total_null_move_attempts = 0u64;
+    let mut total_null_move_cutoffs = 0u64;
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -91,6 +93,8 @@ fn main() -> Result<()> {
         total_quiescence_moves_considered += ai.quiescence_moves_considered();
         total_quiescence_moves_searched += ai.quiescence_moves_searched();
         total_quiescence_see_skips += ai.quiescence_see_skips();
+        total_null_move_attempts += ai.null_move_attempts();
+        total_null_move_cutoffs += ai.null_move_cutoffs();
     }
 
     let elapsed = start.elapsed();
@@ -104,12 +108,23 @@ fn main() -> Result<()> {
     println!("samples: {}", args.samples);
     println!("total nodes: {}", total_nodes);
     println!("quiescence nodes: {}", total_quiescence_nodes);
-    println!("quiescence moves considered: {}", total_quiescence_moves_considered);
-    println!("quiescence moves searched: {}", total_quiescence_moves_searched);
+    println!(
+        "quiescence moves considered: {}",
+        total_quiescence_moves_considered
+    );
+    println!(
+        "quiescence moves searched: {}",
+        total_quiescence_moves_searched
+    );
     println!("quiescence see skips: {}", total_quiescence_see_skips);
+    println!("null move attempts: {}", total_null_move_attempts);
+    println!("null move cutoffs: {}", total_null_move_cutoffs);
     println!("elapsed ms: {:.2}", elapsed_secs * 1000.0);
     println!("nodes/sec: {:.2}", nps);
-    println!("avg nodes/sample: {:.2}", total_nodes as f64 / args.samples as f64);
+    println!(
+        "avg nodes/sample: {:.2}",
+        total_nodes as f64 / args.samples as f64
+    );
     println!(
         "quiescence node rate: {:.2}%",
         total_quiescence_nodes as f64 / total_nodes.max(1) as f64 * 100.0
@@ -121,6 +136,10 @@ fn main() -> Result<()> {
     println!(
         "quiescence see skip rate: {:.2}%",
         total_quiescence_see_skips as f64 / total_quiescence_moves_considered.max(1) as f64 * 100.0
+    );
+    println!(
+        "null move cutoff rate: {:.2}%",
+        total_null_move_cutoffs as f64 / total_null_move_attempts.max(1) as f64 * 100.0
     );
 
     Ok(())

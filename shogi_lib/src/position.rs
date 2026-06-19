@@ -220,6 +220,28 @@ impl Position {
         self.inner.ply -= 1;
         self.states.pop();
     }
+
+    pub fn do_null_move(&mut self) {
+        let mut keys = self.state().keys;
+        self.inner.side = self.inner.side.flip();
+        self.inner.ply += 1;
+        keys.0 ^= Key::COLOR;
+        let checkers = AttackInfo::calculate_checkers(&self.inner);
+        self.states.push(State {
+            keys,
+            captured: None,
+            last_moved_piece: None,
+            last_move: None,
+            attack_info: AttackInfo::new(checkers, &self.inner),
+        });
+    }
+
+    pub fn undo_null_move(&mut self) {
+        self.inner.side = self.inner.side.flip();
+        self.inner.ply -= 1;
+        self.states.pop();
+    }
+
     #[inline(always)]
     pub(crate) fn player_bitboard(&self, c: Color) -> Bitboard {
         self.inner.player_bb[c.array_index()]
@@ -623,6 +645,32 @@ mod tests {
     }
 
     #[test]
+    fn do_undo_null_move() {
+        let mut pos = Position::default();
+        let original = pos.clone();
+        let original_key = pos.key();
+        let original_keys = pos.keys();
+
+        pos.do_null_move();
+        assert_eq!(Color::White, pos.side_to_move());
+        assert_eq!(2, pos.ply());
+        assert_eq!(None, pos.last_move());
+        assert_eq!(None, pos.captured());
+        assert_eq!(None, pos.last_moved_piece());
+        assert_ne!(original_key, pos.key());
+
+        pos.undo_null_move();
+        assert_eq!(original_key, pos.key());
+        assert_eq!(original_keys, pos.keys());
+        assert_eq!(original.to_sfen_owned(), pos.to_sfen_owned());
+        assert!(Square::all().all(|sq| pos.piece_at(sq) == original.piece_at(sq)));
+        assert_eq!(original.side_to_move(), pos.side_to_move());
+        assert_eq!(original.ply(), pos.ply());
+        assert_eq!(original.in_check(), pos.in_check());
+        assert_eq!(original.legal_moves(), pos.legal_moves());
+    }
+
+    #[test]
     fn perft() {
         fn perft(pos: &mut Position, depth: usize) -> u64 {
             if depth == 0 {
@@ -686,8 +734,10 @@ mod tests {
         // P-00AL
         // +
         let pos = Position::new(
-            ShogiCorePartialPosition::from_usi("sfen 6p1k/9/6P1G/9/8L/9/9/9/9 b RBLrb3g4s4n2l16p 1")
-                .expect("failed to parse"),
+            ShogiCorePartialPosition::from_usi(
+                "sfen 6p1k/9/6P1G/9/8L/9/9/9/9 b RBLrb3g4s4n2l16p 1",
+            )
+            .expect("failed to parse"),
         );
         let test_cases = [
             (
