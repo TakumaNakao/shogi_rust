@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
@@ -43,6 +43,14 @@ struct Args {
     teacher_score_top: usize,
     #[arg(long)]
     teacher_score_depth: Option<u8>,
+    #[arg(long, value_enum, default_value_t = TeacherScoreSource::Static)]
+    teacher_score_source: TeacherScoreSource,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TeacherScoreSource {
+    Static,
+    Searched,
 }
 
 #[derive(Serialize)]
@@ -171,6 +179,18 @@ fn teacher_move_scores(
         .collect()
 }
 
+fn searched_teacher_score_records(
+    model: &SparseModel,
+    position: &Position,
+    legal_moves: &[Move],
+    depth: u8,
+    limit: usize,
+) -> Vec<TeacherScoreRecord> {
+    let mut scored = teacher_move_scores(model, position, legal_moves, depth);
+    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+    scored.into_iter().take(limit).collect()
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     if args.depth == 0 {
@@ -228,14 +248,25 @@ fn main() -> Result<()> {
                 Vec::new()
             } else {
                 let score_depth = args.teacher_score_depth.unwrap_or(args.depth);
-                let candidates = ordered_teacher_candidates(
-                    &model,
-                    &position,
-                    &legal_moves,
-                    best_move,
-                    args.teacher_score_top,
-                );
-                teacher_move_scores(&model, &position, &candidates, score_depth)
+                match args.teacher_score_source {
+                    TeacherScoreSource::Static => {
+                        let candidates = ordered_teacher_candidates(
+                            &model,
+                            &position,
+                            &legal_moves,
+                            best_move,
+                            args.teacher_score_top,
+                        );
+                        teacher_move_scores(&model, &position, &candidates, score_depth)
+                    }
+                    TeacherScoreSource::Searched => searched_teacher_score_records(
+                        &model,
+                        &position,
+                        &legal_moves,
+                        score_depth,
+                        args.teacher_score_top,
+                    ),
+                }
             };
 
             let record = DistillRecord {

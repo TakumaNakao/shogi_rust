@@ -31,6 +31,8 @@ struct Args {
     softmax_temperature: f32,
     #[arg(long, default_value_t = 600.0)]
     teacher_temperature: f32,
+    #[arg(long, default_value_t = 0.0)]
+    min_teacher_gap: f32,
     #[arg(long, default_value_t = true)]
     freeze_material: bool,
     #[arg(long, default_value_t = false)]
@@ -72,7 +74,7 @@ fn parse_move_for_position(position: &Position, move_text: &str) -> Option<Move>
     })
 }
 
-fn load_batch(path: &Path) -> Result<Vec<Sample>> {
+fn load_batch(path: &Path, min_teacher_gap: f32) -> Result<Vec<Sample>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut batch = Vec::new();
@@ -133,6 +135,17 @@ fn load_batch(path: &Path) -> Result<Vec<Sample>> {
                     mv,
                     score: teacher_score.score,
                 });
+            }
+        }
+        teacher_scores.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if min_teacher_gap > 0.0 && teacher_scores.len() >= 2 {
+            let gap = teacher_scores[0].score - teacher_scores[1].score;
+            if gap < min_teacher_gap {
+                continue;
             }
         }
         batch.push(Sample {
@@ -341,9 +354,12 @@ fn main() -> Result<()> {
     if !args.teacher_temperature.is_finite() || args.teacher_temperature <= 0.0 {
         return Err(anyhow!("--teacher-temperature must be positive"));
     }
+    if !args.min_teacher_gap.is_finite() || args.min_teacher_gap < 0.0 {
+        return Err(anyhow!("--min-teacher-gap must be non-negative"));
+    }
 
-    let train = load_batch(&args.train)?;
-    let valid = load_batch(&args.valid)?;
+    let train = load_batch(&args.train, args.min_teacher_gap)?;
+    let valid = load_batch(&args.valid, args.min_teacher_gap)?;
     let mut model = SparseModel::new(args.learning_rate, 0.0);
     model.load(&args.weights)?;
     model.kpp_eta = args.learning_rate;
