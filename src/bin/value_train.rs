@@ -27,7 +27,7 @@ struct Args {
     epochs: usize,
     #[arg(long, default_value_t = 256)]
     batch_size: usize,
-    #[arg(long, default_value_t = 0.02)]
+    #[arg(long, default_value_t = 100.0)]
     learning_rate: f32,
     #[arg(long, default_value_t = 600.0)]
     target_scale: f32,
