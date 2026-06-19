@@ -25,6 +25,12 @@ struct Args {
     #[arg(long)]
     export_drops: Option<PathBuf>,
     #[arg(long)]
+    export_drop_windows: Option<PathBuf>,
+    #[arg(long, default_value_t = 3)]
+    drop_window_before: usize,
+    #[arg(long, default_value_t = 1)]
+    drop_window_after: usize,
+    #[arg(long)]
     export_mismatches: Option<PathBuf>,
     #[arg(long)]
     export_baseline_win_tails: Option<PathBuf>,
@@ -61,6 +67,7 @@ struct DropRecord {
     ply: usize,
     move_text: Option<String>,
     position_sfen: Option<String>,
+    window_sfens: Vec<String>,
     path: PathBuf,
     result: String,
     reason: String,
@@ -323,6 +330,19 @@ fn tail_position_sfens(record: &Record, tail_plies: usize) -> Vec<String> {
         .collect()
 }
 
+fn drop_window_sfens(record: &Record, ply: usize, before: usize, after: usize) -> Vec<String> {
+    if record.positions.is_empty() {
+        return Vec::new();
+    }
+    let start = ply.saturating_sub(before);
+    let end = (ply + after).min(record.positions.len().saturating_sub(1));
+    record.positions[start..=end]
+        .iter()
+        .filter(|position| !position.legal_moves().is_empty())
+        .map(|position| position.to_sfen_owned())
+        .collect()
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let model = load_model(&args.weights)?;
@@ -458,6 +478,12 @@ fn main() -> Result<()> {
                         .positions
                         .get(ply)
                         .map(|position| position.to_sfen_owned()),
+                    window_sfens: drop_window_sfens(
+                        &record,
+                        ply,
+                        args.drop_window_before,
+                        args.drop_window_after,
+                    ),
                     path: record.path.clone(),
                     result: record.result.clone(),
                     reason: reason.clone(),
@@ -562,7 +588,9 @@ fn main() -> Result<()> {
             baseline_win_score_sum / baseline_win_scored as f32
         );
     }
-    if (args.top_drops > 0 || args.export_drops.is_some()) && !drop_records.is_empty() {
+    if (args.top_drops > 0 || args.export_drops.is_some() || args.export_drop_windows.is_some())
+        && !drop_records.is_empty()
+    {
         drop_records.sort_by(|a, b| {
             b.drop
                 .partial_cmp(&a.drop)
@@ -579,6 +607,22 @@ fn main() -> Result<()> {
         write_sfen_file(path, &positions)?;
         println!(
             "exported tail drop positions: {} to {}",
+            positions.len(),
+            path.display()
+        );
+    }
+    if let Some(path) = &args.export_drop_windows {
+        let limit = limit_count(args.top_drops, drop_records.len());
+        let mut positions = drop_records
+            .iter()
+            .take(limit)
+            .flat_map(|record| record.window_sfens.clone())
+            .collect::<Vec<_>>();
+        positions.sort();
+        positions.dedup();
+        write_sfen_file(path, &positions)?;
+        println!(
+            "exported tail drop window positions: {} to {}",
             positions.len(),
             path.display()
         );
