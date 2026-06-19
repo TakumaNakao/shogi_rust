@@ -150,13 +150,6 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
     }
 
-    fn is_check(&self, position: &mut Position, mv: Move) -> bool {
-        position.do_move(mv);
-        let is_in_check = position.in_check();
-        position.undo_move(mv);
-        is_in_check
-    }
-
     fn search_ordering_score(&mut self, position: &mut Position, mv: Move) -> i32 {
         let mut score = self.move_ordering.score_move(&mv, position);
         if let Move::Normal { promote, .. } = mv {
@@ -165,7 +158,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
         score += self.see(position, mv) * SEE_ORDERING_SCALE;
-        if self.is_check(position, mv) {
+        if position.is_check_move(mv) {
             score += CHECK_MOVE_BONUS;
         }
         score
@@ -184,9 +177,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         
         moves.retain(|m| {
             if let Move::Normal { to, .. } = *m {
-                position.piece_at(to).is_some() || self.is_check(position, *m)
+                position.piece_at(to).is_some() || position.is_check_move(*m)
             } else {
-                self.is_check(position, *m)
+                position.is_check_move(*m)
             }
         });
 
