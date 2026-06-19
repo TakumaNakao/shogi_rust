@@ -28,6 +28,8 @@ struct Args {
     show_legal: bool,
     #[arg(long, default_value_t = 0)]
     root_top: usize,
+    #[arg(long, default_value_t = 0)]
+    root_search_limit: usize,
     #[arg(long, default_value_t = false)]
     summary: bool,
 }
@@ -105,9 +107,20 @@ struct RootMoveProbe {
     pv: Vec<Move>,
 }
 
-fn probe_root_moves(model: &SparseModel, position: &Position, depth: u8) -> Vec<RootMoveProbe> {
+fn probe_root_moves(
+    model: &SparseModel,
+    position: &Position,
+    depth: u8,
+    search_limit: usize,
+) -> Vec<RootMoveProbe> {
     let mut probes = Vec::new();
-    for mv in position.legal_moves() {
+    let legal_moves = position.legal_moves();
+    let root_moves = if search_limit > 0 {
+        &legal_moves[..legal_moves.len().min(search_limit)]
+    } else {
+        &legal_moves[..]
+    };
+    for &mv in root_moves {
         let mut child = position.clone();
         child.do_move(mv);
         let child_legal_moves = child.legal_moves();
@@ -303,10 +316,20 @@ fn main() -> Result<()> {
             println!("  legal {}", move_list_text(&legal_moves));
         }
         if args.root_top > 0 {
-            for (rank, probe) in probe_root_moves(&model, &position, args.depth)
-                .into_iter()
-                .take(args.root_top)
-                .enumerate()
+            let searched_root_moves = if args.root_search_limit > 0 {
+                legal_count.min(args.root_search_limit)
+            } else {
+                legal_count
+            };
+            println!(
+                "  root_probe searched_moves={} total_legal_moves={} depth={}",
+                searched_root_moves, legal_count, args.depth
+            );
+            for (rank, probe) in
+                probe_root_moves(&model, &position, args.depth, args.root_search_limit)
+                    .into_iter()
+                    .take(args.root_top)
+                    .enumerate()
             {
                 println!(
                     "  root rank={} move={} score={} gives_check={} child_in_check={} child_legal_moves={} child_checking_moves={} child_static_eval_for_opponent={:.1} nodes={} qnodes={} check_evasion_extensions={} pv={}",
