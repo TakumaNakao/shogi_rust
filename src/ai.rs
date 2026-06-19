@@ -76,6 +76,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     quiescence_moves_searched: u64,
     quiescence_see_skips: u64,
     check_evasion_extensions: u64,
+    single_reply_chain_extensions: u64,
     emit_info: bool,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
@@ -97,6 +98,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             quiescence_moves_searched: 0,
             quiescence_see_skips: 0,
             check_evasion_extensions: 0,
+            single_reply_chain_extensions: 0,
             emit_info: true,
             search_generation: 0,
             stop_signal: None,
@@ -148,6 +150,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn check_evasion_extensions(&self) -> u64 {
         self.check_evasion_extensions
+    }
+
+    pub fn single_reply_chain_extensions(&self) -> u64 {
+        self.single_reply_chain_extensions
     }
 
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
@@ -287,7 +293,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         alpha: f32,
         beta: f32,
     ) -> Option<(f32, Vec<Move>)> {
-        self.alpha_beta_search_internal(position, depth, alpha, beta, 1)
+        self.alpha_beta_search_internal(position, depth, alpha, beta, 1, 1)
     }
 
     fn alpha_beta_search_internal(
@@ -297,6 +303,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         mut alpha: f32,
         mut beta: f32,
         check_evasion_extension_budget: u8,
+        single_reply_chain_budget: u8,
     ) -> Option<(f32, Vec<Move>)> {
         if self.is_time_up() {
             return None;
@@ -327,6 +334,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let moves = position.legal_moves();
         if moves.is_empty() {
             return Some((-f32::INFINITY, Vec::new()));
+        }
+        let extend_single_reply_chain_node = depth == 1
+            && check_evasion_extension_budget == 0
+            && single_reply_chain_budget > 0
+            && position.in_check()
+            && moves.len() == 1;
+        if extend_single_reply_chain_node {
+            self.single_reply_chain_extensions += 1;
         }
 
         let mut scored_moves = Vec::with_capacity(moves.len());
@@ -365,16 +380,26 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
                 SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
                 SennichiteStatus::None => {
-                    let mut child_depth = depth - 1;
+                    let mut child_depth = if extend_single_reply_chain_node {
+                        1
+                    } else {
+                        depth - 1
+                    };
                     let mut child_extension_budget = check_evasion_extension_budget;
-                    if depth == 1
-                        && check_evasion_extension_budget > 0
-                        && position.in_check()
-                        && position.legal_moves().len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES
-                    {
-                        child_depth = 1;
-                        child_extension_budget -= 1;
-                        self.check_evasion_extensions += 1;
+                    let child_single_reply_chain_budget = if extend_single_reply_chain_node {
+                        single_reply_chain_budget - 1
+                    } else {
+                        single_reply_chain_budget
+                    };
+                    if depth == 1 && position.in_check() {
+                        let reply_count = position.legal_moves().len();
+                        if check_evasion_extension_budget > 0
+                            && reply_count <= CHECK_EVASION_EXTENSION_MAX_REPLIES
+                        {
+                            child_depth = 1;
+                            child_extension_budget -= 1;
+                            self.check_evasion_extensions += 1;
+                        }
                     }
                     self.alpha_beta_search_internal(
                         position,
@@ -382,6 +407,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         -beta,
                         -alpha,
                         child_extension_budget,
+                        child_single_reply_chain_budget,
                     )
                 }
             };
@@ -455,6 +481,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_moves_searched = 0;
         self.quiescence_see_skips = 0;
         self.check_evasion_extensions = 0;
+        self.single_reply_chain_extensions = 0;
 
         let moves = position.legal_moves();
         if moves.is_empty() {
