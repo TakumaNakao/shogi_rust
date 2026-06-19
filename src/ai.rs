@@ -247,21 +247,20 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             scored_moves.push((*mv, self.search_ordering_score(position, *mv)));
         }
         scored_moves.sort_unstable_by_key(|a| -a.1);
-        let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
 
         if (depth as usize) < MAX_DEPTH {
             let killers = self.killer_moves[depth as usize];
             for &killer in killers.iter().flatten().rev() {
-                if let Some(pos) = sorted_moves.iter().position(|&m| m == killer) {
-                    let mv = sorted_moves.remove(pos);
-                    sorted_moves.insert(0, mv);
+                if let Some(pos) = scored_moves.iter().position(|&(m, _)| m == killer) {
+                    let scored_move = scored_moves.remove(pos);
+                    scored_moves.insert(0, scored_move);
                 }
             }
         }
         if let Some(tt_move) = tt_best_move {
-            if let Some(pos) = sorted_moves.iter().position(|&m| m == tt_move) {
-                let mv = sorted_moves.remove(pos);
-                sorted_moves.insert(0, mv);
+            if let Some(pos) = scored_moves.iter().position(|&(m, _)| m == tt_move) {
+                let scored_move = scored_moves.remove(pos);
+                scored_moves.insert(0, scored_move);
             }
         }
 
@@ -270,7 +269,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let mut best_pv = Vec::new();
         let mut node_type = NodeType::UpperBound;
 
-        for mv in sorted_moves {
+        for (mv, _) in scored_moves {
             position.do_move(mv);
             self.sennichite_detector.record_position(position);
             let sennichite_status = self.is_sennichite_internal(position);
@@ -351,22 +350,21 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             scored_moves.push((*mv, self.search_ordering_score(position, *mv)));
         }
         scored_moves.sort_unstable_by_key(|a| -a.1);
-        let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
         let root_hash = PositionHasher::calculate_hash(position);
         if let Some(tt_move) = self.transposition_table.get(&root_hash).and_then(|entry| entry.best_move) {
-            if let Some(pos) = sorted_moves.iter().position(|&m| m == tt_move) {
-                let mv = sorted_moves.remove(pos);
-                sorted_moves.insert(0, mv);
+            if let Some(pos) = scored_moves.iter().position(|&(m, _)| m == tt_move) {
+                let scored_move = scored_moves.remove(pos);
+                scored_moves.insert(0, scored_move);
             }
         }
-        let mut best_move: Option<Move> = sorted_moves.first().copied();
+        let mut best_move: Option<Move> = scored_moves.first().map(|&(mv, _)| mv);
         let mut previous_eval: Option<f32> = None;
 
         for depth in 1..=max_depth {
             if let Some(previous_best) = best_move {
-                if let Some(pos) = sorted_moves.iter().position(|&m| m == previous_best) {
-                    let mv = sorted_moves.remove(pos);
-                    sorted_moves.insert(0, mv);
+                if let Some(pos) = scored_moves.iter().position(|&(m, _)| m == previous_best) {
+                    let scored_move = scored_moves.remove(pos);
+                    scored_moves.insert(0, scored_move);
                 }
             }
             let mut current_best_move_for_depth: Option<Move> = None;
@@ -379,13 +377,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let aspiration_beta = beta;
             let mut search_interrupted = false;
 
-            for mv in &sorted_moves {
+            for &(mv, _) in &scored_moves {
                 if self.is_time_up() {
                     search_interrupted = true;
                     break;
                 }
 
-                position.do_move(*mv);
+                position.do_move(mv);
                 self.sennichite_detector.record_position(position);
                 let sennichite_status = self.is_sennichite_internal(position);
 
@@ -407,14 +405,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     }
                 };
                 self.sennichite_detector.unrecord_last_position();
-                position.undo_move(*mv);
+                position.undo_move(mv);
 
                 if let Some((eval, pv)) = eval_result {
                     let current_eval = -eval;
                     if current_eval > best_eval_for_depth {
                         best_eval_for_depth = current_eval;
-                        current_best_move_for_depth = Some(*mv);
-                        let mut current_pv = vec![*mv];
+                        current_best_move_for_depth = Some(mv);
+                        let mut current_pv = vec![mv];
                         current_pv.extend(pv);
                         best_pv_for_depth = current_pv;
                     }
@@ -433,13 +431,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     best_eval_for_depth = -f32::INFINITY;
                     best_pv_for_depth.clear();
 
-                    for mv in &sorted_moves {
+                    for &(mv, _) in &scored_moves {
                         if self.is_time_up() {
                             search_interrupted = true;
                             break;
                         }
 
-                        position.do_move(*mv);
+                        position.do_move(mv);
                         self.sennichite_detector.record_position(position);
                         let sennichite_status = self.is_sennichite_internal(position);
 
@@ -451,14 +449,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                             }
                         };
                         self.sennichite_detector.unrecord_last_position();
-                        position.undo_move(*mv);
+                        position.undo_move(mv);
 
                         if let Some((eval, pv)) = eval_result {
                             let current_eval = -eval;
                             if current_eval > best_eval_for_depth {
                                 best_eval_for_depth = current_eval;
-                                current_best_move_for_depth = Some(*mv);
-                                let mut current_pv = vec![*mv];
+                                current_best_move_for_depth = Some(mv);
+                                let mut current_pv = vec![mv];
                                 current_pv.extend(pv);
                                 best_pv_for_depth = current_pv;
                             }
