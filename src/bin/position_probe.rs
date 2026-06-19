@@ -5,6 +5,7 @@ use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
 use shogi_core::{Color, Move};
 use shogi_lib::Position;
+use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +26,8 @@ struct Args {
     limit: usize,
     #[arg(long, default_value_t = false)]
     show_legal: bool,
+    #[arg(long, default_value_t = 0)]
+    root_top: usize,
     #[arg(long, default_value_t = false)]
     summary: bool,
 }
@@ -75,6 +78,73 @@ fn pv_text(pv: &[Move]) -> String {
     } else {
         move_list_text(pv)
     }
+}
+
+fn score_text(score: f32) -> String {
+    if score == f32::INFINITY {
+        "inf".to_string()
+    } else if score == -f32::INFINITY {
+        "-inf".to_string()
+    } else {
+        format!("{score:.1}")
+    }
+}
+
+#[derive(Debug)]
+struct RootMoveProbe {
+    mv: Move,
+    score: f32,
+    gives_check: bool,
+    child_in_check: bool,
+    child_legal_moves: usize,
+    child_checking_moves: usize,
+    child_static_eval_for_opponent: f32,
+    nodes: u64,
+    qnodes: u64,
+    check_evasion_extensions: u64,
+    pv: Vec<Move>,
+}
+
+fn probe_root_moves(model: &SparseModel, position: &Position, depth: u8) -> Vec<RootMoveProbe> {
+    let mut probes = Vec::new();
+    for mv in position.legal_moves() {
+        let mut child = position.clone();
+        child.do_move(mv);
+        let child_legal_moves = child.legal_moves();
+        let child_static_eval_for_opponent = model.predict_from_position(&child);
+
+        let evaluator = SharedModelEvaluator { model };
+        let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
+        ai.set_emit_info(false);
+        ai.sennichite_detector.record_position(&child);
+        let child_depth = depth.saturating_sub(1);
+        let result = ai.alpha_beta_search(
+            &mut child.clone(),
+            child_depth,
+            -f32::INFINITY,
+            f32::INFINITY,
+        );
+
+        if let Some((child_score, child_pv)) = result {
+            let mut pv = vec![mv];
+            pv.extend(child_pv);
+            probes.push(RootMoveProbe {
+                mv,
+                score: -child_score,
+                gives_check: position.is_check_move(mv),
+                child_in_check: child.in_check(),
+                child_legal_moves: child_legal_moves.len(),
+                child_checking_moves: checking_moves(&child, &child_legal_moves),
+                child_static_eval_for_opponent,
+                nodes: ai.nodes_searched(),
+                qnodes: ai.quiescence_nodes_searched(),
+                check_evasion_extensions: ai.check_evasion_extensions(),
+                pv,
+            });
+        }
+    }
+    probes.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+    probes
 }
 
 #[derive(Default)]
@@ -231,6 +301,29 @@ fn main() -> Result<()> {
         );
         if args.show_legal {
             println!("  legal {}", move_list_text(&legal_moves));
+        }
+        if args.root_top > 0 {
+            for (rank, probe) in probe_root_moves(&model, &position, args.depth)
+                .into_iter()
+                .take(args.root_top)
+                .enumerate()
+            {
+                println!(
+                    "  root rank={} move={} score={} gives_check={} child_in_check={} child_legal_moves={} child_checking_moves={} child_static_eval_for_opponent={:.1} nodes={} qnodes={} check_evasion_extensions={} pv={}",
+                    rank + 1,
+                    format_move_usi(probe.mv),
+                    score_text(probe.score),
+                    probe.gives_check,
+                    probe.child_in_check,
+                    probe.child_legal_moves,
+                    probe.child_checking_moves,
+                    probe.child_static_eval_for_opponent,
+                    probe.nodes,
+                    probe.qnodes,
+                    probe.check_evasion_extensions,
+                    pv_text(&probe.pv)
+                );
+            }
         }
         println!("  sfen {}", position.to_sfen_owned());
     }
