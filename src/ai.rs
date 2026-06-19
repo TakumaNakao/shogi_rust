@@ -17,6 +17,30 @@ const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
 const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 3;
 const USI_SCORE_CP_LIMIT: i32 = 2_000;
+const USI_SCORE_CP_SOFT_START: i32 = 1_000;
+
+fn usi_display_score_cp(score: f32) -> i32 {
+    if !score.is_finite() {
+        return if score.is_sign_negative() {
+            -USI_SCORE_CP_LIMIT
+        } else {
+            USI_SCORE_CP_LIMIT
+        };
+    }
+
+    let sign = if score < 0.0 { -1 } else { 1 };
+    let abs_score = score.abs();
+    let soft_start = USI_SCORE_CP_SOFT_START as f32;
+    let limit = USI_SCORE_CP_LIMIT as f32;
+    let displayed = if abs_score <= soft_start {
+        abs_score
+    } else {
+        let tail = limit - soft_start;
+        soft_start + tail * (1.0 - (-(abs_score - soft_start) / tail).exp())
+    };
+
+    sign * (displayed.round() as i32).min(USI_SCORE_CP_LIMIT)
+}
 
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -585,8 +609,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     .join(" ");
 
                 // 評価値は手番視点に変換する
-                let score_cp =
-                    (best_eval_for_depth as i32).clamp(-USI_SCORE_CP_LIMIT, USI_SCORE_CP_LIMIT);
+                let score_cp = usi_display_score_cp(best_eval_for_depth);
 
                 if self.emit_info {
                     println!(
@@ -604,5 +627,30 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
         best_move
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usi_display_score_keeps_small_values() {
+        assert_eq!(0, usi_display_score_cp(0.0));
+        assert_eq!(500, usi_display_score_cp(500.0));
+        assert_eq!(-500, usi_display_score_cp(-500.0));
+        assert_eq!(1000, usi_display_score_cp(1000.0));
+    }
+
+    #[test]
+    fn usi_display_score_soft_limits_large_values() {
+        let two_thousand = usi_display_score_cp(2000.0);
+        let four_thousand = usi_display_score_cp(4000.0);
+        assert!(two_thousand > 1000);
+        assert!(four_thousand > two_thousand);
+        assert!(four_thousand < USI_SCORE_CP_LIMIT);
+        assert_eq!(-four_thousand, usi_display_score_cp(-4000.0));
+        assert_eq!(USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::INFINITY));
+        assert_eq!(-USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::NEG_INFINITY));
     }
 }
