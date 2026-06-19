@@ -22,6 +22,10 @@ struct Args {
     top_drops: usize,
     #[arg(long, default_value_t = 0)]
     top_mismatches: usize,
+    #[arg(long)]
+    export_drops: Option<PathBuf>,
+    #[arg(long)]
+    export_mismatches: Option<PathBuf>,
     #[arg(required_unless_present = "record_dir")]
     records: Vec<PathBuf>,
 }
@@ -270,6 +274,23 @@ fn tail_score_summary(
     })
 }
 
+fn limit_count(configured_limit: usize, available: usize) -> usize {
+    if configured_limit == 0 {
+        available
+    } else {
+        configured_limit.min(available)
+    }
+}
+
+fn write_sfen_file(path: &Path, positions: &[String]) -> Result<()> {
+    let content = if positions.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", positions.join("\n"))
+    };
+    fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let model = load_model(&args.weights)?;
@@ -473,12 +494,28 @@ fn main() -> Result<()> {
             baseline_win_score_sum / baseline_win_scored as f32
         );
     }
-    if args.top_drops > 0 && !drop_records.is_empty() {
+    if (args.top_drops > 0 || args.export_drops.is_some()) && !drop_records.is_empty() {
         drop_records.sort_by(|a, b| {
             b.drop
                 .partial_cmp(&a.drop)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+    }
+    if let Some(path) = &args.export_drops {
+        let limit = limit_count(args.top_drops, drop_records.len());
+        let positions = drop_records
+            .iter()
+            .take(limit)
+            .filter_map(|record| record.position_sfen.clone())
+            .collect::<Vec<_>>();
+        write_sfen_file(path, &positions)?;
+        println!(
+            "exported tail drop positions: {} to {}",
+            positions.len(),
+            path.display()
+        );
+    }
+    if args.top_drops > 0 && !drop_records.is_empty() {
         println!("largest tail drops:");
         for record in drop_records.iter().take(args.top_drops) {
             let final_score = record
@@ -505,12 +542,29 @@ fn main() -> Result<()> {
         }
     }
     println!("score/result sign mismatches: {}", score_result_mismatches);
-    if args.top_mismatches > 0 && !mismatch_records.is_empty() {
+    if (args.top_mismatches > 0 || args.export_mismatches.is_some()) && !mismatch_records.is_empty()
+    {
         mismatch_records.sort_by(|a, b| {
             b.margin
                 .partial_cmp(&a.margin)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+    }
+    if let Some(path) = &args.export_mismatches {
+        let limit = limit_count(args.top_mismatches, mismatch_records.len());
+        let positions = mismatch_records
+            .iter()
+            .take(limit)
+            .map(|record| record.final_sfen.clone())
+            .collect::<Vec<_>>();
+        write_sfen_file(path, &positions)?;
+        println!(
+            "exported mismatch positions: {} to {}",
+            positions.len(),
+            path.display()
+        );
+    }
+    if args.top_mismatches > 0 && !mismatch_records.is_empty() {
         println!("largest score/result mismatches:");
         for record in mismatch_records.iter().take(args.top_mismatches) {
             println!(
