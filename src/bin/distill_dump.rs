@@ -7,7 +7,9 @@ use serde::Serialize;
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
+use shogi_core::Move;
 use shogi_lib::Position;
+use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -37,6 +39,10 @@ struct Args {
     max_positions: Option<usize>,
     #[arg(long, default_value_t = 0)]
     jobs: usize,
+    #[arg(long, default_value_t = 0)]
+    teacher_score_top: usize,
+    #[arg(long)]
+    teacher_score_depth: Option<u8>,
 }
 
 #[derive(Serialize)]
@@ -45,6 +51,14 @@ struct DistillRecord {
     teacher_move: String,
     depth: u8,
     legal_moves: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    teacher_scores: Vec<TeacherScoreRecord>,
+}
+
+#[derive(Serialize)]
+struct TeacherScoreRecord {
+    move_usi: String,
+    score: f32,
 }
 
 struct DumpedRecord {
@@ -87,6 +101,76 @@ fn create_writer(path: &Path) -> Result<BufWriter<File>> {
     Ok(BufWriter::new(File::create(path)?))
 }
 
+fn model_move_score(model: &SparseModel, position: &Position, mv: Move) -> f32 {
+    let mut child = position.clone();
+    child.do_move(mv);
+    child.switch_turn();
+    model.predict_from_position(&child)
+}
+
+fn ordered_teacher_candidates(
+    model: &SparseModel,
+    position: &Position,
+    legal_moves: &[Move],
+    best_move: Move,
+    limit: usize,
+) -> Vec<Move> {
+    let mut ranked = legal_moves
+        .iter()
+        .map(|&mv| (mv, model_move_score(model, position, mv)))
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+
+    let mut candidates = Vec::with_capacity(limit.min(legal_moves.len()));
+    candidates.push(best_move);
+    for (mv, _) in ranked {
+        if candidates.len() >= limit {
+            break;
+        }
+        if mv != best_move {
+            candidates.push(mv);
+        }
+    }
+    candidates
+}
+
+fn sanitize_teacher_score(score: f32) -> f32 {
+    const LIMIT: f32 = 100_000.0;
+    if score == f32::INFINITY {
+        LIMIT
+    } else if score == -f32::INFINITY {
+        -LIMIT
+    } else {
+        score.clamp(-LIMIT, LIMIT)
+    }
+}
+
+fn teacher_move_scores(
+    model: &SparseModel,
+    position: &Position,
+    candidates: &[Move],
+    depth: u8,
+) -> Vec<TeacherScoreRecord> {
+    candidates
+        .iter()
+        .filter_map(|&mv| {
+            let mut child = position.clone();
+            child.do_move(mv);
+            let evaluator = SharedModelEvaluator { model };
+            let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
+            ai.set_emit_info(false);
+            ai.sennichite_detector.record_position(&child);
+            let child_depth = depth.saturating_sub(1);
+            let (score, _) =
+                ai.alpha_beta_search(&mut child, child_depth, -f32::INFINITY, f32::INFINITY)?;
+            Some(TeacherScoreRecord {
+                move_usi: format_move_usi(mv),
+                score: sanitize_teacher_score(-score),
+            })
+        })
+        .collect()
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     if args.depth == 0 {
@@ -94,6 +178,11 @@ fn main() -> Result<()> {
     }
     if args.valid_percent > 90 {
         return Err(anyhow!("--valid-percent must be 0..=90"));
+    }
+    if let Some(teacher_score_depth) = args.teacher_score_depth {
+        if teacher_score_depth == 0 {
+            return Err(anyhow!("--teacher-score-depth must be greater than zero"));
+        }
     }
     if args.jobs > 0 {
         rayon::ThreadPoolBuilder::new()
@@ -135,12 +224,26 @@ fn main() -> Result<()> {
             if !legal_moves.contains(&best_move) {
                 return None;
             }
+            let teacher_scores = if args.teacher_score_top == 0 {
+                Vec::new()
+            } else {
+                let score_depth = args.teacher_score_depth.unwrap_or(args.depth);
+                let candidates = ordered_teacher_candidates(
+                    &model,
+                    &position,
+                    &legal_moves,
+                    best_move,
+                    args.teacher_score_top,
+                );
+                teacher_move_scores(&model, &position, &candidates, score_depth)
+            };
 
             let record = DistillRecord {
                 sfen: position.to_sfen_owned(),
                 teacher_move: format_move_usi(best_move),
                 depth: args.depth,
                 legal_moves: legal_moves.len(),
+                teacher_scores,
             };
             let line = serde_json::to_string(&record).ok()?;
             Some(DumpedRecord {
