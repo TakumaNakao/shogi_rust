@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
+use shogi_ai::utils::{format_move_usi, parse_usi_move_for_color, position_from_sfen_or_usi};
 use shogi_core::Move;
 use shogi_lib::Position;
 use std::fs;
@@ -15,9 +15,13 @@ struct Args {
     max_positions: usize,
     #[arg(long, default_value_t = 20)]
     show: usize,
+    #[arg(long, default_value_t = false)]
+    all_plies: bool,
+    #[arg(long, default_value_t = false)]
+    ordered: bool,
 }
 
-fn reference_quiescence_moves(position: &Position) -> Vec<String> {
+fn reference_quiescence_moves(position: &Position, ordered: bool) -> Vec<String> {
     let mut moves = position.legal_moves();
     moves.retain(|m| {
         if let Move::Normal { to, .. } = *m {
@@ -26,22 +30,25 @@ fn reference_quiescence_moves(position: &Position) -> Vec<String> {
             position.is_check_move(*m)
         }
     });
-    sorted_move_texts(moves.into_iter())
+    move_texts(moves.into_iter(), ordered)
 }
 
-fn current_quiescence_moves(position: &Position) -> Vec<String> {
-    sorted_move_texts(position.legal_quiescence_moves().into_iter())
+fn current_quiescence_moves(position: &Position, ordered: bool) -> Vec<String> {
+    move_texts(position.legal_quiescence_moves().into_iter(), ordered)
 }
 
-fn sorted_move_texts(moves: impl Iterator<Item = Move>) -> Vec<String> {
+fn move_texts(moves: impl Iterator<Item = Move>, ordered: bool) -> Vec<String> {
     let mut moves = moves.map(format_move_usi).collect::<Vec<_>>();
-    moves.sort();
+    if !ordered {
+        moves.sort();
+    }
     moves
 }
 
 fn load_positions(
     paths: &[PathBuf],
     max_positions: usize,
+    all_plies: bool,
 ) -> Result<Vec<(PathBuf, usize, Position)>> {
     let mut positions = Vec::new();
     for path in paths {
@@ -52,16 +59,20 @@ fn load_positions(
             if line.is_empty() {
                 continue;
             }
-            let Some(position) = position_from_sfen_or_usi(line) else {
-                return Err(anyhow!(
-                    "{}:{} invalid position",
-                    path.display(),
-                    line_index + 1
-                ));
+            let line_positions = if all_plies {
+                positions_from_line(line).ok_or_else(|| {
+                    anyhow!("{}:{} invalid position", path.display(), line_index + 1)
+                })?
+            } else {
+                vec![position_from_sfen_or_usi(line).ok_or_else(|| {
+                    anyhow!("{}:{} invalid position", path.display(), line_index + 1)
+                })?]
             };
-            positions.push((path.clone(), line_index + 1, position));
-            if max_positions > 0 && positions.len() >= max_positions {
-                return Ok(positions);
+            for position in line_positions {
+                positions.push((path.clone(), line_index + 1, position));
+                if max_positions > 0 && positions.len() >= max_positions {
+                    return Ok(positions);
+                }
             }
         }
     }
@@ -71,17 +82,37 @@ fn load_positions(
     Ok(positions)
 }
 
+fn positions_from_line(line: &str) -> Option<Vec<Position>> {
+    let line = line.strip_prefix("position ").unwrap_or(line.trim());
+    if line == "startpos" || line.starts_with("startpos moves ") {
+        let mut position = Position::default();
+        let mut positions = vec![position.clone()];
+        if let Some(moves_part) = line.strip_prefix("startpos moves ") {
+            for token in moves_part.split_whitespace() {
+                let mv = parse_usi_move_for_color(token, position.side_to_move())?;
+                if !position.legal_moves().contains(&mv) {
+                    return None;
+                }
+                position.do_move(mv);
+                positions.push(position.clone());
+            }
+        }
+        return Some(positions);
+    }
+    position_from_sfen_or_usi(line).map(|position| vec![position])
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
-    let positions = load_positions(&args.input, args.max_positions)?;
+    let positions = load_positions(&args.input, args.max_positions, args.all_plies)?;
     let mut mismatches = 0usize;
     let mut shown = 0usize;
     let mut total_reference = 0usize;
     let mut total_current = 0usize;
 
     for (path, line, position) in &positions {
-        let reference = reference_quiescence_moves(position);
-        let current = current_quiescence_moves(position);
+        let reference = reference_quiescence_moves(position, args.ordered);
+        let current = current_quiescence_moves(position, args.ordered);
         total_reference += reference.len();
         total_current += current.len();
         if reference != current {
@@ -116,6 +147,8 @@ fn main() -> Result<()> {
 
     println!("positions: {}", positions.len());
     println!("mismatches: {}", mismatches);
+    println!("ordered: {}", args.ordered);
+    println!("all plies: {}", args.all_plies);
     println!("reference candidates: {}", total_reference);
     println!("current candidates: {}", total_current);
     if mismatches > 0 {
