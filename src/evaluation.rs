@@ -1,15 +1,15 @@
 #![allow(dead_code)]
 use anyhow::Result;
+use rand::prelude::*;
+use rand_distr::Distribution;
+use rayon::prelude::*;
 use shogi_core::{Color, Piece, PieceKind, Square};
+use shogi_lib;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::LazyLock;
-use rand::prelude::*;
-use rand_distr::Distribution;
-use rayon::prelude::*;
-use shogi_lib;
 
 // --- Piece Values ---
 const PAWN_VALUE: f32 = 100.0;
@@ -118,16 +118,35 @@ fn hand_kind_to_offset(kind: PieceKind) -> Option<usize> {
         PieceKind::Lance => Some(MAX_HAND_PAWNS),
         PieceKind::Knight => Some(MAX_HAND_PAWNS + MAX_HAND_LANCES),
         PieceKind::Silver => Some(MAX_HAND_PAWNS + MAX_HAND_LANCES + MAX_HAND_KNIGHTS),
-        PieceKind::Gold => Some(MAX_HAND_PAWNS + MAX_HAND_LANCES + MAX_HAND_KNIGHTS + MAX_HAND_SILVERS),
-        PieceKind::Bishop => Some(MAX_HAND_PAWNS + MAX_HAND_LANCES + MAX_HAND_KNIGHTS + MAX_HAND_SILVERS + MAX_HAND_GOLDS),
-        PieceKind::Rook => Some(MAX_HAND_PAWNS + MAX_HAND_LANCES + MAX_HAND_KNIGHTS + MAX_HAND_SILVERS + MAX_HAND_GOLDS + MAX_HAND_BISHOPS),
+        PieceKind::Gold => {
+            Some(MAX_HAND_PAWNS + MAX_HAND_LANCES + MAX_HAND_KNIGHTS + MAX_HAND_SILVERS)
+        }
+        PieceKind::Bishop => Some(
+            MAX_HAND_PAWNS + MAX_HAND_LANCES + MAX_HAND_KNIGHTS + MAX_HAND_SILVERS + MAX_HAND_GOLDS,
+        ),
+        PieceKind::Rook => Some(
+            MAX_HAND_PAWNS
+                + MAX_HAND_LANCES
+                + MAX_HAND_KNIGHTS
+                + MAX_HAND_SILVERS
+                + MAX_HAND_GOLDS
+                + MAX_HAND_BISHOPS,
+        ),
         _ => None,
     }
 }
 
 fn piece_to_id(piece: Piece, sq: Option<Square>, hand_index: usize, turn: Color) -> Option<usize> {
-    let normalized_color = if piece.color() == turn { Color::Black } else { Color::White };
-    let color_offset = if normalized_color == Color::Black { 0 } else { 1 };
+    let normalized_color = if piece.color() == turn {
+        Color::Black
+    } else {
+        Color::White
+    };
+    let color_offset = if normalized_color == Color::Black {
+        0
+    } else {
+        1
+    };
 
     if let Some(sq) = sq {
         let normalized_sq = if turn == Color::Black { sq } else { sq.flip() };
@@ -184,11 +203,18 @@ pub fn extract_kpp_features_and_material(pos: &shogi_lib::Position) -> (Vec<usiz
     let king_sq = match king_sq {
         Some(sq) => sq,
         None => {
-            println!("Warning: King not found for side {:?}. Skipping this position.", turn);
+            println!(
+                "Warning: King not found for side {:?}. Skipping this position.",
+                turn
+            );
             return (vec![], 0.0);
         }
     };
-    let normalized_king_sq = if turn == Color::Black { king_sq } else { king_sq.flip() };
+    let normalized_king_sq = if turn == Color::Black {
+        king_sq
+    } else {
+        king_sq.flip()
+    };
     let king_sq_index = (normalized_king_sq.index() - 1) as usize;
 
     for color in [Color::Black, Color::White] {
@@ -257,7 +283,6 @@ pub fn calculate_material_advantage(pos: &shogi_lib::Position) -> f32 {
     material
 }
 
-
 #[derive(Default, Clone)]
 pub struct SparseModel {
     pub w: Vec<f32>,
@@ -293,14 +318,20 @@ impl SparseModel {
 
         let expected_w_bytes = MAX_FEATURES * 4;
         if buffer.len() - offset != expected_w_bytes {
-            return Err(anyhow::anyhow!("File size mismatch for weights. Expected {} bytes, got {}.", expected_w_bytes + 8, buffer.len()));
+            return Err(anyhow::anyhow!(
+                "File size mismatch for weights. Expected {} bytes, got {}.",
+                expected_w_bytes + 8,
+                buffer.len()
+            ));
         }
 
         for i in 0..MAX_FEATURES {
             let start = offset + i * 4;
             let end = start + 4;
             if end > buffer.len() {
-                return Err(anyhow::anyhow!("Unexpected end of file while reading weights."));
+                return Err(anyhow::anyhow!(
+                    "Unexpected end of file while reading weights."
+                ));
             }
             self.w[i] = f32::from_le_bytes(buffer[start..end].try_into()?);
         }
@@ -320,8 +351,15 @@ impl SparseModel {
         }
 
         file.write_all(&buffer)?;
-        
-        println!("Max W: {:?}, Material Coeff: {}", self.w.iter().cloned().max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)), self.material_coeff);
+
+        println!(
+            "Max W: {:?}, Material Coeff: {}",
+            self.w
+                .iter()
+                .cloned()
+                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)),
+            self.material_coeff
+        );
 
         Ok(())
     }
@@ -395,7 +433,11 @@ impl SparseModel {
                 return 0.0;
             }
         };
-        let normalized_king_sq = if turn == Color::Black { king_sq } else { king_sq.flip() };
+        let normalized_king_sq = if turn == Color::Black {
+            king_sq
+        } else {
+            king_sq.flip()
+        };
         let king_sq_index = (normalized_king_sq.index() - 1) as usize;
 
         for color in [Color::Black, Color::White] {
@@ -408,7 +450,8 @@ impl SparseModel {
                     material -= count as f32 * value;
                 }
                 for i in 0..count {
-                    if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize, turn) {
+                    if let Some(id) = piece_to_id(Piece::new(*kind, color), None, i as usize, turn)
+                    {
                         piece_ids.push(id);
                     }
                 }
@@ -497,7 +540,12 @@ impl SparseModel {
                         }
                     }
                 }
-                (is_correct, sparse_grads, teacher_material, best_model_material)
+                (
+                    is_correct,
+                    sparse_grads,
+                    teacher_material,
+                    best_model_material,
+                )
             })
             .collect();
 
@@ -525,8 +573,8 @@ impl SparseModel {
             self.w[i] += g / total_samples as f32;
         }
 
-        self.material_coeff += material_grad / total_samples as f32 - self.kpp_eta * self.l2_lambda * self.material_coeff;
-
+        self.material_coeff += material_grad / total_samples as f32
+            - self.kpp_eta * self.l2_lambda * self.material_coeff;
 
         (correct_predictions, total_samples)
     }
@@ -535,12 +583,21 @@ impl SparseModel {
         &mut self,
         batch: &[(shogi_lib::Position, shogi_core::Move)],
     ) -> (f32, usize) {
+        self.update_batch_with_cross_entropy_temperature(batch, 600.0)
+    }
+
+    pub fn update_batch_with_cross_entropy_temperature(
+        &mut self,
+        batch: &[(shogi_lib::Position, shogi_core::Move)],
+        softmax_temperature: f32,
+    ) -> (f32, usize) {
         let total_samples = batch.len();
         if total_samples == 0 {
             return (0.0, 0);
         }
-
-        const SOFTMAX_TEMPERATURE: f32 = 600.0;
+        if !softmax_temperature.is_finite() || softmax_temperature <= 0.0 {
+            return (0.0, 0);
+        }
 
         let results: Vec<(HashMap<usize, f32>, f32, f32, bool)> = batch
             .par_iter()
@@ -569,7 +626,7 @@ impl SparseModel {
                     .fold(f32::NEG_INFINITY, f32::max);
                 let exp_scores: Vec<f32> = move_data
                     .iter()
-                    .map(|d| ((d.3 - max_score) / SOFTMAX_TEMPERATURE).exp())
+                    .map(|d| ((d.3 - max_score) / softmax_temperature).exp())
                     .collect();
                 let total_score = exp_scores.iter().sum::<f32>();
 
@@ -584,11 +641,8 @@ impl SparseModel {
                             loss = -prob.max(1e-7).ln();
                         }
 
-                        let delta = if mv == teacher_move {
-                            prob - 1.0
-                        } else {
-                            prob
-                        } / SOFTMAX_TEMPERATURE;
+                        let delta = if mv == teacher_move { prob - 1.0 } else { prob }
+                            / softmax_temperature;
 
                         for &idx in features {
                             *sparse_grads.entry(idx).or_insert(0.0) += delta;
@@ -624,17 +678,14 @@ impl SparseModel {
         let avg_loss = loss / valid_samples as f32;
 
         for (i, grad) in w_grads {
-            self.w[i] -=
-                self.kpp_eta * (grad / valid_samples as f32 + self.l2_lambda * self.w[i]);
+            self.w[i] -= self.kpp_eta * (grad / valid_samples as f32 + self.l2_lambda * self.w[i]);
         }
         self.material_coeff -= self.kpp_eta
-            * (material_grad_total / valid_samples as f32
-                + self.l2_lambda * self.material_coeff);
+            * (material_grad_total / valid_samples as f32 + self.l2_lambda * self.material_coeff);
 
         (avg_loss, valid_samples)
     }
 }
-
 
 pub struct SparseModelEvaluator {
     pub model: SparseModel,
@@ -649,7 +700,6 @@ impl SparseModelEvaluator {
     }
 }
 
-
 impl Evaluator for SparseModelEvaluator {
     fn evaluate(&self, position: &shogi_lib::Position) -> f32 {
         self.model.predict_from_position(position)
@@ -660,30 +710,53 @@ impl Evaluator for SparseModelEvaluator {
 
 fn index_to_board_kind(index: usize) -> Option<PieceKind> {
     match index {
-        0 => Some(PieceKind::Pawn), 1 => Some(PieceKind::Lance), 2 => Some(PieceKind::Knight),
-        3 => Some(PieceKind::Silver), 4 => Some(PieceKind::Gold), 5 => Some(PieceKind::Bishop),
-        6 => Some(PieceKind::Rook), 7 => Some(PieceKind::ProPawn), 8 => Some(PieceKind::ProLance),
-        9 => Some(PieceKind::ProKnight), 10 => Some(PieceKind::ProSilver), 11 => Some(PieceKind::ProBishop),
-        12 => Some(PieceKind::ProRook), 13 => Some(PieceKind::King),
+        0 => Some(PieceKind::Pawn),
+        1 => Some(PieceKind::Lance),
+        2 => Some(PieceKind::Knight),
+        3 => Some(PieceKind::Silver),
+        4 => Some(PieceKind::Gold),
+        5 => Some(PieceKind::Bishop),
+        6 => Some(PieceKind::Rook),
+        7 => Some(PieceKind::ProPawn),
+        8 => Some(PieceKind::ProLance),
+        9 => Some(PieceKind::ProKnight),
+        10 => Some(PieceKind::ProSilver),
+        11 => Some(PieceKind::ProBishop),
+        12 => Some(PieceKind::ProRook),
+        13 => Some(PieceKind::King),
         _ => None,
     }
 }
 
 fn index_to_hand_kind_and_offset(index: usize) -> Option<(PieceKind, usize)> {
     let mut current_offset = 0;
-    if index < MAX_HAND_PAWNS { return Some((PieceKind::Pawn, index)); }
+    if index < MAX_HAND_PAWNS {
+        return Some((PieceKind::Pawn, index));
+    }
     current_offset += MAX_HAND_PAWNS;
-    if index < current_offset + MAX_HAND_LANCES { return Some((PieceKind::Lance, index - current_offset)); }
+    if index < current_offset + MAX_HAND_LANCES {
+        return Some((PieceKind::Lance, index - current_offset));
+    }
     current_offset += MAX_HAND_LANCES;
-    if index < current_offset + MAX_HAND_KNIGHTS { return Some((PieceKind::Knight, index - current_offset)); }
+    if index < current_offset + MAX_HAND_KNIGHTS {
+        return Some((PieceKind::Knight, index - current_offset));
+    }
     current_offset += MAX_HAND_KNIGHTS;
-    if index < current_offset + MAX_HAND_SILVERS { return Some((PieceKind::Silver, index - current_offset)); }
+    if index < current_offset + MAX_HAND_SILVERS {
+        return Some((PieceKind::Silver, index - current_offset));
+    }
     current_offset += MAX_HAND_SILVERS;
-    if index < current_offset + MAX_HAND_GOLDS { return Some((PieceKind::Gold, index - current_offset)); }
+    if index < current_offset + MAX_HAND_GOLDS {
+        return Some((PieceKind::Gold, index - current_offset));
+    }
     current_offset += MAX_HAND_GOLDS;
-    if index < current_offset + MAX_HAND_BISHOPS { return Some((PieceKind::Bishop, index - current_offset)); }
+    if index < current_offset + MAX_HAND_BISHOPS {
+        return Some((PieceKind::Bishop, index - current_offset));
+    }
     current_offset += MAX_HAND_BISHOPS;
-    if index < current_offset + MAX_HAND_ROOKS { return Some((PieceKind::Rook, index - current_offset)); }
+    if index < current_offset + MAX_HAND_ROOKS {
+        return Some((PieceKind::Rook, index - current_offset));
+    }
     None
 }
 
@@ -696,14 +769,22 @@ fn id_to_piece_info(id: usize) -> Option<(PieceKind, Option<Square>, Option<usiz
         let sq_index = remaining_id % NUM_SQUARES;
         let piece_kind = index_to_board_kind(kind_index)?;
         let normalized_sq = Square::from_u8(sq_index as u8 + 1)?;
-        let normalized_color = if color_offset == 0 { Color::Black } else { Color::White };
+        let normalized_color = if color_offset == 0 {
+            Color::Black
+        } else {
+            Color::White
+        };
         Some((piece_kind, Some(normalized_sq), None, normalized_color))
     } else {
         let hand_id = id - board_pieces_total;
         let color_offset = hand_id / NUM_HAND_PIECE_SLOTS_PER_PLAYER;
         let remaining_hand_id = hand_id % NUM_HAND_PIECE_SLOTS_PER_PLAYER;
         let (piece_kind, hand_index) = index_to_hand_kind_and_offset(remaining_hand_id)?;
-        let normalized_color = if color_offset == 0 { Color::Black } else { Color::White };
+        let normalized_color = if color_offset == 0 {
+            Color::Black
+        } else {
+            Color::White
+        };
         Some((piece_kind, None, Some(hand_index), normalized_color))
     }
 }
@@ -716,10 +797,24 @@ fn pair_index_to_ids(pair_index: usize) -> Option<(usize, usize)> {
     id2 -= 1;
     let pair_index_base = id2 * (id2 - 1) / 2;
     let id1 = pair_index - pair_index_base;
-    if id1 < id2 { Some((id1, id2)) } else { None }
+    if id1 < id2 {
+        Some((id1, id2))
+    } else {
+        None
+    }
 }
 
-pub type KppInfo = (Square, PieceKind, Option<Square>, Option<usize>, Color, PieceKind, Option<Square>, Option<usize>, Color);
+pub type KppInfo = (
+    Square,
+    PieceKind,
+    Option<Square>,
+    Option<usize>,
+    Color,
+    PieceKind,
+    Option<Square>,
+    Option<usize>,
+    Color,
+);
 
 pub fn index_to_kpp_info(index: usize) -> Option<KppInfo> {
     let king_sq_index = index / NUM_PIECE_PAIRS;
@@ -749,14 +844,62 @@ pub fn is_promoted_piece_kind(kind: PieceKind) -> bool {
 // Helper for SFEN character conversion
 pub fn piece_kind_to_sfen_char_base(kind: PieceKind, color: Color) -> char {
     match kind {
-        PieceKind::Pawn | PieceKind::ProPawn => if color == Color::Black { 'P' } else { 'p' },
-        PieceKind::Lance | PieceKind::ProLance => if color == Color::Black { 'L' } else { 'l' },
-        PieceKind::Knight | PieceKind::ProKnight => if color == Color::Black { 'N' } else { 'n' },
-        PieceKind::Silver | PieceKind::ProSilver => if color == Color::Black { 'S' } else { 's' },
-        PieceKind::Gold => if color == Color::Black { 'G' } else { 'g' },
-        PieceKind::Bishop | PieceKind::ProBishop => if color == Color::Black { 'B' } else { 'b' },
-        PieceKind::Rook | PieceKind::ProRook => if color == Color::Black { 'R' } else { 'r' },
-        PieceKind::King => if color == Color::Black { 'K' } else { 'k' },
+        PieceKind::Pawn | PieceKind::ProPawn => {
+            if color == Color::Black {
+                'P'
+            } else {
+                'p'
+            }
+        }
+        PieceKind::Lance | PieceKind::ProLance => {
+            if color == Color::Black {
+                'L'
+            } else {
+                'l'
+            }
+        }
+        PieceKind::Knight | PieceKind::ProKnight => {
+            if color == Color::Black {
+                'N'
+            } else {
+                'n'
+            }
+        }
+        PieceKind::Silver | PieceKind::ProSilver => {
+            if color == Color::Black {
+                'S'
+            } else {
+                's'
+            }
+        }
+        PieceKind::Gold => {
+            if color == Color::Black {
+                'G'
+            } else {
+                'g'
+            }
+        }
+        PieceKind::Bishop | PieceKind::ProBishop => {
+            if color == Color::Black {
+                'B'
+            } else {
+                'b'
+            }
+        }
+        PieceKind::Rook | PieceKind::ProRook => {
+            if color == Color::Black {
+                'R'
+            } else {
+                'r'
+            }
+        }
+        PieceKind::King => {
+            if color == Color::Black {
+                'K'
+            } else {
+                'k'
+            }
+        }
     }
 }
 
@@ -825,7 +968,10 @@ pub fn generate_sfen(
                 if is_promoted_piece_kind(piece.piece_kind()) {
                     sfen_board_str.push('+');
                 }
-                sfen_board_str.push(piece_kind_to_sfen_char_base(piece.piece_kind(), piece.color()));
+                sfen_board_str.push(piece_kind_to_sfen_char_base(
+                    piece.piece_kind(),
+                    piece.color(),
+                ));
             } else {
                 count += 1;
             }
