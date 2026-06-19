@@ -45,3 +45,11 @@ path = "src/bin/kpp_weight_check.rs"
 [[bin]]
 name = "kpp_self_learn"
 path = "src/bin/kpp_self_learn.rs"
+
+[[bin]]
+name = "distill_dump"
+path = "src/bin/distill_dump.rs"
+
+[[bin]]
+name = "distill_train"
+path = "src/bin/distill_train.rs"
