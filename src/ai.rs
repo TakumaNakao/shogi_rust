@@ -16,6 +16,7 @@ const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
 const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 4;
+const USI_SCORE_CP_LIMIT: i32 = 2_000;
 
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -599,7 +600,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     .join(" ");
 
                 // 評価値は手番視点に変換する
-                let score_cp = best_eval_for_depth as i32;
+                let score_cp =
+                    (best_eval_for_depth as i32).clamp(-USI_SCORE_CP_LIMIT, USI_SCORE_CP_LIMIT);
 
                 if self.emit_info {
                     println!(
