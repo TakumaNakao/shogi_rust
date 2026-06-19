@@ -67,6 +67,14 @@ fn move_list_text(moves: &[Move]) -> String {
         .join(",")
 }
 
+fn pv_text(pv: &[Move]) -> String {
+    if pv.is_empty() {
+        "none".to_string()
+    } else {
+        move_list_text(pv)
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let model = load_model(&args.weights)?;
@@ -99,6 +107,20 @@ fn main() -> Result<()> {
         ai.sennichite_detector.record_position(&position);
         let best_move = ai.find_best_move(&mut position, args.depth, args.time_limit_ms);
 
+        let search_evaluator = SharedModelEvaluator { model: &model };
+        let mut search_ai = ShogiAI::<_, HISTORY_CAPACITY>::new(search_evaluator);
+        search_ai.set_emit_info(false);
+        search_ai.sennichite_detector.record_position(&position);
+        let search_result = search_ai.alpha_beta_search(
+            &mut position.clone(),
+            args.depth,
+            -f32::INFINITY,
+            f32::INFINITY,
+        );
+        let (search_score, search_pv) = search_result
+            .map(|(score, pv)| (format!("{score:.1}"), pv_text(&pv)))
+            .unwrap_or_else(|| ("interrupted".to_string(), "none".to_string()));
+
         let mut after_text = "after_best=n/a".to_string();
         if let Some(best_move) = best_move {
             position.do_move(best_move);
@@ -115,16 +137,20 @@ fn main() -> Result<()> {
         }
 
         println!(
-            "idx={} side={} in_check={} legal_moves={} checking_moves={} static_eval={:.1} bestmove={} nodes={} qnodes={} {}",
+            "idx={} side={} in_check={} legal_moves={} checking_moves={} static_eval={:.1} search_score={} search_pv={} bestmove={} nodes={} qnodes={} search_nodes={} search_qnodes={} {}",
             probed,
             side_text(position.side_to_move()),
             position.in_check(),
             legal_count,
             checking_count,
             static_eval,
+            search_score,
+            search_pv,
             best_move.map(format_move_usi).unwrap_or_else(|| "none".to_string()),
             ai.nodes_searched(),
             ai.quiescence_nodes_searched(),
+            search_ai.nodes_searched(),
+            search_ai.quiescence_nodes_searched(),
             after_text
         );
         if args.show_legal {
