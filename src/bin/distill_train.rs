@@ -187,6 +187,9 @@ fn main() -> Result<()> {
         "baseline valid samples={} ce={:.6} top1={:.4}",
         valid_valid, base_valid_loss, base_valid_accuracy
     );
+    if args.dry_run {
+        return Ok(());
+    }
 
     for epoch in 1..=args.epochs {
         for chunk in train.chunks(args.batch_size) {
@@ -229,9 +232,7 @@ fn main() -> Result<()> {
         ));
     }
 
-    if !args.dry_run {
-        model.save(&args.output)?;
-        println!("saved {}", args.output.display());
-    }
+    model.save(&args.output)?;
+    println!("saved {}", args.output.display());
     Ok(())
 }
