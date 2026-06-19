@@ -15,6 +15,7 @@ const TRANSPOSITION_TABLE_MAX_ENTRIES: usize = 1_000_000;
 const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
+const QSEARCH_DELTA_MARGIN: f32 = 0.0;
 
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -48,6 +49,8 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     quiescence_moves_considered: u64,
     quiescence_moves_searched: u64,
     quiescence_see_skips: u64,
+    quiescence_delta_skips: u64,
+    quiescence_delta_candidates: u64,
     emit_info: bool,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
@@ -68,6 +71,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             quiescence_moves_considered: 0,
             quiescence_moves_searched: 0,
             quiescence_see_skips: 0,
+            quiescence_delta_skips: 0,
+            quiescence_delta_candidates: 0,
             emit_info: true,
             search_generation: 0,
             stop_signal: None,
@@ -115,6 +120,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn quiescence_see_skips(&self) -> u64 {
         self.quiescence_see_skips
+    }
+
+    pub fn quiescence_delta_skips(&self) -> u64 {
+        self.quiescence_delta_skips
+    }
+
+    pub fn quiescence_delta_candidates(&self) -> u64 {
+        self.quiescence_delta_candidates
     }
 
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
@@ -173,6 +186,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         if stand_pat_score >= beta { return Some((beta, Vec::new())); }
         alpha = alpha.max(stand_pat_score);
 
+        let in_check = position.in_check();
         let mut moves = position.legal_moves();
         
         moves.retain(|m| {
@@ -191,6 +205,23 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
         let mut best_score = stand_pat_score;
         for (mv, _) in scored_moves {
+            if !in_check {
+                if let Move::Normal { to, promote, .. } = mv {
+                    if !promote && !position.is_check_move(mv) {
+                        if let Some(victim) = position.piece_at(to) {
+                            self.quiescence_delta_candidates += 1;
+                            let optimistic = stand_pat_score
+                                + get_piece_value(victim.piece_kind()) as f32
+                                + QSEARCH_DELTA_MARGIN;
+                            if optimistic <= alpha {
+                                self.quiescence_delta_skips += 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
             if self.see(position, mv) < 0 {
                 self.quiescence_see_skips += 1;
                 continue;
@@ -342,6 +373,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_moves_considered = 0;
         self.quiescence_moves_searched = 0;
         self.quiescence_see_skips = 0;
+        self.quiescence_delta_skips = 0;
+        self.quiescence_delta_candidates = 0;
 
         let moves = position.legal_moves();
         if moves.is_empty() { return None; }

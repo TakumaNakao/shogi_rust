@@ -77,6 +77,8 @@ fn main() -> Result<()> {
     let mut total_quiescence_moves_considered = 0u64;
     let mut total_quiescence_moves_searched = 0u64;
     let mut total_quiescence_see_skips = 0u64;
+    let mut total_quiescence_delta_skips = 0u64;
+    let mut total_quiescence_delta_candidates = 0u64;
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -91,6 +93,8 @@ fn main() -> Result<()> {
         total_quiescence_moves_considered += ai.quiescence_moves_considered();
         total_quiescence_moves_searched += ai.quiescence_moves_searched();
         total_quiescence_see_skips += ai.quiescence_see_skips();
+        total_quiescence_delta_skips += ai.quiescence_delta_skips();
+        total_quiescence_delta_candidates += ai.quiescence_delta_candidates();
     }
 
     let elapsed = start.elapsed();
@@ -107,6 +111,8 @@ fn main() -> Result<()> {
     println!("quiescence moves considered: {}", total_quiescence_moves_considered);
     println!("quiescence moves searched: {}", total_quiescence_moves_searched);
     println!("quiescence see skips: {}", total_quiescence_see_skips);
+    println!("quiescence delta candidates: {}", total_quiescence_delta_candidates);
+    println!("quiescence delta skips: {}", total_quiescence_delta_skips);
     println!("elapsed ms: {:.2}", elapsed_secs * 1000.0);
     println!("nodes/sec: {:.2}", nps);
     println!("avg nodes/sample: {:.2}", total_nodes as f64 / args.samples as f64);
@@ -121,6 +127,14 @@ fn main() -> Result<()> {
     println!(
         "quiescence see skip rate: {:.2}%",
         total_quiescence_see_skips as f64 / total_quiescence_moves_considered.max(1) as f64 * 100.0
+    );
+    println!(
+        "quiescence delta skip rate: {:.2}%",
+        total_quiescence_delta_skips as f64 / total_quiescence_moves_considered.max(1) as f64 * 100.0
+    );
+    println!(
+        "quiescence delta candidate skip rate: {:.2}%",
+        total_quiescence_delta_skips as f64 / total_quiescence_delta_candidates.max(1) as f64 * 100.0
     );
 
     Ok(())
