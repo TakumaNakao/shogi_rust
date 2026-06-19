@@ -1,0 +1,89 @@
+use anyhow::{anyhow, Result};
+use clap::Parser;
+use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
+use shogi_ai::evaluation::SparseModel;
+use shogi_ai::utils::position_from_sfen_or_usi;
+use shogi_lib::Position;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+#[derive(Parser, Debug)]
+#[command(about = "Profile KPP evaluation speed")]
+struct Args {
+    #[arg(long, default_value = "./policy_weights_v2.1.0.binary")]
+    weights: PathBuf,
+    #[arg(long, default_value = "./taya36.sfen")]
+    positions: PathBuf,
+    #[arg(long, default_value_t = 4096)]
+    samples: usize,
+    #[arg(long, default_value_t = 100)]
+    repeat: usize,
+    #[arg(long, default_value_t = 0)]
+    seed: u64,
+}
+
+fn load_model(path: &Path) -> Result<SparseModel> {
+    let mut model = SparseModel::new(0.0, 0.0);
+    model
+        .load(path)
+        .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
+    Ok(model)
+}
+
+fn load_positions(path: &Path) -> Result<Vec<Position>> {
+    let content = fs::read_to_string(path)?;
+    let positions = content
+        .lines()
+        .filter_map(position_from_sfen_or_usi)
+        .collect::<Vec<_>>();
+    if positions.is_empty() {
+        return Err(anyhow!("no valid positions loaded from {}", path.display()));
+    }
+    Ok(positions)
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    if args.samples == 0 {
+        return Err(anyhow!("--samples must be greater than zero"));
+    }
+    if args.repeat == 0 {
+        return Err(anyhow!("--repeat must be greater than zero"));
+    }
+
+    let model = load_model(&args.weights)?;
+    let mut positions = load_positions(&args.positions)?;
+    let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
+    positions.shuffle(&mut rng);
+
+    let start = Instant::now();
+    let mut total_evals = 0usize;
+    let mut score_sum = 0.0f64;
+    let mut min_score = f32::INFINITY;
+    let mut max_score = -f32::INFINITY;
+
+    for _ in 0..args.repeat {
+        for i in 0..args.samples {
+            let position = &positions[i % positions.len()];
+            let score = model.predict_from_position(position);
+            total_evals += 1;
+            score_sum += score as f64;
+            min_score = min_score.min(score);
+            max_score = max_score.max(score);
+        }
+    }
+
+    let elapsed = start.elapsed().as_secs_f64();
+    println!("evals: {}", total_evals);
+    println!("score sum: {:.1}", score_sum);
+    println!("min score: {:.1}", min_score);
+    println!("max score: {:.1}", max_score);
+    println!("elapsed ms: {:.2}", elapsed * 1000.0);
+    if elapsed > 0.0 {
+        println!("evals/sec: {:.2}", total_evals as f64 / elapsed);
+    }
+
+    Ok(())
+}
