@@ -3,7 +3,7 @@ use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
 use crate::utils::{format_move_usi, get_piece_value};
-use shogi_core::Move;
+use shogi_core::{Move, PieceKind};
 use shogi_lib::Position;
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -41,6 +41,56 @@ fn usi_display_score_cp(score: f32) -> i32 {
     };
 
     sign * (displayed.round() as i32).min(USI_SCORE_CP_LIMIT)
+}
+
+fn qsearch_move_class(position: &Position, mv: Move) -> u8 {
+    match mv {
+        Move::Normal { to, promote, .. } => {
+            let capture = position.piece_at(to).is_some();
+            let check = position.is_check_move(mv);
+            match (capture, promote, check) {
+                (true, true, _) => 0,
+                (true, false, _) => 1,
+                (false, true, true) => 2,
+                (false, false, true) => 3,
+                (false, true, false) => 4,
+                (false, false, false) => 5,
+            }
+        }
+        Move::Drop { .. } => 6,
+    }
+}
+
+fn move_numeric_key(mv: Move) -> u16 {
+    match mv {
+        Move::Normal { from, to, promote } => {
+            let from = (from.index() - 1) as u16;
+            let to = (to.index() - 1) as u16;
+            from * 81 * 2 + to * 2 + u16::from(promote)
+        }
+        Move::Drop { to, piece } => {
+            81 * 81 * 2 + piece_kind_order(piece.piece_kind()) * 81 + (to.index() - 1) as u16
+        }
+    }
+}
+
+fn piece_kind_order(piece_kind: PieceKind) -> u16 {
+    match piece_kind {
+        PieceKind::Pawn => 0,
+        PieceKind::Lance => 1,
+        PieceKind::Knight => 2,
+        PieceKind::Silver => 3,
+        PieceKind::Gold => 4,
+        PieceKind::Bishop => 5,
+        PieceKind::Rook => 6,
+        PieceKind::King
+        | PieceKind::ProPawn
+        | PieceKind::ProLance
+        | PieceKind::ProKnight
+        | PieceKind::ProSilver
+        | PieceKind::ProBishop
+        | PieceKind::ProRook => 7,
+    }
 }
 
 /// トランスポジションテーブルに格納する評価値の種類
@@ -237,6 +287,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         score
     }
 
+    fn qsearch_order_key(&self, position: &Position, mv: Move, score: i32) -> (i32, u8, u16) {
+        (
+            -score,
+            qsearch_move_class(position, mv),
+            move_numeric_key(mv),
+        )
+    }
+
     pub fn quiescence_search(
         &mut self,
         position: &mut Position,
@@ -278,7 +336,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 )
             })
             .collect();
-        scored_moves.sort_unstable_by_key(|a| -a.1);
+        scored_moves
+            .sort_unstable_by_key(|&(mv, score)| self.qsearch_order_key(position, mv, score));
 
         let mut best_score = stand_pat_score;
         for (mv, _) in scored_moves {
