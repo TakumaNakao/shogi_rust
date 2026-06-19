@@ -140,6 +140,19 @@ fn main() -> Result<()> {
                 );
                 println!("  missing={}", missing.join(","));
                 println!("  extra={}", extra.join(","));
+                if args.ordered && missing.is_empty() && extra.is_empty() {
+                    if let Some(index) = reference
+                        .iter()
+                        .zip(current.iter())
+                        .position(|(lhs, rhs)| lhs != rhs)
+                    {
+                        let start = index.saturating_sub(3);
+                        let end = (index + 8).min(reference.len());
+                        println!("  first_order_diff_index={index}");
+                        println!("  reference_window={}", reference[start..end].join(","));
+                        println!("  current_window={}", current[start..end].join(","));
+                    }
+                }
                 println!("  sfen {}", position.to_sfen_owned());
             }
         }
