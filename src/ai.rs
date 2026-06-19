@@ -77,6 +77,9 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     quiescence_see_skips: u64,
     quiescence_terminal_mates: u64,
     check_evasion_extensions: u64,
+    aspiration_fail_lows: u64,
+    aspiration_fail_highs: u64,
+    aspiration_researches: u64,
     emit_info: bool,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
@@ -99,6 +102,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             quiescence_see_skips: 0,
             quiescence_terminal_mates: 0,
             check_evasion_extensions: 0,
+            aspiration_fail_lows: 0,
+            aspiration_fail_highs: 0,
+            aspiration_researches: 0,
             emit_info: true,
             search_generation: 0,
             stop_signal: None,
@@ -154,6 +160,18 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn check_evasion_extensions(&self) -> u64 {
         self.check_evasion_extensions
+    }
+
+    pub fn aspiration_fail_lows(&self) -> u64 {
+        self.aspiration_fail_lows
+    }
+
+    pub fn aspiration_fail_highs(&self) -> u64 {
+        self.aspiration_fail_highs
+    }
+
+    pub fn aspiration_researches(&self) -> u64 {
+        self.aspiration_researches
     }
 
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
@@ -467,6 +485,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_see_skips = 0;
         self.quiescence_terminal_mates = 0;
         self.check_evasion_extensions = 0;
+        self.aspiration_fail_lows = 0;
+        self.aspiration_fail_highs = 0;
+        self.aspiration_researches = 0;
 
         let moves = position.legal_moves();
         if moves.is_empty() {
@@ -559,6 +580,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             if !search_interrupted {
                 if best_eval_for_depth <= aspiration_alpha || best_eval_for_depth >= aspiration_beta
                 {
+                    if aspiration_alpha.is_finite() && aspiration_beta.is_finite() {
+                        self.aspiration_researches += 1;
+                        if best_eval_for_depth <= aspiration_alpha {
+                            self.aspiration_fail_lows += 1;
+                        } else {
+                            self.aspiration_fail_highs += 1;
+                        }
+                    }
                     alpha = -f32::INFINITY;
                     beta = f32::INFINITY;
                     current_best_move_for_depth = None;
