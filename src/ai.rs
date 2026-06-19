@@ -15,7 +15,7 @@ const TRANSPOSITION_TABLE_MAX_ENTRIES: usize = 1_000_000;
 const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
-const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 3;
+const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 4;
 
 /// トランスポジションテーブルに格納する評価値の種類
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -50,6 +50,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     quiescence_moves_searched: u64,
     quiescence_see_skips: u64,
     check_evasion_extensions: u64,
+    check_evasion_reply4_extensions: u64,
     emit_info: bool,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
@@ -71,6 +72,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             quiescence_moves_searched: 0,
             quiescence_see_skips: 0,
             check_evasion_extensions: 0,
+            check_evasion_reply4_extensions: 0,
             emit_info: true,
             search_generation: 0,
             stop_signal: None,
@@ -122,6 +124,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn check_evasion_extensions(&self) -> u64 {
         self.check_evasion_extensions
+    }
+
+    pub fn check_evasion_reply4_extensions(&self) -> u64 {
+        self.check_evasion_reply4_extensions
     }
 
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
@@ -341,14 +347,22 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 SennichiteStatus::None => {
                     let mut child_depth = depth - 1;
                     let mut child_extension_budget = check_evasion_extension_budget;
-                    if depth == 1
+                    let reply_count = if depth == 1
                         && check_evasion_extension_budget > 0
                         && position.in_check()
-                        && position.legal_moves().len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES
+                    {
+                        Some(position.legal_moves().len())
+                    } else {
+                        None
+                    };
+                    if reply_count.is_some_and(|count| count <= CHECK_EVASION_EXTENSION_MAX_REPLIES)
                     {
                         child_depth = 1;
                         child_extension_budget -= 1;
                         self.check_evasion_extensions += 1;
+                        if reply_count == Some(4) {
+                            self.check_evasion_reply4_extensions += 1;
+                        }
                     }
                     self.alpha_beta_search_internal(
                         position,
@@ -429,6 +443,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_moves_searched = 0;
         self.quiescence_see_skips = 0;
         self.check_evasion_extensions = 0;
+        self.check_evasion_reply4_extensions = 0;
 
         let moves = position.legal_moves();
         if moves.is_empty() {

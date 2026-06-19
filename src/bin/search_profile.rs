@@ -78,6 +78,7 @@ fn main() -> Result<()> {
     let mut total_quiescence_moves_searched = 0u64;
     let mut total_quiescence_see_skips = 0u64;
     let mut total_check_evasion_extensions = 0u64;
+    let mut total_check_evasion_reply4_extensions = 0u64;
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -93,6 +94,7 @@ fn main() -> Result<()> {
         total_quiescence_moves_searched += ai.quiescence_moves_searched();
         total_quiescence_see_skips += ai.quiescence_see_skips();
         total_check_evasion_extensions += ai.check_evasion_extensions();
+        total_check_evasion_reply4_extensions += ai.check_evasion_reply4_extensions();
     }
 
     let elapsed = start.elapsed();
@@ -118,6 +120,10 @@ fn main() -> Result<()> {
     println!(
         "check evasion extensions: {}",
         total_check_evasion_extensions
+    );
+    println!(
+        "check evasion reply4 extensions: {}",
+        total_check_evasion_reply4_extensions
     );
     println!("elapsed ms: {:.2}", elapsed_secs * 1000.0);
     println!("nodes/sec: {:.2}", nps);
