@@ -75,6 +75,8 @@ fn main() -> Result<()> {
     let mut total_nodes = 0u64;
     let mut total_quiescence_nodes = 0u64;
     let mut total_quiescence_moves_considered = 0u64;
+    let mut total_quiescence_moves_generated = 0u64;
+    let mut total_quiescence_moves_discarded = 0u64;
     let mut total_quiescence_moves_searched = 0u64;
     let mut total_quiescence_see_skips = 0u64;
     let mut total_quiescence_terminal_mates = 0u64;
@@ -94,6 +96,8 @@ fn main() -> Result<()> {
         total_nodes += ai.nodes_searched();
         total_quiescence_nodes += ai.quiescence_nodes_searched();
         total_quiescence_moves_considered += ai.quiescence_moves_considered();
+        total_quiescence_moves_generated += ai.quiescence_moves_generated();
+        total_quiescence_moves_discarded += ai.quiescence_moves_discarded();
         total_quiescence_moves_searched += ai.quiescence_moves_searched();
         total_quiescence_see_skips += ai.quiescence_see_skips();
         total_quiescence_terminal_mates += ai.quiescence_terminal_mates();
@@ -117,6 +121,14 @@ fn main() -> Result<()> {
     println!(
         "quiescence moves considered: {}",
         total_quiescence_moves_considered
+    );
+    println!(
+        "quiescence moves generated: {}",
+        total_quiescence_moves_generated
+    );
+    println!(
+        "quiescence moves discarded: {}",
+        total_quiescence_moves_discarded
     );
     println!(
         "quiescence moves searched: {}",
@@ -147,6 +159,11 @@ fn main() -> Result<()> {
     println!(
         "quiescence moves/node: {:.2}",
         total_quiescence_moves_considered as f64 / total_quiescence_nodes.max(1) as f64
+    );
+    println!(
+        "quiescence discard rate: {:.2}%",
+        total_quiescence_moves_discarded as f64 / total_quiescence_moves_generated.max(1) as f64
+            * 100.0
     );
     println!(
         "quiescence see skip rate: {:.2}%",

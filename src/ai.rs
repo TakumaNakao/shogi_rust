@@ -73,6 +73,8 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     nodes_searched: u64,
     quiescence_nodes_searched: u64,
     quiescence_moves_considered: u64,
+    quiescence_moves_generated: u64,
+    quiescence_moves_discarded: u64,
     quiescence_moves_searched: u64,
     quiescence_see_skips: u64,
     quiescence_terminal_mates: u64,
@@ -98,6 +100,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             nodes_searched: 0,
             quiescence_nodes_searched: 0,
             quiescence_moves_considered: 0,
+            quiescence_moves_generated: 0,
+            quiescence_moves_discarded: 0,
             quiescence_moves_searched: 0,
             quiescence_see_skips: 0,
             quiescence_terminal_mates: 0,
@@ -144,6 +148,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn quiescence_moves_considered(&self) -> u64 {
         self.quiescence_moves_considered
+    }
+
+    pub fn quiescence_moves_generated(&self) -> u64 {
+        self.quiescence_moves_generated
+    }
+
+    pub fn quiescence_moves_discarded(&self) -> u64 {
+        self.quiescence_moves_discarded
     }
 
     pub fn quiescence_moves_searched(&self) -> u64 {
@@ -249,6 +261,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         alpha = alpha.max(stand_pat_score);
 
         let mut moves = position.legal_moves();
+        let generated_moves = moves.len();
 
         moves.retain(|m| {
             if let Move::Normal { to, .. } = *m {
@@ -258,6 +271,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         });
 
+        self.quiescence_moves_generated += generated_moves as u64;
+        self.quiescence_moves_discarded += (generated_moves - moves.len()) as u64;
         if moves.is_empty() {
             return Some((stand_pat_score, Vec::new()));
         }
@@ -481,6 +496,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.nodes_searched = 0;
         self.quiescence_nodes_searched = 0;
         self.quiescence_moves_considered = 0;
+        self.quiescence_moves_generated = 0;
+        self.quiescence_moves_discarded = 0;
         self.quiescence_moves_searched = 0;
         self.quiescence_see_skips = 0;
         self.quiescence_terminal_mates = 0;
