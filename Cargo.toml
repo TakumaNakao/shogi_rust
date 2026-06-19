@@ -53,3 +53,7 @@ path = "src/bin/distill_dump.rs"
 [[bin]]
 name = "distill_train"
 path = "src/bin/distill_train.rs"
+
+[[bin]]
+name = "csa_policy_dump"
+path = "src/bin/csa_policy_dump.rs"
