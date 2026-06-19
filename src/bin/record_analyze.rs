@@ -33,6 +33,7 @@ struct Record {
     start_sfen: Option<String>,
     final_position: Position,
     positions: Vec<Position>,
+    moves: Vec<String>,
     plies: usize,
 }
 
@@ -46,6 +47,8 @@ struct TailSummary {
 struct DropRecord {
     drop: f32,
     ply: usize,
+    move_text: Option<String>,
+    position_sfen: Option<String>,
     path: PathBuf,
     result: String,
     reason: String,
@@ -78,7 +81,7 @@ fn parse_move_for_position(position: &Position, move_text: &str) -> Option<Move>
     })
 }
 
-fn parse_position_command(command: &str) -> Result<Vec<Position>> {
+fn parse_position_command(command: &str) -> Result<(Vec<Position>, Vec<String>)> {
     let rest = command
         .trim()
         .strip_prefix("position ")
@@ -110,6 +113,7 @@ fn parse_position_command(command: &str) -> Result<Vec<Position>> {
     let mut position = position_from_sfen_or_usi(&start_text)
         .ok_or_else(|| anyhow!("invalid start position: {}", start_text))?;
     let mut positions = vec![position.clone()];
+    let mut moves = Vec::new();
     for move_text in move_tokens {
         let mv = parse_move_for_position(&position, move_text)
             .ok_or_else(|| anyhow!("invalid move '{}' in {}", move_text, command))?;
@@ -117,10 +121,11 @@ fn parse_position_command(command: &str) -> Result<Vec<Position>> {
             return Err(anyhow!("illegal move '{}' in {}", move_text, command));
         }
         position.do_move(mv);
+        moves.push((*move_text).to_string());
         positions.push(position.clone());
     }
 
-    Ok(positions)
+    Ok((positions, moves))
 }
 
 fn load_record(path: &Path) -> Result<Record> {
@@ -132,6 +137,7 @@ fn load_record(path: &Path) -> Result<Record> {
     let mut start_sfen = None;
     let mut final_position = None;
     let mut positions = None;
+    let mut moves = None;
     let mut plies = 0;
 
     for line in content.lines() {
@@ -144,10 +150,11 @@ fn load_record(path: &Path) -> Result<Record> {
         } else if let Some(rest) = line.strip_prefix("start_sfen ") {
             start_sfen = Some(rest.trim().to_string());
         } else if line.starts_with("position ") {
-            let parsed_positions = parse_position_command(line)?;
+            let (parsed_positions, parsed_moves) = parse_position_command(line)?;
             plies = parsed_positions.len().saturating_sub(1);
             final_position = parsed_positions.last().cloned();
             positions = Some(parsed_positions);
+            moves = Some(parsed_moves);
         }
     }
 
@@ -160,6 +167,7 @@ fn load_record(path: &Path) -> Result<Record> {
         final_position: final_position
             .ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
         positions: positions.ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
+        moves: moves.ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
         plies,
     })
 }
@@ -307,6 +315,11 @@ fn main() -> Result<()> {
                 drop_records.push(DropRecord {
                     drop,
                     ply,
+                    move_text: ply
+                        .checked_sub(1)
+                        .and_then(|move_index| record.moves.get(move_index))
+                        .cloned(),
+                    position_sfen: record.positions.get(ply).map(|position| position.to_sfen_owned()),
                     path: record.path.clone(),
                     result: record.result.clone(),
                     reason: reason.clone(),
@@ -398,7 +411,7 @@ fn main() -> Result<()> {
                 .map(|score| format!("{score:.1}"))
                 .unwrap_or_else(|| "n/a".to_string());
             println!(
-                "  {} drop=ply{}:{:.0} result={} reason={} final_score_for_new={}",
+                "  {} drop=ply{}:{:.0} move={} result={} reason={} final_score_for_new={}",
                 record
                     .path
                     .file_name()
@@ -406,10 +419,14 @@ fn main() -> Result<()> {
                     .unwrap_or("<unknown>"),
                 record.ply,
                 record.drop,
+                record.move_text.as_deref().unwrap_or("n/a"),
                 record.result,
                 record.reason,
                 final_score
             );
+            if let Some(position_sfen) = &record.position_sfen {
+                println!("    position sfen {}", position_sfen);
+            }
         }
     }
     println!("score/result sign mismatches: {}", score_result_mismatches);
