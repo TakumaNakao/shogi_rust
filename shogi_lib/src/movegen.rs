@@ -38,7 +38,7 @@ impl Position {
         self.generate_for_ou(av, &target);
         self.generate_for_um(av, &target);
         self.generate_for_ry(av, &target);
-        self.generate_drop(av, &(!self.occupied_bitboard() & !Bitboard::empty()));
+        self.generate_drop(av, &!self.occupied_bitboard());
     }
     /// Generate moves to evade check, optimized using AttackInfo.
     fn generate_evasions(&self, av: &mut ArrayVec<Move, MAX_LEGAL_MOVES>) {
