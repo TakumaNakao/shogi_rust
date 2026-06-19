@@ -249,7 +249,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         scored_moves.sort_unstable_by_key(|a| -a.1);
         let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
 
-        if (depth as usize) < MAX_DEPTH {
+        if !position.in_check() && (depth as usize) < MAX_DEPTH {
             let killers = self.killer_moves[depth as usize];
             for &killer in killers.iter().flatten().rev() {
                 if let Some(pos) = sorted_moves.iter().position(|&m| m == killer) {
