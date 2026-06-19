@@ -20,6 +20,8 @@ struct Args {
     tail_plies: usize,
     #[arg(long, default_value_t = 0)]
     top_drops: usize,
+    #[arg(long, default_value_t = 0)]
+    top_mismatches: usize,
     #[arg(required_unless_present = "record_dir")]
     records: Vec<PathBuf>,
 }
@@ -53,6 +55,19 @@ struct DropRecord {
     result: String,
     reason: String,
     final_score: Option<f32>,
+}
+
+#[derive(Debug)]
+struct MismatchRecord {
+    margin: f32,
+    path: PathBuf,
+    result: String,
+    reason: String,
+    new_as: Option<Color>,
+    plies: usize,
+    final_score: f32,
+    last_move: Option<String>,
+    final_sfen: String,
 }
 
 fn load_model(path: &Path) -> Result<SparseModel> {
@@ -166,7 +181,8 @@ fn load_record(path: &Path) -> Result<Record> {
         start_sfen,
         final_position: final_position
             .ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
-        positions: positions.ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
+        positions: positions
+            .ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
         moves: moves.ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
         plies,
     })
@@ -197,12 +213,20 @@ fn score_for_new_position(model: &SparseModel, position: &Position, new_as: Colo
         Color::Black => new_as == Color::Black,
         Color::White => new_as == Color::White,
     };
-    if new_to_move { score } else { -score }
+    if new_to_move {
+        score
+    } else {
+        -score
+    }
 }
 
 fn score_for_new(model: &SparseModel, record: &Record) -> Option<f32> {
     let new_as = record.new_as?;
-    Some(score_for_new_position(model, &record.final_position, new_as))
+    Some(score_for_new_position(
+        model,
+        &record.final_position,
+        new_as,
+    ))
 }
 
 fn tail_score_summary(
@@ -261,6 +285,7 @@ fn main() -> Result<()> {
     let mut reason_counts = BTreeMap::<String, usize>::new();
     let mut paired_results = BTreeMap::<String, (usize, usize, usize)>::new();
     let mut drop_records = Vec::new();
+    let mut mismatch_records = Vec::new();
 
     for path in paths {
         let record = load_record(&path)?;
@@ -276,7 +301,9 @@ fn main() -> Result<()> {
             _ => {}
         }
         if let Some(start_sfen) = &record.start_sfen {
-            let entry = paired_results.entry(start_sfen.clone()).or_insert((0, 0, 0));
+            let entry = paired_results
+                .entry(start_sfen.clone())
+                .or_insert((0, 0, 0));
             match record.result.as_str() {
                 "NewWin" => entry.0 += 1,
                 "BaselineWin" => entry.1 += 1,
@@ -294,6 +321,17 @@ fn main() -> Result<()> {
                     new_win_score_sum += score;
                     if score < 0.0 {
                         score_result_mismatches += 1;
+                        mismatch_records.push(MismatchRecord {
+                            margin: -score,
+                            path: record.path.clone(),
+                            result: record.result.clone(),
+                            reason: reason.clone(),
+                            new_as: record.new_as,
+                            plies: record.plies,
+                            final_score: score,
+                            last_move: record.moves.last().cloned(),
+                            final_sfen: record.final_position.to_sfen_owned(),
+                        });
                     }
                 }
                 "BaselineWin" => {
@@ -301,6 +339,17 @@ fn main() -> Result<()> {
                     baseline_win_score_sum += score;
                     if score > 0.0 {
                         score_result_mismatches += 1;
+                        mismatch_records.push(MismatchRecord {
+                            margin: score,
+                            path: record.path.clone(),
+                            result: record.result.clone(),
+                            reason: reason.clone(),
+                            new_as: record.new_as,
+                            plies: record.plies,
+                            final_score: score,
+                            last_move: record.moves.last().cloned(),
+                            final_sfen: record.final_position.to_sfen_owned(),
+                        });
                     }
                 }
                 _ => {}
@@ -319,7 +368,10 @@ fn main() -> Result<()> {
                         .checked_sub(1)
                         .and_then(|move_index| record.moves.get(move_index))
                         .cloned(),
-                    position_sfen: record.positions.get(ply).map(|position| position.to_sfen_owned()),
+                    position_sfen: record
+                        .positions
+                        .get(ply)
+                        .map(|position| position.to_sfen_owned()),
                     path: record.path.clone(),
                     result: record.result.clone(),
                     reason: reason.clone(),
@@ -341,7 +393,11 @@ fn main() -> Result<()> {
             reason,
             record
                 .new_as
-                .map(|side| if side == Color::Black { "black" } else { "white" })
+                .map(|side| if side == Color::Black {
+                    "black"
+                } else {
+                    "white"
+                })
                 .unwrap_or("unknown"),
             record.plies,
             score,
@@ -430,6 +486,35 @@ fn main() -> Result<()> {
         }
     }
     println!("score/result sign mismatches: {}", score_result_mismatches);
+    if args.top_mismatches > 0 && !mismatch_records.is_empty() {
+        mismatch_records.sort_by(|a, b| {
+            b.margin
+                .partial_cmp(&a.margin)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        println!("largest score/result mismatches:");
+        for record in mismatch_records.iter().take(args.top_mismatches) {
+            println!(
+                "  {} margin={:.1} result={} reason={} new_as={} plies={} final_score_for_new={:.1} last_move={}",
+                record
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("<unknown>"),
+                record.margin,
+                record.result,
+                record.reason,
+                record
+                    .new_as
+                    .map(|side| if side == Color::Black { "black" } else { "white" })
+                    .unwrap_or("unknown"),
+                record.plies,
+                record.final_score,
+                record.last_move.as_deref().unwrap_or("n/a")
+            );
+            println!("    final sfen {}", record.final_sfen);
+        }
+    }
 
     Ok(())
 }
