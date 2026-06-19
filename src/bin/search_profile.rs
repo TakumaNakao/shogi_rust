@@ -74,6 +74,10 @@ fn main() -> Result<()> {
 
     let mut total_nodes = 0u64;
     let mut total_quiescence_nodes = 0u64;
+    let mut total_quiescence_legal_moves_generated = 0u64;
+    let mut total_quiescence_capture_candidates = 0u64;
+    let mut total_quiescence_quiet_check_candidates = 0u64;
+    let mut total_quiescence_drop_check_candidates = 0u64;
     let mut total_quiescence_moves_considered = 0u64;
     let mut total_quiescence_moves_searched = 0u64;
     let mut total_quiescence_see_skips = 0u64;
@@ -89,6 +93,10 @@ fn main() -> Result<()> {
         ai.find_best_move(&mut position, args.depth, args.time_limit_ms);
         total_nodes += ai.nodes_searched();
         total_quiescence_nodes += ai.quiescence_nodes_searched();
+        total_quiescence_legal_moves_generated += ai.quiescence_legal_moves_generated();
+        total_quiescence_capture_candidates += ai.quiescence_capture_candidates();
+        total_quiescence_quiet_check_candidates += ai.quiescence_quiet_check_candidates();
+        total_quiescence_drop_check_candidates += ai.quiescence_drop_check_candidates();
         total_quiescence_moves_considered += ai.quiescence_moves_considered();
         total_quiescence_moves_searched += ai.quiescence_moves_searched();
         total_quiescence_see_skips += ai.quiescence_see_skips();
@@ -107,8 +115,24 @@ fn main() -> Result<()> {
     println!("total nodes: {}", total_nodes);
     println!("quiescence nodes: {}", total_quiescence_nodes);
     println!(
+        "quiescence legal moves generated: {}",
+        total_quiescence_legal_moves_generated
+    );
+    println!(
         "quiescence moves considered: {}",
         total_quiescence_moves_considered
+    );
+    println!(
+        "quiescence capture candidates: {}",
+        total_quiescence_capture_candidates
+    );
+    println!(
+        "quiescence quiet check candidates: {}",
+        total_quiescence_quiet_check_candidates
+    );
+    println!(
+        "quiescence drop check candidates: {}",
+        total_quiescence_drop_check_candidates
     );
     println!(
         "quiescence moves searched: {}",
@@ -132,6 +156,28 @@ fn main() -> Result<()> {
     println!(
         "quiescence moves/node: {:.2}",
         total_quiescence_moves_considered as f64 / total_quiescence_nodes.max(1) as f64
+    );
+    println!(
+        "quiescence legal moves/node: {:.2}",
+        total_quiescence_legal_moves_generated as f64 / total_quiescence_nodes.max(1) as f64
+    );
+    println!(
+        "quiescence capture candidate rate: {:.2}%",
+        total_quiescence_capture_candidates as f64
+            / total_quiescence_moves_considered.max(1) as f64
+            * 100.0
+    );
+    println!(
+        "quiescence quiet check candidate rate: {:.2}%",
+        total_quiescence_quiet_check_candidates as f64
+            / total_quiescence_moves_considered.max(1) as f64
+            * 100.0
+    );
+    println!(
+        "quiescence drop check candidate rate: {:.2}%",
+        total_quiescence_drop_check_candidates as f64
+            / total_quiescence_moves_considered.max(1) as f64
+            * 100.0
     );
     println!(
         "quiescence see skip rate: {:.2}%",

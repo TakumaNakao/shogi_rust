@@ -72,6 +72,10 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     time_limit: Option<Duration>,
     nodes_searched: u64,
     quiescence_nodes_searched: u64,
+    quiescence_legal_moves_generated: u64,
+    quiescence_capture_candidates: u64,
+    quiescence_quiet_check_candidates: u64,
+    quiescence_drop_check_candidates: u64,
     quiescence_moves_considered: u64,
     quiescence_moves_searched: u64,
     quiescence_see_skips: u64,
@@ -93,6 +97,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             time_limit: None,
             nodes_searched: 0,
             quiescence_nodes_searched: 0,
+            quiescence_legal_moves_generated: 0,
+            quiescence_capture_candidates: 0,
+            quiescence_quiet_check_candidates: 0,
+            quiescence_drop_check_candidates: 0,
             quiescence_moves_considered: 0,
             quiescence_moves_searched: 0,
             quiescence_see_skips: 0,
@@ -132,6 +140,22 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn quiescence_nodes_searched(&self) -> u64 {
         self.quiescence_nodes_searched
+    }
+
+    pub fn quiescence_legal_moves_generated(&self) -> u64 {
+        self.quiescence_legal_moves_generated
+    }
+
+    pub fn quiescence_capture_candidates(&self) -> u64 {
+        self.quiescence_capture_candidates
+    }
+
+    pub fn quiescence_quiet_check_candidates(&self) -> u64 {
+        self.quiescence_quiet_check_candidates
+    }
+
+    pub fn quiescence_drop_check_candidates(&self) -> u64 {
+        self.quiescence_drop_check_candidates
     }
 
     pub fn quiescence_moves_considered(&self) -> u64 {
@@ -220,12 +244,26 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         alpha = alpha.max(stand_pat_score);
 
         let mut moves = position.legal_moves();
+        self.quiescence_legal_moves_generated += moves.len() as u64;
 
         moves.retain(|m| {
             if let Move::Normal { to, .. } = *m {
-                position.piece_at(to).is_some() || position.is_check_move(*m)
+                if position.piece_at(to).is_some() {
+                    self.quiescence_capture_candidates += 1;
+                    true
+                } else if position.is_check_move(*m) {
+                    self.quiescence_quiet_check_candidates += 1;
+                    true
+                } else {
+                    false
+                }
             } else {
-                position.is_check_move(*m)
+                if position.is_check_move(*m) {
+                    self.quiescence_drop_check_candidates += 1;
+                    true
+                } else {
+                    false
+                }
             }
         });
 
@@ -451,6 +489,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.time_limit = time_limit_ms.map(Duration::from_millis);
         self.nodes_searched = 0;
         self.quiescence_nodes_searched = 0;
+        self.quiescence_legal_moves_generated = 0;
+        self.quiescence_capture_candidates = 0;
+        self.quiescence_quiet_check_candidates = 0;
+        self.quiescence_drop_check_candidates = 0;
         self.quiescence_moves_considered = 0;
         self.quiescence_moves_searched = 0;
         self.quiescence_see_skips = 0;
