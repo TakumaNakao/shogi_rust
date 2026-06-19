@@ -82,6 +82,12 @@ impl Position {
     pub fn in_check(&self) -> bool {
         !self.checkers().is_empty()
     }
+    #[inline(always)]
+    pub fn is_attacked_by(&self, c: Color, sq: Square) -> bool {
+        !self
+            .attackers_to(c, sq, &self.occupied_bitboard())
+            .is_empty()
+    }
     pub fn is_check_move(&self, m: Move) -> bool {
         match m {
             Move::Normal { from, to, promote } => {
@@ -686,8 +692,10 @@ mod tests {
         // P-00AL
         // +
         let pos = Position::new(
-            ShogiCorePartialPosition::from_usi("sfen 6p1k/9/6P1G/9/8L/9/9/9/9 b RBLrb3g4s4n2l16p 1")
-                .expect("failed to parse"),
+            ShogiCorePartialPosition::from_usi(
+                "sfen 6p1k/9/6P1G/9/8L/9/9/9/9 b RBLrb3g4s4n2l16p 1",
+            )
+            .expect("failed to parse"),
         );
         let test_cases = [
             (

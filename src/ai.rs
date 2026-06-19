@@ -1,11 +1,11 @@
-use std::collections::HashMap;
-use shogi_core::{Move};
-use shogi_lib::Position;
-use crate::evaluation::{Evaluator};
+use crate::evaluation::Evaluator;
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
 use crate::utils::{format_move_usi, get_piece_value};
+use shogi_core::Move;
+use shogi_lib::Position;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -120,7 +120,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
         let d = depth as usize;
         if d < MAX_DEPTH {
-            if self.killer_moves[d][0] == Some(mv) { return; }
+            if self.killer_moves[d][0] == Some(mv) {
+                return;
+            }
             self.killer_moves[d][1] = self.killer_moves[d][0];
             self.killer_moves[d][0] = Some(mv);
         }
@@ -128,11 +130,32 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     fn see(&self, position: &Position, mv: Move) -> i32 {
         if let Move::Normal { from, to, .. } = mv {
-            if let (Some(attacker), Some(victim)) = (position.piece_at(from), position.piece_at(to)) {
-                return get_piece_value(victim.piece_kind()) - get_piece_value(attacker.piece_kind());
+            if let (Some(attacker), Some(victim)) = (position.piece_at(from), position.piece_at(to))
+            {
+                return get_piece_value(victim.piece_kind())
+                    - get_piece_value(attacker.piece_kind());
             }
         }
         0
+    }
+
+    fn capture_sequence_see(&self, position: &mut Position, mv: Move) -> i32 {
+        let Move::Normal { to, .. } = mv else {
+            return 0;
+        };
+        let Some(victim) = position.piece_at(to) else {
+            return 0;
+        };
+
+        position.do_move(mv);
+        let is_defended = position.is_attacked_by(position.side_to_move(), to);
+        position.undo_move(mv);
+
+        if is_defended {
+            self.see(position, mv)
+        } else {
+            get_piece_value(victim.piece_kind())
+        }
     }
 
     fn is_time_up(&self) -> bool {
@@ -164,17 +187,26 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         score
     }
 
-    pub fn quiescence_search(&mut self, position: &mut Position, mut alpha: f32, beta: f32) -> Option<(f32, Vec<Move>)> {
-        if self.is_time_up() { return None; }
+    pub fn quiescence_search(
+        &mut self,
+        position: &mut Position,
+        mut alpha: f32,
+        beta: f32,
+    ) -> Option<(f32, Vec<Move>)> {
+        if self.is_time_up() {
+            return None;
+        }
         self.nodes_searched += 1;
         self.quiescence_nodes_searched += 1;
 
         let stand_pat_score = self.evaluator.evaluate(position);
-        if stand_pat_score >= beta { return Some((beta, Vec::new())); }
+        if stand_pat_score >= beta {
+            return Some((beta, Vec::new()));
+        }
         alpha = alpha.max(stand_pat_score);
 
         let mut moves = position.legal_moves();
-        
+
         moves.retain(|m| {
             if let Move::Normal { to, .. } = *m {
                 position.piece_at(to).is_some() || position.is_check_move(*m)
@@ -183,15 +215,25 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         });
 
-        if moves.is_empty() { return Some((stand_pat_score, Vec::new())); }
+        if moves.is_empty() {
+            return Some((stand_pat_score, Vec::new()));
+        }
         self.quiescence_moves_considered += moves.len() as u64;
 
-        let mut scored_moves: Vec<(Move, i32)> = moves.iter().map(|&mv| (mv, self.move_ordering.score_move_without_counter(&mv, position))).collect();
+        let mut scored_moves: Vec<(Move, i32)> = moves
+            .iter()
+            .map(|&mv| {
+                (
+                    mv,
+                    self.move_ordering.score_move_without_counter(&mv, position),
+                )
+            })
+            .collect();
         scored_moves.sort_unstable_by_key(|a| -a.1);
 
         let mut best_score = stand_pat_score;
         for (mv, _) in scored_moves {
-            if self.see(position, mv) < 0 {
+            if self.see(position, mv) < 0 && self.capture_sequence_see(position, mv) < 0 {
                 self.quiescence_see_skips += 1;
                 continue;
             }
@@ -210,9 +252,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
             if let Some((current_score, _)) = score_result {
                 let negated_score = -current_score;
-                if negated_score > best_score { best_score = negated_score; }
+                if negated_score > best_score {
+                    best_score = negated_score;
+                }
                 alpha = alpha.max(negated_score);
-                if alpha >= beta { break; }
+                if alpha >= beta {
+                    break;
+                }
             } else {
                 return None;
             }
@@ -220,9 +266,19 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         Some((best_score, Vec::new()))
     }
 
-    pub fn alpha_beta_search(&mut self, position: &mut Position, depth: u8, mut alpha: f32, mut beta: f32) -> Option<(f32, Vec<Move>)> {
-        if self.is_time_up() { return None; }
-        if depth == 0 { return self.quiescence_search(position, alpha, beta); }
+    pub fn alpha_beta_search(
+        &mut self,
+        position: &mut Position,
+        depth: u8,
+        mut alpha: f32,
+        mut beta: f32,
+    ) -> Option<(f32, Vec<Move>)> {
+        if self.is_time_up() {
+            return None;
+        }
+        if depth == 0 {
+            return self.quiescence_search(position, alpha, beta);
+        }
         self.nodes_searched += 1;
 
         let hash = PositionHasher::calculate_hash(position);
@@ -231,16 +287,22 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         if let Some(entry) = tt_entry {
             if entry.generation == self.search_generation && entry.depth >= depth {
                 match entry.node_type {
-                    NodeType::Exact => return Some((entry.score, entry.best_move.map_or(Vec::new(), |m| vec![m]))),
+                    NodeType::Exact => {
+                        return Some((entry.score, entry.best_move.map_or(Vec::new(), |m| vec![m])))
+                    }
                     NodeType::LowerBound => alpha = alpha.max(entry.score),
                     NodeType::UpperBound => beta = beta.min(entry.score),
                 }
-                if alpha >= beta { return Some((entry.score, entry.best_move.map_or(Vec::new(), |m| vec![m]))); }
+                if alpha >= beta {
+                    return Some((entry.score, entry.best_move.map_or(Vec::new(), |m| vec![m])));
+                }
             }
         }
 
         let moves = position.legal_moves();
-        if moves.is_empty() { return Some((-f32::INFINITY, Vec::new())); }
+        if moves.is_empty() {
+            return Some((-f32::INFINITY, Vec::new()));
+        }
 
         let mut scored_moves = Vec::with_capacity(moves.len());
         for mv in moves.iter() {
@@ -277,7 +339,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let search_result = match sennichite_status {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
                 SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
-                SennichiteStatus::None => self.alpha_beta_search(position, depth - 1, -beta, -alpha),
+                SennichiteStatus::None => {
+                    self.alpha_beta_search(position, depth - 1, -beta, -alpha)
+                }
             };
             self.sennichite_detector.unrecord_last_position();
             position.undo_move(mv);
@@ -295,7 +359,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 }
                 if alpha >= beta {
                     self.update_killer_moves(depth, mv);
-                    self.move_ordering.update_history(&mv, position, depth as i32 * 10);
+                    self.move_ordering
+                        .update_history(&mv, position, depth as i32 * 10);
                     node_type = NodeType::LowerBound;
                     break;
                 }
@@ -303,7 +368,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 return None;
             }
         }
-        
+
         let mut final_pv = Vec::new();
         if let Some(bm) = best_move {
             final_pv.push(bm);
@@ -325,7 +390,12 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.sennichite_detector.check_sennichite(position)
     }
 
-    pub fn find_best_move(&mut self, position: &mut Position, max_depth: u8, time_limit_ms: Option<u64>) -> Option<Move> {
+    pub fn find_best_move(
+        &mut self,
+        position: &mut Position,
+        max_depth: u8,
+        time_limit_ms: Option<u64>,
+    ) -> Option<Move> {
         if self.transposition_table.len() > TRANSPOSITION_TABLE_MAX_ENTRIES {
             self.transposition_table.clear();
         }
@@ -344,7 +414,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_see_skips = 0;
 
         let moves = position.legal_moves();
-        if moves.is_empty() { return None; }
+        if moves.is_empty() {
+            return None;
+        }
 
         let mut scored_moves = Vec::with_capacity(moves.len());
         for mv in moves.iter() {
@@ -353,7 +425,11 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         scored_moves.sort_unstable_by_key(|a| -a.1);
         let mut sorted_moves: Vec<Move> = scored_moves.into_iter().map(|(mv, _)| mv).collect();
         let root_hash = PositionHasher::calculate_hash(position);
-        if let Some(tt_move) = self.transposition_table.get(&root_hash).and_then(|entry| entry.best_move) {
+        if let Some(tt_move) = self
+            .transposition_table
+            .get(&root_hash)
+            .and_then(|entry| entry.best_move)
+        {
             if let Some(pos) = sorted_moves.iter().position(|&m| m == tt_move) {
                 let mv = sorted_moves.remove(pos);
                 sorted_moves.insert(0, mv);
@@ -426,7 +502,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
 
             if !search_interrupted {
-                if best_eval_for_depth <= aspiration_alpha || best_eval_for_depth >= aspiration_beta {
+                if best_eval_for_depth <= aspiration_alpha || best_eval_for_depth >= aspiration_beta
+                {
                     alpha = -f32::INFINITY;
                     beta = f32::INFINITY;
                     current_best_move_for_depth = None;
@@ -445,7 +522,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                         let eval_result = match sennichite_status {
                             SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                            SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
+                            SennichiteStatus::PerpetualCheckLoss => {
+                                Some((f32::INFINITY, Vec::new()))
+                            }
                             SennichiteStatus::None => {
                                 self.alpha_beta_search(position, depth - 1, -beta, -alpha)
                             }
@@ -475,24 +554,25 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 best_move = current_best_move_for_depth;
                 previous_eval = Some(best_eval_for_depth);
                 if let Some(bm) = best_move {
-                    self.move_ordering.update_history(&bm, position, depth as i32 * 20);
+                    self.move_ordering
+                        .update_history(&bm, position, depth as i32 * 20);
                 }
-                
+
                 // --- infoコマンド出力 ---
                 let elapsed_time = self.start_time.unwrap().elapsed().as_millis();
-                let pv_string = best_pv_for_depth.iter().map(|m| format_move_usi(*m)).collect::<Vec<_>>().join(" ");
-                
+                let pv_string = best_pv_for_depth
+                    .iter()
+                    .map(|m| format_move_usi(*m))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
                 // 評価値は手番視点に変換する
                 let score_cp = best_eval_for_depth as i32;
 
                 if self.emit_info {
                     println!(
                         "info depth {} score cp {} time {} nodes {} pv {}",
-                        depth,
-                        score_cp,
-                        elapsed_time,
-                        self.nodes_searched,
-                        pv_string
+                        depth, score_cp, elapsed_time, self.nodes_searched, pv_string
                     );
                 }
                 // --- ここまで ---

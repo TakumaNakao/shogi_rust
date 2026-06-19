@@ -378,7 +378,7 @@ impl Position {
         true
     }
     #[rustfmt::skip]
-    fn attackers_to(&self, c: Color, to: Square, occ: &Bitboard) -> Bitboard {
+    pub(crate) fn attackers_to(&self, c: Color, to: Square, occ: &Bitboard) -> Bitboard {
         let opp = c.flip();
         (     (ATTACK_TABLE.fu.attack(to, opp)      & self.piece_kind_bitboard(PieceKind::Pawn))
             | (ATTACK_TABLE.ky.attack(to, opp, occ) & self.piece_kind_bitboard(PieceKind::Lance))
