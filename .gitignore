@@ -1,4 +1,5 @@
 csa_files/
+data/wdoor/
 target/
 *.png
 *.binary

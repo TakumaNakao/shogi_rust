@@ -55,30 +55,54 @@ cargo build --release --bin kpp_learn
 
 新しく重みを試す場合は、まず `ce` 方式と `--freeze-material` の組み合わせを推奨します。駒得係数を固定し、KPP重みだけを安全に更新します。
 
+#### wdoor/floodgate棋譜の取得
+
+東京大学のwdoor/floodgateアーカイブからCSA棋譜を取得できます。棋譜本体は大きいため `data/wdoor/` に保存し、Git管理対象にはしません。
+
+```bash
+tools/download_wdoor_kifu.sh 2026
+```
+
+取得後の主なパス:
+
+- `data/wdoor/archive/wdoor2026.7z`
+- `data/wdoor/extract/2026`
+
+レート分布を確認して学習用の閾値を決めるには、以下を実行します。
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin csa_rate_stats
+
+target/release/csa_rate_stats \
+  --input data/wdoor/extract/2026 \
+  --thresholds 3000,3500,4000,4500 \
+  --top-players 20
+```
+
 #### 実行例
 
 ```bash
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin kpp_learn
 
 env RUST_FONTCONFIG_DLOPEN=1 target/release/kpp_learn \
-  --input-dir /path/to/csa/2016 \
-  --input-dir /path/to/csa/2017 \
+  --input-dir data/wdoor/extract/2026 \
   --weights ./policy_weights_v2.1.0.binary \
-  --output /tmp/policy_weights_kpp_ce_t600_lr005_seed20260620.binary \
+  --output /tmp/policy_weights_wdoor2026_r4000_ce_seed20260620.binary \
   --epochs 1 \
-  --batch-size 1024 \
-  --chunk-size 1024 \
-  --learning-rate 0.05 \
-  --l2-lambda 0.00001 \
+  --batch-size 2048 \
+  --chunk-size 20000 \
+  --learning-rate 0.005 \
+  --l2-lambda 0.0001 \
   --loss ce \
-  --softmax-temperature 600 \
+  --softmax-temperature 150 \
   --valid-percent 5 \
-  --valid-max-files 512 \
+  --valid-max-files 500 \
   --seed 20260620 \
-  --checkpoint-dir /tmp/kpp_ce_t600_lr005_seed20260620_checkpoints \
-  --checkpoint-every-batches 100 \
-  --log-path /tmp/kpp_ce_t600_lr005_seed20260620.csv \
+  --checkpoint-dir /tmp/kpp_wdoor2026_r4000_ce_seed20260620_checkpoints \
+  --checkpoint-every-batches 200 \
+  --log-path /tmp/kpp_wdoor2026_r4000_ce_seed20260620.csv \
   --freeze-material \
+  --min-player-rate 4000 \
   --decisive-only \
   --exclude-loser-after-ply 100
 ```
