@@ -82,6 +82,18 @@ pub const ALL_HAND_PIECES: [PieceKind; 7] = [
     PieceKind::Rook,
 ];
 
+pub const NNUE_NUM_KING_BUCKETS: usize = NUM_SQUARES * NUM_SQUARES;
+pub const NNUE_NUM_BOARD_FEATURES: usize = NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2;
+pub const NNUE_NUM_HAND_FEATURES: usize = NUM_HAND_PIECE_SLOTS_PER_PLAYER * 2;
+pub const NNUE_NUM_FEATURES: usize = NNUE_NUM_BOARD_FEATURES + NNUE_NUM_HAND_FEATURES;
+
+#[derive(Debug, Clone)]
+pub struct NnueFeatures {
+    pub king_bucket: usize,
+    pub features: Vec<usize>,
+    pub material: f32,
+}
+
 static BOARD_SQUARES: LazyLock<[Square; NUM_SQUARES]> = LazyLock::new(|| {
     std::array::from_fn(|i| Square::from_u8(i as u8 + 1).expect("valid board square"))
 });
@@ -250,6 +262,90 @@ pub fn extract_kpp_features_and_material(pos: &shogi_lib::Position) -> (Vec<usiz
     }
 
     (indices, material)
+}
+
+pub fn extract_nnue_features(pos: &shogi_lib::Position) -> Option<NnueFeatures> {
+    let turn = pos.side_to_move();
+    let mut material = 0.0;
+    let mut features = Vec::with_capacity(40);
+    let mut own_king = None;
+    let mut opponent_king = None;
+
+    for &sq in BOARD_SQUARES.iter() {
+        if let Some(piece) = pos.piece_at(sq) {
+            let value = piece_kind_value(piece.piece_kind());
+            if piece.color() == turn {
+                material += value;
+            } else {
+                material -= value;
+            }
+
+            let normalized_sq = if turn == Color::Black { sq } else { sq.flip() };
+            if piece.piece_kind() == PieceKind::King {
+                if piece.color() == turn {
+                    own_king = Some(normalized_sq);
+                } else {
+                    opponent_king = Some(normalized_sq);
+                }
+            }
+
+            let normalized_color = if piece.color() == turn {
+                Color::Black
+            } else {
+                Color::White
+            };
+            let color_offset = if normalized_color == Color::Black {
+                0
+            } else {
+                NUM_BOARD_PIECE_KINDS * NUM_SQUARES
+            };
+            let kind_index = board_kind_to_index(piece.piece_kind())?;
+            features.push(
+                color_offset + kind_index * NUM_SQUARES + (normalized_sq.index() - 1) as usize,
+            );
+        }
+    }
+
+    let hand_base = NNUE_NUM_BOARD_FEATURES;
+    for color in [Color::Black, Color::White] {
+        let normalized_color = if color == turn {
+            Color::Black
+        } else {
+            Color::White
+        };
+        let color_offset = if normalized_color == Color::Black {
+            0
+        } else {
+            NUM_HAND_PIECE_SLOTS_PER_PLAYER
+        };
+        for kind in ALL_HAND_PIECES.iter() {
+            let count = pos.hand(color).count(*kind).unwrap_or(0);
+            let value = piece_kind_value(*kind);
+            if color == turn {
+                material += count as f32 * value;
+            } else {
+                material -= count as f32 * value;
+            }
+            let kind_offset = hand_kind_to_offset(*kind)?;
+            for i in 0..count {
+                features.push(hand_base + color_offset + kind_offset + i as usize);
+            }
+        }
+    }
+
+    features.sort_unstable();
+    features.dedup();
+
+    let own_king = own_king?;
+    let opponent_king = opponent_king?;
+    let king_bucket =
+        (own_king.index() - 1) as usize * NUM_SQUARES + (opponent_king.index() - 1) as usize;
+
+    Some(NnueFeatures {
+        king_bucket,
+        features,
+        material,
+    })
 }
 
 pub fn calculate_material_advantage(pos: &shogi_lib::Position) -> f32 {
@@ -1005,4 +1101,23 @@ pub fn generate_sfen(
 
     let turn_char = if turn == Color::Black { 'b' } else { 'w' };
     format!("{} {} {} 1", sfen_board_str, turn_char, sfen_hand_str)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nnue_features_are_in_declared_ranges() {
+        let position = shogi_lib::Position::default();
+        let features = extract_nnue_features(&position).expect("initial position has both kings");
+
+        assert!(features.king_bucket < NNUE_NUM_KING_BUCKETS);
+        assert!(!features.features.is_empty());
+        assert!(features
+            .features
+            .iter()
+            .all(|&feature| feature < NNUE_NUM_FEATURES));
+        assert!(features.features.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 }
