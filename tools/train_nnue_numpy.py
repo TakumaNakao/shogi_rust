@@ -71,6 +71,11 @@ def parse_args() -> argparse.Namespace:
         default="teacher_score",
     )
     parser.add_argument(
+        "--target-offset-field",
+        default=None,
+        help="Optional JSONL field to subtract from the target before scaling.",
+    )
+    parser.add_argument(
         "--baseline-field",
         default="static_eval",
         help="Optional JSONL field to compare against the target before training.",
@@ -81,6 +86,7 @@ def parse_args() -> argparse.Namespace:
 def load_jsonl(
     path: Path,
     target_field: str,
+    target_offset_field: str | None,
     target_scale: float,
     baseline_field: str | None,
 ) -> list[Sample]:
@@ -96,6 +102,12 @@ def load_jsonl(
             target = record[target_field]
             if target is None or not math.isfinite(float(target)):
                 continue
+            target_value = float(target)
+            if target_offset_field:
+                offset = record.get(target_offset_field)
+                if offset is None or not math.isfinite(float(offset)):
+                    continue
+                target_value -= float(offset)
             king_bucket = int(record["king_bucket"])
             if not 0 <= king_bucket < NNUE_NUM_KING_BUCKETS:
                 raise ValueError(f"{path}:{line_number}: king_bucket out of range")
@@ -113,7 +125,7 @@ def load_jsonl(
                     king_bucket=king_bucket,
                     features=features,
                     material=float(record["material"]),
-                    target=float(target) / target_scale,
+                    target=target_value / target_scale,
                     baseline=(
                         float(record[baseline_field]) / target_scale
                         if baseline_field and record.get(baseline_field) is not None
@@ -370,10 +382,20 @@ def train(args: argparse.Namespace) -> None:
     rng = np.random.default_rng(args.seed)
     baseline_field = args.baseline_field or None
     train_samples = load_jsonl(
-        args.train, args.target_field, args.target_scale, baseline_field
+        args.train,
+        args.target_field,
+        args.target_offset_field,
+        args.target_scale,
+        baseline_field,
     )
     valid_samples = (
-        load_jsonl(args.valid, args.target_field, args.target_scale, baseline_field)
+        load_jsonl(
+            args.valid,
+            args.target_field,
+            args.target_offset_field,
+            args.target_scale,
+            baseline_field,
+        )
         if args.valid is not None
         else train_samples
     )
@@ -496,6 +518,7 @@ def train(args: argparse.Namespace) -> None:
         "num_king_buckets": NNUE_NUM_KING_BUCKETS,
         "target_scale": args.target_scale,
         "target_field": args.target_field,
+        "target_offset_field": args.target_offset_field,
         "rank_loss_weight": args.rank_loss_weight,
         "rank_temperature_cp": args.rank_temperature_cp,
         "checkpoint_metric": args.checkpoint_metric,
