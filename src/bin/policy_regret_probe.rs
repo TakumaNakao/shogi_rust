@@ -3,7 +3,7 @@ use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::utils::{format_move_usi, parse_usi_move, position_from_sfen_or_usi};
@@ -37,6 +37,8 @@ struct Args {
     show_worst: usize,
     #[arg(long)]
     export_accepted: Option<PathBuf>,
+    #[arg(long)]
+    export_soft: Option<PathBuf>,
     #[arg(long, default_value_t = 100.0)]
     max_accepted_regret_cp: f32,
     #[arg(long, default_value_t = 0)]
@@ -51,6 +53,19 @@ struct Args {
 struct PolicyRecord {
     sfen: String,
     teacher_move: String,
+}
+
+#[derive(Serialize)]
+struct SoftPolicyRecord<'a> {
+    sfen: &'a str,
+    teacher_move: &'a str,
+    teacher_scores: Vec<SoftTeacherScore<'a>>,
+}
+
+#[derive(Serialize)]
+struct SoftTeacherScore<'a> {
+    move_usi: &'a str,
+    score: f32,
 }
 
 #[derive(Clone)]
@@ -206,6 +221,15 @@ fn percentile(mut values: Vec<f32>, percentile: f32) -> f32 {
     values[index]
 }
 
+fn is_accepted_result(result: &ProbeResult, args: &Args) -> bool {
+    result.regret <= args.max_accepted_regret_cp
+        && result.legal_moves >= args.min_accepted_legal_moves
+        && (!args.exclude_accepted_in_check || !result.in_check)
+        && args.max_accepted_abs_score_cp.map_or(true, |limit| {
+            result.search_score.abs() <= limit && result.teacher_score.abs() <= limit
+        })
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     if args.depth == 0 {
@@ -316,14 +340,10 @@ fn main() -> Result<()> {
         let mut writer = BufWriter::new(File::create(path)?);
         let mut exported = 0usize;
         let mut seen = HashSet::new();
-        for result in results.iter().filter(|result| {
-            result.regret <= args.max_accepted_regret_cp
-                && result.legal_moves >= args.min_accepted_legal_moves
-                && (!args.exclude_accepted_in_check || !result.in_check)
-                && args.max_accepted_abs_score_cp.map_or(true, |limit| {
-                    result.search_score.abs() <= limit && result.teacher_score.abs() <= limit
-                })
-        }) {
+        for result in results
+            .iter()
+            .filter(|result| is_accepted_result(result, &args))
+        {
             if !seen.insert(result.sfen.clone()) {
                 continue;
             }
@@ -333,6 +353,51 @@ fn main() -> Result<()> {
         writer.flush()?;
         println!(
             "exported accepted: {} to {} (max_regret_cp <= {:.2})",
+            exported,
+            path.display(),
+            args.max_accepted_regret_cp
+        );
+    }
+
+    if let Some(path) = &args.export_soft {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut writer = BufWriter::new(File::create(path)?);
+        let mut exported = 0usize;
+        let mut seen = HashSet::new();
+        for result in results
+            .iter()
+            .filter(|result| is_accepted_result(result, &args))
+        {
+            if !seen.insert(result.sfen.clone()) {
+                continue;
+            }
+            let Some(search_move) = result.search_move.as_deref() else {
+                continue;
+            };
+            let mut teacher_scores = vec![SoftTeacherScore {
+                move_usi: search_move,
+                score: result.search_score,
+            }];
+            if search_move != result.teacher_move {
+                teacher_scores.push(SoftTeacherScore {
+                    move_usi: &result.teacher_move,
+                    score: result.teacher_score,
+                });
+            }
+            let record = SoftPolicyRecord {
+                sfen: &result.sfen,
+                teacher_move: &result.teacher_move,
+                teacher_scores,
+            };
+            serde_json::to_writer(&mut writer, &record)?;
+            writeln!(writer)?;
+            exported += 1;
+        }
+        writer.flush()?;
+        println!(
+            "exported soft accepted: {} to {} (max_regret_cp <= {:.2})",
             exported,
             path.display(),
             args.max_accepted_regret_cp
