@@ -32,6 +32,7 @@ class Sample:
     features: np.ndarray
     material: float
     target: float
+    baseline: float | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,10 +59,20 @@ def parse_args() -> argparse.Namespace:
         choices=["teacher_score", "static_eval"],
         default="teacher_score",
     )
+    parser.add_argument(
+        "--baseline-field",
+        default="static_eval",
+        help="Optional JSONL field to compare against the target before training.",
+    )
     return parser.parse_args()
 
 
-def load_jsonl(path: Path, target_field: str, target_scale: float) -> list[Sample]:
+def load_jsonl(
+    path: Path,
+    target_field: str,
+    target_scale: float,
+    baseline_field: str | None,
+) -> list[Sample]:
     samples: list[Sample] = []
     with path.open("r", encoding="utf-8") as f:
         for line_number, line in enumerate(f, start=1):
@@ -89,6 +100,11 @@ def load_jsonl(path: Path, target_field: str, target_scale: float) -> list[Sampl
                     features=features,
                     material=float(record["material"]),
                     target=float(target) / target_scale,
+                    baseline=(
+                        float(record[baseline_field]) / target_scale
+                        if baseline_field and record.get(baseline_field) is not None
+                        else None
+                    ),
                 )
             )
     if not samples:
@@ -149,17 +165,39 @@ def forward(model: dict[str, np.ndarray], sample: Sample) -> tuple[float, np.nda
     return pred, z, hidden
 
 
-def evaluate(model: dict[str, np.ndarray], samples: list[Sample], target_scale: float) -> tuple[float, float]:
+def summarize_errors(
+    predictions: Iterable[float], samples: list[Sample], target_scale: float
+) -> tuple[float, float, float]:
     sq_error = 0.0
     abs_error = 0.0
-    for sample in samples:
-        pred, _, _ = forward(model, sample)
+    sign_matches = 0
+    total = 0
+    for pred, sample in zip(predictions, samples):
         error = pred - sample.target
         sq_error += error * error
         abs_error += abs(error)
-    rmse = math.sqrt(sq_error / len(samples)) * target_scale
-    mae = (abs_error / len(samples)) * target_scale
-    return rmse, mae
+        if (pred >= 0.0) == (sample.target >= 0.0):
+            sign_matches += 1
+        total += 1
+    if total == 0:
+        return float("nan"), float("nan"), float("nan")
+    rmse = math.sqrt(sq_error / total) * target_scale
+    mae = (abs_error / total) * target_scale
+    sign_accuracy = sign_matches / total
+    return rmse, mae, sign_accuracy
+
+
+def evaluate(
+    model: dict[str, np.ndarray], samples: list[Sample], target_scale: float
+) -> tuple[float, float, float]:
+    predictions = (forward(model, sample)[0] for sample in samples)
+    return summarize_errors(predictions, samples, target_scale)
+
+
+def evaluate_baseline(samples: list[Sample], target_scale: float) -> tuple[float, float, float] | None:
+    if any(sample.baseline is None for sample in samples):
+        return None
+    return summarize_errors((sample.baseline for sample in samples if sample.baseline is not None), samples, target_scale)
 
 
 def zero_grads(model: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -196,9 +234,12 @@ def batches(samples: list[Sample], batch_size: int) -> Iterable[list[Sample]]:
 
 def train(args: argparse.Namespace) -> None:
     rng = np.random.default_rng(args.seed)
-    train_samples = load_jsonl(args.train, args.target_field, args.target_scale)
+    baseline_field = args.baseline_field or None
+    train_samples = load_jsonl(
+        args.train, args.target_field, args.target_scale, baseline_field
+    )
     valid_samples = (
-        load_jsonl(args.valid, args.target_field, args.target_scale)
+        load_jsonl(args.valid, args.target_field, args.target_scale, baseline_field)
         if args.valid is not None
         else train_samples
     )
@@ -210,6 +251,20 @@ def train(args: argparse.Namespace) -> None:
     print(f"train samples: {len(train_samples)}")
     print(f"valid samples: {len(valid_samples)}")
     print(f"hidden: {args.hidden}")
+    train_baseline = evaluate_baseline(train_samples, args.target_scale)
+    valid_baseline = evaluate_baseline(valid_samples, args.target_scale)
+    if train_baseline is not None:
+        print(
+            "baseline train "
+            f"rmse={train_baseline[0]:.2f} mae={train_baseline[1]:.2f} "
+            f"sign={train_baseline[2] * 100.0:.2f}%"
+        )
+    if valid_baseline is not None:
+        print(
+            "baseline valid "
+            f"rmse={valid_baseline[0]:.2f} mae={valid_baseline[1]:.2f} "
+            f"sign={valid_baseline[2] * 100.0:.2f}%"
+        )
     for epoch in range(1, args.epochs + 1):
         rng.shuffle(train_samples)
         for batch in batches(train_samples, args.batch_size):
@@ -228,12 +283,14 @@ def train(args: argparse.Namespace) -> None:
             step += 1
             apply_adam(model, grads, moments1, moments2, step, args.lr, args.weight_decay)
 
-        train_rmse, train_mae = evaluate(model, train_samples, args.target_scale)
-        valid_rmse, valid_mae = evaluate(model, valid_samples, args.target_scale)
+        train_rmse, train_mae, train_sign = evaluate(model, train_samples, args.target_scale)
+        valid_rmse, valid_mae, valid_sign = evaluate(model, valid_samples, args.target_scale)
         print(
             f"epoch {epoch:03d} "
             f"train_rmse={train_rmse:.2f} train_mae={train_mae:.2f} "
-            f"valid_rmse={valid_rmse:.2f} valid_mae={valid_mae:.2f}"
+            f"train_sign={train_sign * 100.0:.2f}% "
+            f"valid_rmse={valid_rmse:.2f} valid_mae={valid_mae:.2f} "
+            f"valid_sign={valid_sign * 100.0:.2f}%"
         )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
