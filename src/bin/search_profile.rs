@@ -3,7 +3,7 @@ use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use shogi_ai::ai::ShogiAI;
-use shogi_ai::evaluation::{Evaluator, SparseModel};
+use shogi_ai::evaluation::{Evaluator, SparseModel, TinyNnueModel};
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_lib::Position;
 use std::fs;
@@ -17,6 +17,8 @@ const HISTORY_CAPACITY: usize = 256;
 struct Args {
     #[arg(long, default_value = "./policy_weights_v2.1.0.binary")]
     weights: PathBuf,
+    #[arg(long)]
+    nnue_weights: Option<PathBuf>,
     #[arg(long, default_value = "./taya36.sfen")]
     positions: PathBuf,
     #[arg(long, default_value_t = 32)]
@@ -34,6 +36,16 @@ struct SharedModelEvaluator<'a> {
 }
 
 impl Evaluator for SharedModelEvaluator<'_> {
+    fn evaluate(&self, position: &Position) -> f32 {
+        self.model.predict_from_position(position)
+    }
+}
+
+struct SharedTinyNnueEvaluator<'a> {
+    model: &'a TinyNnueModel,
+}
+
+impl Evaluator for SharedTinyNnueEvaluator<'_> {
     fn evaluate(&self, position: &Position) -> f32 {
         self.model.predict_from_position(position)
     }
@@ -61,17 +73,16 @@ fn load_positions(path: &Path) -> Result<Vec<Position>> {
     Ok(positions)
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-    if args.samples == 0 {
-        return Err(anyhow!("--samples must be greater than zero"));
-    }
-
-    let model = load_model(&args.weights)?;
-    let mut positions = load_positions(&args.positions)?;
-    let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
-    positions.shuffle(&mut rng);
-
+fn run_profile<E, F>(
+    args: &Args,
+    positions: &[Position],
+    model_name: &str,
+    mut make_evaluator: F,
+) -> Result<()>
+where
+    E: Evaluator,
+    F: FnMut() -> E,
+{
     let mut total_nodes = 0u64;
     let mut total_quiescence_nodes = 0u64;
     let mut total_quiescence_moves_considered = 0u64;
@@ -88,7 +99,7 @@ fn main() -> Result<()> {
 
     for i in 0..args.samples {
         let mut position = positions[i % positions.len()].clone();
-        let evaluator = SharedModelEvaluator { model: &model };
+        let evaluator = make_evaluator();
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
         ai.set_emit_info(false);
         ai.sennichite_detector.record_position(&position);
@@ -115,6 +126,7 @@ fn main() -> Result<()> {
         0.0
     };
 
+    println!("model: {}", model_name);
     println!("samples: {}", args.samples);
     println!("total nodes: {}", total_nodes);
     println!("quiescence nodes: {}", total_quiescence_nodes);
@@ -171,4 +183,28 @@ fn main() -> Result<()> {
     );
 
     Ok(())
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    if args.samples == 0 {
+        return Err(anyhow!("--samples must be greater than zero"));
+    }
+
+    let mut positions = load_positions(&args.positions)?;
+    let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
+    positions.shuffle(&mut rng);
+
+    if let Some(path) = &args.nnue_weights {
+        let model = TinyNnueModel::load(path)
+            .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
+        run_profile::<SharedTinyNnueEvaluator<'_>, _>(&args, &positions, "tiny-nnue", || {
+            SharedTinyNnueEvaluator { model: &model }
+        })
+    } else {
+        let model = load_model(&args.weights)?;
+        run_profile::<SharedModelEvaluator<'_>, _>(&args, &positions, "sparse", || {
+            SharedModelEvaluator { model: &model }
+        })
+    }
 }
