@@ -20,6 +20,7 @@ use shogi_ai::evaluation::SparseModel;
 const DEFAULT_LEARNING_RATE: f32 = 0.1;
 const DEFAULT_L2_LAMBDA: f32 = 1e-5;
 const DEFAULT_BATCH_SIZE: usize = 1024;
+const DEFAULT_LOAD_FILE_BATCH_SIZE: usize = 256;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum LossMode {
@@ -50,6 +51,8 @@ struct Args {
     softmax_temperature: f32,
     #[arg(long, default_value_t = 1024)]
     chunk_size: usize,
+    #[arg(long, default_value_t = DEFAULT_LOAD_FILE_BATCH_SIZE)]
+    load_file_batch_size: usize,
     #[arg(long, default_value_t = 0)]
     valid_percent: u8,
     #[arg(long, default_value_t = 512)]
@@ -508,6 +511,9 @@ fn main() -> Result<()> {
     if args.chunk_size == 0 {
         return Err(anyhow!("--chunk-size must be greater than zero"));
     }
+    if args.load_file_batch_size == 0 {
+        return Err(anyhow!("--load-file-batch-size must be greater than zero"));
+    }
     if args.valid_percent > 90 {
         return Err(anyhow!("--valid-percent must be 0..=90"));
     }
@@ -564,6 +570,10 @@ fn main() -> Result<()> {
     csa_files.shuffle(&mut rng);
 
     println!("{}個のCSAファイルを読み込みます。", csa_files.len());
+    println!(
+        "学習データ読み込み: chunk_size={}、load_file_batch_size={}。メモリ保護のため、chunk内を小分けに処理します。",
+        args.chunk_size, args.load_file_batch_size
+    );
 
     let valid_count = if args.valid_percent == 0 {
         0
@@ -618,109 +628,128 @@ fn main() -> Result<()> {
 
         for (chunk_index, file_chunk) in epoch_train_files.chunks(args.chunk_size).enumerate() {
             let start_time_chunk = Instant::now();
+            let mut chunk_samples = 0usize;
 
-            let chunk_results: Vec<Vec<(Position, Move)>> = file_chunk
-                .par_iter()
-                .enumerate()
-                .map(|(idx, path)| {
-                    process_csa_file(
-                        path,
-                        sample_filter,
-                        args.seed
-                            .wrapping_add(epoch as u64)
-                            .wrapping_mul(1_000_003)
-                            .wrapping_add(chunk_index as u64)
-                            .wrapping_mul(1_000_003)
-                            .wrapping_add(idx as u64),
-                    )
-                })
-                .filter_map(Result::ok)
-                .collect();
+            for (load_index, file_group) in file_chunk.chunks(args.load_file_batch_size).enumerate()
+            {
+                let load_results: Vec<Vec<(Position, Move)>> = file_group
+                    .par_iter()
+                    .enumerate()
+                    .map(|(idx, path)| {
+                        process_csa_file(
+                            path,
+                            sample_filter,
+                            args.seed
+                                .wrapping_add(epoch as u64)
+                                .wrapping_mul(1_000_003)
+                                .wrapping_add(chunk_index as u64)
+                                .wrapping_mul(1_000_003)
+                                .wrapping_add(load_index as u64)
+                                .wrapping_mul(1_000_003)
+                                .wrapping_add(idx as u64),
+                        )
+                    })
+                    .filter_map(Result::ok)
+                    .collect();
 
-            let mut new_data: Vec<_> = chunk_results.into_iter().flatten().collect();
-            new_data.shuffle(&mut rng);
-            remaining_data.append(&mut new_data);
+                let mut new_data: Vec<_> = load_results.into_iter().flatten().collect();
+                chunk_samples += new_data.len();
+                new_data.shuffle(&mut rng);
+                remaining_data.append(&mut new_data);
+
+                while remaining_data.len() >= args.batch_size {
+                    let mut tail = remaining_data.split_off(args.batch_size);
+                    std::mem::swap(&mut tail, &mut remaining_data);
+                    let batch_data = tail;
+                    let start_time_batch = Instant::now();
+
+                    let (train_loss, correct_predictions, total_samples) = train_batch(
+                        &mut model,
+                        &batch_data,
+                        args.loss,
+                        args.softmax_temperature,
+                        args.freeze_material,
+                    );
+                    let accuracy = if total_samples > 0 {
+                        (correct_predictions as f32 / total_samples as f32) * 100.0
+                    } else {
+                        0.0
+                    };
+
+                    batch_count += 1;
+                    let elapsed_time_batch = start_time_batch.elapsed();
+                    println!(
+                        "epoch {} batch {}: 正解率: {:.2}%, 時間: {:?}, pending_samples={}",
+                        epoch,
+                        batch_count,
+                        accuracy,
+                        elapsed_time_batch,
+                        remaining_data.len()
+                    );
+
+                    accuracy_history.push((batch_count, accuracy));
+
+                    if let Some(file) = log_file.as_mut() {
+                        let valid_metrics = if validation_samples.is_empty() {
+                            PolicyMetrics {
+                                correct: 0,
+                                total: 0,
+                                ce: 0.0,
+                            }
+                        } else {
+                            evaluate_policy_metrics(
+                                &model,
+                                &validation_samples,
+                                args.softmax_temperature,
+                            )
+                        };
+                        let max_w = model.w.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                        let min_w = model.w.iter().cloned().fold(f32::INFINITY, f32::min);
+                        writeln!(
+                            file,
+                            "{},{},{:?},{:.6},{:.4},{},{},{:.6},{:.4},{},{},{:.6},{:.6},{:.6}",
+                            epoch,
+                            batch_count,
+                            args.loss,
+                            train_loss,
+                            accuracy,
+                            correct_predictions,
+                            total_samples,
+                            valid_metrics.ce,
+                            valid_metrics.accuracy_percent(),
+                            valid_metrics.correct,
+                            valid_metrics.total,
+                            model.material_coeff,
+                            min_w,
+                            max_w
+                        )?;
+                        file.flush()?;
+                    }
+
+                    if args.checkpoint_every_batches > 0
+                        && batch_count % args.checkpoint_every_batches == 0
+                    {
+                        save_checkpoint(
+                            &model,
+                            args.checkpoint_dir.as_deref(),
+                            epoch,
+                            batch_count,
+                        )?;
+                    }
+                }
+            }
 
             let elapsed_time_chunk = start_time_chunk.elapsed();
             println!(
-                "epoch {} チャンク {}/{} ({} ファイル) の処理完了。時間: {:?}. 現在のデータ数: {}",
+                "epoch {} チャンク {}/{} ({} ファイル, {} サンプル) の処理完了。時間: {:?}. pending_samples={}",
                 epoch,
                 chunk_index + 1,
                 (epoch_train_files.len() + args.chunk_size - 1) / args.chunk_size,
                 file_chunk.len(),
+                chunk_samples,
                 elapsed_time_chunk,
                 remaining_data.len()
             );
-
-            while remaining_data.len() >= args.batch_size {
-                let batch_data: Vec<_> = remaining_data.drain(0..args.batch_size).collect();
-                let start_time_batch = Instant::now();
-
-                let (train_loss, correct_predictions, total_samples) = train_batch(
-                    &mut model,
-                    &batch_data,
-                    args.loss,
-                    args.softmax_temperature,
-                    args.freeze_material,
-                );
-                let accuracy = if total_samples > 0 {
-                    (correct_predictions as f32 / total_samples as f32) * 100.0
-                } else {
-                    0.0
-                };
-
-                batch_count += 1;
-                let elapsed_time_batch = start_time_batch.elapsed();
-                println!(
-                    "epoch {} batch {}: 正解率: {:.2}%, 時間: {:?}",
-                    epoch, batch_count, accuracy, elapsed_time_batch
-                );
-
-                accuracy_history.push((batch_count, accuracy));
-
-                if let Some(file) = log_file.as_mut() {
-                    let valid_metrics = if validation_samples.is_empty() {
-                        PolicyMetrics {
-                            correct: 0,
-                            total: 0,
-                            ce: 0.0,
-                        }
-                    } else {
-                        evaluate_policy_metrics(
-                            &model,
-                            &validation_samples,
-                            args.softmax_temperature,
-                        )
-                    };
-                    let max_w = model.w.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    let min_w = model.w.iter().cloned().fold(f32::INFINITY, f32::min);
-                    writeln!(
-                        file,
-                        "{},{},{:?},{:.6},{:.4},{},{},{:.6},{:.4},{},{},{:.6},{:.6},{:.6}",
-                        epoch,
-                        batch_count,
-                        args.loss,
-                        train_loss,
-                        accuracy,
-                        correct_predictions,
-                        total_samples,
-                        valid_metrics.ce,
-                        valid_metrics.accuracy_percent(),
-                        valid_metrics.correct,
-                        valid_metrics.total,
-                        model.material_coeff,
-                        min_w,
-                        max_w
-                    )?;
-                    file.flush()?;
-                }
-
-                if args.checkpoint_every_batches > 0
-                    && batch_count % args.checkpoint_every_batches == 0
-                {
-                    save_checkpoint(&model, args.checkpoint_dir.as_deref(), epoch, batch_count)?;
-                }
-            }
         }
 
         if !remaining_data.is_empty() {
@@ -794,7 +823,9 @@ fn main() -> Result<()> {
                 metrics.ce
             );
         }
-        save_checkpoint(&model, args.checkpoint_dir.as_deref(), epoch, batch_count)?;
+        if args.checkpoint_every_batches > 0 {
+            save_checkpoint(&model, args.checkpoint_dir.as_deref(), epoch, batch_count)?;
+        }
     }
 
     if !args.no_graph {

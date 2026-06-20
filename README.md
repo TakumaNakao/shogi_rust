@@ -91,6 +91,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/kpp_learn \
   --epochs 1 \
   --batch-size 2048 \
   --chunk-size 20000 \
+  --load-file-batch-size 256 \
   --learning-rate 0.005 \
   --l2-lambda 0.0001 \
   --loss ce \
@@ -114,6 +115,8 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/kpp_learn \
 - `--log-path`: 学習ログCSV
 
 CSVには `train_loss`、`valid_ce`、`valid_accuracy`、`material_coeff`、重みの最小/最大値が出ます。長時間学習中は `valid_ce` が改善しているか、`valid_accuracy` が大きく悪化していないかを確認してください。
+
+`--chunk-size` は進捗表示と大きな処理区切り、`--load-file-batch-size` は一度に局面化するCSAファイル数です。メモリ不足を避けるため、通常は `--load-file-batch-size 256` 以下から始めてください。メモリが少ないPCでは `RAYON_NUM_THREADS=4` と `--batch-size 512` も有効です。
 
 #### 勝敗を使ったサンプリング
 
