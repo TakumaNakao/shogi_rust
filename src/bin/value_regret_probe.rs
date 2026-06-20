@@ -3,7 +3,7 @@ use clap::Parser;
 use rayon::prelude::*;
 use serde::Deserialize;
 use shogi_ai::ai::ShogiAI;
-use shogi_ai::evaluation::{EngineEvaluator, Evaluator};
+use shogi_ai::evaluation::{EngineEvaluator, Evaluator, HybridNnueEvaluator};
 use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
 use shogi_core::Move;
 use shogi_lib::Position;
@@ -19,6 +19,10 @@ struct Args {
     teacher_weights: PathBuf,
     #[arg(long, default_value = "./policy_weights_v2.1.0.binary")]
     candidate_weights: PathBuf,
+    #[arg(long)]
+    candidate_residual_nnue_weights: Option<PathBuf>,
+    #[arg(long, default_value_t = 1.0)]
+    candidate_residual_scale: f32,
     #[arg(long, required = true)]
     input: Vec<PathBuf>,
     #[arg(long, default_value_t = 4)]
@@ -202,8 +206,15 @@ fn main() -> Result<()> {
 
     let teacher = EngineEvaluator::new(&args.teacher_weights, 0.0)
         .map_err(|e| anyhow!("failed to load teacher weights: {e}"))?;
-    let candidate = EngineEvaluator::new(&args.candidate_weights, 0.0)
-        .map_err(|e| anyhow!("failed to load candidate weights: {e}"))?;
+    let candidate = if let Some(path) = &args.candidate_residual_nnue_weights {
+        EngineEvaluator::HybridNnue(
+            HybridNnueEvaluator::new(&args.candidate_weights, path, args.candidate_residual_scale)
+                .map_err(|e| anyhow!("failed to load candidate hybrid evaluator: {e}"))?,
+        )
+    } else {
+        EngineEvaluator::new(&args.candidate_weights, 0.0)
+            .map_err(|e| anyhow!("failed to load candidate weights: {e}"))?
+    };
     println!("teacher model: {}", teacher.name());
     println!("candidate model: {}", candidate.name());
 

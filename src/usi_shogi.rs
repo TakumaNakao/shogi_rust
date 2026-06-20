@@ -1,5 +1,5 @@
 use crate::ai::ShogiAI;
-use crate::evaluation::EngineEvaluator;
+use crate::evaluation::{EngineEvaluator, HybridNnueEvaluator};
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
 use std::io::{self, BufRead, Write};
@@ -27,6 +27,8 @@ struct UsiEngine {
     position: Position,
     stop_signal: Arc<AtomicBool>,
     eval_file_path: Option<PathBuf>,
+    residual_eval_file_path: Option<PathBuf>,
+    residual_scale: f32,
     max_depth: u8,
     search_time_limit: u64,
     ai: Arc<Mutex<Option<ShogiAI<EngineEvaluator, HISTORY_CAPACITY>>>>,
@@ -38,6 +40,8 @@ impl UsiEngine {
             position: Position::default(),
             stop_signal: Arc::new(AtomicBool::new(false)),
             eval_file_path: None,
+            residual_eval_file_path: None,
+            residual_scale: 1.0,
             max_depth: 30,            // Default max depth
             search_time_limit: 10000, // Default time limit in ms
             ai: Arc::new(Mutex::new(None)),
@@ -73,6 +77,8 @@ impl UsiEngine {
         println!("id name {}", ENGINE_NAME);
         println!("id author {}", ENGINE_AUTHOR);
         println!("option name EvalFile type string default");
+        println!("option name ResidualEvalFile type string default");
+        println!("option name ResidualScale type string default 1.0");
         println!(
             "option name MaxDepth type spin default {} min 1 max 100",
             self.max_depth
@@ -88,26 +94,67 @@ impl UsiEngine {
         println!("readyok");
     }
 
+    fn rebuild_ai(&mut self) {
+        let Some(eval_path) = self.eval_file_path.clone() else {
+            return;
+        };
+        let evaluator_result = if let Some(residual_path) = &self.residual_eval_file_path {
+            HybridNnueEvaluator::new(&eval_path, residual_path, self.residual_scale)
+                .map(EngineEvaluator::HybridNnue)
+        } else {
+            EngineEvaluator::new(&eval_path, OVERWRITE_VALUE)
+        };
+
+        match evaluator_result {
+            Ok(evaluator) => {
+                let evaluator_name = evaluator.name();
+                let new_ai = ShogiAI::new(evaluator);
+                *self.ai.lock().unwrap() = Some(new_ai);
+                if let Some(residual_path) = &self.residual_eval_file_path {
+                    eprintln!(
+                        "info string Loaded {} evaluation files: base={} residual={} residual_scale={}",
+                        evaluator_name,
+                        eval_path.display(),
+                        residual_path.display(),
+                        self.residual_scale
+                    );
+                } else {
+                    eprintln!(
+                        "info string Loaded {} evaluation file: {}",
+                        evaluator_name,
+                        eval_path.display()
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "info string Error: Failed to load evaluation files. Error: {}",
+                    e
+                );
+            }
+        }
+    }
+
     fn handle_setoption(&mut self, tokens: &[&str]) {
         if tokens.get(1) == Some(&"name") && tokens.get(3) == Some(&"value") {
             match tokens.get(2) {
                 Some(&"EvalFile") => {
                     if let Some(path_str) = tokens.get(4) {
-                        let new_path = PathBuf::from(path_str);
-                        match EngineEvaluator::new(&new_path, OVERWRITE_VALUE) {
-                            Ok(evaluator) => {
-                                let evaluator_name = evaluator.name();
-                                let new_ai = ShogiAI::new(evaluator);
-                                *self.ai.lock().unwrap() = Some(new_ai);
-                                self.eval_file_path = Some(new_path);
-                                eprintln!(
-                                    "info string Loaded {} evaluation file: {}",
-                                    evaluator_name, path_str
-                                );
-                            }
-                            Err(e) => {
-                                eprintln!("info string Error: Failed to load new evaluation file: {}. Error: {}", path_str, e);
-                            }
+                        self.eval_file_path = Some(PathBuf::from(path_str));
+                        self.rebuild_ai();
+                    }
+                }
+                Some(&"ResidualEvalFile") => {
+                    if let Some(path_str) = tokens.get(4) {
+                        self.residual_eval_file_path = Some(PathBuf::from(path_str));
+                        self.rebuild_ai();
+                    }
+                }
+                Some(&"ResidualScale") => {
+                    if let Some(val_str) = tokens.get(4) {
+                        if let Ok(val) = val_str.parse::<f32>() {
+                            self.residual_scale = val;
+                            self.rebuild_ai();
                         }
                     }
                 }

@@ -907,9 +907,43 @@ impl Evaluator for SparseModelEvaluator {
     }
 }
 
+pub struct HybridNnueEvaluator {
+    pub sparse: SparseModel,
+    pub residual: TinyNnueModel,
+    pub residual_scale: f32,
+}
+
+impl HybridNnueEvaluator {
+    pub fn new(sparse_path: &Path, residual_path: &Path, residual_scale: f32) -> Result<Self> {
+        if !residual_scale.is_finite() {
+            return Err(anyhow!("residual scale must be finite"));
+        }
+        let mut sparse = SparseModel::new(0.0, 0.0);
+        sparse.load(sparse_path)?;
+        let residual = TinyNnueModel::load(residual_path)?;
+        Ok(HybridNnueEvaluator {
+            sparse,
+            residual,
+            residual_scale,
+        })
+    }
+
+    pub fn predict_from_position(&self, position: &shogi_lib::Position) -> f32 {
+        self.sparse.predict_from_position(position)
+            + self.residual_scale * self.residual.predict_from_position(position)
+    }
+}
+
+impl Evaluator for HybridNnueEvaluator {
+    fn evaluate(&self, position: &shogi_lib::Position) -> f32 {
+        self.predict_from_position(position)
+    }
+}
+
 pub enum EngineEvaluator {
     Sparse(SparseModelEvaluator),
     TinyNnue(TinyNnueModel),
+    HybridNnue(HybridNnueEvaluator),
 }
 
 impl EngineEvaluator {
@@ -933,6 +967,7 @@ impl EngineEvaluator {
         match self {
             EngineEvaluator::Sparse(_) => "sparse",
             EngineEvaluator::TinyNnue(_) => "tiny-nnue",
+            EngineEvaluator::HybridNnue(_) => "hybrid-nnue",
         }
     }
 }
@@ -942,6 +977,7 @@ impl Evaluator for EngineEvaluator {
         match self {
             EngineEvaluator::Sparse(evaluator) => evaluator.evaluate(position),
             EngineEvaluator::TinyNnue(model) => model.predict_from_position(position),
+            EngineEvaluator::HybridNnue(evaluator) => evaluator.evaluate(position),
         }
     }
 }

@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use shogi_ai::evaluation::{SparseModel, TinyNnueModel};
+use shogi_ai::evaluation::{HybridNnueEvaluator, SparseModel, TinyNnueModel};
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_lib::Position;
 use std::fs;
@@ -16,6 +16,10 @@ struct Args {
     weights: PathBuf,
     #[arg(long)]
     nnue_weights: Option<PathBuf>,
+    #[arg(long)]
+    residual_nnue_weights: Option<PathBuf>,
+    #[arg(long, default_value_t = 1.0)]
+    residual_scale: f32,
     #[arg(long, default_value = "./taya36.sfen")]
     positions: PathBuf,
     #[arg(long, default_value_t = 4096)]
@@ -37,6 +41,7 @@ fn load_model(path: &Path) -> Result<SparseModel> {
 enum ProfileModel {
     Sparse(SparseModel),
     TinyNnue(TinyNnueModel),
+    HybridNnue(HybridNnueEvaluator),
 }
 
 impl ProfileModel {
@@ -44,6 +49,7 @@ impl ProfileModel {
         match self {
             ProfileModel::Sparse(model) => model.predict_from_position(position),
             ProfileModel::TinyNnue(model) => model.predict_from_position(position),
+            ProfileModel::HybridNnue(model) => model.predict_from_position(position),
         }
     }
 
@@ -51,6 +57,7 @@ impl ProfileModel {
         match self {
             ProfileModel::Sparse(_) => "sparse",
             ProfileModel::TinyNnue(_) => "tiny-nnue",
+            ProfileModel::HybridNnue(_) => "hybrid-nnue",
         }
     }
 }
@@ -76,7 +83,12 @@ fn main() -> Result<()> {
         return Err(anyhow!("--repeat must be greater than zero"));
     }
 
-    let model = if let Some(path) = &args.nnue_weights {
+    let model = if let Some(path) = &args.residual_nnue_weights {
+        ProfileModel::HybridNnue(
+            HybridNnueEvaluator::new(&args.weights, path, args.residual_scale)
+                .map_err(|e| anyhow!("failed to load hybrid evaluator: {e}"))?,
+        )
+    } else if let Some(path) = &args.nnue_weights {
         ProfileModel::TinyNnue(
             TinyNnueModel::load(path)
                 .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?,
