@@ -1,12 +1,14 @@
-use anyhow::Result;
-use std::env;
-use std::fs;
-use std::path::Path;
+use anyhow::{anyhow, Result};
+use clap::Parser;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use csa;
 use plotters::prelude::*;
 use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use shogi_lib::Position;
@@ -14,9 +16,48 @@ use shogi_lib::Position;
 // evaluationモジュールから公開されたロジックとモデルを使用する
 use shogi_ai::evaluation::SparseModel;
 
-const KPP_LEARNING_RATE: f32 = 0.1;
-const L2_LAMBDA: f32 = 1e-5;
-const BATCH_SIZE: usize = 1024;
+const DEFAULT_LEARNING_RATE: f32 = 0.1;
+const DEFAULT_L2_LAMBDA: f32 = 1e-5;
+const DEFAULT_BATCH_SIZE: usize = 1024;
+
+#[derive(Parser, Debug)]
+#[command(about = "Supervised KPP training from CSA game records")]
+struct Args {
+    #[arg(long, required = true)]
+    input_dir: Vec<PathBuf>,
+    #[arg(long, default_value = "./policy_weights.binary")]
+    weights: PathBuf,
+    #[arg(long, default_value = "./policy_weights.binary")]
+    output: PathBuf,
+    #[arg(long, default_value_t = 1)]
+    epochs: usize,
+    #[arg(long, default_value_t = DEFAULT_BATCH_SIZE)]
+    batch_size: usize,
+    #[arg(long, default_value_t = DEFAULT_LEARNING_RATE)]
+    learning_rate: f32,
+    #[arg(long, default_value_t = DEFAULT_L2_LAMBDA)]
+    l2_lambda: f32,
+    #[arg(long, default_value_t = 1024)]
+    chunk_size: usize,
+    #[arg(long, default_value_t = 0)]
+    valid_percent: u8,
+    #[arg(long, default_value_t = 512)]
+    valid_max_files: usize,
+    #[arg(long, default_value_t = 20260620)]
+    seed: u64,
+    #[arg(long)]
+    checkpoint_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 0)]
+    checkpoint_every_batches: usize,
+    #[arg(long)]
+    log_path: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    freeze_material: bool,
+    #[arg(long, default_value = "move_accuracy_graph.png")]
+    accuracy_graph: PathBuf,
+    #[arg(long, default_value_t = false)]
+    no_graph: bool,
+}
 
 fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     match csa_piece_type {
@@ -103,7 +144,7 @@ fn process_csa_file(path: &Path) -> Result<Vec<(Position, Move)>> {
     Ok(training_data)
 }
 
-fn draw_accuracy_graph(data: &[(usize, f32)], path: &str) -> Result<()> {
+fn draw_accuracy_graph(data: &[(usize, f32)], path: &Path) -> Result<()> {
     let root = BitMapBackend::new(path, (1024, 768)).into_drawing_area();
     root.fill(&WHITE)?;
 
@@ -112,7 +153,10 @@ fn draw_accuracy_graph(data: &[(usize, f32)], path: &str) -> Result<()> {
     }
 
     let mut chart = ChartBuilder::on(&root)
-        .caption("Move Prediction Accuracy per Batch", ("sans-serif", 50).into_font())
+        .caption(
+            "Move Prediction Accuracy per Batch",
+            ("sans-serif", 50).into_font(),
+        )
         .margin(10)
         .x_label_area_size(30)
         .y_label_area_size(50)
@@ -129,109 +173,335 @@ fn draw_accuracy_graph(data: &[(usize, f32)], path: &str) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("使用法: {} <year>", args[0]);
-        return Ok(());
+fn collect_csa_files(input_dirs: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for input_dir in input_dirs {
+        for entry in fs::read_dir(input_dir)
+            .map_err(|e| anyhow!("failed to read {}: {}", input_dir.display(), e))?
+        {
+            let path = entry?.path();
+            if path.extension().map(|s| s == "csa").unwrap_or(false) {
+                files.push(path);
+            }
+        }
     }
-    let year = String::from(&args[1]);
+    files.sort();
+    if files.is_empty() {
+        return Err(anyhow!("no CSA files found"));
+    }
+    Ok(files)
+}
 
-    let data_dir_str = format!("./csa_files/{}", year);
-    let data_dir = Path::new(&data_dir_str);
-    let weight_path = Path::new("./policy_weights.binary");
-    let accuracy_graph_path = "move_accuracy_graph.png";
+fn evaluate_move_accuracy(model: &SparseModel, samples: &[(Position, Move)]) -> (usize, usize) {
+    let correct = samples
+        .par_iter()
+        .filter(|(position, teacher_move)| {
+            let legal_moves = position.legal_moves();
+            if legal_moves.is_empty() || !legal_moves.contains(teacher_move) {
+                return false;
+            }
 
-    let mut model = SparseModel::new(KPP_LEARNING_RATE, L2_LAMBDA);
+            let mut best_move = legal_moves[0];
+            let mut best_score = f32::NEG_INFINITY;
+            for &mv in legal_moves.iter() {
+                let mut child = position.clone();
+                child.do_move(mv);
+                child.switch_turn();
+                let score = model.predict_from_position(&child);
+                if score > best_score {
+                    best_score = score;
+                    best_move = mv;
+                }
+            }
+            best_move == *teacher_move
+        })
+        .count();
+    (correct, samples.len())
+}
 
-    if weight_path.exists() {
+fn load_validation_samples(paths: &[PathBuf], max_files: usize) -> Vec<(Position, Move)> {
+    paths
+        .iter()
+        .take(max_files)
+        .collect::<Vec<_>>()
+        .par_iter()
+        .filter_map(|path| process_csa_file(path).ok())
+        .flatten()
+        .collect()
+}
+
+fn save_checkpoint(
+    model: &SparseModel,
+    checkpoint_dir: Option<&Path>,
+    epoch: usize,
+    batch_count: usize,
+) -> Result<()> {
+    let Some(checkpoint_dir) = checkpoint_dir else {
+        return Ok(());
+    };
+    fs::create_dir_all(checkpoint_dir)?;
+    let checkpoint_path = checkpoint_dir.join(format!(
+        "policy_weights_epoch{:03}_batch{:07}.binary",
+        epoch, batch_count
+    ));
+    model.save(&checkpoint_path)?;
+    println!("Checkpoint saved to {}.", checkpoint_path.display());
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    if args.epochs == 0 {
+        return Err(anyhow!("--epochs must be greater than zero"));
+    }
+    if args.batch_size == 0 {
+        return Err(anyhow!("--batch-size must be greater than zero"));
+    }
+    if args.chunk_size == 0 {
+        return Err(anyhow!("--chunk-size must be greater than zero"));
+    }
+    if args.valid_percent > 90 {
+        return Err(anyhow!("--valid-percent must be 0..=90"));
+    }
+    if !args.learning_rate.is_finite() || args.learning_rate <= 0.0 {
+        return Err(anyhow!("--learning-rate must be positive"));
+    }
+    if !args.l2_lambda.is_finite() || args.l2_lambda < 0.0 {
+        return Err(anyhow!("--l2-lambda must be non-negative"));
+    }
+
+    let mut model = SparseModel::new(args.learning_rate, args.l2_lambda);
+
+    if args.weights.exists() {
         println!("重みファイルを読み込んでいます...");
-        model.load(weight_path)?;
+        model.load(&args.weights)?;
         println!("重みファイルを読み込みました。");
     } else {
         println!("新しい重みファイルを作成します。");
-        model.save(weight_path)?;
+        model.save(&args.weights)?;
     }
+    model.kpp_eta = args.learning_rate;
+    model.l2_lambda = args.l2_lambda;
+    let initial_material_coeff = model.material_coeff;
 
-    let mut csa_files: Vec<_> = fs::read_dir(data_dir)?
-        .filter_map(|entry| {
-            entry.ok().and_then(|e| {
-                let path = e.path();
-                if path.extension().map(|s| s == "csa").unwrap_or(false) {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-
-    let mut rng = thread_rng();
+    let mut csa_files = collect_csa_files(&args.input_dir)?;
+    let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
     csa_files.shuffle(&mut rng);
 
     println!("{}個のCSAファイルを読み込みます。", csa_files.len());
 
+    let valid_count = if args.valid_percent == 0 {
+        0
+    } else {
+        (csa_files.len() * args.valid_percent as usize / 100).max(1)
+    };
+    let (valid_files, train_files) = csa_files.split_at(valid_count);
+    let validation_samples = if valid_files.is_empty() {
+        Vec::new()
+    } else {
+        let capped = args.valid_max_files.min(valid_files.len());
+        println!(
+            "検証用CSAファイル: {} / {}、検証サンプルを読み込みます。",
+            capped,
+            valid_files.len()
+        );
+        load_validation_samples(valid_files, capped)
+    };
+    if !validation_samples.is_empty() {
+        let (correct, total) = evaluate_move_accuracy(&model, &validation_samples);
+        println!(
+            "baseline validation accuracy: {:.2}% ({}/{})",
+            correct as f32 / total.max(1) as f32 * 100.0,
+            correct,
+            total
+        );
+    }
+
     let mut batch_count = 0;
     let mut accuracy_history = Vec::new();
-    let mut remaining_data: Vec<(Position, Move)> = Vec::new();
 
-    let chunk_size = 1024;
+    let mut log_file = if let Some(path) = &args.log_path {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = File::create(path)?;
+        writeln!(
+            file,
+            "epoch,batch,train_accuracy,train_correct,train_total,valid_accuracy,valid_correct,valid_total,material_coeff,min_w,max_w"
+        )?;
+        Some(file)
+    } else {
+        None
+    };
 
-    for (chunk_index, file_chunk) in csa_files.chunks(chunk_size).enumerate() {
-        let start_time_chunk = Instant::now();
+    for epoch in 1..=args.epochs {
+        let mut epoch_train_files = train_files.to_vec();
+        epoch_train_files.shuffle(&mut rng);
+        let mut remaining_data: Vec<(Position, Move)> = Vec::new();
 
-        let chunk_results: Vec<Vec<(Position, Move)>> = file_chunk
-            .par_iter()
-            .map(|path| process_csa_file(path))
-            .filter_map(Result::ok)
-            .collect();
+        for (chunk_index, file_chunk) in epoch_train_files.chunks(args.chunk_size).enumerate() {
+            let start_time_chunk = Instant::now();
 
-        let mut new_data: Vec<_> = chunk_results.into_iter().flatten().collect();
+            let chunk_results: Vec<Vec<(Position, Move)>> = file_chunk
+                .par_iter()
+                .map(|path| process_csa_file(path))
+                .filter_map(Result::ok)
+                .collect();
 
-        remaining_data.append(&mut new_data);
+            let mut new_data: Vec<_> = chunk_results.into_iter().flatten().collect();
+            new_data.shuffle(&mut rng);
+            remaining_data.append(&mut new_data);
 
-        let elapsed_time_chunk = start_time_chunk.elapsed();
-        println!("チャンク {}/{} ({} ファイル) の処理完了。時間: {:?}. 現在のデータ数: {}",
-                 chunk_index + 1, (csa_files.len() + chunk_size - 1) / chunk_size, file_chunk.len(), elapsed_time_chunk, remaining_data.len());
+            let elapsed_time_chunk = start_time_chunk.elapsed();
+            println!(
+                "epoch {} チャンク {}/{} ({} ファイル) の処理完了。時間: {:?}. 現在のデータ数: {}",
+                epoch,
+                chunk_index + 1,
+                (epoch_train_files.len() + args.chunk_size - 1) / args.chunk_size,
+                file_chunk.len(),
+                elapsed_time_chunk,
+                remaining_data.len()
+            );
 
-        while remaining_data.len() >= BATCH_SIZE {
-            let batch_data: Vec<_> = remaining_data.drain(0..BATCH_SIZE).collect();
+            while remaining_data.len() >= args.batch_size {
+                let batch_data: Vec<_> = remaining_data.drain(0..args.batch_size).collect();
+                let start_time_batch = Instant::now();
+
+                let material_before = model.material_coeff;
+                let (correct_predictions, total_samples) =
+                    model.update_batch_for_moves(&batch_data);
+                if args.freeze_material {
+                    model.material_coeff = material_before;
+                }
+                let accuracy = if total_samples > 0 {
+                    (correct_predictions as f32 / total_samples as f32) * 100.0
+                } else {
+                    0.0
+                };
+
+                batch_count += 1;
+                let elapsed_time_batch = start_time_batch.elapsed();
+                println!(
+                    "epoch {} batch {}: 正解率: {:.2}%, 時間: {:?}",
+                    epoch, batch_count, accuracy, elapsed_time_batch
+                );
+
+                accuracy_history.push((batch_count, accuracy));
+
+                if let Some(file) = log_file.as_mut() {
+                    let (valid_correct, valid_total) = if validation_samples.is_empty() {
+                        (0, 0)
+                    } else {
+                        evaluate_move_accuracy(&model, &validation_samples)
+                    };
+                    let valid_accuracy = if valid_total > 0 {
+                        valid_correct as f32 / valid_total as f32 * 100.0
+                    } else {
+                        0.0
+                    };
+                    let max_w = model.w.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    let min_w = model.w.iter().cloned().fold(f32::INFINITY, f32::min);
+                    writeln!(
+                        file,
+                        "{},{},{:.4},{},{},{:.4},{},{},{:.6},{:.6},{:.6}",
+                        epoch,
+                        batch_count,
+                        accuracy,
+                        correct_predictions,
+                        total_samples,
+                        valid_accuracy,
+                        valid_correct,
+                        valid_total,
+                        model.material_coeff,
+                        min_w,
+                        max_w
+                    )?;
+                    file.flush()?;
+                }
+
+                if args.checkpoint_every_batches > 0
+                    && batch_count % args.checkpoint_every_batches == 0
+                {
+                    save_checkpoint(&model, args.checkpoint_dir.as_deref(), epoch, batch_count)?;
+                }
+            }
+        }
+
+        if !remaining_data.is_empty() {
             let start_time_batch = Instant::now();
-
-            let (correct_predictions, total_samples) = model.update_batch_for_moves(&batch_data);
+            let material_before = model.material_coeff;
+            let (correct_predictions, total_samples) =
+                model.update_batch_for_moves(&remaining_data);
+            if args.freeze_material {
+                model.material_coeff = material_before;
+            }
             let accuracy = if total_samples > 0 {
                 (correct_predictions as f32 / total_samples as f32) * 100.0
             } else {
                 0.0
             };
-
             batch_count += 1;
             let elapsed_time_batch = start_time_batch.elapsed();
-            println!("バッチ {}: 正解率: {:.2}%, 時間: {:?}",
-                     batch_count, accuracy, elapsed_time_batch);
-
+            println!(
+                "epoch {} 最後のバッチ {}: 正解率: {:.2}%, 時間: {:?}",
+                epoch, batch_count, accuracy, elapsed_time_batch
+            );
             accuracy_history.push((batch_count, accuracy));
+
+            if let Some(file) = log_file.as_mut() {
+                let (valid_correct, valid_total) = if validation_samples.is_empty() {
+                    (0, 0)
+                } else {
+                    evaluate_move_accuracy(&model, &validation_samples)
+                };
+                let valid_accuracy = if valid_total > 0 {
+                    valid_correct as f32 / valid_total as f32 * 100.0
+                } else {
+                    0.0
+                };
+                let max_w = model.w.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let min_w = model.w.iter().cloned().fold(f32::INFINITY, f32::min);
+                writeln!(
+                    file,
+                    "{},{},{:.4},{},{},{:.4},{},{},{:.6},{:.6},{:.6}",
+                    epoch,
+                    batch_count,
+                    accuracy,
+                    correct_predictions,
+                    total_samples,
+                    valid_accuracy,
+                    valid_correct,
+                    valid_total,
+                    model.material_coeff,
+                    min_w,
+                    max_w
+                )?;
+                file.flush()?;
+            }
         }
+
+        if args.freeze_material {
+            model.material_coeff = initial_material_coeff;
+        }
+        if !validation_samples.is_empty() {
+            let (correct, total) = evaluate_move_accuracy(&model, &validation_samples);
+            println!(
+                "epoch {} validation accuracy: {:.2}% ({}/{})",
+                epoch,
+                correct as f32 / total.max(1) as f32 * 100.0,
+                correct,
+                total
+            );
+        }
+        save_checkpoint(&model, args.checkpoint_dir.as_deref(), epoch, batch_count)?;
     }
 
-    if !remaining_data.is_empty() {
-        let start_time_batch = Instant::now();
-        let (correct_predictions, total_samples) = model.update_batch_for_moves(&remaining_data);
-        let accuracy = if total_samples > 0 {
-            (correct_predictions as f32 / total_samples as f32) * 100.0
-        } else {
-            0.0
-        };
-        batch_count += 1;
-        let elapsed_time_batch = start_time_batch.elapsed();
-        println!("最後のバッチ {}: 正解率: {:.2}%, 時間: {:?}",
-                 batch_count, accuracy, elapsed_time_batch);
-        accuracy_history.push((batch_count, accuracy));
-        draw_accuracy_graph(&accuracy_history, accuracy_graph_path)?;
+    if !args.no_graph {
+        draw_accuracy_graph(&accuracy_history, &args.accuracy_graph)?;
     }
 
     let start_time_save = Instant::now();
-    model.save(weight_path)?;
+    model.save(&args.output)?;
     let elapsed_time_save = start_time_save.elapsed();
     println!("最終モデル保存完了。処理時間: {:?}", elapsed_time_save);
 
@@ -246,7 +516,10 @@ fn main() -> Result<()> {
     println!("駒得係数: {:.6}", model.material_coeff);
     println!("最大重み: {:.6}", max_w);
     println!("最小重み: {:.6}", min_w);
-    println!("非ゼロ要素の割合: {:.4}% ({}/{})", sparsity, non_zero_count, total_count);
+    println!(
+        "非ゼロ要素の割合: {:.4}% ({}/{})",
+        sparsity, non_zero_count, total_count
+    );
     // --- End of statistics ---
 
     println!("学習完了。");
