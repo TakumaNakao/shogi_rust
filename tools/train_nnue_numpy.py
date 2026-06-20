@@ -58,6 +58,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--rank-loss-weight", type=float, default=0.0)
     parser.add_argument("--rank-temperature-cp", type=float, default=20.0)
+    parser.add_argument(
+        "--checkpoint-metric",
+        choices=["valid_rmse", "valid_rank_selected_regret", "valid_rank_top1"],
+        default="valid_rmse",
+    )
     parser.add_argument("--target-scale", type=float, default=1000.0)
     parser.add_argument("--seed", type=int, default=20260620)
     parser.add_argument(
@@ -250,6 +255,22 @@ def evaluate_model_ranking(
     return evaluate_ranking((forward(model, sample)[0] for sample in samples), samples)
 
 
+def checkpoint_score(
+    metric: str,
+    valid_rmse: float,
+    valid_rank: tuple[int, float, float, int] | None,
+) -> float:
+    if metric == "valid_rmse":
+        return valid_rmse
+    if valid_rank is None:
+        return float("inf")
+    if metric == "valid_rank_selected_regret":
+        return valid_rank[2]
+    if metric == "valid_rank_top1":
+        return -valid_rank[1]
+    raise ValueError(f"unsupported checkpoint metric: {metric}")
+
+
 def zero_grads(model: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return {name: np.zeros_like(value) for name, value in model.items()}
 
@@ -359,9 +380,11 @@ def train(args: argparse.Namespace) -> None:
     model = init_model(args.hidden, rng)
     best_model = clone_model(model)
     best_epoch = 0
+    best_checkpoint_score = float("inf")
     best_valid_rmse = float("inf")
     best_valid_mae = float("inf")
     best_valid_sign = 0.0
+    best_valid_rank: tuple[int, float, float, int] | None = None
     moments1 = zero_grads(model)
     moments2 = zero_grads(model)
     step = 0
@@ -430,12 +453,17 @@ def train(args: argparse.Namespace) -> None:
         valid_rmse, valid_mae, valid_sign = evaluate(model, valid_samples, args.target_scale)
         train_rank = evaluate_model_ranking(model, train_samples)
         valid_rank = evaluate_model_ranking(model, valid_samples)
-        if valid_rmse < best_valid_rmse:
+        current_checkpoint_score = checkpoint_score(
+            args.checkpoint_metric, valid_rmse, valid_rank
+        )
+        if current_checkpoint_score < best_checkpoint_score:
             best_model = clone_model(model)
             best_epoch = epoch
+            best_checkpoint_score = current_checkpoint_score
             best_valid_rmse = valid_rmse
             best_valid_mae = valid_mae
             best_valid_sign = valid_sign
+            best_valid_rank = valid_rank
         message = (
             f"epoch {epoch:03d} "
             f"train_rmse={train_rmse:.2f} train_mae={train_mae:.2f} "
@@ -457,8 +485,9 @@ def train(args: argparse.Namespace) -> None:
     meta_path = args.output.with_suffix(args.output.suffix + ".json")
     meta = {
         "format": "tiny_nnue_numpy_v1",
-        "checkpoint": "best_valid_rmse",
+        "checkpoint": args.checkpoint_metric,
         "best_epoch": best_epoch,
+        "best_checkpoint_score": best_checkpoint_score,
         "best_valid_rmse": best_valid_rmse,
         "best_valid_mae": best_valid_mae,
         "best_valid_sign": best_valid_sign,
@@ -469,10 +498,11 @@ def train(args: argparse.Namespace) -> None:
         "target_field": args.target_field,
         "rank_loss_weight": args.rank_loss_weight,
         "rank_temperature_cp": args.rank_temperature_cp,
+        "checkpoint_metric": args.checkpoint_metric,
         "train_samples": len(train_samples),
         "valid_samples": len(valid_samples),
     }
-    best_rank = evaluate_model_ranking(best_model, valid_samples)
+    best_rank = best_valid_rank or evaluate_model_ranking(best_model, valid_samples)
     if best_rank is not None:
         meta["best_valid_rank_roots"] = best_rank[0]
         meta["best_valid_rank_top1"] = best_rank[1]
@@ -486,6 +516,7 @@ def train(args: argparse.Namespace) -> None:
         print(f"wrote binary model: {args.binary_output}")
     print(
         f"best epoch: {best_epoch} "
+        f"checkpoint={args.checkpoint_metric} "
         f"valid_rmse={best_valid_rmse:.2f} "
         f"valid_mae={best_valid_mae:.2f} "
         f"valid_sign={best_valid_sign * 100.0:.2f}%"
