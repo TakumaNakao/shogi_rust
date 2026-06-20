@@ -9,8 +9,9 @@ use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::utils::{format_move_usi, parse_usi_move, position_from_sfen_or_usi};
 use shogi_core::{Move, Piece};
 use shogi_lib::Position;
+use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 const HISTORY_CAPACITY: usize = 256;
@@ -34,6 +35,16 @@ struct Args {
     bad_regret_cp: f32,
     #[arg(long, default_value_t = 10)]
     show_worst: usize,
+    #[arg(long)]
+    export_accepted: Option<PathBuf>,
+    #[arg(long, default_value_t = 100.0)]
+    max_accepted_regret_cp: f32,
+    #[arg(long, default_value_t = 0)]
+    min_accepted_legal_moves: usize,
+    #[arg(long)]
+    max_accepted_abs_score_cp: Option<f32>,
+    #[arg(long, default_value_t = false)]
+    exclude_accepted_in_check: bool,
 }
 
 #[derive(Deserialize)]
@@ -48,16 +59,19 @@ struct Sample {
     position: Position,
     teacher_move: Move,
     teacher_move_text: String,
+    original_line: String,
 }
 
 struct ProbeResult {
     sfen: String,
     legal_moves: usize,
+    in_check: bool,
     teacher_move: String,
     search_move: Option<String>,
     search_score: f32,
     teacher_score: f32,
     regret: f32,
+    original_line: String,
 }
 
 struct SharedModelEvaluator<'a> {
@@ -108,6 +122,7 @@ fn load_samples(paths: &[PathBuf]) -> Result<Vec<Sample>> {
                 position,
                 teacher_move,
                 teacher_move_text: record.teacher_move,
+                original_line: line,
             });
         }
     }
@@ -164,11 +179,13 @@ fn probe_sample(model: &SparseModel, sample: Sample, depth: u8) -> Option<ProbeR
     Some(ProbeResult {
         sfen: sample.sfen,
         legal_moves,
+        in_check: sample.position.in_check(),
         teacher_move: sample.teacher_move_text,
         search_move,
         search_score,
         teacher_score,
         regret,
+        original_line: sample.original_line,
     })
 }
 
@@ -196,6 +213,15 @@ fn main() -> Result<()> {
     }
     if !args.bad_regret_cp.is_finite() || args.bad_regret_cp < 0.0 {
         return Err(anyhow!("--bad-regret-cp must be non-negative"));
+    }
+    if !args.max_accepted_regret_cp.is_finite() || args.max_accepted_regret_cp < 0.0 {
+        return Err(anyhow!("--max-accepted-regret-cp must be non-negative"));
+    }
+    if args
+        .max_accepted_abs_score_cp
+        .is_some_and(|limit| !limit.is_finite() || limit < 0.0)
+    {
+        return Err(anyhow!("--max-accepted-abs-score-cp must be non-negative"));
     }
     if args.jobs > 0 {
         rayon::ThreadPoolBuilder::new()
@@ -280,6 +306,36 @@ fn main() -> Result<()> {
             result.teacher_move,
             result.legal_moves,
             result.sfen
+        );
+    }
+
+    if let Some(path) = &args.export_accepted {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut writer = BufWriter::new(File::create(path)?);
+        let mut exported = 0usize;
+        let mut seen = HashSet::new();
+        for result in results.iter().filter(|result| {
+            result.regret <= args.max_accepted_regret_cp
+                && result.legal_moves >= args.min_accepted_legal_moves
+                && (!args.exclude_accepted_in_check || !result.in_check)
+                && args.max_accepted_abs_score_cp.map_or(true, |limit| {
+                    result.search_score.abs() <= limit && result.teacher_score.abs() <= limit
+                })
+        }) {
+            if !seen.insert(result.sfen.clone()) {
+                continue;
+            }
+            writeln!(writer, "{}", result.original_line)?;
+            exported += 1;
+        }
+        writer.flush()?;
+        println!(
+            "exported accepted: {} to {} (max_regret_cp <= {:.2})",
+            exported,
+            path.display(),
+            args.max_accepted_regret_cp
         );
     }
 
