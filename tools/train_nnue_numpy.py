@@ -13,6 +13,7 @@ import json
 import math
 import struct
 from dataclasses import dataclass
+from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
 
@@ -33,6 +34,9 @@ class Sample:
     material: float
     target: float
     baseline: float | None
+    root_index: int | None
+    rank: int | None
+    regret: float | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,9 +97,12 @@ def load_jsonl(
                 continue
             if int(features.min()) < 0 or int(features.max()) >= NNUE_NUM_FEATURES:
                 raise ValueError(f"{path}:{line_number}: feature index out of range")
+            sfen = record.get("sfen", record.get("child_sfen"))
+            if sfen is None:
+                continue
             samples.append(
                 Sample(
-                    sfen=str(record["sfen"]),
+                    sfen=str(sfen),
                     king_bucket=king_bucket,
                     features=features,
                     material=float(record["material"]),
@@ -103,6 +110,15 @@ def load_jsonl(
                     baseline=(
                         float(record[baseline_field]) / target_scale
                         if baseline_field and record.get(baseline_field) is not None
+                        else None
+                    ),
+                    root_index=(
+                        int(record["root_index"]) if record.get("root_index") is not None else None
+                    ),
+                    rank=(int(record["rank"]) if record.get("rank") is not None else None),
+                    regret=(
+                        float(record["regret"])
+                        if record.get("regret") is not None
                         else None
                     ),
                 )
@@ -200,6 +216,38 @@ def evaluate_baseline(samples: list[Sample], target_scale: float) -> tuple[float
     return summarize_errors((sample.baseline for sample in samples if sample.baseline is not None), samples, target_scale)
 
 
+def evaluate_ranking(
+    predictions: Iterable[float], samples: list[Sample]
+) -> tuple[int, float, float, int] | None:
+    root_records: dict[int, list[tuple[float, Sample]]] = defaultdict(list)
+    for pred, sample in zip(predictions, samples):
+        if sample.root_index is None or sample.rank is None or sample.regret is None:
+            return None
+        root_records[sample.root_index].append((pred, sample))
+    if not root_records:
+        return None
+
+    top1_matches = 0
+    selected_regret = 0.0
+    bad_selected = 0
+    for records in root_records.values():
+        selected_pred, selected = max(records, key=lambda item: item[0])
+        _ = selected_pred
+        if selected.rank == 1:
+            top1_matches += 1
+        selected_regret += selected.regret
+        if selected.regret > 300.0:
+            bad_selected += 1
+    roots = len(root_records)
+    return roots, top1_matches / roots, selected_regret / roots, bad_selected
+
+
+def evaluate_model_ranking(
+    model: dict[str, np.ndarray], samples: list[Sample]
+) -> tuple[int, float, float, int] | None:
+    return evaluate_ranking((forward(model, sample)[0] for sample in samples), samples)
+
+
 def zero_grads(model: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return {name: np.zeros_like(value) for name, value in model.items()}
 
@@ -274,6 +322,20 @@ def train(args: argparse.Namespace) -> None:
             f"rmse={valid_baseline[0]:.2f} mae={valid_baseline[1]:.2f} "
             f"sign={valid_baseline[2] * 100.0:.2f}%"
         )
+    train_rank = evaluate_model_ranking(model, train_samples)
+    valid_rank = evaluate_model_ranking(model, valid_samples)
+    if train_rank is not None:
+        print(
+            "initial rank train "
+            f"roots={train_rank[0]} top1={train_rank[1] * 100.0:.2f}% "
+            f"selected_regret={train_rank[2]:.2f} bad_selected={train_rank[3]}"
+        )
+    if valid_rank is not None:
+        print(
+            "initial rank valid "
+            f"roots={valid_rank[0]} top1={valid_rank[1] * 100.0:.2f}% "
+            f"selected_regret={valid_rank[2]:.2f} bad_selected={valid_rank[3]}"
+        )
     for epoch in range(1, args.epochs + 1):
         rng.shuffle(train_samples)
         for batch in batches(train_samples, args.batch_size):
@@ -294,19 +356,29 @@ def train(args: argparse.Namespace) -> None:
 
         train_rmse, train_mae, train_sign = evaluate(model, train_samples, args.target_scale)
         valid_rmse, valid_mae, valid_sign = evaluate(model, valid_samples, args.target_scale)
+        train_rank = evaluate_model_ranking(model, train_samples)
+        valid_rank = evaluate_model_ranking(model, valid_samples)
         if valid_rmse < best_valid_rmse:
             best_model = clone_model(model)
             best_epoch = epoch
             best_valid_rmse = valid_rmse
             best_valid_mae = valid_mae
             best_valid_sign = valid_sign
-        print(
+        message = (
             f"epoch {epoch:03d} "
             f"train_rmse={train_rmse:.2f} train_mae={train_mae:.2f} "
             f"train_sign={train_sign * 100.0:.2f}% "
             f"valid_rmse={valid_rmse:.2f} valid_mae={valid_mae:.2f} "
             f"valid_sign={valid_sign * 100.0:.2f}%"
         )
+        if train_rank is not None and valid_rank is not None:
+            message += (
+                f" train_top1={train_rank[1] * 100.0:.2f}%"
+                f" train_sel_regret={train_rank[2]:.2f}"
+                f" valid_top1={valid_rank[1] * 100.0:.2f}%"
+                f" valid_sel_regret={valid_rank[2]:.2f}"
+            )
+        print(message)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.output, **best_model)
@@ -326,6 +398,12 @@ def train(args: argparse.Namespace) -> None:
         "train_samples": len(train_samples),
         "valid_samples": len(valid_samples),
     }
+    best_rank = evaluate_model_ranking(best_model, valid_samples)
+    if best_rank is not None:
+        meta["best_valid_rank_roots"] = best_rank[0]
+        meta["best_valid_rank_top1"] = best_rank[1]
+        meta["best_valid_rank_selected_regret"] = best_rank[2]
+        meta["best_valid_rank_bad_selected"] = best_rank[3]
     meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"wrote model: {args.output}")
     print(f"wrote meta: {meta_path}")
