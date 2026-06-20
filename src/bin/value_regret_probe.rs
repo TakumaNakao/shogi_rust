@@ -3,7 +3,7 @@ use clap::Parser;
 use rayon::prelude::*;
 use serde::Deserialize;
 use shogi_ai::ai::ShogiAI;
-use shogi_ai::evaluation::{Evaluator, SparseModel};
+use shogi_ai::evaluation::{EngineEvaluator, Evaluator};
 use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
 use shogi_core::Move;
 use shogi_lib::Position;
@@ -40,13 +40,13 @@ struct SfenRecord {
     sfen: String,
 }
 
-struct SharedModelEvaluator<'a> {
-    model: &'a SparseModel,
+struct SharedEngineEvaluator<'a> {
+    model: &'a EngineEvaluator,
 }
 
-impl Evaluator for SharedModelEvaluator<'_> {
+impl Evaluator for SharedEngineEvaluator<'_> {
     fn evaluate(&self, position: &Position) -> f32 {
-        self.model.predict_from_position(position)
+        self.model.evaluate(position)
     }
 }
 
@@ -101,8 +101,12 @@ fn sanitize_score(score: f32) -> f32 {
     }
 }
 
-fn searched_root(model: &SparseModel, position: &Position, depth: u8) -> Option<(f32, Vec<Move>)> {
-    let evaluator = SharedModelEvaluator { model };
+fn searched_root(
+    model: &EngineEvaluator,
+    position: &Position,
+    depth: u8,
+) -> Option<(f32, Vec<Move>)> {
+    let evaluator = SharedEngineEvaluator { model };
     let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
     let mut root = position.clone();
     ai.set_emit_info(false);
@@ -112,14 +116,14 @@ fn searched_root(model: &SparseModel, position: &Position, depth: u8) -> Option<
 }
 
 fn searched_move_score(
-    model: &SparseModel,
+    model: &EngineEvaluator,
     position: &Position,
     mv: Move,
     depth: u8,
 ) -> Option<f32> {
     let mut child = position.clone();
     child.do_move(mv);
-    let evaluator = SharedModelEvaluator { model };
+    let evaluator = SharedEngineEvaluator { model };
     let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
     ai.set_emit_info(false);
     ai.sennichite_detector.record_position(&child);
@@ -129,8 +133,8 @@ fn searched_move_score(
 }
 
 fn probe_position(
-    teacher: &SparseModel,
-    candidate: &SparseModel,
+    teacher: &EngineEvaluator,
+    candidate: &EngineEvaluator,
     position: Position,
     teacher_depth: u8,
     candidate_depth: u8,
@@ -196,10 +200,12 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow!("failed to configure rayon thread pool: {e}"))?;
     }
 
-    let mut teacher = SparseModel::new(0.0, 0.0);
-    teacher.load(&args.teacher_weights)?;
-    let mut candidate = SparseModel::new(0.0, 0.0);
-    candidate.load(&args.candidate_weights)?;
+    let teacher = EngineEvaluator::new(&args.teacher_weights, 0.0)
+        .map_err(|e| anyhow!("failed to load teacher weights: {e}"))?;
+    let candidate = EngineEvaluator::new(&args.candidate_weights, 0.0)
+        .map_err(|e| anyhow!("failed to load candidate weights: {e}"))?;
+    println!("teacher model: {}", teacher.name());
+    println!("candidate model: {}", candidate.name());
 
     let mut positions = load_positions(&args.input)?;
     if let Some(max_positions) = args.max_positions {
