@@ -63,6 +63,14 @@ struct Args {
     log_path: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     freeze_material: bool,
+    #[arg(long, default_value_t = false)]
+    decisive_only: bool,
+    #[arg(long, default_value_t = false)]
+    winner_only: bool,
+    #[arg(long)]
+    exclude_loser_after_ply: Option<usize>,
+    #[arg(long, default_value_t = 1.0)]
+    loser_sample_rate: f64,
     #[arg(long, default_value = "move_accuracy_graph.png")]
     accuracy_graph: PathBuf,
     #[arg(long, default_value_t = false)]
@@ -89,14 +97,90 @@ fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
     }
 }
 
-fn process_csa_file(path: &Path) -> Result<Vec<(Position, Move)>> {
+fn csa_to_shogi_color(color: csa::Color) -> Color {
+    if color == csa::Color::Black {
+        Color::Black
+    } else {
+        Color::White
+    }
+}
+
+fn infer_winner(record: &csa::GameRecord) -> Option<Color> {
+    let mut last_mover = None;
+    for move_record in &record.moves {
+        match move_record.action {
+            csa::Action::Move(color, ..) => {
+                last_mover = Some(csa_to_shogi_color(color));
+            }
+            csa::Action::Toryo | csa::Action::TimeUp | csa::Action::IllegalMove => {
+                return last_mover;
+            }
+            csa::Action::IllegalAction(color) => {
+                return Some(csa_to_shogi_color(color).flip());
+            }
+            csa::Action::Tsumi | csa::Action::Kachi => {
+                return last_mover;
+            }
+            csa::Action::Chudan
+            | csa::Action::Sennichite
+            | csa::Action::Jishogi
+            | csa::Action::Hikiwake
+            | csa::Action::Matta
+            | csa::Action::Fuzumi
+            | csa::Action::Error => return None,
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SampleFilter {
+    decisive_only: bool,
+    winner_only: bool,
+    exclude_loser_after_ply: Option<usize>,
+    loser_sample_rate: f64,
+}
+
+impl SampleFilter {
+    fn include(
+        &self,
+        color: Color,
+        ply_index: usize,
+        winner: Option<Color>,
+        rng: &mut ChaCha8Rng,
+    ) -> bool {
+        if self.decisive_only && winner.is_none() {
+            return false;
+        }
+        if winner == Some(color) {
+            return true;
+        }
+        if self.winner_only {
+            return false;
+        }
+        if let Some(after_ply) = self.exclude_loser_after_ply {
+            if winner.is_some() && ply_index >= after_ply {
+                return false;
+            }
+        }
+        self.loser_sample_rate >= 1.0 || rng.gen_bool(self.loser_sample_rate)
+    }
+}
+
+fn process_csa_file(
+    path: &Path,
+    filter: SampleFilter,
+    sample_seed: u64,
+) -> Result<Vec<(Position, Move)>> {
     let text = fs::read_to_string(path)?;
     let record = csa::parse_csa(&text)?;
+    let winner = infer_winner(&record);
 
     let mut training_data = Vec::new();
     let mut shogi_lib_pos = Position::default();
+    let mut rng = ChaCha8Rng::seed_from_u64(sample_seed);
 
-    for mv in record.moves.iter() {
+    for (ply_index, mv) in record.moves.iter().enumerate() {
         let shogi_move = match mv.action {
             csa::Action::Move(color, from_csa, to_csa, piece_type_after_csa) => {
                 let to_sq = if let Some(sq) = Square::new(to_csa.file, to_csa.rank) {
@@ -142,7 +226,13 @@ fn process_csa_file(path: &Path) -> Result<Vec<(Position, Move)>> {
         if let Some(shogi_move) = shogi_move {
             let legal_moves = shogi_lib_pos.legal_moves();
             if legal_moves.contains(&shogi_move) {
-                training_data.push((shogi_lib_pos.clone(), shogi_move));
+                let move_color = match mv.action {
+                    csa::Action::Move(color, ..) => csa_to_shogi_color(color),
+                    _ => break,
+                };
+                if filter.include(move_color, ply_index, winner, &mut rng) {
+                    training_data.push((shogi_lib_pos.clone(), shogi_move));
+                }
                 shogi_lib_pos.do_move(shogi_move);
             } else {
                 break;
@@ -313,13 +403,21 @@ fn train_batch(
     (train_loss, correct_predictions, total_samples)
 }
 
-fn load_validation_samples(paths: &[PathBuf], max_files: usize) -> Vec<(Position, Move)> {
+fn load_validation_samples(
+    paths: &[PathBuf],
+    max_files: usize,
+    filter: SampleFilter,
+    seed: u64,
+) -> Vec<(Position, Move)> {
     paths
         .iter()
         .take(max_files)
+        .enumerate()
         .collect::<Vec<_>>()
         .par_iter()
-        .filter_map(|path| process_csa_file(path).ok())
+        .filter_map(|(idx, path)| {
+            process_csa_file(path, filter, seed.wrapping_add(*idx as u64)).ok()
+        })
         .flatten()
         .collect()
 }
@@ -366,6 +464,29 @@ fn main() -> Result<()> {
     if !args.softmax_temperature.is_finite() || args.softmax_temperature <= 0.0 {
         return Err(anyhow!("--softmax-temperature must be positive"));
     }
+    if !args.loser_sample_rate.is_finite()
+        || args.loser_sample_rate < 0.0
+        || args.loser_sample_rate > 1.0
+    {
+        return Err(anyhow!("--loser-sample-rate must be in 0.0..=1.0"));
+    }
+    if args.winner_only && args.loser_sample_rate < 1.0 {
+        return Err(anyhow!(
+            "--winner-only and --loser-sample-rate are redundant; use one loser filtering mode"
+        ));
+    }
+    if args.winner_only && args.exclude_loser_after_ply.is_some() {
+        return Err(anyhow!(
+            "--winner-only and --exclude-loser-after-ply are redundant; use one loser filtering mode"
+        ));
+    }
+
+    let sample_filter = SampleFilter {
+        decisive_only: args.decisive_only,
+        winner_only: args.winner_only,
+        exclude_loser_after_ply: args.exclude_loser_after_ply,
+        loser_sample_rate: args.loser_sample_rate,
+    };
 
     let mut model = SparseModel::new(args.learning_rate, args.l2_lambda);
 
@@ -402,7 +523,7 @@ fn main() -> Result<()> {
             capped,
             valid_files.len()
         );
-        load_validation_samples(valid_files, capped)
+        load_validation_samples(valid_files, capped, sample_filter, args.seed ^ 0x9e37_79b9)
     };
     if !validation_samples.is_empty() {
         let metrics =
@@ -443,7 +564,19 @@ fn main() -> Result<()> {
 
             let chunk_results: Vec<Vec<(Position, Move)>> = file_chunk
                 .par_iter()
-                .map(|path| process_csa_file(path))
+                .enumerate()
+                .map(|(idx, path)| {
+                    process_csa_file(
+                        path,
+                        sample_filter,
+                        args.seed
+                            .wrapping_add(epoch as u64)
+                            .wrapping_mul(1_000_003)
+                            .wrapping_add(chunk_index as u64)
+                            .wrapping_mul(1_000_003)
+                            .wrapping_add(idx as u64),
+                    )
+                })
                 .filter_map(Result::ok)
                 .collect();
 
