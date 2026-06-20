@@ -1,5 +1,5 @@
 use crate::ai::ShogiAI;
-use crate::evaluation::SparseModelEvaluator;
+use crate::evaluation::EngineEvaluator;
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
 use std::io::{self, BufRead, Write};
@@ -29,7 +29,7 @@ struct UsiEngine {
     eval_file_path: Option<PathBuf>,
     max_depth: u8,
     search_time_limit: u64,
-    ai: Arc<Mutex<Option<ShogiAI<SparseModelEvaluator, HISTORY_CAPACITY>>>>,
+    ai: Arc<Mutex<Option<ShogiAI<EngineEvaluator, HISTORY_CAPACITY>>>>,
 }
 
 impl UsiEngine {
@@ -94,12 +94,16 @@ impl UsiEngine {
                 Some(&"EvalFile") => {
                     if let Some(path_str) = tokens.get(4) {
                         let new_path = PathBuf::from(path_str);
-                        match SparseModelEvaluator::new(&new_path, OVERWRITE_VALUE) {
+                        match EngineEvaluator::new(&new_path, OVERWRITE_VALUE) {
                             Ok(evaluator) => {
+                                let evaluator_name = evaluator.name();
                                 let new_ai = ShogiAI::new(evaluator);
                                 *self.ai.lock().unwrap() = Some(new_ai);
                                 self.eval_file_path = Some(new_path);
-                                eprintln!("info string Loaded new evaluation file: {}", path_str);
+                                eprintln!(
+                                    "info string Loaded {} evaluation file: {}",
+                                    evaluator_name, path_str
+                                );
                             }
                             Err(e) => {
                                 eprintln!("info string Error: Failed to load new evaluation file: {}. Error: {}", path_str, e);
@@ -218,7 +222,9 @@ impl UsiEngine {
                     let byoyomi_slice = byoyomi.saturating_mul(8) / 10;
                     Some((main_slice + byoyomi_slice).clamp(100, self.search_time_limit))
                 }
-                (Some(main_time), None) => Some((main_time / 30).clamp(100, self.search_time_limit)),
+                (Some(main_time), None) => {
+                    Some((main_time / 30).clamp(100, self.search_time_limit))
+                }
                 (None, Some(byoyomi)) => Some(byoyomi.clamp(100, self.search_time_limit)),
                 (None, None) => Some(self.search_time_limit),
             }
@@ -253,8 +259,11 @@ impl UsiEngine {
             if let Some(thinking_ai) = ai_lock.as_mut() {
                 thinking_ai.set_stop_signal(Some(stop_signal.clone()));
                 thinking_ai.set_emit_info(true);
-                let best_move =
-                    thinking_ai.find_best_move(&mut position, limits.max_depth, limits.time_limit_ms);
+                let best_move = thinking_ai.find_best_move(
+                    &mut position,
+                    limits.max_depth,
+                    limits.time_limit_ms,
+                );
                 if let Some(best_move) = best_move {
                     thinking_ai.set_stop_signal(None);
                     println!("bestmove {}", format_move_usi(best_move));
