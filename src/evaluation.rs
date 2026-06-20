@@ -907,6 +907,45 @@ impl Evaluator for SparseModelEvaluator {
     }
 }
 
+pub enum EngineEvaluator {
+    Sparse(SparseModelEvaluator),
+    TinyNnue(TinyNnueModel),
+}
+
+impl EngineEvaluator {
+    pub fn new(path: &Path, material_override: f32) -> Result<Self> {
+        let mut file = File::open(path)?;
+        let mut magic = [0u8; 8];
+        let read = file.read(&mut magic)?;
+        drop(file);
+
+        if read == magic.len() && &magic == b"TNNUE001" {
+            Ok(EngineEvaluator::TinyNnue(TinyNnueModel::load(path)?))
+        } else {
+            Ok(EngineEvaluator::Sparse(SparseModelEvaluator::new(
+                path,
+                material_override,
+            )?))
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            EngineEvaluator::Sparse(_) => "sparse",
+            EngineEvaluator::TinyNnue(_) => "tiny-nnue",
+        }
+    }
+}
+
+impl Evaluator for EngineEvaluator {
+    fn evaluate(&self, position: &shogi_lib::Position) -> f32 {
+        match self {
+            EngineEvaluator::Sparse(evaluator) => evaluator.evaluate(position),
+            EngineEvaluator::TinyNnue(model) => model.predict_from_position(position),
+        }
+    }
+}
+
 // --- Decoding functions (moved from kpp_weight_check.rs) ---
 
 fn index_to_board_kind(index: usize) -> Option<PieceKind> {
