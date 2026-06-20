@@ -4,6 +4,8 @@ target/
 *.binary
 log_*.txt
 *.kif
+__pycache__/
+*.pyc
 learn.sh
 ex_lib/
 *.exe

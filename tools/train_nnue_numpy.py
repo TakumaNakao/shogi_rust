@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -40,6 +41,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train", type=Path, required=True)
     parser.add_argument("--valid", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--binary-output",
+        type=Path,
+        help="Optional Rust-friendly binary export path.",
+    )
     parser.add_argument("--hidden", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -104,6 +110,31 @@ def init_model(hidden: int, rng: np.random.Generator) -> dict[str, np.ndarray]:
         "out_w": rng.normal(0.0, scale, size=(hidden,)).astype(np.float32),
         "out_b": np.zeros((), dtype=np.float32),
     }
+
+
+def write_binary_model(
+    path: Path,
+    model: dict[str, np.ndarray],
+    hidden: int,
+    target_scale: float,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+        f.write(b"TNNUE001")
+        f.write(
+            struct.pack(
+                "<IIIIf",
+                1,
+                hidden,
+                NNUE_NUM_FEATURES,
+                NNUE_NUM_KING_BUCKETS,
+                target_scale,
+            )
+        )
+        for name in ["feature_emb", "king_emb", "material_w", "hidden_b", "out_w"]:
+            array = np.ascontiguousarray(model[name], dtype="<f4")
+            f.write(array.tobytes(order="C"))
+        f.write(struct.pack("<f", float(model["out_b"])))
 
 
 def forward(model: dict[str, np.ndarray], sample: Sample) -> tuple[float, np.ndarray, np.ndarray]:
@@ -221,6 +252,9 @@ def train(args: argparse.Namespace) -> None:
     meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"wrote model: {args.output}")
     print(f"wrote meta: {meta_path}")
+    if args.binary_output is not None:
+        write_binary_model(args.binary_output, model, args.hidden, args.target_scale)
+        print(f"wrote binary model: {args.binary_output}")
 
 
 def main() -> None:
