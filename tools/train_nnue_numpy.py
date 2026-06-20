@@ -204,6 +204,10 @@ def zero_grads(model: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return {name: np.zeros_like(value) for name, value in model.items()}
 
 
+def clone_model(model: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    return {name: value.copy() for name, value in model.items()}
+
+
 def apply_adam(
     model: dict[str, np.ndarray],
     grads: dict[str, np.ndarray],
@@ -244,6 +248,11 @@ def train(args: argparse.Namespace) -> None:
         else train_samples
     )
     model = init_model(args.hidden, rng)
+    best_model = clone_model(model)
+    best_epoch = 0
+    best_valid_rmse = float("inf")
+    best_valid_mae = float("inf")
+    best_valid_sign = 0.0
     moments1 = zero_grads(model)
     moments2 = zero_grads(model)
     step = 0
@@ -285,6 +294,12 @@ def train(args: argparse.Namespace) -> None:
 
         train_rmse, train_mae, train_sign = evaluate(model, train_samples, args.target_scale)
         valid_rmse, valid_mae, valid_sign = evaluate(model, valid_samples, args.target_scale)
+        if valid_rmse < best_valid_rmse:
+            best_model = clone_model(model)
+            best_epoch = epoch
+            best_valid_rmse = valid_rmse
+            best_valid_mae = valid_mae
+            best_valid_sign = valid_sign
         print(
             f"epoch {epoch:03d} "
             f"train_rmse={train_rmse:.2f} train_mae={train_mae:.2f} "
@@ -294,10 +309,15 @@ def train(args: argparse.Namespace) -> None:
         )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(args.output, **model)
+    np.savez_compressed(args.output, **best_model)
     meta_path = args.output.with_suffix(args.output.suffix + ".json")
     meta = {
         "format": "tiny_nnue_numpy_v1",
+        "checkpoint": "best_valid_rmse",
+        "best_epoch": best_epoch,
+        "best_valid_rmse": best_valid_rmse,
+        "best_valid_mae": best_valid_mae,
+        "best_valid_sign": best_valid_sign,
         "hidden": args.hidden,
         "num_features": NNUE_NUM_FEATURES,
         "num_king_buckets": NNUE_NUM_KING_BUCKETS,
@@ -310,8 +330,14 @@ def train(args: argparse.Namespace) -> None:
     print(f"wrote model: {args.output}")
     print(f"wrote meta: {meta_path}")
     if args.binary_output is not None:
-        write_binary_model(args.binary_output, model, args.hidden, args.target_scale)
+        write_binary_model(args.binary_output, best_model, args.hidden, args.target_scale)
         print(f"wrote binary model: {args.binary_output}")
+    print(
+        f"best epoch: {best_epoch} "
+        f"valid_rmse={best_valid_rmse:.2f} "
+        f"valid_mae={best_valid_mae:.2f} "
+        f"valid_sign={best_valid_sign * 100.0:.2f}%"
+    )
 
 
 def main() -> None:
