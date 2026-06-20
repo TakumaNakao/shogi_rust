@@ -21,6 +21,8 @@ struct Args {
     seed: u64,
     #[arg(long, default_value_t = false)]
     do_undo: bool,
+    #[arg(long, default_value_t = false)]
+    quiescence: bool,
 }
 
 fn load_positions(path: &PathBuf) -> Result<Vec<Position>> {
@@ -51,15 +53,23 @@ fn main() -> Result<()> {
     let start = Instant::now();
     let mut total_positions = 0usize;
     let mut total_moves = 0usize;
+    let mut total_generated = 0usize;
     let mut total_do_undo = 0usize;
     let mut max_moves = 0usize;
 
     for _ in 0..args.repeat {
         for i in 0..args.samples {
             let mut position = positions[i % positions.len()].clone();
-            let moves = position.legal_moves();
+            let (moves, generated) = if args.quiescence {
+                position.legal_quiescence_moves_with_generated_count()
+            } else {
+                let moves = position.legal_moves();
+                let generated = moves.len();
+                (moves, generated)
+            };
             total_positions += 1;
             total_moves += moves.len();
+            total_generated += generated;
             max_moves = max_moves.max(moves.len());
             if args.do_undo {
                 for mv in moves {
@@ -74,12 +84,18 @@ fn main() -> Result<()> {
     let elapsed = start.elapsed().as_secs_f64();
     println!("positions: {}", total_positions);
     println!("legal moves: {}", total_moves);
+    println!("generated moves: {}", total_generated);
+    println!(
+        "discarded moves: {}",
+        total_generated.saturating_sub(total_moves)
+    );
     println!("max moves: {}", max_moves);
     println!("do/undo moves: {}", total_do_undo);
     println!("elapsed ms: {:.2}", elapsed * 1000.0);
     if elapsed > 0.0 {
         println!("positions/sec: {:.2}", total_positions as f64 / elapsed);
         println!("moves/sec: {:.2}", total_moves as f64 / elapsed);
+        println!("generated/sec: {:.2}", total_generated as f64 / elapsed);
         if total_do_undo > 0 {
             println!("do-undo/sec: {:.2}", total_do_undo as f64 / elapsed);
         }
@@ -87,6 +103,14 @@ fn main() -> Result<()> {
     println!(
         "avg moves/position: {:.2}",
         total_moves as f64 / total_positions.max(1) as f64
+    );
+    println!(
+        "avg generated/position: {:.2}",
+        total_generated as f64 / total_positions.max(1) as f64
+    );
+    println!(
+        "discard rate: {:.2}%",
+        total_generated.saturating_sub(total_moves) as f64 / total_generated.max(1) as f64 * 100.0
     );
 
     Ok(())
