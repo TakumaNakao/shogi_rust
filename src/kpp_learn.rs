@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, ValueEnum};
+use glob::glob;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -68,6 +69,8 @@ struct Args {
     #[arg(long, default_value_t = false)]
     winner_only: bool,
     #[arg(long)]
+    min_player_rate: Option<i32>,
+    #[arg(long)]
     exclude_loser_after_ply: Option<usize>,
     #[arg(long, default_value_t = 1.0)]
     loser_sample_rate: f64,
@@ -133,10 +136,45 @@ fn infer_winner(record: &csa::GameRecord) -> Option<Color> {
     None
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct CsaMetadata {
+    black_rate: Option<i32>,
+    white_rate: Option<i32>,
+    winner: Option<Color>,
+}
+
+fn parse_rate_line(line: &str, prefix: &str) -> Option<i32> {
+    line.strip_prefix(prefix)
+        .and_then(|rest| rest.rsplit(':').next())
+        .and_then(|rate| rate.parse::<f64>().ok())
+        .map(|rate| rate.round() as i32)
+}
+
+fn parse_csa_metadata(text: &str, record: &csa::GameRecord) -> CsaMetadata {
+    let mut metadata = CsaMetadata::default();
+    for line in text.lines() {
+        if let Some(rate) = parse_rate_line(line, "'black_rate:") {
+            metadata.black_rate = Some(rate);
+        } else if let Some(rate) = parse_rate_line(line, "'white_rate:") {
+            metadata.white_rate = Some(rate);
+        }
+    }
+    metadata.winner = infer_winner(record);
+    metadata
+}
+
+fn player_rate(metadata: &CsaMetadata, color: Color) -> Option<i32> {
+    match color {
+        Color::Black => metadata.black_rate,
+        Color::White => metadata.white_rate,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct SampleFilter {
     decisive_only: bool,
     winner_only: bool,
+    min_player_rate: Option<i32>,
     exclude_loser_after_ply: Option<usize>,
     loser_sample_rate: f64,
 }
@@ -146,20 +184,25 @@ impl SampleFilter {
         &self,
         color: Color,
         ply_index: usize,
-        winner: Option<Color>,
+        metadata: &CsaMetadata,
         rng: &mut ChaCha8Rng,
     ) -> bool {
-        if self.decisive_only && winner.is_none() {
+        if self.decisive_only && metadata.winner.is_none() {
             return false;
         }
-        if winner == Some(color) {
+        if let Some(min_rate) = self.min_player_rate {
+            if !player_rate(metadata, color).is_some_and(|rate| rate >= min_rate) {
+                return false;
+            }
+        }
+        if metadata.winner == Some(color) {
             return true;
         }
         if self.winner_only {
             return false;
         }
         if let Some(after_ply) = self.exclude_loser_after_ply {
-            if winner.is_some() && ply_index >= after_ply {
+            if metadata.winner.is_some() && ply_index >= after_ply {
                 return false;
             }
         }
@@ -172,9 +215,10 @@ fn process_csa_file(
     filter: SampleFilter,
     sample_seed: u64,
 ) -> Result<Vec<(Position, Move)>> {
-    let text = fs::read_to_string(path)?;
+    let bytes = fs::read(path)?;
+    let text = String::from_utf8_lossy(&bytes);
     let record = csa::parse_csa(&text)?;
-    let winner = infer_winner(&record);
+    let metadata = parse_csa_metadata(&text, &record);
 
     let mut training_data = Vec::new();
     let mut shogi_lib_pos = Position::default();
@@ -230,7 +274,7 @@ fn process_csa_file(
                     csa::Action::Move(color, ..) => csa_to_shogi_color(color),
                     _ => break,
                 };
-                if filter.include(move_color, ply_index, winner, &mut rng) {
+                if filter.include(move_color, ply_index, &metadata, &mut rng) {
                     training_data.push((shogi_lib_pos.clone(), shogi_move));
                 }
                 shogi_lib_pos.do_move(shogi_move);
@@ -276,16 +320,28 @@ fn draw_accuracy_graph(data: &[(usize, f32)], path: &Path) -> Result<()> {
 fn collect_csa_files(input_dirs: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for input_dir in input_dirs {
-        for entry in fs::read_dir(input_dir)
-            .map_err(|e| anyhow!("failed to read {}: {}", input_dir.display(), e))?
-        {
-            let path = entry?.path();
-            if path.extension().map(|s| s == "csa").unwrap_or(false) {
-                files.push(path);
+        if input_dir.is_dir() {
+            let pattern = input_dir.join("**/*.csa");
+            let pattern = pattern
+                .to_str()
+                .ok_or_else(|| anyhow!("path is not valid UTF-8: {}", input_dir.display()))?;
+            for entry in glob(pattern)? {
+                files.push(entry?);
             }
+        } else if input_dir
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("csa"))
+        {
+            files.push(input_dir.clone());
+        } else {
+            return Err(anyhow!(
+                "input path is neither a directory nor a CSA file: {}",
+                input_dir.display()
+            ));
         }
     }
     files.sort();
+    files.dedup();
     if files.is_empty() {
         return Err(anyhow!("no CSA files found"));
     }
@@ -484,6 +540,7 @@ fn main() -> Result<()> {
     let sample_filter = SampleFilter {
         decisive_only: args.decisive_only,
         winner_only: args.winner_only,
+        min_player_rate: args.min_player_rate,
         exclude_loser_after_ply: args.exclude_loser_after_ply,
         loser_sample_rate: args.loser_sample_rate,
     };
