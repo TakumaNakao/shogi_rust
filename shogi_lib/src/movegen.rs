@@ -6,6 +6,14 @@ use shogi_core::{Color, Hand, Move, Piece, PieceKind, Square};
 
 const MAX_LEGAL_MOVES: usize = 593;
 
+struct LegalFilterContext {
+    side_to_move: Color,
+    king_piece: Piece,
+    king_square: Option<Square>,
+    pinned: Bitboard,
+    occupied: Bitboard,
+}
+
 impl Position {
     pub fn legal_moves(&self) -> ArrayVec<Move, MAX_LEGAL_MOVES> {
         let mut av = ArrayVec::new();
@@ -15,15 +23,27 @@ impl Position {
             self.generate_all(&mut av);
         }
 
+        let context = self.legal_filter_context();
         let mut i = 0;
         while i != av.len() {
-            if self.is_legal(av[i]) {
+            if self.is_legal_with_context(av[i], &context) {
                 i += 1;
             } else {
                 av.swap_remove(i);
             }
         }
         av
+    }
+
+    fn legal_filter_context(&self) -> LegalFilterContext {
+        let side_to_move = self.side_to_move();
+        LegalFilterContext {
+            side_to_move,
+            king_piece: [Piece::B_K, Piece::W_K][side_to_move.array_index()],
+            king_square: self.king_position(side_to_move),
+            pinned: self.pinned(side_to_move),
+            occupied: self.occupied_bitboard(),
+        }
     }
 
     pub fn legal_quiescence_moves(&self) -> ArrayVec<Move, MAX_LEGAL_MOVES> {
@@ -407,20 +427,23 @@ impl Position {
     }
     // Checks if the move isn't illegal: king's suicidal moves and moving pinned piece away.
     fn is_legal(&self, m: Move) -> bool {
+        let context = self.legal_filter_context();
+        self.is_legal_with_context(m, &context)
+    }
+
+    fn is_legal_with_context(&self, m: Move, context: &LegalFilterContext) -> bool {
         if let Some(from) = m.from() {
-            let c = self.side_to_move();
-            let king = [Piece::B_K, Piece::W_K][c.array_index()];
             // 玉が相手の攻撃範囲内に動いてしまう指し手は除外
-            if self.piece_at(from) == Some(king)
+            if self.piece_at(from) == Some(context.king_piece)
                 && !self
-                    .attackers_to(c.flip(), m.to(), &self.occupied_bitboard())
+                    .attackers_to(context.side_to_move.flip(), m.to(), &context.occupied)
                     .is_empty()
             {
                 return false;
             }
             // 飛び駒から守っている駒が直線上から外れてしまう指し手は除外
-            if self.pinned(c).contains(from) {
-                if let Some(sq) = self.king_position(c) {
+            if context.pinned.contains(from) {
+                if let Some(sq) = context.king_square {
                     if !(BETWEEN_TABLE[sq.array_index()][from.array_index()].contains(m.to())
                         || BETWEEN_TABLE[sq.array_index()][m.to().array_index()].contains(from))
                     {
