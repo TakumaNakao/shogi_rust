@@ -27,6 +27,14 @@ struct Args {
     new_weights: PathBuf,
     #[arg(long, default_value = "./policy_weights_v2.1.0.binary")]
     baseline_weights: PathBuf,
+    #[arg(long)]
+    new_residual_weights: Option<PathBuf>,
+    #[arg(long)]
+    baseline_residual_weights: Option<PathBuf>,
+    #[arg(long, default_value_t = 1.0)]
+    new_residual_scale: f32,
+    #[arg(long, default_value_t = 1.0)]
+    baseline_residual_scale: f32,
     #[arg(long, default_value = "./taya36.sfen")]
     positions: PathBuf,
     #[arg(long, default_value_t = 20)]
@@ -81,6 +89,8 @@ impl EngineProcess {
     fn start(
         engine_path: &Path,
         weights_path: &Path,
+        residual_weights_path: Option<&Path>,
+        residual_scale: f32,
         depth: u8,
         time_limit_ms: u64,
     ) -> Result<Self> {
@@ -108,6 +118,16 @@ impl EngineProcess {
             "setoption name EvalFile value {}",
             weights_path.display()
         ))?;
+        if let Some(residual_weights_path) = residual_weights_path {
+            engine.send(&format!(
+                "setoption name ResidualEvalFile value {}",
+                residual_weights_path.display()
+            ))?;
+            engine.send(&format!(
+                "setoption name ResidualScale value {}",
+                residual_scale
+            ))?;
+        }
         engine.send(&format!("setoption name MaxDepth value {}", depth))?;
         engine.send(&format!(
             "setoption name SearchTimeLimit value {}",
@@ -451,12 +471,16 @@ fn main() -> Result<()> {
         let mut new_engine = EngineProcess::start(
             &args.new_engine,
             &args.new_weights,
+            args.new_residual_weights.as_deref(),
+            args.new_residual_scale,
             args.depth,
             args.time_limit_ms,
         )?;
         let mut baseline_engine = EngineProcess::start(
             &args.baseline_engine,
             &args.baseline_weights,
+            args.baseline_residual_weights.as_deref(),
+            args.baseline_residual_scale,
             args.depth,
             args.time_limit_ms,
         )?;

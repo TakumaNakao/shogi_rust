@@ -3,7 +3,7 @@ use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use shogi_ai::ai::ShogiAI;
-use shogi_ai::evaluation::{Evaluator, SparseModel, TinyNnueModel};
+use shogi_ai::evaluation::{Evaluator, HybridNnueEvaluator, SparseModel, TinyNnueModel};
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_lib::Position;
 use std::fs;
@@ -19,6 +19,10 @@ struct Args {
     weights: PathBuf,
     #[arg(long)]
     nnue_weights: Option<PathBuf>,
+    #[arg(long)]
+    residual_nnue_weights: Option<PathBuf>,
+    #[arg(long, default_value_t = 1.0)]
+    residual_scale: f32,
     #[arg(long, default_value = "./taya36.sfen")]
     positions: PathBuf,
     #[arg(long, default_value_t = 32)]
@@ -46,6 +50,16 @@ struct SharedTinyNnueEvaluator<'a> {
 }
 
 impl Evaluator for SharedTinyNnueEvaluator<'_> {
+    fn evaluate(&self, position: &Position) -> f32 {
+        self.model.predict_from_position(position)
+    }
+}
+
+struct SharedHybridNnueEvaluator<'a> {
+    model: &'a HybridNnueEvaluator,
+}
+
+impl Evaluator for SharedHybridNnueEvaluator<'_> {
     fn evaluate(&self, position: &Position) -> f32 {
         self.model.predict_from_position(position)
     }
@@ -195,7 +209,13 @@ fn main() -> Result<()> {
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
     positions.shuffle(&mut rng);
 
-    if let Some(path) = &args.nnue_weights {
+    if let Some(path) = &args.residual_nnue_weights {
+        let model = HybridNnueEvaluator::new(&args.weights, path, args.residual_scale)
+            .map_err(|e| anyhow!("failed to load hybrid evaluator: {e}"))?;
+        run_profile::<SharedHybridNnueEvaluator<'_>, _>(&args, &positions, "hybrid-nnue", || {
+            SharedHybridNnueEvaluator { model: &model }
+        })
+    } else if let Some(path) = &args.nnue_weights {
         let model = TinyNnueModel::load(path)
             .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
         run_profile::<SharedTinyNnueEvaluator<'_>, _>(&args, &positions, "tiny-nnue", || {
