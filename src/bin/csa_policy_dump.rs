@@ -88,7 +88,8 @@ fn csa_to_shogi_color(color: csa::Color) -> Color {
 fn parse_rate_line(line: &str, prefix: &str) -> Option<i32> {
     line.strip_prefix(prefix)
         .and_then(|rest| rest.rsplit(':').next())
-        .and_then(|rate| rate.parse::<i32>().ok())
+        .and_then(|rate| rate.parse::<f64>().ok())
+        .map(|rate| rate.round() as i32)
 }
 
 fn parse_csa_metadata(text: &str, record: &csa::GameRecord) -> CsaMetadata {
