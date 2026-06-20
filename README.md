@@ -78,7 +78,9 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/kpp_learn \
   --checkpoint-dir /tmp/kpp_ce_t600_lr005_seed20260620_checkpoints \
   --checkpoint-every-batches 100 \
   --log-path /tmp/kpp_ce_t600_lr005_seed20260620.csv \
-  --freeze-material
+  --freeze-material \
+  --decisive-only \
+  --exclude-loser-after-ply 100
 ```
 
 主な出力:
@@ -88,6 +90,30 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/kpp_learn \
 - `--log-path`: 学習ログCSV
 
 CSVには `train_loss`、`valid_ce`、`valid_accuracy`、`material_coeff`、重みの最小/最大値が出ます。長時間学習中は `valid_ce` が改善しているか、`valid_accuracy` が大きく悪化していないかを確認してください。
+
+#### 勝敗を使ったサンプリング
+
+棋譜には勝った側の手と負けた側の手が両方含まれます。負けた側の手をすべて正解手として学習すると、終盤の敗着まで強く覚えてしまう可能性があります。
+
+`kpp_learn` では以下のオプションで調整できます。
+
+- `--decisive-only`: 勝敗が推定できる棋譜だけ使います。
+- `--winner-only`: 勝った側の手だけ学習します。
+- `--exclude-loser-after-ply N`: 負けた側のN手目以降を除外します。
+- `--loser-sample-rate R`: 負けた側の手を確率Rで残します。`0.25` なら25%だけ残します。
+
+最初の長時間学習では、勝者手だけに絞りすぎず、負け側の序中盤は残す設定を推奨します。
+
+```bash
+--decisive-only --exclude-loser-after-ply 100
+```
+
+より強く絞る比較実験としては、以下も候補です。
+
+```bash
+--decisive-only --winner-only
+--decisive-only --loser-sample-rate 0.5
+```
 
 #### 採用前の検証
 
