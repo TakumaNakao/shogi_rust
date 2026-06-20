@@ -56,6 +56,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=0.003)
     parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--rank-loss-weight", type=float, default=0.0)
+    parser.add_argument("--rank-temperature-cp", type=float, default=20.0)
     parser.add_argument("--target-scale", type=float, default=1000.0)
     parser.add_argument("--seed", type=int, default=20260620)
     parser.add_argument(
@@ -256,6 +258,65 @@ def clone_model(model: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return {name: value.copy() for name, value in model.items()}
 
 
+def add_prediction_grad(
+    model: dict[str, np.ndarray],
+    grads: dict[str, np.ndarray],
+    sample: Sample,
+    dloss: float,
+) -> None:
+    _pred, z, hidden = forward(model, sample)
+    grads["out_w"] += dloss * hidden
+    grads["out_b"] += dloss
+    dz = dloss * model["out_w"] * ((z > 0.0) & (z < 1.0))
+    np.add.at(grads["feature_emb"], sample.features, dz)
+    grads["king_emb"][sample.king_bucket] += dz
+    grads["material_w"] += dz * sample.material
+    grads["hidden_b"] += dz
+
+
+def grouped_rank_samples(samples: list[Sample]) -> list[list[Sample]]:
+    groups: dict[int, list[Sample]] = defaultdict(list)
+    for sample in samples:
+        if sample.root_index is None:
+            return []
+        groups[sample.root_index].append(sample)
+    return [group for group in groups.values() if len(group) >= 2]
+
+
+def softmax(values: np.ndarray) -> np.ndarray:
+    shifted = values - np.max(values)
+    exp_values = np.exp(shifted)
+    return exp_values / np.sum(exp_values)
+
+
+def apply_rank_loss_epoch(
+    model: dict[str, np.ndarray],
+    groups: list[list[Sample]],
+    moments1: dict[str, np.ndarray],
+    moments2: dict[str, np.ndarray],
+    step: int,
+    lr: float,
+    weight_decay: float,
+    rank_loss_weight: float,
+    rank_temperature: float,
+) -> int:
+    if rank_loss_weight <= 0.0 or not groups:
+        return step
+    for group in groups:
+        preds = np.asarray([forward(model, sample)[0] for sample in group], dtype=np.float32)
+        targets = np.asarray([sample.target for sample in group], dtype=np.float32)
+        pred_probs = softmax(preds / rank_temperature)
+        target_probs = softmax(targets / rank_temperature)
+        pred_grads = rank_loss_weight * (pred_probs - target_probs) / rank_temperature
+
+        grads = zero_grads(model)
+        for sample, dloss in zip(group, pred_grads):
+            add_prediction_grad(model, grads, sample, float(dloss))
+        step += 1
+        apply_adam(model, grads, moments1, moments2, step, lr, weight_decay)
+    return step
+
+
 def apply_adam(
     model: dict[str, np.ndarray],
     grads: dict[str, np.ndarray],
@@ -304,6 +365,12 @@ def train(args: argparse.Namespace) -> None:
     moments1 = zero_grads(model)
     moments2 = zero_grads(model)
     step = 0
+    rank_temperature = args.rank_temperature_cp / args.target_scale
+    if args.rank_loss_weight < 0.0:
+        raise SystemExit("--rank-loss-weight must be non-negative")
+    if rank_temperature <= 0.0:
+        raise SystemExit("--rank-temperature-cp must be greater than zero")
+    train_rank_groups = grouped_rank_samples(train_samples)
 
     print(f"train samples: {len(train_samples)}")
     print(f"valid samples: {len(valid_samples)}")
@@ -342,17 +409,22 @@ def train(args: argparse.Namespace) -> None:
             grads = zero_grads(model)
             inv_batch = 1.0 / len(batch)
             for sample in batch:
-                pred, z, hidden = forward(model, sample)
+                pred, _, _ = forward(model, sample)
                 dloss = (pred - sample.target) * inv_batch
-                grads["out_w"] += dloss * hidden
-                grads["out_b"] += dloss
-                dz = dloss * model["out_w"] * ((z > 0.0) & (z < 1.0))
-                np.add.at(grads["feature_emb"], sample.features, dz)
-                grads["king_emb"][sample.king_bucket] += dz
-                grads["material_w"] += dz * sample.material
-                grads["hidden_b"] += dz
+                add_prediction_grad(model, grads, sample, dloss)
             step += 1
             apply_adam(model, grads, moments1, moments2, step, args.lr, args.weight_decay)
+        step = apply_rank_loss_epoch(
+            model,
+            train_rank_groups,
+            moments1,
+            moments2,
+            step,
+            args.lr,
+            args.weight_decay,
+            args.rank_loss_weight,
+            rank_temperature,
+        )
 
         train_rmse, train_mae, train_sign = evaluate(model, train_samples, args.target_scale)
         valid_rmse, valid_mae, valid_sign = evaluate(model, valid_samples, args.target_scale)
@@ -395,6 +467,8 @@ def train(args: argparse.Namespace) -> None:
         "num_king_buckets": NNUE_NUM_KING_BUCKETS,
         "target_scale": args.target_scale,
         "target_field": args.target_field,
+        "rank_loss_weight": args.rank_loss_weight,
+        "rank_temperature_cp": args.rank_temperature_cp,
         "train_samples": len(train_samples),
         "valid_samples": len(valid_samples),
     }
