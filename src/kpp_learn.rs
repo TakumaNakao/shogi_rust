@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,12 @@ const DEFAULT_LEARNING_RATE: f32 = 0.1;
 const DEFAULT_L2_LAMBDA: f32 = 1e-5;
 const DEFAULT_BATCH_SIZE: usize = 1024;
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LossMode {
+    Margin,
+    Ce,
+}
+
 #[derive(Parser, Debug)]
 #[command(about = "Supervised KPP training from CSA game records")]
 struct Args {
@@ -37,6 +43,10 @@ struct Args {
     learning_rate: f32,
     #[arg(long, default_value_t = DEFAULT_L2_LAMBDA)]
     l2_lambda: f32,
+    #[arg(long, value_enum, default_value_t = LossMode::Margin)]
+    loss: LossMode,
+    #[arg(long, default_value_t = 600.0)]
+    softmax_temperature: f32,
     #[arg(long, default_value_t = 1024)]
     chunk_size: usize,
     #[arg(long, default_value_t = 0)]
@@ -192,17 +202,48 @@ fn collect_csa_files(input_dirs: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn evaluate_move_accuracy(model: &SparseModel, samples: &[(Position, Move)]) -> (usize, usize) {
-    let correct = samples
+#[derive(Clone, Copy, Debug)]
+struct PolicyMetrics {
+    correct: usize,
+    total: usize,
+    ce: f32,
+}
+
+impl PolicyMetrics {
+    fn accuracy_percent(&self) -> f32 {
+        if self.total > 0 {
+            self.correct as f32 / self.total as f32 * 100.0
+        } else {
+            0.0
+        }
+    }
+}
+
+fn evaluate_policy_metrics(
+    model: &SparseModel,
+    samples: &[(Position, Move)],
+    softmax_temperature: f32,
+) -> PolicyMetrics {
+    if !softmax_temperature.is_finite() || softmax_temperature <= 0.0 {
+        return PolicyMetrics {
+            correct: 0,
+            total: 0,
+            ce: 0.0,
+        };
+    }
+
+    let results: Vec<(bool, f32)> = samples
         .par_iter()
-        .filter(|(position, teacher_move)| {
+        .filter_map(|(position, teacher_move)| {
             let legal_moves = position.legal_moves();
             if legal_moves.is_empty() || !legal_moves.contains(teacher_move) {
-                return false;
+                return None;
             }
 
             let mut best_move = legal_moves[0];
             let mut best_score = f32::NEG_INFINITY;
+            let mut teacher_score = None;
+            let mut scores = Vec::with_capacity(legal_moves.len());
             for &mv in legal_moves.iter() {
                 let mut child = position.clone();
                 child.do_move(mv);
@@ -212,11 +253,64 @@ fn evaluate_move_accuracy(model: &SparseModel, samples: &[(Position, Move)]) -> 
                     best_score = score;
                     best_move = mv;
                 }
+                if mv == *teacher_move {
+                    teacher_score = Some(score);
+                }
+                scores.push(score);
             }
-            best_move == *teacher_move
+
+            let teacher_score = teacher_score?;
+            let max_score = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let total_exp = scores
+                .iter()
+                .map(|score| ((*score - max_score) / softmax_temperature).exp())
+                .sum::<f32>();
+            if total_exp <= 0.0 || !total_exp.is_finite() {
+                return None;
+            }
+            let teacher_prob =
+                ((teacher_score - max_score) / softmax_temperature).exp() / total_exp;
+            Some((best_move == *teacher_move, -teacher_prob.max(1e-7).ln()))
         })
-        .count();
-    (correct, samples.len())
+        .collect();
+
+    let total = results.len();
+    if total == 0 {
+        return PolicyMetrics {
+            correct: 0,
+            total: 0,
+            ce: 0.0,
+        };
+    }
+    let correct = results.iter().filter(|(is_correct, _)| *is_correct).count();
+    let ce = results.iter().map(|(_, loss)| *loss).sum::<f32>() / total as f32;
+    PolicyMetrics { correct, total, ce }
+}
+
+fn train_batch(
+    model: &mut SparseModel,
+    batch: &[(Position, Move)],
+    loss: LossMode,
+    softmax_temperature: f32,
+    freeze_material: bool,
+) -> (f32, usize, usize) {
+    let material_before = model.material_coeff;
+    let (train_loss, correct_predictions, total_samples) = match loss {
+        LossMode::Margin => {
+            let (correct, total) = model.update_batch_for_moves(batch);
+            (0.0, correct, total)
+        }
+        LossMode::Ce => {
+            let (loss, total) =
+                model.update_batch_with_cross_entropy_temperature(batch, softmax_temperature);
+            let metrics = evaluate_policy_metrics(model, batch, softmax_temperature);
+            (loss, metrics.correct, total)
+        }
+    };
+    if freeze_material {
+        model.material_coeff = material_before;
+    }
+    (train_loss, correct_predictions, total_samples)
 }
 
 fn load_validation_samples(paths: &[PathBuf], max_files: usize) -> Vec<(Position, Move)> {
@@ -269,6 +363,9 @@ fn main() -> Result<()> {
     if !args.l2_lambda.is_finite() || args.l2_lambda < 0.0 {
         return Err(anyhow!("--l2-lambda must be non-negative"));
     }
+    if !args.softmax_temperature.is_finite() || args.softmax_temperature <= 0.0 {
+        return Err(anyhow!("--softmax-temperature must be positive"));
+    }
 
     let mut model = SparseModel::new(args.learning_rate, args.l2_lambda);
 
@@ -308,12 +405,14 @@ fn main() -> Result<()> {
         load_validation_samples(valid_files, capped)
     };
     if !validation_samples.is_empty() {
-        let (correct, total) = evaluate_move_accuracy(&model, &validation_samples);
+        let metrics =
+            evaluate_policy_metrics(&model, &validation_samples, args.softmax_temperature);
         println!(
-            "baseline validation accuracy: {:.2}% ({}/{})",
-            correct as f32 / total.max(1) as f32 * 100.0,
-            correct,
-            total
+            "baseline validation accuracy: {:.2}% ({}/{}) ce={:.6}",
+            metrics.accuracy_percent(),
+            metrics.correct,
+            metrics.total,
+            metrics.ce
         );
     }
 
@@ -327,7 +426,7 @@ fn main() -> Result<()> {
         let mut file = File::create(path)?;
         writeln!(
             file,
-            "epoch,batch,train_accuracy,train_correct,train_total,valid_accuracy,valid_correct,valid_total,material_coeff,min_w,max_w"
+            "epoch,batch,loss_mode,train_loss,train_accuracy,train_correct,train_total,valid_ce,valid_accuracy,valid_correct,valid_total,material_coeff,min_w,max_w"
         )?;
         Some(file)
     } else {
@@ -367,12 +466,13 @@ fn main() -> Result<()> {
                 let batch_data: Vec<_> = remaining_data.drain(0..args.batch_size).collect();
                 let start_time_batch = Instant::now();
 
-                let material_before = model.material_coeff;
-                let (correct_predictions, total_samples) =
-                    model.update_batch_for_moves(&batch_data);
-                if args.freeze_material {
-                    model.material_coeff = material_before;
-                }
+                let (train_loss, correct_predictions, total_samples) = train_batch(
+                    &mut model,
+                    &batch_data,
+                    args.loss,
+                    args.softmax_temperature,
+                    args.freeze_material,
+                );
                 let accuracy = if total_samples > 0 {
                     (correct_predictions as f32 / total_samples as f32) * 100.0
                 } else {
@@ -389,29 +489,35 @@ fn main() -> Result<()> {
                 accuracy_history.push((batch_count, accuracy));
 
                 if let Some(file) = log_file.as_mut() {
-                    let (valid_correct, valid_total) = if validation_samples.is_empty() {
-                        (0, 0)
+                    let valid_metrics = if validation_samples.is_empty() {
+                        PolicyMetrics {
+                            correct: 0,
+                            total: 0,
+                            ce: 0.0,
+                        }
                     } else {
-                        evaluate_move_accuracy(&model, &validation_samples)
-                    };
-                    let valid_accuracy = if valid_total > 0 {
-                        valid_correct as f32 / valid_total as f32 * 100.0
-                    } else {
-                        0.0
+                        evaluate_policy_metrics(
+                            &model,
+                            &validation_samples,
+                            args.softmax_temperature,
+                        )
                     };
                     let max_w = model.w.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                     let min_w = model.w.iter().cloned().fold(f32::INFINITY, f32::min);
                     writeln!(
                         file,
-                        "{},{},{:.4},{},{},{:.4},{},{},{:.6},{:.6},{:.6}",
+                        "{},{},{:?},{:.6},{:.4},{},{},{:.6},{:.4},{},{},{:.6},{:.6},{:.6}",
                         epoch,
                         batch_count,
+                        args.loss,
+                        train_loss,
                         accuracy,
                         correct_predictions,
                         total_samples,
-                        valid_accuracy,
-                        valid_correct,
-                        valid_total,
+                        valid_metrics.ce,
+                        valid_metrics.accuracy_percent(),
+                        valid_metrics.correct,
+                        valid_metrics.total,
                         model.material_coeff,
                         min_w,
                         max_w
@@ -429,12 +535,13 @@ fn main() -> Result<()> {
 
         if !remaining_data.is_empty() {
             let start_time_batch = Instant::now();
-            let material_before = model.material_coeff;
-            let (correct_predictions, total_samples) =
-                model.update_batch_for_moves(&remaining_data);
-            if args.freeze_material {
-                model.material_coeff = material_before;
-            }
+            let (train_loss, correct_predictions, total_samples) = train_batch(
+                &mut model,
+                &remaining_data,
+                args.loss,
+                args.softmax_temperature,
+                args.freeze_material,
+            );
             let accuracy = if total_samples > 0 {
                 (correct_predictions as f32 / total_samples as f32) * 100.0
             } else {
@@ -449,29 +556,31 @@ fn main() -> Result<()> {
             accuracy_history.push((batch_count, accuracy));
 
             if let Some(file) = log_file.as_mut() {
-                let (valid_correct, valid_total) = if validation_samples.is_empty() {
-                    (0, 0)
+                let valid_metrics = if validation_samples.is_empty() {
+                    PolicyMetrics {
+                        correct: 0,
+                        total: 0,
+                        ce: 0.0,
+                    }
                 } else {
-                    evaluate_move_accuracy(&model, &validation_samples)
-                };
-                let valid_accuracy = if valid_total > 0 {
-                    valid_correct as f32 / valid_total as f32 * 100.0
-                } else {
-                    0.0
+                    evaluate_policy_metrics(&model, &validation_samples, args.softmax_temperature)
                 };
                 let max_w = model.w.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                 let min_w = model.w.iter().cloned().fold(f32::INFINITY, f32::min);
                 writeln!(
                     file,
-                    "{},{},{:.4},{},{},{:.4},{},{},{:.6},{:.6},{:.6}",
+                    "{},{},{:?},{:.6},{:.4},{},{},{:.6},{:.4},{},{},{:.6},{:.6},{:.6}",
                     epoch,
                     batch_count,
+                    args.loss,
+                    train_loss,
                     accuracy,
                     correct_predictions,
                     total_samples,
-                    valid_accuracy,
-                    valid_correct,
-                    valid_total,
+                    valid_metrics.ce,
+                    valid_metrics.accuracy_percent(),
+                    valid_metrics.correct,
+                    valid_metrics.total,
                     model.material_coeff,
                     min_w,
                     max_w
@@ -484,13 +593,15 @@ fn main() -> Result<()> {
             model.material_coeff = initial_material_coeff;
         }
         if !validation_samples.is_empty() {
-            let (correct, total) = evaluate_move_accuracy(&model, &validation_samples);
+            let metrics =
+                evaluate_policy_metrics(&model, &validation_samples, args.softmax_temperature);
             println!(
-                "epoch {} validation accuracy: {:.2}% ({}/{})",
+                "epoch {} validation accuracy: {:.2}% ({}/{}) ce={:.6}",
                 epoch,
-                correct as f32 / total.max(1) as f32 * 100.0,
-                correct,
-                total
+                metrics.accuracy_percent(),
+                metrics.correct,
+                metrics.total,
+                metrics.ce
             );
         }
         save_checkpoint(&model, args.checkpoint_dir.as_deref(), epoch, batch_count)?;
