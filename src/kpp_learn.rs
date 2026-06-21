@@ -63,8 +63,16 @@ struct Args {
     checkpoint_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 0)]
     checkpoint_every_batches: usize,
+    #[arg(long, default_value_t = 0.0)]
+    anchor_l2: f32,
+    #[arg(long)]
+    max_weight_delta: Option<f32>,
     #[arg(long)]
     log_path: Option<PathBuf>,
+    #[arg(long)]
+    early_stop_min_accuracy_drop: Option<f32>,
+    #[arg(long)]
+    best_checkpoint_path: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     freeze_material: bool,
     #[arg(long, default_value_t = false)]
@@ -436,6 +444,46 @@ fn evaluate_policy_metrics(
     PolicyMetrics { correct, total, ce }
 }
 
+#[derive(Debug, Default)]
+struct ConstraintState {
+    max_abs_delta: f32,
+    clamped_count: usize,
+}
+
+fn apply_weight_constraints(
+    model: &mut SparseModel,
+    initial_weights: &[f32],
+    anchor_l2: f32,
+    max_weight_delta: Option<f32>,
+) -> ConstraintState {
+    if initial_weights.len() != model.w.len() {
+        return ConstraintState::default();
+    }
+
+    let limit = max_weight_delta;
+    let mut state = ConstraintState::default();
+    for (weight, anchor_weight) in model.w.iter_mut().zip(initial_weights.iter()) {
+        if anchor_l2 > 0.0 {
+            *weight += anchor_l2 * (*anchor_weight - *weight);
+        }
+
+        if let Some(max_delta) = limit {
+            let raw_delta = *weight - *anchor_weight;
+            let clamped_delta = raw_delta.clamp(-max_delta, max_delta);
+            if clamped_delta != raw_delta {
+                state.clamped_count += 1;
+            }
+            *weight = *anchor_weight + clamped_delta;
+        }
+
+        let delta = (*weight - *anchor_weight).abs();
+        if delta > state.max_abs_delta {
+            state.max_abs_delta = delta;
+        }
+    }
+    state
+}
+
 fn train_batch(
     model: &mut SparseModel,
     batch: &[(Position, Move)],
@@ -523,6 +571,9 @@ fn main() -> Result<()> {
     if !args.l2_lambda.is_finite() || args.l2_lambda < 0.0 {
         return Err(anyhow!("--l2-lambda must be non-negative"));
     }
+    if !args.anchor_l2.is_finite() || args.anchor_l2 < 0.0 {
+        return Err(anyhow!("--anchor-l2 must be non-negative"));
+    }
     if !args.softmax_temperature.is_finite() || args.softmax_temperature <= 0.0 {
         return Err(anyhow!("--softmax-temperature must be positive"));
     }
@@ -542,6 +593,21 @@ fn main() -> Result<()> {
             "--winner-only and --exclude-loser-after-ply are redundant; use one loser filtering mode"
         ));
     }
+    if let Some(max_delta) = args.max_weight_delta {
+        if !max_delta.is_finite() || max_delta < 0.0 {
+            return Err(anyhow!("--max-weight-delta must be non-negative"));
+        }
+    }
+    if let Some(drop_threshold) = args.early_stop_min_accuracy_drop {
+        if !drop_threshold.is_finite() || drop_threshold < 0.0 {
+            return Err(anyhow!(
+                "--early-stop-min-accuracy-drop must be non-negative"
+            ));
+        }
+    }
+
+    let max_weight_delta = args.max_weight_delta.filter(|delta| *delta > 0.0);
+    let early_stop_min_accuracy_drop = args.early_stop_min_accuracy_drop.filter(|drop| *drop > 0.0);
 
     let sample_filter = SampleFilter {
         decisive_only: args.decisive_only,
@@ -564,6 +630,31 @@ fn main() -> Result<()> {
     model.kpp_eta = args.learning_rate;
     model.l2_lambda = args.l2_lambda;
     let initial_material_coeff = model.material_coeff;
+    let initial_model_for_anchor = SparseModel {
+        w: model.w.clone(),
+        bias: model.bias,
+        material_coeff: model.material_coeff,
+        kpp_eta: model.kpp_eta,
+        l2_lambda: model.l2_lambda,
+    };
+    if args.anchor_l2 > 0.0 {
+        println!("anchor L2 is enabled: {:.6} (weights only)", args.anchor_l2);
+    }
+    if let Some(max_delta) = max_weight_delta {
+        println!("max weight delta clamp is enabled: {:.6}", max_delta);
+    }
+    if let Some(early_stop_threshold) = early_stop_min_accuracy_drop {
+        println!(
+            "early stop is enabled: drop >= {:.2}pp from baseline",
+            early_stop_threshold
+        );
+    }
+    if let Some(path) = args.best_checkpoint_path.as_deref() {
+        println!("best checkpoint path: {}", path.display());
+    }
+    if let Some(parent) = args.best_checkpoint_path.as_ref().and_then(|p| p.parent()) {
+        fs::create_dir_all(parent)?;
+    }
 
     let mut csa_files = collect_csa_files(&args.input_dir)?;
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
@@ -592,9 +683,11 @@ fn main() -> Result<()> {
         );
         load_validation_samples(valid_files, capped, sample_filter, args.seed ^ 0x9e37_79b9)
     };
+    let mut base_validation_accuracy = None;
     if !validation_samples.is_empty() {
         let metrics =
             evaluate_policy_metrics(&model, &validation_samples, args.softmax_temperature);
+        base_validation_accuracy = Some(metrics.accuracy_percent());
         println!(
             "baseline validation accuracy: {:.2}% ({}/{}) ce={:.6}",
             metrics.accuracy_percent(),
@@ -603,6 +696,7 @@ fn main() -> Result<()> {
             metrics.ce
         );
     }
+    let mut best_validation_accuracy = None;
 
     let mut batch_count = 0;
     let mut accuracy_history = Vec::new();
@@ -625,6 +719,7 @@ fn main() -> Result<()> {
         let mut epoch_train_files = train_files.to_vec();
         epoch_train_files.shuffle(&mut rng);
         let mut remaining_data: Vec<(Position, Move)> = Vec::new();
+        let mut should_early_stop = false;
 
         for (chunk_index, file_chunk) in epoch_train_files.chunks(args.chunk_size).enumerate() {
             let start_time_chunk = Instant::now();
@@ -670,6 +765,16 @@ fn main() -> Result<()> {
                         args.softmax_temperature,
                         args.freeze_material,
                     );
+                    let constraint_state = if args.anchor_l2 > 0.0 || max_weight_delta.is_some() {
+                        apply_weight_constraints(
+                            &mut model,
+                            &initial_model_for_anchor.w,
+                            args.anchor_l2,
+                            max_weight_delta,
+                        )
+                    } else {
+                        ConstraintState::default()
+                    };
                     let accuracy = if total_samples > 0 {
                         (correct_predictions as f32 / total_samples as f32) * 100.0
                     } else {
@@ -686,6 +791,12 @@ fn main() -> Result<()> {
                         elapsed_time_batch,
                         remaining_data.len()
                     );
+                    if args.anchor_l2 > 0.0 || max_weight_delta.is_some() {
+                        println!(
+                            "  constraints -> max|w-w0|={:.6}, clamped_weights={}",
+                            constraint_state.max_abs_delta, constraint_state.clamped_count
+                        );
+                    }
 
                     accuracy_history.push((batch_count, accuracy));
 
@@ -761,6 +872,16 @@ fn main() -> Result<()> {
                 args.softmax_temperature,
                 args.freeze_material,
             );
+            let constraint_state = if args.anchor_l2 > 0.0 || max_weight_delta.is_some() {
+                apply_weight_constraints(
+                    &mut model,
+                    &initial_model_for_anchor.w,
+                    args.anchor_l2,
+                    max_weight_delta,
+                )
+            } else {
+                ConstraintState::default()
+            };
             let accuracy = if total_samples > 0 {
                 (correct_predictions as f32 / total_samples as f32) * 100.0
             } else {
@@ -772,6 +893,12 @@ fn main() -> Result<()> {
                 "epoch {} 最後のバッチ {}: 正解率: {:.2}%, 時間: {:?}",
                 epoch, batch_count, accuracy, elapsed_time_batch
             );
+            if args.anchor_l2 > 0.0 || max_weight_delta.is_some() {
+                println!(
+                    "  constraints -> max|w-w0|={:.6}, clamped_weights={}",
+                    constraint_state.max_abs_delta, constraint_state.clamped_count
+                );
+            }
             accuracy_history.push((batch_count, accuracy));
 
             if let Some(file) = log_file.as_mut() {
@@ -814,14 +941,44 @@ fn main() -> Result<()> {
         if !validation_samples.is_empty() {
             let metrics =
                 evaluate_policy_metrics(&model, &validation_samples, args.softmax_temperature);
+            let validation_accuracy = metrics.accuracy_percent();
+            if best_validation_accuracy.map_or(true, |best| validation_accuracy > best) {
+                best_validation_accuracy = Some(validation_accuracy);
+                if let Some(path) = args.best_checkpoint_path.as_deref() {
+                    model.save(path)?;
+                    println!(
+                        "Best validation checkpoint saved to {} (accuracy {:.2}%)",
+                        path.display(),
+                        validation_accuracy
+                    );
+                }
+            }
             println!(
                 "epoch {} validation accuracy: {:.2}% ({}/{}) ce={:.6}",
-                epoch,
-                metrics.accuracy_percent(),
-                metrics.correct,
-                metrics.total,
-                metrics.ce
+                epoch, validation_accuracy, metrics.correct, metrics.total, metrics.ce
             );
+
+            if let (Some(base), Some(drop_threshold)) =
+                (base_validation_accuracy, early_stop_min_accuracy_drop)
+            {
+                let drop = base - validation_accuracy;
+                if drop >= drop_threshold {
+                    println!(
+                        "early stop: validation accuracy dropped {:.2}pt from baseline ({:.2}% -> {:.2}%), threshold {:.2}pt",
+                        drop,
+                        base,
+                        validation_accuracy,
+                        drop_threshold
+                    );
+                    should_early_stop = true;
+                }
+            }
+        }
+        if should_early_stop {
+            if args.checkpoint_every_batches > 0 {
+                save_checkpoint(&model, args.checkpoint_dir.as_deref(), epoch, batch_count)?;
+            }
+            break;
         }
         if args.checkpoint_every_batches > 0 {
             save_checkpoint(&model, args.checkpoint_dir.as_deref(), epoch, batch_count)?;
