@@ -190,6 +190,13 @@ kill "$(cat "$RUN_DIR/pid")"
 - `--exclude-loser-after-ply N`: 負けた側のN手目以降を除外します。
 - `--loser-sample-rate R`: 負けた側の手を確率Rで残します。`0.25` なら25%だけ残します。
 
+`--freeze-material` と合わせて長時間学習向けに使える安全オプション:
+
+- `--anchor-l2 X`: 学習開始時の重みに対して `w := w + X*(w0 - w)` を各バッチ後に適用します。`0.0` で無効。
+- `--max-weight-delta X`: `|w - w0| <= X` になるよう各バッチ後に重みをクリップします。`--anchor-l2` と併用可。
+- `--early-stop-min-accuracy-drop X`: 検証精度がベースラインからXポイント以上低下したら学習停止します。
+- `--best-checkpoint-path path`: 検証精度がこれまでで最良の場合に `path` へ保存します（検証サンプルがあるときのみ）。
+
 最初の長時間学習では、勝者手だけに絞りすぎず、負け側の序中盤は残す設定を推奨します。
 
 ```bash
