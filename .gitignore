@@ -1,5 +1,6 @@
 csa_files/
 data/wdoor/
+data/mmto/
 target/
 *.png
 *.binary
