@@ -280,10 +280,12 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/record_analyze \
 
 40局gateを通った場合だけ、次の順で拡大する。
 
+現在の推奨は、trainもvalidもfull-legalに近い候補集合で検証すること。`searched` は内部的に全合法手を探索してから `--teacher-score-top` に切るため、`--teacher-score-top 128` は多くの通常局面で実質full-legal trainになる。
+
 ### 9.1 局面数を増やす
 
 ```bash
-RUN_DIR="data/mmto/runs/d3_top8_1000_$(date -u +%Y%m%d_%H%M%S)"
+RUN_DIR="data/mmto/runs/d3_top128_1000_fullvalid_$(date -u +%Y%m%d_%H%M%S)"
 mkdir -p "$RUN_DIR"
 
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_dump \
@@ -292,10 +294,11 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_dump \
   --train-output "$RUN_DIR/train.rank.jsonl" \
   --valid-output "$RUN_DIR/valid.rank.jsonl" \
   --depth 3 \
-  --teacher-score-top 8 \
+  --teacher-score-top 128 \
   --teacher-score-source searched \
   --max-positions 1000 \
   --valid-percent 10 \
+  --score-all-legal-for-valid \
   --min-legal-moves 2 \
   --exclude-in-check \
   --max-abs-root-score 3000 \
@@ -313,6 +316,16 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_dump \
 - `learning-rate`: 0.005, 0.01, 0.02
 - `max-weight-delta`: 0.02, 0.05
 - `teacher-score-top`: 8, 16
+
+MMTO-lite改善版では、以下も試す。
+
+- `--loss listwise-pairwise`
+- `--pairwise-weight`: 0.01, 0.05, 0.1
+- `--pairwise-gap`: 1, 2, 5
+- `--pairwise-margin`: 0.5, 1, 2
+- `--train-min-teacher-gap`: 0, 0.5, 1
+- `--train-min-score-span`: 0, 5, 10
+- `--valid-filter none` を標準にし、validを簡単にしない。
 
 一度に複数要素を変えない。
 
