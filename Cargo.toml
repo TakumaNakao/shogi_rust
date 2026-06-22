@@ -55,5 +55,13 @@ name = "distill_train"
 path = "src/bin/distill_train.rs"
 
 [[bin]]
+name = "mmto_dump"
+path = "src/bin/mmto_dump.rs"
+
+[[bin]]
+name = "mmto_train"
+path = "src/bin/mmto_train.rs"
+
+[[bin]]
 name = "csa_policy_dump"
 path = "src/bin/csa_policy_dump.rs"

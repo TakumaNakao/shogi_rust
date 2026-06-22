@@ -82,14 +82,30 @@ mod tests {
 
         // 4回同じ局面を繰り返す
         for _ in 0..3 {
-            let mv1 = Move::Normal { from: Square::new(2, 7).unwrap(), to: Square::new(2, 6).unwrap(), promote: false };
-            let mv2 = Move::Normal { from: Square::new(8, 3).unwrap(), to: Square::new(8, 4).unwrap(), promote: false };
+            let mv1 = Move::Normal {
+                from: Square::new(2, 7).unwrap(),
+                to: Square::new(2, 6).unwrap(),
+                promote: false,
+            };
+            let mv2 = Move::Normal {
+                from: Square::new(8, 3).unwrap(),
+                to: Square::new(8, 4).unwrap(),
+                promote: false,
+            };
             pos.do_move(mv1);
             pos.do_move(mv2);
             detector.record_position(&pos);
 
-            let mv3 = Move::Normal { from: Square::new(2, 6).unwrap(), to: Square::new(2, 7).unwrap(), promote: false };
-            let mv4 = Move::Normal { from: Square::new(8, 4).unwrap(), to: Square::new(8, 3).unwrap(), promote: false };
+            let mv3 = Move::Normal {
+                from: Square::new(2, 6).unwrap(),
+                to: Square::new(2, 7).unwrap(),
+                promote: false,
+            };
+            let mv4 = Move::Normal {
+                from: Square::new(8, 4).unwrap(),
+                to: Square::new(8, 3).unwrap(),
+                promote: false,
+            };
             pos.do_move(mv3);
             pos.do_move(mv4);
             detector.record_position(&pos);
@@ -98,17 +114,18 @@ mod tests {
         // 初期局面に戻っているはず
         let initial_pos = Position::default();
         assert_eq!(detector.get_position_count(&initial_pos), 4);
-        assert_eq!(detector.check_sennichite(&initial_pos), SennichiteStatus::Draw);
+        assert_eq!(
+            detector.check_sennichite(&initial_pos),
+            SennichiteStatus::Draw
+        );
     }
 
     #[test]
     fn test_checked_repetition_is_perpetual_check_loss() {
         const TEST_CAPACITY: usize = 8;
         let mut detector = SennichiteDetector::<TEST_CAPACITY>::new();
-        let partial = shogi_core::PartialPosition::from_usi(
-            "sfen 4r3k/9/9/9/9/9/9/9/4K4 b - 1",
-        )
-        .unwrap();
+        let partial =
+            shogi_core::PartialPosition::from_usi("sfen 4r3k/9/9/9/9/9/9/9/4K4 b - 1").unwrap();
         let pos = Position::new(partial);
         assert!(pos.in_check());
 

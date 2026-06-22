@@ -6,8 +6,8 @@ use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::utils::{format_move_usi, parse_usi_move, position_from_sfen_or_usi};
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 const HISTORY_CAPACITY: usize = 256;
 
