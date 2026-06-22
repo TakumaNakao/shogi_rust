@@ -29,6 +29,7 @@ test -f policy_weights_v2.1.0.binary
 ```bash
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
   --bin mmto_dump \
+  --bin mmto_probe \
   --bin mmto_train \
   --bin adjust_weights \
   --bin kpp_weight_check \
@@ -179,6 +180,86 @@ tail -n 5 "$RUN_DIR/train.log"
 
 CEだけが改善してregretが悪化した候補は破棄する。
 
+### 5.1 Hard-negative診断
+
+offline regretが改善しても対局に効かない場合は、full-legal validで「現モデルが高評価して選びそうな高regret悪手」を抽出する。
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_probe \
+  --weights policy_weights_v2.1.0.binary \
+  --input "$RUN_DIR/valid.rank.jsonl" \
+  --output "$RUN_DIR/probe_valid_regret100.jsonl" \
+  --min-regret 100 \
+  --top 50 \
+  --format jsonl
+```
+
+CSVで目視する場合:
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_probe \
+  --weights policy_weights_v2.1.0.binary \
+  --input "$RUN_DIR/valid.rank.jsonl" \
+  --output "$RUN_DIR/probe_valid_regret100.csv" \
+  --min-regret 100 \
+  --top 50 \
+  --format csv
+```
+
+見るべき点:
+
+- `selected_regret` が大きい局面がどの程度あるか。
+- `model_rank_by_teacher` が大きい手をモデルが選んでいないか。このrankは0-basedで、0がteacher bestである。
+- `teacher_gap` が小さい局面だけに偏っていないか。
+- `candidate_count` が十分大きいか。top8/top16だけでは危険手を見落とすことがある。
+
+`mmto_probe` は該当局面が0件でも正常終了する。JSONLは空ファイル、CSVはヘッダのみになる。
+
+### 5.2 Hard-negative学習
+
+`listwise` で全体順位を整えつつ、現モデルが選びそうな高regret悪手を直接下げる補助損失を使う。
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_train \
+  --weights policy_weights_v2.1.0.binary \
+  --train "$RUN_DIR/train.rank.jsonl" \
+  --valid "$RUN_DIR/valid.rank.jsonl" \
+  --output "$RUN_DIR/mmto_hard_negative.binary" \
+  --epochs 5 \
+  --batch-size 128 \
+  --learning-rate 10 \
+  --model-temperature 30 \
+  --teacher-temperature 100 \
+  --loss listwise-hard-negative \
+  --hard-negative-weight 0.1 \
+  --hard-negative-min-regret 100 \
+  --hard-negative-margin 0.5 \
+  --hard-negative-top-model 5 \
+  --hard-negative-top-teacher 1 \
+  --anchor-l2 0.0001 \
+  --max-weight-delta 0.2 \
+  --bad-regret-cp 300 \
+  --best-metric selected-regret \
+  --best-checkpoint-path "$RUN_DIR/best_hard_negative.binary" \
+  --log-path "$RUN_DIR/train_hard_negative.log"
+```
+
+初期探索範囲:
+
+- `--hard-negative-weight`: 0.05, 0.1, 0.2
+- `--hard-negative-min-regret`: 50, 100, 200
+- `--hard-negative-margin`: 0.5, 1.0
+- `--hard-negative-top-model`: 3, 5
+- `--hard-negative-top-teacher`: 1, 2
+
+採用条件:
+
+- `valid_selected_regret_mean` がepoch 0より5%以上改善。
+- `valid_p90_regret`, `valid_p95_regret`, `valid_bad_regret_ratio`, `valid_expected_regret` が悪化しない。
+- `hard_negative_samples` と `hard_negative_pairs` が0ではない。
+- `probe_valid_regret100` の高regret局面が減る。
+- 20局smokeと40局gateを必ず通す。
+
 ## 6. Blend候補の作成
 
 MMTO-liteで直接学習した重みが強すぎる場合に備え、v2.1.0とのblendを作る。
@@ -326,6 +407,12 @@ MMTO-lite改善版では、以下も試す。
 - `--train-min-teacher-gap`: 0, 0.5, 1
 - `--train-min-score-span`: 0, 5, 10
 - `--valid-filter none` を標準にし、validを簡単にしない。
+- `--loss listwise-hard-negative`
+- `--hard-negative-weight`: 0.05, 0.1, 0.2
+- `--hard-negative-min-regret`: 50, 100, 200
+- `--hard-negative-margin`: 0.5, 1.0
+- `--hard-negative-top-model`: 3, 5
+- `--hard-negative-top-teacher`: 1, 2
 
 一度に複数要素を変えない。
 

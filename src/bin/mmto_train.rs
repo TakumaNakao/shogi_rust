@@ -55,6 +55,18 @@ struct Args {
     pairwise_margin: f32,
     #[arg(long, default_value_t = 512)]
     pairwise_max_pairs_per_sample: usize,
+    #[arg(long, default_value_t = 0.1)]
+    hard_negative_weight: f32,
+    #[arg(long, default_value_t = 0.5)]
+    hard_negative_margin: f32,
+    #[arg(long, default_value_t = 0.0)]
+    hard_negative_min_regret: f32,
+    #[arg(long, default_value_t = 5)]
+    hard_negative_top_model: usize,
+    #[arg(long, default_value_t = 1)]
+    hard_negative_top_teacher: usize,
+    #[arg(long, default_value_t = 512)]
+    hard_negative_max_pairs_per_sample: usize,
     #[arg(long, default_value_t = true)]
     freeze_material: bool,
     #[arg(long, default_value_t = 0.0)]
@@ -86,6 +98,8 @@ enum LossMode {
     Listwise,
     #[value(name = "listwise-pairwise")]
     ListwisePairwise,
+    #[value(name = "listwise-hard-negative")]
+    ListwiseHardNegative,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -161,6 +175,8 @@ struct Metrics {
     teacher_gaps: Vec<f32>,
     pairwise_total: usize,
     pairwise_correct: usize,
+    hard_negative_pair_count: usize,
+    hard_negative_sample_count: usize,
 }
 
 #[derive(Default)]
@@ -193,6 +209,12 @@ struct TrainOptions {
     pairwise_gap: f32,
     pairwise_margin: f32,
     pairwise_max_pairs_per_sample: usize,
+    hard_negative_weight: f32,
+    hard_negative_margin: f32,
+    hard_negative_min_regret: f32,
+    hard_negative_top_model: usize,
+    hard_negative_top_teacher: usize,
+    hard_negative_max_pairs_per_sample: usize,
 }
 
 fn parse_move_for_position(position: &Position, move_text: &str) -> Option<Move> {
@@ -234,6 +256,65 @@ fn percentile(mut values: Vec<f32>, p: f32) -> f32 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let idx = ((values.len() - 1) as f32 * p).round() as usize;
     values[idx.min(values.len() - 1)]
+}
+
+fn hard_negative_pairs(
+    teacher_scores: &[f32],
+    model_scores: &[f32],
+    selected_regret: f32,
+    min_regret: f32,
+    top_teacher: usize,
+    top_model: usize,
+    margin: f32,
+    max_pairs_per_sample: usize,
+) -> Vec<(usize, usize, f32)> {
+    if selected_regret < min_regret || teacher_scores.is_empty() || model_scores.is_empty() {
+        return Vec::new();
+    }
+    let sample_len = teacher_scores.len().min(model_scores.len());
+    if sample_len == 0 {
+        return Vec::new();
+    }
+
+    let teacher_good = top_teacher.min(sample_len);
+    let model_bad = top_model.min(sample_len);
+    if teacher_good == 0 || model_bad == 0 {
+        return Vec::new();
+    }
+
+    let mut model_order: Vec<usize> = (0..sample_len).collect();
+    model_order.sort_by(|&a, &b| {
+        model_scores[b]
+            .partial_cmp(&model_scores[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut good = vec![false; sample_len];
+    for idx in 0..teacher_good {
+        good[idx] = true;
+    }
+
+    let mut pairs = Vec::new();
+    'pairs: for &bad_idx in model_order.iter().take(model_bad) {
+        if good[bad_idx] {
+            continue;
+        }
+        for good_idx in 0..teacher_good {
+            if good_idx == bad_idx {
+                continue;
+            }
+            let violation = margin - (model_scores[good_idx] - model_scores[bad_idx]);
+            if violation <= 0.0 {
+                continue;
+            }
+            pairs.push((good_idx, bad_idx, violation));
+            if pairs.len() >= max_pairs_per_sample {
+                break 'pairs;
+            }
+        }
+    }
+
+    pairs
 }
 
 fn teacher_gap(candidates: &[Candidate]) -> Option<f32> {
@@ -389,6 +470,11 @@ fn evaluate_batch(
     model_temperature: f32,
     teacher_temperature: f32,
     bad_regret_cp: f32,
+    hard_negative_top_model: usize,
+    hard_negative_top_teacher: usize,
+    hard_negative_min_regret: f32,
+    hard_negative_margin: f32,
+    hard_negative_max_pairs_per_sample: usize,
 ) -> Metrics {
     let mut metrics = Metrics::default();
     if model_temperature <= 0.0 || !model_temperature.is_finite() {
@@ -486,6 +572,26 @@ fn evaluate_batch(
                 selected_regret = regret;
             }
         }
+        let teacher_scores = entries
+            .iter()
+            .map(|(_, teacher_score, _, _, _)| *teacher_score)
+            .collect::<Vec<_>>();
+        let model_scores = entries
+            .iter()
+            .map(|(_, _, model_score, _, _)| *model_score)
+            .collect::<Vec<_>>();
+        let hn_pairs = hard_negative_pairs(
+            &teacher_scores,
+            &model_scores,
+            selected_regret,
+            hard_negative_min_regret,
+            hard_negative_top_teacher,
+            hard_negative_top_model,
+            hard_negative_margin,
+            hard_negative_max_pairs_per_sample,
+        );
+        metrics.hard_negative_sample_count += usize::from(!hn_pairs.is_empty());
+        metrics.hard_negative_pair_count += hn_pairs.len();
         metrics.ce += sample_loss;
         metrics.selected_regret_sum += selected_regret;
         metrics.expected_regret_sum += expected_regret;
@@ -586,6 +692,19 @@ fn update_batch_with_soft_targets(
         if model_total <= 0.0 || !model_total.is_finite() {
             continue;
         }
+        let mut selected_model_idx = 0usize;
+        let mut selected_model_score = f32::NEG_INFINITY;
+        for (idx, (_, _, _, model_score)) in entries.iter().enumerate() {
+            if *model_score > selected_model_score {
+                selected_model_score = *model_score;
+                selected_model_idx = idx;
+            }
+        }
+        let best_teacher = sample.root_score;
+        if !best_teacher.is_finite() {
+            continue;
+        }
+        let selected_regret = (best_teacher - entries[selected_model_idx].0).max(0.0);
 
         valid_samples += 1;
         for (idx, (teacher_score, features, material, _)) in entries.iter().enumerate() {
@@ -600,6 +719,44 @@ fn update_batch_with_soft_targets(
                 *w_grads.entry(feature_idx).or_insert(0.0) += delta;
             }
             material_grad_total += delta * *material;
+        }
+
+        let teacher_scores = entries
+            .iter()
+            .map(|(teacher_score, _, _, _)| *teacher_score)
+            .collect::<Vec<_>>();
+        let model_scores = entries
+            .iter()
+            .map(|(_, _, _, model_score)| *model_score)
+            .collect::<Vec<_>>();
+        let hard_negative_pairs = hard_negative_pairs(
+            &teacher_scores,
+            &model_scores,
+            selected_regret,
+            options.hard_negative_min_regret,
+            options.hard_negative_top_teacher,
+            options.hard_negative_top_model,
+            options.hard_negative_margin,
+            options.hard_negative_max_pairs_per_sample,
+        );
+
+        if matches!(options.loss, LossMode::ListwiseHardNegative)
+            && options.hard_negative_weight > 0.0
+            && !hard_negative_pairs.is_empty()
+        {
+            let scale = options.hard_negative_weight / hard_negative_pairs.len() as f32;
+            for (good_idx, bad_idx, violation) in hard_negative_pairs {
+                loss += scale * violation;
+                let (good_features, good_material) = (&entries[good_idx].1, entries[good_idx].2);
+                let (bad_features, bad_material) = (&entries[bad_idx].1, entries[bad_idx].2);
+                for &feature_idx in good_features {
+                    *w_grads.entry(feature_idx).or_insert(0.0) -= scale;
+                }
+                for &feature_idx in bad_features {
+                    *w_grads.entry(feature_idx).or_insert(0.0) += scale;
+                }
+                material_grad_total += scale * (bad_material - good_material);
+            }
         }
 
         if matches!(options.loss, LossMode::ListwisePairwise) && options.pairwise_weight > 0.0 {
@@ -694,7 +851,7 @@ fn log_summary(name: &str, metrics: &Metrics, bad_regret_cp: f32) -> String {
         metrics.pairwise_correct as f32 / metrics.pairwise_total as f32 * 100.0
     };
     format!(
-        "{name} ce={:.6}, top1={:.2}%, mean={:.2}, p90={:.2}, p95={:.2}, bad>{:.0}={:.4}, expected={:.2}, gap_mean={:.2}, gap_p50={:.2}, pairwise={:.2}%, samples={}",
+        "{name} ce={:.6}, top1={:.2}%, mean={:.2}, p90={:.2}, p95={:.2}, bad>{:.0}={:.4}, expected={:.2}, gap_mean={:.2}, gap_p50={:.2}, pairwise={:.2}%, hard_negative_samples={}, hard_negative_pairs={}, samples={}",
         metrics.ce,
         metrics.top1,
         metrics.selected_regret_sum,
@@ -706,6 +863,8 @@ fn log_summary(name: &str, metrics: &Metrics, bad_regret_cp: f32) -> String {
         metrics.teacher_gap_sum,
         percentile(metrics.teacher_gaps.clone(), 0.50),
         pairwise_accuracy,
+        metrics.hard_negative_sample_count,
+        metrics.hard_negative_pair_count,
         metrics.samples
     )
 }
@@ -761,6 +920,30 @@ fn main() -> Result<()> {
     if args.pairwise_max_pairs_per_sample == 0 {
         return Err(anyhow!(
             "--pairwise-max-pairs-per-sample must be greater than zero"
+        ));
+    }
+    if !args.hard_negative_weight.is_finite() || args.hard_negative_weight < 0.0 {
+        return Err(anyhow!("--hard-negative-weight must be non-negative"));
+    }
+    if !args.hard_negative_margin.is_finite() || args.hard_negative_margin < 0.0 {
+        return Err(anyhow!("--hard-negative-margin must be non-negative"));
+    }
+    if !args.hard_negative_min_regret.is_finite() || args.hard_negative_min_regret < 0.0 {
+        return Err(anyhow!("--hard-negative-min-regret must be non-negative"));
+    }
+    if args.hard_negative_top_model == 0 {
+        return Err(anyhow!(
+            "--hard-negative-top-model must be greater than zero"
+        ));
+    }
+    if args.hard_negative_top_teacher == 0 {
+        return Err(anyhow!(
+            "--hard-negative-top-teacher must be greater than zero"
+        ));
+    }
+    if args.hard_negative_max_pairs_per_sample == 0 {
+        return Err(anyhow!(
+            "--hard-negative-max-pairs-per-sample must be greater than zero"
         ));
     }
     if let Some(max_delta) = args.max_weight_delta {
@@ -820,6 +1003,11 @@ fn main() -> Result<()> {
         args.model_temperature,
         args.teacher_temperature,
         args.bad_regret_cp,
+        args.hard_negative_top_model,
+        args.hard_negative_top_teacher,
+        args.hard_negative_min_regret,
+        args.hard_negative_margin,
+        args.hard_negative_max_pairs_per_sample,
     );
     let baseline_valid = evaluate_batch(
         &model,
@@ -827,6 +1015,11 @@ fn main() -> Result<()> {
         args.model_temperature,
         args.teacher_temperature,
         args.bad_regret_cp,
+        args.hard_negative_top_model,
+        args.hard_negative_top_teacher,
+        args.hard_negative_min_regret,
+        args.hard_negative_margin,
+        args.hard_negative_max_pairs_per_sample,
     );
 
     let mut log_file = if let Some(path) = &args.log_path {
@@ -867,12 +1060,18 @@ fn main() -> Result<()> {
         pairwise_gap: args.pairwise_gap,
         pairwise_margin: args.pairwise_margin,
         pairwise_max_pairs_per_sample: args.pairwise_max_pairs_per_sample,
+        hard_negative_weight: args.hard_negative_weight,
+        hard_negative_margin: args.hard_negative_margin,
+        hard_negative_min_regret: args.hard_negative_min_regret,
+        hard_negative_top_model: args.hard_negative_top_model,
+        hard_negative_top_teacher: args.hard_negative_top_teacher,
+        hard_negative_max_pairs_per_sample: args.hard_negative_max_pairs_per_sample,
     };
 
     if let Some(file) = log_file.as_mut() {
         writeln!(
             file,
-            "epoch,train_ce,train_top1,train_selected_regret_mean,train_p90_regret,train_p95_regret,train_bad_regret_ratio,train_expected_regret,train_teacher_gap_mean,train_teacher_gap_p50,train_pairwise_accuracy,train_samples,valid_ce,valid_top1,valid_selected_regret_mean,valid_p90_regret,valid_p95_regret,valid_bad_regret_ratio,valid_expected_regret,valid_teacher_gap_mean,valid_teacher_gap_p50,valid_pairwise_accuracy,valid_samples,max_abs_delta,p95_abs_delta,clamped_weights,material_coeff"
+            "epoch,train_ce,train_top1,train_selected_regret_mean,train_p90_regret,train_p95_regret,train_bad_regret_ratio,train_expected_regret,train_teacher_gap_mean,train_teacher_gap_p50,train_pairwise_accuracy,train_hn_samples,train_hn_pairs,train_samples,valid_ce,valid_top1,valid_selected_regret_mean,valid_p90_regret,valid_p95_regret,valid_bad_regret_ratio,valid_expected_regret,valid_teacher_gap_mean,valid_teacher_gap_p50,valid_pairwise_accuracy,valid_hn_samples,valid_hn_pairs,valid_samples,max_abs_delta,p95_abs_delta,clamped_weights,material_coeff"
         )?;
         let baseline_train_pairwise = if baseline_train.pairwise_total == 0 {
             0.0
@@ -886,7 +1085,7 @@ fn main() -> Result<()> {
         };
         writeln!(
             file,
-            "0,{:.6},{:.2},{:.2},{:.2},{:.2},{:.6},{:.2},{:.2},{:.2},{:.2},{},{:.6},{:.2},{:.2},{:.2},{:.2},{:.6},{:.2},{:.2},{:.2},{:.2},{},{:.6},{:.4},{},{}",
+            "0,{:.6},{:.2},{:.2},{:.2},{:.2},{:.6},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.6},{:.2},{:.2},{:.2},{:.2},{:.6},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.6},{:.4},{},{}",
             baseline_train.ce,
             baseline_train.top1,
             baseline_train.selected_regret_sum,
@@ -897,6 +1096,8 @@ fn main() -> Result<()> {
             baseline_train.teacher_gap_sum,
             percentile(baseline_train.teacher_gaps.clone(), 0.50),
             baseline_train_pairwise,
+            baseline_train.hard_negative_sample_count,
+            baseline_train.hard_negative_pair_count,
             baseline_train.samples,
             baseline_valid.ce,
             baseline_valid.top1,
@@ -908,6 +1109,8 @@ fn main() -> Result<()> {
             baseline_valid.teacher_gap_sum,
             percentile(baseline_valid.teacher_gaps.clone(), 0.50),
             baseline_valid_pairwise,
+            baseline_valid.hard_negative_sample_count,
+            baseline_valid.hard_negative_pair_count,
             baseline_valid.samples,
             0.0,
             0.0,
@@ -921,10 +1124,17 @@ fn main() -> Result<()> {
                 args.model_temperature,
                 args.teacher_temperature,
                 args.bad_regret_cp,
+                args.hard_negative_top_model,
+                args.hard_negative_top_teacher,
+                args.hard_negative_min_regret,
+                args.hard_negative_margin,
+                args.hard_negative_max_pairs_per_sample,
             );
             let bad_ratio = metrics.bad_regret_count as f32 / metrics.samples.max(1) as f32;
+            let hard_negative_ratio =
+                metrics.hard_negative_sample_count as f32 / metrics.samples.max(1) as f32;
             println!(
-                "baseline extra_valid[{}] samples={} ce={:.6} top1={:.2}% mean={:.2} p90={:.2} p95={:.2} bad_ratio={:.4}",
+                "baseline extra_valid[{}] samples={} ce={:.6} top1={:.2}% mean={:.2} p90={:.2} p95={:.2} bad_ratio={:.4} hn_samples={:.4} hn_pairs={}",
                 batch.label,
                 metrics.samples,
                 metrics.ce,
@@ -932,7 +1142,9 @@ fn main() -> Result<()> {
                 metrics.selected_regret_sum,
                 percentile(metrics.regrets.clone(), 0.90),
                 percentile(metrics.regrets.clone(), 0.95),
-                bad_ratio
+                bad_ratio,
+                hard_negative_ratio,
+                metrics.hard_negative_pair_count
             );
         }
         file.flush()?;
@@ -980,6 +1192,11 @@ fn main() -> Result<()> {
             args.model_temperature,
             args.teacher_temperature,
             args.bad_regret_cp,
+            args.hard_negative_top_model,
+            args.hard_negative_top_teacher,
+            args.hard_negative_min_regret,
+            args.hard_negative_margin,
+            args.hard_negative_max_pairs_per_sample,
         );
         let valid_metrics = evaluate_batch(
             &model,
@@ -987,6 +1204,11 @@ fn main() -> Result<()> {
             args.model_temperature,
             args.teacher_temperature,
             args.bad_regret_cp,
+            args.hard_negative_top_model,
+            args.hard_negative_top_teacher,
+            args.hard_negative_min_regret,
+            args.hard_negative_margin,
+            args.hard_negative_max_pairs_per_sample,
         );
 
         let max_abs_delta = model
@@ -1014,6 +1236,10 @@ fn main() -> Result<()> {
             train_metrics.bad_regret_count as f32 / train_metrics.samples.max(1) as f32;
         let valid_bad_ratio =
             valid_metrics.bad_regret_count as f32 / valid_metrics.samples.max(1) as f32;
+        let train_hn_ratio =
+            train_metrics.hard_negative_sample_count as f32 / train_metrics.samples.max(1) as f32;
+        let valid_hn_ratio =
+            valid_metrics.hard_negative_sample_count as f32 / valid_metrics.samples.max(1) as f32;
         let train_pairwise_accuracy = if train_metrics.pairwise_total == 0 {
             0.0
         } else {
@@ -1054,7 +1280,7 @@ fn main() -> Result<()> {
         }
 
         println!(
-            "epoch {} train_ce={:.6} train_top1={:.2}% train_mean_regret={:.2} train_p90={:.2} train_p95={:.2} train_bad_ratio={:.4} expected_regret={:.2} train_gap={:.2} train_pairwise={:.2}% valid_ce={:.6} valid_top1={:.2}% valid_mean_regret={:.2} valid_p90={:.2} valid_p95={:.2} valid_bad_ratio={:.4} expected_regret={:.2} valid_gap={:.2} valid_pairwise={:.2}% max_abs_delta={:.4} p95_abs_delta={:.4} clamped_weights={}",
+            "epoch {} train_ce={:.6} train_top1={:.2}% train_mean_regret={:.2} train_p90={:.2} train_p95={:.2} train_bad_ratio={:.4} expected_regret={:.2} train_gap={:.2} train_pairwise={:.2}% train_hn_ratio={:.4} train_hn_pairs={:.4} valid_ce={:.6} valid_top1={:.2}% valid_mean_regret={:.2} valid_p90={:.2} valid_p95={:.2} valid_bad_ratio={:.4} expected_regret={:.2} valid_gap={:.2} valid_pairwise={:.2}% valid_hn_ratio={:.4} valid_hn_pairs={:.4} max_abs_delta={:.4} p95_abs_delta={:.4} clamped_weights={}",
             epoch,
             train_metrics.ce,
             if train_metrics.samples > 0 { train_metrics.top1 } else { 0.0 },
@@ -1065,6 +1291,8 @@ fn main() -> Result<()> {
             train_metrics.expected_regret_sum,
             train_metrics.teacher_gap_sum,
             train_pairwise_accuracy,
+            train_hn_ratio,
+            train_metrics.hard_negative_pair_count as f32 / train_metrics.samples.max(1) as f32,
             valid_metrics.ce,
             if valid_metrics.samples > 0 { valid_metrics.top1 } else { 0.0 },
             valid_mean_regret,
@@ -1074,6 +1302,8 @@ fn main() -> Result<()> {
             valid_metrics.expected_regret_sum,
             valid_metrics.teacher_gap_sum,
             valid_pairwise_accuracy,
+            valid_hn_ratio,
+            valid_metrics.hard_negative_pair_count as f32 / valid_metrics.samples.max(1) as f32,
             max_abs_delta,
             p95_abs_delta,
             clamped_weights
@@ -1081,11 +1311,11 @@ fn main() -> Result<()> {
 
         if let Some(file) = log_file.as_mut() {
             writeln!(
-            file,
-            "{},{:.6},{:.2},{:.2},{:.2},{:.2},{:.6},{:.2},{:.2},{:.2},{:.2},{},{:.6},{:.2},{:.2},{:.2},{:.2},{:.6},{:.2},{:.2},{:.2},{:.2},{},{:.6},{:.4},{},{}",
-            epoch,
-            train_metrics.ce,
-            if train_metrics.samples > 0 { train_metrics.top1 } else { 0.0 },
+                file,
+                "{},{:.6},{:.2},{:.2},{:.2},{:.2},{:.6},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.6},{:.2},{:.2},{:.2},{:.2},{:.6},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.6},{:.4},{},{}",
+                epoch,
+                train_metrics.ce,
+                if train_metrics.samples > 0 { train_metrics.top1 } else { 0.0 },
                 train_mean_regret,
                 train_p90,
                 train_p95,
@@ -1094,6 +1324,8 @@ fn main() -> Result<()> {
                 train_metrics.teacher_gap_sum,
                 percentile(train_metrics.teacher_gaps.clone(), 0.50),
                 train_pairwise_accuracy,
+                train_metrics.hard_negative_sample_count,
+                train_metrics.hard_negative_pair_count,
                 train_metrics.samples,
                 valid_metrics.ce,
                 if valid_metrics.samples > 0 { valid_metrics.top1 } else { 0.0 },
@@ -1105,6 +1337,8 @@ fn main() -> Result<()> {
                 valid_metrics.teacher_gap_sum,
                 percentile(valid_metrics.teacher_gaps.clone(), 0.50),
                 valid_pairwise_accuracy,
+                valid_metrics.hard_negative_sample_count,
+                valid_metrics.hard_negative_pair_count,
                 valid_metrics.samples,
                 max_abs_delta,
                 p95_abs_delta,
@@ -1131,10 +1365,17 @@ fn main() -> Result<()> {
             args.model_temperature,
             args.teacher_temperature,
             args.bad_regret_cp,
+            args.hard_negative_top_model,
+            args.hard_negative_top_teacher,
+            args.hard_negative_min_regret,
+            args.hard_negative_margin,
+            args.hard_negative_max_pairs_per_sample,
         );
         let bad_ratio = metrics.bad_regret_count as f32 / metrics.samples.max(1) as f32;
+        let hard_negative_ratio =
+            metrics.hard_negative_sample_count as f32 / metrics.samples.max(1) as f32;
         println!(
-            "final extra_valid[{}] samples={} ce={:.6} top1={:.2}% mean={:.2} p90={:.2} p95={:.2} bad_ratio={:.4}",
+            "final extra_valid[{}] samples={} ce={:.6} top1={:.2}% mean={:.2} p90={:.2} p95={:.2} bad_ratio={:.4} hn_samples={:.4} hn_pairs={}",
             batch.label,
             metrics.samples,
             metrics.ce,
@@ -1142,7 +1383,9 @@ fn main() -> Result<()> {
             metrics.selected_regret_sum,
             percentile(metrics.regrets.clone(), 0.90),
             percentile(metrics.regrets.clone(), 0.95),
-            bad_ratio
+            bad_ratio,
+            hard_negative_ratio,
+            metrics.hard_negative_pair_count
         );
     }
 
