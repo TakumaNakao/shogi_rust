@@ -97,6 +97,12 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/kpp_weight_check "$RUN_DIR/best.bina
   > "$RUN_DIR/weight_check.txt"
 ```
 
+注意:
+
+- `kpp_weight_check` は全KPP重みを並べ替えるためメモリ消費が大きい。複数候補に対して並列実行しない。
+- ハイパーパラメータ探索だけが目的なら、`mmto_train --output /dev/null` とし、`--best-checkpoint-path` を指定しないことで巨大な重みファイル生成を避けられる。
+- 対局へ進める候補だけ `--best-checkpoint-path "$RUN_DIR/best.binary"` を指定して保存する。
+
 ここで見るもの:
 
 - `train.rank.jsonl` と `valid.rank.jsonl` が空でない。
