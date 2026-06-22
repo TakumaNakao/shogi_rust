@@ -283,7 +283,28 @@ done
 
 小さいblendが弱いのに大きいblendだけ強い、という結果は過学習やノイズの疑いがあるため慎重に扱う。
 
-## 7. 20局 Smoke対局
+## 7. 安定性フィルター（depth3/depth4一致）
+
+depth4 の `kpp_rank_v1` JSONL を depth3 と照合して、安定性で `stable` / `unstable` を振り分ける前処理。
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_stability_filter \
+  --depth3 path/to/d3.rank.jsonl \
+  --depth4 path/to/d4.rank.jsonl \
+  --output-stable path/to/stable.rank.jsonl \
+  --output-unstable path/to/unstable.rank.jsonl \
+  --stats-output path/to/stable_stats.json \
+  --min-d4-gap-cp 15 \
+  --min-d3-gap-cp 5 \
+  --min-legal-moves 2
+```
+
+主な出力:
+- `stable.rank.jsonl`: 条件をすべて満たした depth4 record（JSON行をそのまま保持）
+- `unstable.rank.jsonl`: 不適合 record（同じく元JSON行）
+- `stable_stats.json`: reject 理由ごとの件数、ヒストグラム、分布統計を含む集計
+
+## 8. 20局 Smoke対局
 
 重みだけの効果を見るため、同じ `usi_engine` を両側に使い、重みだけを変える。
 
@@ -321,7 +342,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/record_analyze \
 - 50%以上なら40局へ進める。
 - 45%から50%は、offline指標が強い場合だけ別seedで再確認する。
 
-## 8. 40局 Gate
+## 9. 40局 Gate
 
 ```bash
 WEIGHT="$RUN_DIR/blend_0.10.binary"
@@ -357,13 +378,13 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/record_analyze \
 - 50%から55%は、seed違い40局でもう一度確認する。
 - baseline sweepsがnew sweepsより多い場合は破棄寄りに判断する。
 
-## 9. 次のスケールアップ
+## 10. 次のスケールアップ
 
 40局gateを通った場合だけ、次の順で拡大する。
 
 現在の推奨は、trainもvalidもfull-legalに近い候補集合で検証すること。`searched` は内部的に全合法手を探索してから `--teacher-score-top` に切るため、`--teacher-score-top 128` は多くの通常局面で実質full-legal trainになる。
 
-### 9.1 局面数を増やす
+### 10.1 局面数を増やす
 
 ```bash
 RUN_DIR="data/mmto/runs/d3_top128_1000_fullvalid_$(date -u +%Y%m%d_%H%M%S)"
@@ -389,7 +410,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_dump \
 
 `depth 4` は探索コストが大きいため、`depth 3 / 1000局面` が非悪化を示してから試す。
 
-### 9.2 ハイパーパラメータを小さく振る
+### 10.2 ハイパーパラメータを小さく振る
 
 優先順:
 
@@ -416,7 +437,7 @@ MMTO-lite改善版では、以下も試す。
 
 一度に複数要素を変えない。
 
-## 10. 100局 Gate
+## 11. 100局 Gate
 
 40局で有望な候補だけ100局へ進める。
 
@@ -454,7 +475,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/record_analyze \
 - 100局で50%前後なら、完全MMTOではなく学習信号・データ選別・温度・blendを見直す。
 - 100局で明確に勝ち越すまで、長時間学習へ進めない。
 
-## 11. アルゴリズム込みの最終比較
+## 12. アルゴリズム込みの最終比較
 
 重みだけで有望な候補が出たあと、現行HEADの探索アルゴリズム込みで `v2.1.0` baselineと比較する。
 
@@ -488,7 +509,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/usi_benchmark \
 
 この比較は「現行探索 + 新重み」対「v2.1.0探索 + v2.1.0重み」であり、リリース候補の判断に使う。重み単体の効果とは分けて記録する。
 
-## 12. 完全MMTOへ進む条件
+## 13. 完全MMTOへ進む条件
 
 完全MMTOまたは探索木内兄弟比較へ進むのは、以下を満たした後にする。
 
@@ -506,7 +527,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/usi_benchmark \
 4. PV leaf特徴の保存
 5. exact/boundを区別した探索木MMTO
 
-## 13. 破棄条件
+## 14. 破棄条件
 
 以下に該当する候補は破棄する。
 
@@ -520,7 +541,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/usi_benchmark \
 - baseline sweepsがnew sweepsより多い。
 - `kpp_weight_check` で重みが異常に偏る。
 
-## 14. 結果記録
+## 15. 結果記録
 
 有望候補または方針転換が出たら、`report/` に日本語で報告書を作る。
 
