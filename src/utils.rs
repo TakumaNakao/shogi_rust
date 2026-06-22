@@ -33,7 +33,11 @@ pub fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String
 
     match mv {
         Move::Normal { from, to, promote } => {
-            let piece = if let Some(p) = position.piece_at(*from) { p } else { return "".to_string(); };
+            let piece = if let Some(p) = position.piece_at(*from) {
+                p
+            } else {
+                return "".to_string();
+            };
             let piece_kind = piece.piece_kind();
 
             let from_s = format!("({}{})", from.file(), from.rank());
@@ -54,8 +58,14 @@ pub fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String
                 PieceKind::ProBishop => "馬",
                 PieceKind::ProRook => "龍",
             };
-            kif_str.push_str(&format!("{}{}{}{}", to_s, piece_kind_str, if *promote { "成" } else { "" }, from_s));
-        },
+            kif_str.push_str(&format!(
+                "{}{}{}{}",
+                to_s,
+                piece_kind_str,
+                if *promote { "成" } else { "" },
+                from_s
+            ));
+        }
         Move::Drop { to, piece } => {
             let to_s = format!("{}{}", to.file(), to.rank());
             let piece_kind_str = match piece.piece_kind() {
@@ -75,7 +85,7 @@ pub fn move_to_kif(mv: &Move, position: &Position, move_number: usize) -> String
                 PieceKind::ProRook => "龍",
             };
             kif_str.push_str(&format!("{}{}打", to_s, piece_kind_str));
-        },
+        }
     }
     kif_str
 }
@@ -85,7 +95,11 @@ pub fn piece_value(piece: Piece) -> i32 {
     get_piece_value(piece.piece_kind())
 }
 
-pub fn draw_evaluation_graph(sente_data: &[(usize, f32)], gote_data: &[(usize, f32)], path: &str) -> anyhow::Result<()> {
+pub fn draw_evaluation_graph(
+    sente_data: &[(usize, f32)],
+    gote_data: &[(usize, f32)],
+    path: &str,
+) -> anyhow::Result<()> {
     let root = BitMapBackend::new(path, (1024, 768)).into_drawing_area();
     root.fill(&WHITE)?;
 
@@ -93,7 +107,12 @@ pub fn draw_evaluation_graph(sente_data: &[(usize, f32)], gote_data: &[(usize, f
         return Ok(());
     }
 
-    let max_turn = sente_data.iter().map(|&(turn, _)| turn).max().unwrap_or(0).max(gote_data.iter().map(|&(turn, _)| turn).max().unwrap_or(0));
+    let max_turn = sente_data
+        .iter()
+        .map(|&(turn, _)| turn)
+        .max()
+        .unwrap_or(0)
+        .max(gote_data.iter().map(|&(turn, _)| turn).max().unwrap_or(0));
     let (min_score, max_score) = sente_data
         .iter()
         .chain(gote_data.iter())
@@ -110,17 +129,26 @@ pub fn draw_evaluation_graph(sente_data: &[(usize, f32)], gote_data: &[(usize, f
 
     chart.configure_mesh().draw()?;
 
-    chart.draw_series(LineSeries::new(
-        sente_data.iter().map(|&(turn, score)| (turn as i32, score)),
-        &BLUE,
-    ))?.label("先手AI評価値").legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
+    chart
+        .draw_series(LineSeries::new(
+            sente_data.iter().map(|&(turn, score)| (turn as i32, score)),
+            &BLUE,
+        ))?
+        .label("先手AI評価値")
+        .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
 
-    chart.draw_series(LineSeries::new(
-        gote_data.iter().map(|&(turn, score)| (turn as i32, score)),
-        &RED,
-    ))?.label("後手AI評価値").legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
+    chart
+        .draw_series(LineSeries::new(
+            gote_data.iter().map(|&(turn, score)| (turn as i32, score)),
+            &RED,
+        ))?
+        .label("後手AI評価値")
+        .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
 
-    chart.configure_series_labels().border_style(&BLACK).draw()?;
+    chart
+        .configure_series_labels()
+        .border_style(&BLACK)
+        .draw()?;
 
     root.present()?;
     Ok(())
@@ -132,22 +160,35 @@ pub fn parse_usi_move(s: &str) -> Option<Move> {
 }
 
 pub fn parse_usi_move_for_color(s: &str, color: Color) -> Option<Move> {
-    if s.len() < 4 || s.len() > 5 { return None; }
+    if s.len() < 4 || s.len() > 5 {
+        return None;
+    }
     if s.chars().nth(1) == Some('*') {
         let piece_char = s.chars().nth(0)?;
         let piece_kind = match piece_char {
-            'P' => PieceKind::Pawn, 'L' => PieceKind::Lance, 'N' => PieceKind::Knight,
-            'S' => PieceKind::Silver, 'G' => PieceKind::Gold, 'B' => PieceKind::Bishop,
+            'P' => PieceKind::Pawn,
+            'L' => PieceKind::Lance,
+            'N' => PieceKind::Knight,
+            'S' => PieceKind::Silver,
+            'G' => PieceKind::Gold,
+            'B' => PieceKind::Bishop,
             'R' => PieceKind::Rook,
             _ => return None,
         };
         let to_sq = parse_square(&s[2..4])?;
-        return Some(Move::Drop { piece: Piece::new(piece_kind, color), to: to_sq });
+        return Some(Move::Drop {
+            piece: Piece::new(piece_kind, color),
+            to: to_sq,
+        });
     }
     let from_sq = parse_square(&s[0..2])?;
     let to_sq = parse_square(&s[2..4])?;
     let promote = s.len() == 5 && s.chars().nth(4) == Some('+');
-    Some(Move::Normal { from: from_sq, to: to_sq, promote })
+    Some(Move::Normal {
+        from: from_sq,
+        to: to_sq,
+        promote,
+    })
 }
 
 pub fn position_from_sfen_or_usi(line: &str) -> Option<Position> {
@@ -179,7 +220,15 @@ pub fn parse_square(s: &str) -> Option<Square> {
     let file = s.chars().nth(0)?.to_digit(10)? as u8;
     let rank_char = s.chars().nth(1)?;
     let rank = match rank_char {
-        'a' => 1, 'b' => 2, 'c' => 3, 'd' => 4, 'e' => 5, 'f' => 6, 'g' => 7, 'h' => 8, 'i' => 9,
+        'a' => 1,
+        'b' => 2,
+        'c' => 3,
+        'd' => 4,
+        'e' => 5,
+        'f' => 6,
+        'g' => 7,
+        'h' => 8,
+        'i' => 9,
         _ => return None,
     };
     Square::new(file, rank)
@@ -187,12 +236,21 @@ pub fn parse_square(s: &str) -> Option<Square> {
 pub fn format_move_usi(mv: Move) -> String {
     match mv {
         Move::Normal { from, to, promote } => {
-            format!("{}{}{}", format_square(from), format_square(to), if promote { "+" } else { "" })
+            format!(
+                "{}{}{}",
+                format_square(from),
+                format_square(to),
+                if promote { "+" } else { "" }
+            )
         }
         Move::Drop { piece, to } => {
             let piece_char = match piece.piece_kind() {
-                PieceKind::Pawn => 'P', PieceKind::Lance => 'L', PieceKind::Knight => 'N',
-                PieceKind::Silver => 'S', PieceKind::Gold => 'G', PieceKind::Bishop => 'B',
+                PieceKind::Pawn => 'P',
+                PieceKind::Lance => 'L',
+                PieceKind::Knight => 'N',
+                PieceKind::Silver => 'S',
+                PieceKind::Gold => 'G',
+                PieceKind::Bishop => 'B',
                 PieceKind::Rook => 'R',
                 _ => ' ',
             };
@@ -203,7 +261,15 @@ pub fn format_move_usi(mv: Move) -> String {
 fn format_square(sq: Square) -> String {
     let file = sq.file();
     let rank = match sq.rank() {
-        1 => 'a', 2 => 'b', 3 => 'c', 4 => 'd', 5 => 'e', 6 => 'f', 7 => 'g', 8 => 'h', 9 => 'i',
+        1 => 'a',
+        2 => 'b',
+        3 => 'c',
+        4 => 'd',
+        5 => 'e',
+        6 => 'f',
+        7 => 'g',
+        8 => 'h',
+        9 => 'i',
         _ => ' ',
     };
     format!("{}{}", file, rank)

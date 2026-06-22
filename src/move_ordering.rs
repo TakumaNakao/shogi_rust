@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use shogi_core::{Color, Move, PieceKind, Square};
-use arrayvec::ArrayVec;
 use crate::position_hash::{color_to_index, ZOBRIST_KEYS};
 use crate::utils::get_piece_value;
+use arrayvec::ArrayVec;
+use shogi_core::{Color, Move, PieceKind, Square};
 use shogi_lib::Position;
+use std::collections::HashMap;
 
 fn board_piece_kind_index(kind: PieceKind) -> usize {
     match kind {
@@ -44,7 +44,11 @@ fn hash_move(mv: Move) -> u64 {
             let to_idx = (to.index() - 1) as usize;
             let from_key = ZOBRIST_KEYS.board[0][from_idx][0];
             let to_key = ZOBRIST_KEYS.board[1][to_idx][1];
-            let promote_key = if promote { ZOBRIST_KEYS.side_to_move } else { 0 };
+            let promote_key = if promote {
+                ZOBRIST_KEYS.side_to_move
+            } else {
+                0
+            };
             from_key ^ to_key ^ promote_key
         }
         Move::Drop { piece, to } => {
@@ -191,7 +195,12 @@ impl MoveOrdering {
         self.score_move_with_counter(current_move, position, false)
     }
 
-    fn score_move_with_counter(&self, current_move: &Move, position: &Position, include_counter: bool) -> i32 {
+    fn score_move_with_counter(
+        &self,
+        current_move: &Move,
+        position: &Position,
+        include_counter: bool,
+    ) -> i32 {
         let mut score = 0;
         let side_to_move = position.side_to_move();
 
@@ -199,14 +208,18 @@ impl MoveOrdering {
             Move::Normal { from, .. } => {
                 let piece = position.piece_at(*from).unwrap();
                 (piece.piece_kind(), piece.color())
-            },
+            }
             Move::Drop { piece, .. } => (piece.piece_kind(), piece.color()),
         };
 
-        score += self.piece_to_history.get_score(piece_kind, current_move.to(), color);
+        score += self
+            .piece_to_history
+            .get_score(piece_kind, current_move.to(), color);
 
         if let Some(from_sq) = current_move.from() {
-            score += self.butterfly_history.get_score(from_sq, current_move.to(), side_to_move);
+            score += self
+                .butterfly_history
+                .get_score(from_sq, current_move.to(), side_to_move);
         }
 
         if include_counter {
@@ -217,8 +230,11 @@ impl MoveOrdering {
 
         if let Move::Normal { from, to, .. } = current_move {
             // 駒を取る手の場合、MVV-LVAスコアを加算
-            if let (Some(victim), Some(attacker)) = (position.piece_at(*to), position.piece_at(*from)) {
-                score += get_piece_value(victim.piece_kind()) * 100 - get_piece_value(attacker.piece_kind());
+            if let (Some(victim), Some(attacker)) =
+                (position.piece_at(*to), position.piece_at(*from))
+            {
+                score += get_piece_value(victim.piece_kind()) * 100
+                    - get_piece_value(attacker.piece_kind());
             }
         }
 
@@ -245,17 +261,24 @@ impl MoveOrdering {
             Move::Normal { from, .. } => {
                 let piece = position.piece_at(*from).unwrap();
                 (piece.piece_kind(), piece.color())
-            },
+            }
             Move::Drop { piece, .. } => (piece.piece_kind(), piece.color()),
         };
-        self.piece_to_history.update_score(piece_kind, good_move.to(), color, delta);
+        self.piece_to_history
+            .update_score(piece_kind, good_move.to(), color, delta);
 
         if let Some(from_sq) = good_move.from() {
-            self.butterfly_history.update_score(from_sq, good_move.to(), position.side_to_move(), delta);
+            self.butterfly_history.update_score(
+                from_sq,
+                good_move.to(),
+                position.side_to_move(),
+                delta,
+            );
         }
 
         if let Some(op_move) = position.last_move() {
-            self.counter_move_history.update_score(op_move, *good_move, delta);
+            self.counter_move_history
+                .update_score(op_move, *good_move, delta);
         }
     }
 

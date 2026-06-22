@@ -145,7 +145,8 @@ fn load_record(path: &Path) -> Result<Record> {
     Ok(Record {
         result: result.unwrap_or_else(|| "Unknown".to_string()),
         new_as,
-        positions: positions.ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
+        positions: positions
+            .ok_or_else(|| anyhow!("missing position line in {}", path.display()))?,
     })
 }
 
