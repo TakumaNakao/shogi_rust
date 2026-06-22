@@ -67,5 +67,9 @@ name = "mmto_probe"
 path = "src/bin/mmto_probe.rs"
 
 [[bin]]
+name = "mmto_stability_filter"
+path = "src/bin/mmto_stability_filter.rs"
+
+[[bin]]
 name = "csa_policy_dump"
 path = "src/bin/csa_policy_dump.rs"
