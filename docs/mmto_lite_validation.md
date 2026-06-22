@@ -299,6 +299,21 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_stability_filter \
   --min-legal-moves 2
 ```
 
+soft条件を許可する例:
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_stability_filter \
+  --depth3 path/to/d3.rank.jsonl \
+  --depth4 path/to/d4.rank.jsonl \
+  --output-stable path/to/stable.rank.jsonl \
+  --output-unstable path/to/unstable.rank.jsonl \
+  --stats-output path/to/stable_stats.json \
+  --require-best-match \
+  --max-d4-best-rank-in-d3 3 \
+  --max-d3-best-regret-in-d4-cp 25 \
+  --min-legal-moves 2
+```
+
 主な出力:
 - `stable.rank.jsonl`: 条件をすべて満たした depth4 record（JSON行をそのまま保持）
 - `unstable.rank.jsonl`: 不適合 record（同じく元JSON行）

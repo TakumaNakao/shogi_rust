@@ -28,6 +28,10 @@ struct Args {
     keep_duplicates: bool,
     #[arg(long, default_value_t = true)]
     require_best_match: bool,
+    #[arg(long, default_value_t = 0)]
+    max_d4_best_rank_in_d3: usize,
+    #[arg(long, default_value_t = 0.0)]
+    max_d3_best_regret_in_d4_cp: f32,
     #[arg(long, default_value_t = 15.0)]
     min_d4_gap_cp: f32,
     #[arg(long, default_value_t = 5.0)]
@@ -107,6 +111,7 @@ struct FilterStats {
     root_delta_values: Vec<f32>,
     d3_gap_values: Vec<f32>,
     d4_gap_values: Vec<f32>,
+    d3_best_regret_in_d4_values: Vec<f32>,
     pairwise_agreement_values: Vec<f32>,
     candidate_count_values: Vec<f32>,
     legal_moves_values: Vec<f32>,
@@ -168,6 +173,7 @@ struct DistributionReport {
     root_delta: DistributionSummary,
     d3_gap: DistributionSummary,
     d4_gap: DistributionSummary,
+    d3_best_regret_in_d4: DistributionSummary,
     pairwise_agreement: PairwiseDistributionSummary,
     candidate_count: DistributionSummary,
     legal_moves: DistributionSummary,
@@ -487,6 +493,9 @@ fn validate_args(args: &Args) -> Result<()> {
     if args.max_abs_root_score.is_sign_negative() {
         return Err(anyhow!("--max-abs-root-score must be >= 0"));
     }
+    if args.max_d3_best_regret_in_d4_cp.is_sign_negative() {
+        return Err(anyhow!("--max-d3-best-regret-in-d4-cp must be >= 0"));
+    }
     Ok(())
 }
 
@@ -643,6 +652,16 @@ fn main() -> Result<()> {
                                 break;
                             }
                         }
+                        let mut d3_best_regret_in_d4_cp: Option<f32> = None;
+                        for candidate in candidates.iter() {
+                            if candidate.move_usi == *d3_best_move {
+                                d3_best_regret_in_d4_cp = Some(
+                                    (candidates[0].teacher_score - candidate.teacher_score)
+                                        .max(0.0),
+                                );
+                                break;
+                            }
+                        }
                         if let Some(best_rank) = d4_best_rank_in_d3 {
                             *stats
                                 .d4_best_rank_in_d3
@@ -664,12 +683,23 @@ fn main() -> Result<()> {
                             .iter()
                             .filter(|c| d4_set.contains(c.move_usi.as_str()))
                             .count();
+                        if let Some(regret) = d3_best_regret_in_d4_cp {
+                            stats.d3_best_regret_in_d4_values.push(regret);
+                        }
 
                         if common < args.min_common_candidates {
                             Some(RejectReason::CommonCandidatesLow)
-                        } else if !d3_best_in_d4 {
+                        } else if args.require_best_match && !d3_best_in_d4 {
                             Some(RejectReason::BestMismatch)
-                        } else if args.require_best_match && d3_best_move != d4_best_move {
+                        } else if args.require_best_match && d4_best_rank_in_d3.is_none() {
+                            Some(RejectReason::BestMismatch)
+                        } else if args.require_best_match
+                            && d4_best_rank_in_d3.unwrap() > args.max_d4_best_rank_in_d3
+                        {
+                            Some(RejectReason::BestMismatch)
+                        } else if args.require_best_match
+                            && d3_best_regret_in_d4_cp > Some(args.max_d3_best_regret_in_d4_cp)
+                        {
                             Some(RejectReason::BestMismatch)
                         } else if top_span < args.min_d4_topk_span_cp {
                             Some(RejectReason::TopkSpanLow)
@@ -730,6 +760,8 @@ fn main() -> Result<()> {
     let root_delta = percentiles(stats.root_delta_values.clone(), &[0.5, 0.9, 0.95]);
     let d3_gap = percentiles(stats.d3_gap_values.clone(), &[0.5, 0.9]);
     let d4_gap = percentiles(stats.d4_gap_values.clone(), &[0.5, 0.9]);
+    let d3_best_regret_in_d4 =
+        percentiles(stats.d3_best_regret_in_d4_values.clone(), &[0.5, 0.9, 0.95]);
     let pairwise = percentiles(stats.pairwise_agreement_values.clone(), &[0.5]);
     let pairwise_mean = mean(&stats.pairwise_agreement_values);
     let candidate_count = percentiles(stats.candidate_count_values.clone(), &[0.5, 0.9]);
@@ -765,6 +797,12 @@ fn main() -> Result<()> {
                 p50: d4_gap[0],
                 p90: Some(d4_gap[1]),
                 p95: None,
+            },
+            d3_best_regret_in_d4: DistributionSummary {
+                mean: mean(&stats.d3_best_regret_in_d4_values),
+                p50: d3_best_regret_in_d4[0],
+                p90: Some(d3_best_regret_in_d4[1]),
+                p95: Some(d3_best_regret_in_d4[2]),
             },
             pairwise_agreement: PairwiseDistributionSummary {
                 mean: pairwise_mean,
