@@ -319,6 +319,22 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_stability_filter \
 - `unstable.rank.jsonl`: 不適合 record（同じく元JSON行）
 - `stable_stats.json`: reject 理由ごとの件数、ヒストグラム、分布統計を含む集計
 
+best不一致を診断したい場合（best条件を無視してその他条件のヒスト分布を確認）:
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_stability_filter \
+  --depth3 path/to/d3.rank.jsonl \
+  --depth4 path/to/d4.rank.jsonl \
+  --output-stable path/to/stable.rank.jsonl \
+  --output-unstable path/to/unstable.rank.jsonl \
+  --stats-output path/to/stable_stats.json \
+  --allow-best-mismatch \
+  --max-d4-best-rank-in-d3 3 \
+  --max-d3-best-regret-in-d4-cp 25 \
+  --min-legal-moves 2
+```
+
+`--allow-best-mismatch` を付けない場合は、既定（`--require-best-match`）の厳密チェックがそのまま有効です。
+
 ## 8. 20局 Smoke対局
 
 重みだけの効果を見るため、同じ `usi_engine` を両側に使い、重みだけを変える。

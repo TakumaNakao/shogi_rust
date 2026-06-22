@@ -28,6 +28,8 @@ struct Args {
     keep_duplicates: bool,
     #[arg(long, default_value_t = true)]
     require_best_match: bool,
+    #[arg(long, default_value_t = false)]
+    allow_best_mismatch: bool,
     #[arg(long, default_value_t = 0)]
     max_d4_best_rank_in_d3: usize,
     #[arg(long, default_value_t = 0.0)]
@@ -515,6 +517,7 @@ fn main() -> Result<()> {
     let mut unstable_writer = create_writer(&args.output_unstable)?;
     let mut matched_index: HashMap<String, usize> = HashMap::new();
     let mut seen_d4_keys: HashSet<String> = HashSet::new();
+    let require_best_match = args.require_best_match && !args.allow_best_mismatch;
 
     for path in &args.depth4 {
         let file = File::open(path)?;
@@ -689,15 +692,15 @@ fn main() -> Result<()> {
 
                         if common < args.min_common_candidates {
                             Some(RejectReason::CommonCandidatesLow)
-                        } else if args.require_best_match && !d3_best_in_d4 {
+                        } else if require_best_match && !d3_best_in_d4 {
                             Some(RejectReason::BestMismatch)
-                        } else if args.require_best_match && d4_best_rank_in_d3.is_none() {
+                        } else if require_best_match && d4_best_rank_in_d3.is_none() {
                             Some(RejectReason::BestMismatch)
-                        } else if args.require_best_match
+                        } else if require_best_match
                             && d4_best_rank_in_d3.unwrap() > args.max_d4_best_rank_in_d3
                         {
                             Some(RejectReason::BestMismatch)
-                        } else if args.require_best_match
+                        } else if require_best_match
                             && d3_best_regret_in_d4_cp > Some(args.max_d3_best_regret_in_d4_cp)
                         {
                             Some(RejectReason::BestMismatch)
