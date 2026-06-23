@@ -63,6 +63,8 @@ struct Args {
     best_metric: BestMetric,
     #[arg(long, default_value_t = 100.0)]
     bad_regret_cp: f32,
+    #[arg(long, default_value = "50,100,200,300")]
+    bad_regret_thresholds_cp: String,
     #[arg(long)]
     log_path: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
@@ -168,6 +170,7 @@ struct Metrics {
     selected_regret_sum: f32,
     regrets: Vec<f32>,
     bad_regret_count: usize,
+    bad_regret_threshold_counts: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -217,6 +220,93 @@ fn parse_extra_valid(spec: &str) -> Result<(String, PathBuf)> {
         return Err(anyhow!("--extra-valid path must not be empty: {spec}"));
     }
     Ok((label.trim().to_string(), PathBuf::from(path.trim())))
+}
+
+fn parse_bad_regret_thresholds(raw: &str) -> Result<Vec<f32>> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(anyhow!("--bad-regret-thresholds-cp must not be empty"));
+    }
+
+    let mut thresholds = Vec::new();
+    for token in raw.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(anyhow!(
+                "--bad-regret-thresholds-cp must be comma-separated finite numbers (example: 50,100,200)"
+            ));
+        }
+        let value: f32 = token.parse::<f32>().map_err(|error| {
+            anyhow!("--bad-regret-thresholds-cp contains invalid value '{token}': {error}")
+        })?;
+        if !value.is_finite() {
+            return Err(anyhow!(
+                "--bad-regret-thresholds-cp contains non-finite value '{token}'"
+            ));
+        }
+        if value < 0.0 {
+            return Err(anyhow!(
+                "--bad-regret-thresholds-cp contains negative value '{token}'"
+            ));
+        }
+        thresholds.push(value);
+    }
+
+    thresholds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    thresholds.dedup_by(|a, b| a == b);
+    if thresholds.is_empty() {
+        return Err(anyhow!(
+            "--bad-regret-thresholds-cp must contain at least one threshold"
+        ));
+    }
+    Ok(thresholds)
+}
+
+fn bad_regret_threshold_label(threshold: f32) -> String {
+    let rendered = format!("{}", threshold);
+    if rendered.ends_with(".0") {
+        rendered[..rendered.len() - 2].to_string()
+    } else {
+        rendered
+    }
+}
+
+fn bad_regret_thresholds_summary(metrics: &Metrics, thresholds: &[f32]) -> String {
+    let denom = metrics.samples.max(1) as f32;
+    let mut parts = String::new();
+    for (i, threshold) in thresholds.iter().enumerate() {
+        if i > 0 {
+            parts.push(' ');
+        }
+        let count = metrics
+            .bad_regret_threshold_counts
+            .get(i)
+            .copied()
+            .unwrap_or(0);
+        let ratio = count as f32 / denom;
+        parts.push_str(&format!(
+            "bad{}={:.4}",
+            bad_regret_threshold_label(*threshold),
+            ratio
+        ));
+    }
+    parts
+}
+
+fn bad_regret_threshold_ratios(metrics: &Metrics, thresholds: &[f32]) -> Vec<f32> {
+    let denom = metrics.samples.max(1) as f32;
+    thresholds
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| {
+            let count = metrics
+                .bad_regret_threshold_counts
+                .get(idx)
+                .copied()
+                .unwrap_or(0);
+            count as f32 / denom
+        })
+        .collect()
 }
 
 fn percentile(mut values: Vec<f32>, p: f32) -> f32 {
@@ -317,10 +407,14 @@ fn evaluate_batch(
     model: &SparseModel,
     batch: &[Sample],
     bad_regret_cp: f32,
+    bad_regret_thresholds: &[f32],
     pair_options: &PairOptions,
     loss_options: &LossOptions,
 ) -> Metrics {
-    let mut metrics = Metrics::default();
+    let mut metrics = Metrics {
+        bad_regret_threshold_counts: vec![0; bad_regret_thresholds.len()],
+        ..Metrics::default()
+    };
     for sample in batch {
         if sample.candidates.is_empty() {
             continue;
@@ -344,6 +438,11 @@ fn evaluate_batch(
         metrics.regrets.push(selected_regret);
         if selected_regret > bad_regret_cp {
             metrics.bad_regret_count += 1;
+        }
+        for (idx, threshold) in bad_regret_thresholds.iter().enumerate() {
+            if selected_regret > *threshold {
+                metrics.bad_regret_threshold_counts[idx] += 1;
+            }
         }
 
         for (good_idx, bad_idx) in pair_indices(sample, pair_options) {
@@ -657,11 +756,15 @@ fn load_samples(path: &PathBuf) -> Result<Vec<Sample>> {
     Ok(samples)
 }
 
-fn log_summary(metrics: &Metrics, bad_regret_cp: f32, sample_name: &str) -> String {
+fn log_summary(
+    metrics: &Metrics,
+    _bad_regret_cp: f32,
+    bad_regret_thresholds: &[f32],
+    sample_name: &str,
+) -> String {
     let bad_ratio = metrics.bad_regret_count as f32 / metrics.samples.max(1) as f32;
-    let _ = bad_regret_cp;
     format!(
-        "{}: samples={} pairs={} loss={:.6} selected_regret_mean={:.2} p90={:.2} p95={:.2} bad_regret_ratio={:.4}",
+        "{}: samples={} pairs={} loss={:.6} selected_regret_mean={:.2} p90={:.2} p95={:.2} bad_regret_ratio={:.4} {}",
         sample_name,
         metrics.samples,
         metrics.pair_count,
@@ -669,7 +772,8 @@ fn log_summary(metrics: &Metrics, bad_regret_cp: f32, sample_name: &str) -> Stri
         metrics.selected_regret_sum,
         percentile(metrics.regrets.clone(), 0.90),
         percentile(metrics.regrets.clone(), 0.95),
-        bad_ratio
+        bad_ratio,
+        bad_regret_thresholds_summary(metrics, bad_regret_thresholds)
     )
 }
 
@@ -766,6 +870,7 @@ fn main() -> Result<()> {
     if !args.bad_regret_cp.is_finite() || args.bad_regret_cp < 0.0 {
         return Err(anyhow!("--bad-regret-cp must be non-negative"));
     }
+    let bad_regret_thresholds_cp = parse_bad_regret_thresholds(&args.bad_regret_thresholds_cp)?;
     if let Some(max_delta) = args.max_weight_delta {
         if !max_delta.is_finite() || max_delta <= 0.0 {
             return Err(anyhow!("--max-weight-delta must be positive"));
@@ -825,6 +930,7 @@ fn main() -> Result<()> {
         &model,
         &train_samples,
         args.bad_regret_cp,
+        &bad_regret_thresholds_cp,
         &pair_options,
         &loss_options,
     );
@@ -832,30 +938,47 @@ fn main() -> Result<()> {
         &model,
         &valid_samples,
         args.bad_regret_cp,
+        &bad_regret_thresholds_cp,
         &pair_options,
         &loss_options,
     );
 
     println!(
         "baseline train: {}",
-        log_summary(&baseline_train, args.bad_regret_cp, "train")
+        log_summary(
+            &baseline_train,
+            args.bad_regret_cp,
+            &bad_regret_thresholds_cp,
+            "train",
+        )
     );
     println!(
         "baseline valid: {}",
-        log_summary(&baseline_valid, args.bad_regret_cp, "valid")
+        log_summary(
+            &baseline_valid,
+            args.bad_regret_cp,
+            &bad_regret_thresholds_cp,
+            "valid"
+        )
     );
     for batch in &extra_valid {
         let metrics = evaluate_batch(
             &model,
             &batch.samples,
             args.bad_regret_cp,
+            &bad_regret_thresholds_cp,
             &pair_options,
             &loss_options,
         );
         println!(
             "baseline extra_valid[{}]: {}",
             batch.label,
-            log_summary(&metrics, args.bad_regret_cp, "extra_valid")
+            log_summary(
+                &metrics,
+                args.bad_regret_cp,
+                &bad_regret_thresholds_cp,
+                "extra_valid"
+            )
         );
     }
 
@@ -877,13 +1000,26 @@ fn main() -> Result<()> {
         None
     };
     if let Some(file) = log_file.as_mut() {
+        let mut header = String::from(
+            "epoch,train_loss,train_pairs,train_selected_regret,train_p90,train_p95,train_bad_regret_ratio,train_samples,valid_loss,valid_pairs,valid_selected_regret,valid_p90,valid_p95,valid_bad_regret_ratio,valid_samples,max_abs_delta,p95_abs_delta,clamped_weights,material_coeff",
+        );
+        for threshold in bad_regret_thresholds_cp.iter() {
+            let label = bad_regret_threshold_label(*threshold);
+            header.push_str(&format!(",train_bad{label}_ratio,valid_bad{label}_ratio"));
+        }
+        writeln!(file, "{}", header)?;
+        let write_row = |metrics: &Metrics| {
+            let ratios = bad_regret_threshold_ratios(metrics, &bad_regret_thresholds_cp);
+            ratios
+                .into_iter()
+                .map(|ratio| format!(",{ratio:.4}"))
+                .collect::<String>()
+        };
+        let train_threshold_cols = write_row(&baseline_train);
+        let valid_threshold_cols = write_row(&baseline_valid);
         writeln!(
             file,
-            "epoch,train_loss,train_pairs,train_selected_regret,train_p90,train_p95,train_bad_regret_ratio,train_samples,valid_loss,valid_pairs,valid_selected_regret,valid_p90,valid_p95,valid_bad_regret_ratio,valid_samples,max_abs_delta,p95_abs_delta,clamped_weights,material_coeff"
-        )?;
-        writeln!(
-            file,
-            "0,{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{:.6},{},{}",
+            "0,{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{:.6},{},{}{}{}",
             baseline_train.loss,
             baseline_train.pair_count,
             baseline_train.selected_regret_sum,
@@ -901,7 +1037,9 @@ fn main() -> Result<()> {
             0.0,
             0.0,
             0,
-            model.material_coeff
+            model.material_coeff,
+            train_threshold_cols,
+            valid_threshold_cols
         )?;
         file.flush()?;
     }
@@ -952,6 +1090,7 @@ fn main() -> Result<()> {
             &model,
             &train_samples,
             args.bad_regret_cp,
+            &bad_regret_thresholds_cp,
             &pair_options,
             &loss_options,
         );
@@ -959,6 +1098,7 @@ fn main() -> Result<()> {
             &model,
             &valid_samples,
             args.bad_regret_cp,
+            &bad_regret_thresholds_cp,
             &pair_options,
             &loss_options,
         );
@@ -982,17 +1122,18 @@ fn main() -> Result<()> {
         }
 
         println!(
-            "epoch {} train: loss={:.6} pairs={} selected_regret={:.2} p90={:.2} p95={:.2} bad_ratio={:.4}",
+            "epoch {} train: loss={:.6} pairs={} selected_regret={:.2} p90={:.2} p95={:.2} bad_ratio={:.4} {}",
             epoch,
             train.loss,
             train.pair_count,
             train.selected_regret_sum,
             percentile(train.regrets.clone(), 0.90),
             percentile(train.regrets.clone(), 0.95),
-            train.bad_regret_count as f32 / train.samples.max(1) as f32
+            train.bad_regret_count as f32 / train.samples.max(1) as f32,
+            bad_regret_thresholds_summary(&train, &bad_regret_thresholds_cp)
         );
         println!(
-            "epoch {} valid: loss={:.6} pairs={} selected_regret={:.2} p90={:.2} p95={:.2} bad_ratio={:.4} max_abs_delta={:.6} p95_abs_delta={:.6} clamped_weights={}",
+            "epoch {} valid: loss={:.6} pairs={} selected_regret={:.2} p90={:.2} p95={:.2} bad_ratio={:.4} {} max_abs_delta={:.6} p95_abs_delta={:.6} clamped_weights={}",
             epoch,
             valid.loss,
             valid.pair_count,
@@ -1000,6 +1141,7 @@ fn main() -> Result<()> {
             percentile(valid.regrets.clone(), 0.90),
             percentile(valid.regrets.clone(), 0.95),
             valid.bad_regret_count as f32 / valid.samples.max(1) as f32,
+            bad_regret_thresholds_summary(&valid, &bad_regret_thresholds_cp),
             max_abs_delta,
             p95_abs_delta,
             clamped_weights
@@ -1009,6 +1151,7 @@ fn main() -> Result<()> {
                 &model,
                 &batch.samples,
                 args.bad_regret_cp,
+                &bad_regret_thresholds_cp,
                 &pair_options,
                 &loss_options,
             );
@@ -1016,14 +1159,28 @@ fn main() -> Result<()> {
                 "epoch {} extra_valid[{}]: {}",
                 epoch,
                 batch.label,
-                log_summary(&metrics, args.bad_regret_cp, "extra_valid")
+                log_summary(
+                    &metrics,
+                    args.bad_regret_cp,
+                    &bad_regret_thresholds_cp,
+                    "extra_valid"
+                )
             );
         }
 
         if let Some(file) = log_file.as_mut() {
+            let write_row = |metrics: &Metrics| {
+                let ratios = bad_regret_threshold_ratios(metrics, &bad_regret_thresholds_cp);
+                ratios
+                    .into_iter()
+                    .map(|ratio| format!(",{ratio:.4}"))
+                    .collect::<String>()
+            };
+            let train_threshold_cols = write_row(&train);
+            let valid_threshold_cols = write_row(&valid);
             writeln!(
                 file,
-                "{},{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{:.6},{},{}",
+                "{},{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{:.6},{},{}{}{}",
                 epoch,
                 train.loss,
                 train.pair_count,
@@ -1042,7 +1199,9 @@ fn main() -> Result<()> {
                 max_abs_delta,
                 p95_abs_delta,
                 clamped_weights,
-                model.material_coeff
+                model.material_coeff,
+                train_threshold_cols,
+                valid_threshold_cols
             )?;
             file.flush()?;
         }
@@ -1080,13 +1239,19 @@ fn main() -> Result<()> {
             &best_model_checkpoint,
             &batch.samples,
             args.bad_regret_cp,
+            &bad_regret_thresholds_cp,
             &pair_options,
             &loss_options,
         );
         println!(
             "final extra_valid[{}]: {}",
             batch.label,
-            log_summary(&metrics, args.bad_regret_cp, "extra_valid")
+            log_summary(
+                &metrics,
+                args.bad_regret_cp,
+                &bad_regret_thresholds_cp,
+                "extra_valid"
+            )
         );
     }
 
