@@ -1005,7 +1005,11 @@ fn main() -> Result<()> {
         );
         for threshold in bad_regret_thresholds_cp.iter() {
             let label = bad_regret_threshold_label(*threshold);
-            header.push_str(&format!(",train_bad{label}_ratio,valid_bad{label}_ratio"));
+            header.push_str(&format!(",train_bad{label}_ratio"));
+        }
+        for threshold in bad_regret_thresholds_cp.iter() {
+            let label = bad_regret_threshold_label(*threshold);
+            header.push_str(&format!(",valid_bad{label}_ratio"));
         }
         writeln!(file, "{}", header)?;
         let write_row = |metrics: &Metrics| {
