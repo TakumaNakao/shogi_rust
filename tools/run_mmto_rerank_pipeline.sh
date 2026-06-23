@@ -13,6 +13,8 @@ POSITIONS="${POSITIONS:-taya36.sfen}"
 MAX_POSITIONS="${MAX_POSITIONS:-3000}"
 VALID_PERCENT="${VALID_PERCENT:-10}"
 JOBS="${JOBS:-$(nproc)}"
+TEACHER_SCORE_TOP="${TEACHER_SCORE_TOP:-16}"
+CANDIDATE_TOP="${CANDIDATE_TOP:-16}"
 
 TEACHER_DEPTH="${TEACHER_DEPTH:-4}"
 STUDENT_DEPTH="${STUDENT_DEPTH:-3}"
@@ -25,6 +27,9 @@ LEARNING_RATE="${LEARNING_RATE:-0.0002}"
 MIN_REGRET_CP="${MIN_REGRET_CP:-50}"
 MAX_WEIGHT_DELTA="${MAX_WEIGHT_DELTA:-0.05}"
 ANCHOR_L2="${ANCHOR_L2:-0.0002}"
+BLEND_RATIOS="${BLEND_RATIOS:-0.01 0.02 0.05 0.10}"
+KEEP_CANDIDATE_RAW="${KEEP_CANDIDATE_RAW:-0}"
+MIN_FREE_GB="${MIN_FREE_GB:-6}"
 
 RUN_DIR="${RUN_DIR:-data/mmto/runs/mmto_rerank_$(date -u +%Y%m%d_%H%M%S)}"
 mkdir -p "$RUN_DIR"
@@ -42,6 +47,16 @@ fi
 echo "RUN_DIR=$RUN_DIR"
 echo "WEIGHTS=$WEIGHTS"
 echo "POSITIONS=$POSITIONS"
+echo "MAX_POSITIONS=$MAX_POSITIONS"
+echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH"
+
+FREE_KB="$(df -Pk . | awk 'NR==2 {print $4}')"
+MIN_FREE_KB=$((MIN_FREE_GB * 1024 * 1024))
+if (( FREE_KB < MIN_FREE_KB )); then
+  echo "free disk is too low: $((FREE_KB / 1024 / 1024))GB < ${MIN_FREE_GB}GB" >&2
+  echo "Clean old generated runs first: bash tools/clean_mmto_runs.sh" >&2
+  exit 1
+fi
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
   --bin mmto_tree_dump \
@@ -58,8 +73,8 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_dump \
   --valid-output "$RUN_DIR/valid.tree.jsonl" \
   --teacher-depth "$TEACHER_DEPTH" \
   --student-depth "$STUDENT_DEPTH" \
-  --teacher-score-top 16 \
-  --candidate-top 16 \
+  --teacher-score-top "$TEACHER_SCORE_TOP" \
+  --candidate-top "$CANDIDATE_TOP" \
   --max-positions "$MAX_POSITIONS" \
   --valid-percent "$VALID_PERCENT" \
   --seed 7101 \
@@ -150,13 +165,17 @@ for pos in payload.get("hard_positions", []):
     print(pos["sfen"])
 PY
 
-for R in 0.01 0.02 0.05 0.10; do
+for R in $BLEND_RATIOS; do
   env RUST_FONTCONFIG_DLOPEN=1 target/release/adjust_weights \
     --input "$WEIGHTS" \
     --blend-target "$RUN_DIR/best.raw.binary" \
     --blend-ratio "$R" \
     --output "$RUN_DIR/blend_${R}.binary"
 done
+
+if [[ "$KEEP_CANDIDATE_RAW" != "1" ]]; then
+  rm -f "$RUN_DIR/candidate.raw.binary"
+fi
 
 echo "offline gates passed"
 echo "RUN_DIR=$RUN_DIR"

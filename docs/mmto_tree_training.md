@@ -66,11 +66,28 @@ offline gate を通過せずに対局へ進まない。
 bash tools/run_mmto_rerank_pipeline.sh
 ```
 
+24時間程度放置して長めに回す場合は、古いrunを消して空き容量を作ってから長時間用プリセットを使う。
+
+```bash
+bash tools/clean_mmto_runs.sh
+bash tools/run_mmto_rerank_long.sh
+```
+
+長時間用プリセットの主なデフォルト:
+
+- `POSITIONS=converted_records2016_10818.sfen`
+- `MAX_POSITIONS=10000`
+- `TEACHER_DEPTH=5`
+- `STUDENT_DEPTH=4`
+- `EPOCHS=8`
+- `BLEND_RATIOS="0.02 0.05"`
+
 主な環境変数:
 
 ```bash
 MAX_POSITIONS=5000 EPOCHS=5 bash tools/run_mmto_rerank_pipeline.sh
 TEACHER_DEPTH=5 STUDENT_DEPTH=4 RERANK_TEACHER_DEPTH=5 bash tools/run_mmto_rerank_pipeline.sh
+MAX_POSITIONS=8000 EPOCHS=6 bash tools/run_mmto_rerank_long.sh
 ```
 
 古いMMTO run生成物を消す場合:
