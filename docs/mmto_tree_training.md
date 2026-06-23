@@ -60,6 +60,31 @@ env RUST_FONTCONFIG_DLOPEN=1 cargo test --all-targets
 
 offline gate を通過せずに対局へ進まない。
 
+まとめて実行する場合は、以下のスクリプトを使う。
+
+```bash
+bash tools/run_mmto_rerank_pipeline.sh
+```
+
+主な環境変数:
+
+```bash
+MAX_POSITIONS=5000 EPOCHS=5 bash tools/run_mmto_rerank_pipeline.sh
+TEACHER_DEPTH=5 STUDENT_DEPTH=4 RERANK_TEACHER_DEPTH=5 bash tools/run_mmto_rerank_pipeline.sh
+```
+
+古いMMTO run生成物を消す場合:
+
+```bash
+bash tools/clean_mmto_runs.sh
+```
+
+確認なしで消す場合:
+
+```bash
+bash tools/clean_mmto_runs.sh --yes
+```
+
 ## 4. `mmto_tree_dump`（本格前半）
 
 ```bash
