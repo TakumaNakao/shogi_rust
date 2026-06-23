@@ -1,130 +1,255 @@
-# MMTO tree訓練運用手順
+# MMTO tree 実践投入前手順（v2.1.0ベース）
 
-この文書は `mmto_tree_dump` / `mmto_tree_train` / `mmto_score_gate` の想定運用を整理する。
-目標は「学習後に現実の局面評価値が壊れていないか」を検査し、安定してから対局gateへ進めること。
+目的は `mmto_tree_dump` / `mmto_tree_train` / `mmto_score_gate` / `mmto_rerank_gate` を本番導入前のゲートとして運用し、候補重みを作ることにあります。
 
-## 1. 全体設計
+方針:
 
-1. `mmto_tree_dump` で木データを収集する  
-   - 根局面、候補手、教師深さ、スコア、選択情報をJSONL化。
-2. `mmto_tree_train` で重み更新する  
-   - Trackごとに別の初期化方式で学習を回す。
-3. `mmto_score_gate` でscore-space deltaを検査する  
-   - baseline/candidateを同一局面集合で評価し、`abs(candidate-baseline)` 分布を集計。
-4. gate通過後、対局で実性能を確認する  
-   - まずsmoke、次に拡大ゲートへ。
+- オフラインゲートは最優先（対局前に必ず通す）。
+- 本文書は「本格学習前の採用前提手順」であり、1時間程度の試験（smoke）だけで止めない。
+- `best_epoch=0` は baseline が最良のままなので**不採用**。
+- 20局だけで採用判定しない。
+- 直接採用候補を出さず、まず blend から対局へ進める。
 
-## 2. Trackの扱い
-
-### Track A（v2.1.0初期値）
-- 基準重みとして `policy_weights_v2.1.0.binary` を使用する。  
-- 新規実験は基本的にこの重みを出発点にする。  
-- `mmto_score_gate` の比較はこのTrackを基準に取る。
-
-### Track B（ゼロ/駒価値prior）
-- 学習初期化を変えて崩れにくさを検証する。  
-- KPP重みをゼロ寄りにしつつ、`material_coeff` は有効ならpriorとして扱う。  
-- Track A/Bを同時に同条件で回し、どちらが安定性と実戦成果を満たすかを採点する。
-
-## 3. `mmto_score_gate` の設計思想
-
-`mmto_score_gate` は以下を行う。
-
-- `--baseline-weights`, `--candidate-weights`
-- `--input`（複数ファイル）
-  - SFEN / USI 1行形式を読み込む
-- `--seed` でshuffle
-- `--max-positions` でtruncate
-- `SparseModel` で両者の評価を比較
-- `abs_delta` 分布を計算  
-  `mean / p50 / p90 / p95 / p99 / max`
-
-失敗条件:
-
-- `p95` > `--p95-limit-cp`（既定50）
-- `max` > `--max-limit-cp`（既定200）
-
-どちらかを超えると終了コード2で失敗する。
-`--mean-limit-cp` と `--fail-on-material-drift-cp` は任意追加条件として扱う。
-`--json-output` を指定した場合、以下をJSONで保存する。
-
-- summary
-- worst positions（絶対差が大きい上位）
-
-### material係数差の扱い
-
-`SparseModel.material_coeff` が利用可能なら、baseline/candidate差分を要約に含める。  
-材料項は `material_term_delta_cp` の形式で参考統計（mean/p95/max）を持つ。
-
-## 4. 最小smoke手順（最小）
-
-以下は、まだCargo登録が未反映でも名前上のコマンドとしての想定である。
+## 1. 事前の検証コマンド
 
 ```bash
-# 1) 木データ収集（例）
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin mmto_tree_dump
+cd /home/nami_ride_trade/shogi_rust
+
+env RUST_FONTCONFIG_DLOPEN=1 cargo fmt --check
+
+# 既存実装
+env RUST_FONTCONFIG_DLOPEN=1 cargo check \
+  --bin mmto_tree_dump \
+  --bin mmto_tree_train \
+  --bin mmto_score_gate \
+  --bin mmto_rerank_gate \
+  --bin adjust_weights \
+  --bin usi_benchmark
+
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+  --bin mmto_tree_dump \
+  --bin mmto_tree_train \
+  --bin mmto_score_gate \
+  --bin mmto_rerank_gate \
+  --bin adjust_weights \
+  --bin usi_benchmark
+
+env RUST_FONTCONFIG_DLOPEN=1 cargo test --all-targets
+```
+
+## 2. Track
+
+### Track A（基準）
+
+- baseline は `policy_weights_v2.1.0.binary`。
+- 学習・対局ゲートの比較基準は Track A。
+
+### Track B（保守比較）
+
+- Track A と同じパイプラインを別初期化で回し、再現性と安定性を比較する。
+
+## 3. 本格学習前の標準フロー
+
+1. 標準木データ作成（`mmto_tree_dump`）
+2. 学習（`mmto_tree_train`）
+3. offline gate（`mmto_score_gate`、`mmto_rerank_gate`）
+4. hard-valid 対策（rerank候補の再収集）
+5. DAgger再dump（hard局面再収集で再学習）
+6. blend作成（`adjust_weights --blend-target --blend-ratio`）
+7. 対局 gate（20局smoke + 100局以上）
+
+offline gate を通過せずに対局へ進まない。
+
+## 4. `mmto_tree_dump`（本格前半）
+
+```bash
+RUN_DIR="data/mmto/runs/mmto_tree_full_$(date -u +%Y%m%d_%H%M%S)"
+mkdir -p "$RUN_DIR"
+
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_dump \
   --student-weights policy_weights_v2.1.0.binary \
+  --teacher-weights policy_weights_v2.1.0.binary \
   --input taya36.sfen \
-  --train-output /tmp/mmto_tree/train.rank.jsonl \
-  --valid-output /tmp/mmto_tree/valid.rank.jsonl \
-  --max-positions 200 \
+  --train-output "$RUN_DIR/train.rank.jsonl" \
+  --valid-output "$RUN_DIR/valid.rank.jsonl" \
+  --teacher-depth 4 \
+  --student-depth 3 \
+  --teacher-score-top 16 \
+  --candidate-top 16 \
+  --valid-percent 10 \
+  --min-legal-moves 2 \
+  --exclude-in-check \
+  --max-positions 3000 \
   --seed 7101
+```
 
-# 2) 学習
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin mmto_tree_train
+## 5. `mmto_tree_train`（multi-threshold bad regret）
+
+```bash
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --weights policy_weights_v2.1.0.binary \
-  --train /tmp/mmto_tree/train.rank.jsonl \
-  --valid /tmp/mmto_tree/valid.rank.jsonl \
-  --output /tmp/mmto_tree/candidate.binary \
-  --epochs 1
+  --train "$RUN_DIR/train.rank.jsonl" \
+  --valid "$RUN_DIR/valid.rank.jsonl" \
+  --output "$RUN_DIR/candidate.binary" \
+  --best-checkpoint-path "$RUN_DIR/best.binary" \
+  --epochs 5 \
+  --batch-size 128 \
+  --learning-rate 0.0002 \
+  --optimizer adagrad \
+  --best-metric selected-regret \
+  --bad-regret-cp 300 \
+  --bad-regret-thresholds-cp 50,100,200,300 \
+  --freeze-material \
+  --anchor-l2 0.0002 \
+  --max-weight-delta 0.05 \
+  --log-path "$RUN_DIR/train.log"
+```
 
-# 3) score-space deltaゲート
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin mmto_score_gate
+必須チェック:
+
+- `train.log` の `best_epoch=` が `0` なら **不採用**。
+- `--bad-regret-thresholds-cp` は実行ログ上で `bad50` `bad100` `bad200` `bad300`（比率）が全部残ることを確認。
+- 1 epoch目は baseline 行（`epoch=0`）として扱う。比較は epoch 0 より改善しているかで判定する。
+
+## 6. offline gate（優先度最上位）
+
+### 6.1 `mmto_score_gate`
+
+```bash
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_score_gate \
   --baseline-weights policy_weights_v2.1.0.binary \
-  --candidate-weights /tmp/mmto_tree/candidate.binary \
+  --candidate-weights "$RUN_DIR/best.binary" \
   --input taya36.sfen \
-  --max-positions 200 \
+  --max-positions 2000 \
   --seed 7201 \
   --p95-limit-cp 50 \
   --max-limit-cp 200 \
-  --json-output /tmp/mmto_tree/mmto_score_gate.json
+  --mean-limit-cp 10 \
+  --fail-on-material-drift-cp 5 \
+  --json-output "$RUN_DIR/mmto_score_gate.json"
 ```
 
-## 5. Offline gate
+通過条件:
 
-- まずは `mmto_score_gate` が通過していることを最優先で確認する。
-- 基本条件:
-  - `p95<=50`
-  - `max<=200`
-- 追加条件（任意）:
-  - `mean` が許容値以下（`--mean-limit-cp`）
-  - `material_coeff` ドリフトが許容値以下（`--fail-on-material-drift-cp`）
+- `p95 <= 50`、`max <= 200`
+- 必要なら `mean` と material drift も確認
+- failなら再dump/データ条件見直し
 
-`--json-output` には worst上位の局面を残し、どの局面で崩れが出ているか追える状態にする。
+### 6.2 `mmto_rerank_gate`
 
-## 6. 対局gate
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
+  --baseline-weights policy_weights_v2.1.0.binary \
+  --candidate-weights "$RUN_DIR/best.binary" \
+  --teacher-weights policy_weights_v2.1.0.binary \
+  --input taya36.sfen \
+  --max-positions 2000 \
+  --seed 7202 \
+  --baseline-depth 3 \
+  --candidate-depth 3 \
+  --teacher-depth 5 \
+  --bad-regret-thresholds-cp 50,100,200,300 \
+  --allow-mean-regret-increase-cp 0 \
+  --allow-p90-regret-increase-cp 0 \
+  --allow-p95-regret-increase-cp 0 \
+  --allow-bad-ratio-increase 0 \
+  --hard-position-limit 1000 \
+  --json-output "$RUN_DIR/mmto_rerank_gate.json"
+```
 
-offline gateを通過しても、すぐ採用せず対局検証で再確認する。
+`mmto_rerank_gate.json` には `hard_positions` が出力される。ここから hard-valid 用のSFENを抽出する。
 
-- まず20局程度のsmoke
-- その後に拡張（例: 100局）
+## 7. blend候補作成
 
-重要:
+`adjust_weights --blend-target --blend-ratio` を使って、直接置換前の候補として blend を作る。
 
-- **20局だけで採用しない**  
-- 100局では必ず seedを複数回回して再現性を確認する
+```bash
+for R in 0.02 0.05 0.10 0.20; do
+  env RUST_FONTCONFIG_DLOPEN=1 target/release/adjust_weights \
+    --input policy_weights_v2.1.0.binary \
+    --blend-target "$RUN_DIR/best.binary" \
+    --blend-ratio "$R" \
+    --output "$RUN_DIR/blend_${R}.binary"
+done
+```
 
-推奨:
+## 8. hard-valid と DAgger再dump
 
-- 20局: 粗い破綻検知（明らかな不安定性・バグを除外）
-- 100局: 複数seedで同傾向が出るか確認（1 seed依存を避ける）
+hard局面の再収集（rerank結果）:
 
-## 7. 採用判断の最低線
+```bash
+# rerank結果から hard_positions.sfen を作成
+python3 - "$RUN_DIR/mmto_rerank_gate.json" > "$RUN_DIR/hard_positions.sfen" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1]))
+for pos in payload.get("hard_positions", []):
+    print(pos["sfen"])
+PY
+```
 
-- offline gate: `mmto_score_gate` を通過
-- `mmto_score_gate` が通過していても、20局で良好でも採用扱いしない
-- 100局で複数seedで有意に悪くならないこと
-- 追跡対象は Track A/Track B それぞれで比較し、偶発崩れ（seed依存）を避ける
+hard局面を重点再収集して再ダンプ（DAgger再dump）:
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_dump \
+  --student-weights "$RUN_DIR/best.binary" \
+  --teacher-weights policy_weights_v2.1.0.binary \
+  --input "$RUN_DIR/hard_positions.sfen" \
+  --train-output "$RUN_DIR/hard_train.rank.jsonl" \
+  --valid-output "$RUN_DIR/hard_valid.rank.jsonl" \
+  --teacher-depth 6 \
+  --student-depth 5 \
+  --teacher-score-top 32 \
+  --candidate-top 32 \
+  --valid-percent 20 \
+  --max-positions 2000 \
+  --seed 7301
+
+cat "$RUN_DIR/train.rank.jsonl" "$RUN_DIR/hard_train.rank.jsonl" > "$RUN_DIR/train_with_hard.rank.jsonl"
+cat "$RUN_DIR/valid.rank.jsonl" "$RUN_DIR/hard_valid.rank.jsonl" > "$RUN_DIR/valid_with_hard.rank.jsonl"
+```
+
+hard-valid付き再学習:
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
+  --weights "$RUN_DIR/best.binary" \
+  --train "$RUN_DIR/train_with_hard.rank.jsonl" \
+  --valid "$RUN_DIR/valid_with_hard.rank.jsonl" \
+  --extra-valid "hard=$RUN_DIR/hard_valid.rank.jsonl" \
+  --output "$RUN_DIR/candidate_dagger.binary" \
+  --best-checkpoint-path "$RUN_DIR/best_dagger.binary" \
+  --epochs 3 \
+  --batch-size 128 \
+  --learning-rate 0.0002 \
+  --bad-regret-cp 300 \
+  --bad-regret-thresholds-cp 50,100,200,300 \
+  --best-metric selected-regret \
+  --freeze-material \
+  --anchor-l2 0.0002 \
+  --max-weight-delta 0.05 \
+  --log-path "$RUN_DIR/train_dagger.log"
+```
+
+## 9. 対局 gate（採用は段階的）
+
+- 20局は「破綻検知」。  
+  **20局だけで採用しない**（これは条件ではない）。
+- 20局を通過したら、seed変更で100局以上を比較。  
+  - `usi_benchmark` で `seed` を複数変える  
+  - 両者（baseline vs 候補）を同一局面で比較
+- 100局で有意悪化がある場合は棄却。
+
+## 10. 最終採用条件
+
+- `mmto_tree_train` の `best_epoch > 0`
+- `mmto_score_gate` 通過
+- `mmto_rerank_gate` 通過
+- blend候補の少なくとも1種類が、20局smokeと100局以上で一貫して悪化しない
+- material 破綻・`best` 退化（`bad_*` 比率悪化）がないこと
+
+## 11. 破棄条件
+
+- `best_epoch=0`
+- offline gateのいずれか失敗
+- `train.log` / `mmto_score_gate.json` / `mmto_rerank_gate` の情報に異常がある
+- 20局/100局どちらでも明確に悪化（勝率低下、引き分け異常増、時間超過・再現不能な挙動）

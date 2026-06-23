@@ -83,5 +83,9 @@ name = "mmto_score_gate"
 path = "src/bin/mmto_score_gate.rs"
 
 [[bin]]
+name = "mmto_rerank_gate"
+path = "src/bin/mmto_rerank_gate.rs"
+
+[[bin]]
 name = "csa_policy_dump"
 path = "src/bin/csa_policy_dump.rs"
