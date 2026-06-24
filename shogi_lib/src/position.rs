@@ -686,8 +686,10 @@ mod tests {
         // P-00AL
         // +
         let pos = Position::new(
-            ShogiCorePartialPosition::from_usi("sfen 6p1k/9/6P1G/9/8L/9/9/9/9 b RBLrb3g4s4n2l16p 1")
-                .expect("failed to parse"),
+            ShogiCorePartialPosition::from_usi(
+                "sfen 6p1k/9/6P1G/9/8L/9/9/9/9 b RBLrb3g4s4n2l16p 1",
+            )
+            .expect("failed to parse"),
         );
         let test_cases = [
             (

@@ -79,8 +79,15 @@ bash tools/run_mmto_rerank_long.sh
 - `MAX_POSITIONS=10000`
 - `TEACHER_DEPTH=5`
 - `STUDENT_DEPTH=4`
-- `EPOCHS=8`
+- `SCORE_ALL_LEGAL_FOR_VALID=1`
+- `BAD_CANDIDATE_SCOPE=model-top`
+- `STUDENT_BAD_TOP_K=12`
+- `MIN_REGRET_CP=15`
+- `MAX_PAIRS_PER_SAMPLE=32`
+- `EPOCHS=10`
 - `BLEND_RATIOS="0.02 0.05"`
+
+直近の長時間runでは `MIN_REGRET_CP=50` のままだと `train pairs` / `valid pairs` が少なすぎたため、長時間用プリセットは「teacher上位手 vs 現在の学習中モデルが高く見ている悪手」を使う hard-negative 設定にしている。`score gate` と `rerank gate` を通過しない重みは採用しない。
 
 主な環境変数:
 
@@ -88,7 +95,26 @@ bash tools/run_mmto_rerank_long.sh
 MAX_POSITIONS=5000 EPOCHS=5 bash tools/run_mmto_rerank_pipeline.sh
 TEACHER_DEPTH=5 STUDENT_DEPTH=4 RERANK_TEACHER_DEPTH=5 bash tools/run_mmto_rerank_pipeline.sh
 MAX_POSITIONS=8000 EPOCHS=6 bash tools/run_mmto_rerank_long.sh
+MIN_REGRET_CP=20 MAX_PAIRS_PER_SAMPLE=24 bash tools/run_mmto_rerank_long.sh
+BAD_CANDIDATE_SCOPE=all-candidates STUDENT_BAD_TOP_K=0 bash tools/run_mmto_rerank_long.sh
 ```
+
+Wdoor高レート棋譜からMMTO用の局面集合を作る場合:
+
+```bash
+bash tools/make_wdoor_mmto_positions.sh
+POSITIONS=data/mmto/positions/wdoor2023_2026_r4000_p16_120.sfen bash tools/run_mmto_rerank_long.sh
+```
+
+`tools/make_wdoor_mmto_positions.sh` は `data/wdoor/extract/2023` から `2026` のCSAを読み、`MIN_PLAYER_RATE=4000`、`MIN_PLY=16`、`MAX_PLY=120`、`MAX_RECORDS=200000` の局面を重複除去してSFEN化する。出力先の `data/mmto/positions/` はgit管理外。
+
+`rerank gate` が失敗した場合でも、pipelineは `hard_positions.sfen` を保存する。この局面を使って2段目のhard-position DAggerを回す場合:
+
+```bash
+BASE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> bash tools/run_mmto_hard_stage.sh
+```
+
+hard stage は `BASE_RUN_DIR/best.raw.binary` をstudent初期値にし、`policy_weights_v2.1.0.binary` をteacherとして再dumpする。通常valid/rerankも通すため、hard局面だけに過適合した候補は採用しない。
 
 古いMMTO run生成物を消す場合:
 

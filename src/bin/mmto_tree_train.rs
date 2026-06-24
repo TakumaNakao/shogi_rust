@@ -45,6 +45,8 @@ struct Args {
     student_bad_top_k: usize,
     #[arg(long, default_value_t = 50.0)]
     min_regret_cp: f32,
+    #[arg(long, value_enum, default_value_t = BadCandidateScope::StudentTop)]
+    bad_candidate_scope: BadCandidateScope,
     #[arg(long, default_value_t = 16)]
     max_pairs_per_sample: usize,
     #[arg(long, value_enum, default_value_t = OptimizerKind::Adagrad)]
@@ -85,6 +87,16 @@ enum BestMetric {
     SelectedRegret,
     #[value(name = "bad-regret")]
     BadRegret,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BadCandidateScope {
+    #[value(name = "student-top")]
+    StudentTop,
+    #[value(name = "model-top")]
+    ModelTop,
+    #[value(name = "all-candidates")]
+    AllCandidates,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,6 +189,7 @@ struct Metrics {
 struct PairOptions {
     teacher_top_k: usize,
     student_bad_top_k: usize,
+    bad_candidate_scope: BadCandidateScope,
     min_regret_cp: f32,
     max_pairs_per_sample: usize,
 }
@@ -375,7 +388,39 @@ fn candidate_leaf_features<'a>(
     (&candidate.move_features, candidate.move_material)
 }
 
-fn pair_indices(sample: &Sample, options: &PairOptions) -> Vec<(usize, usize)> {
+fn pair_indices(
+    sample: &Sample,
+    options: &PairOptions,
+    model: Option<&SparseModel>,
+) -> Vec<(usize, usize)> {
+    let model_bad_ranks = if matches!(options.bad_candidate_scope, BadCandidateScope::ModelTop) {
+        model.map(|model| {
+            let mut indices = (0..sample.candidates.len()).collect::<Vec<_>>();
+            indices.sort_by(|&lhs, &rhs| {
+                let lhs_candidate = &sample.candidates[lhs];
+                let rhs_candidate = &sample.candidates[rhs];
+                let lhs_score = model.predict_with_material(
+                    &lhs_candidate.move_features,
+                    lhs_candidate.move_material,
+                );
+                let rhs_score = model.predict_with_material(
+                    &rhs_candidate.move_features,
+                    rhs_candidate.move_material,
+                );
+                rhs_score
+                    .partial_cmp(&lhs_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let mut ranks = vec![MISSING_RANK; sample.candidates.len()];
+            for (rank, idx) in indices.into_iter().enumerate() {
+                ranks[idx] = rank;
+            }
+            ranks
+        })
+    } else {
+        None
+    };
+
     let mut pairs = Vec::new();
     for (good_idx, good) in sample.candidates.iter().enumerate() {
         if good.teacher_rank >= options.teacher_top_k {
@@ -385,8 +430,21 @@ fn pair_indices(sample: &Sample, options: &PairOptions) -> Vec<(usize, usize)> {
             if good_idx == bad_idx {
                 continue;
             }
-            if bad.student_rank >= options.student_bad_top_k {
-                continue;
+            match options.bad_candidate_scope {
+                BadCandidateScope::StudentTop => {
+                    if bad.student_rank >= options.student_bad_top_k {
+                        continue;
+                    }
+                }
+                BadCandidateScope::ModelTop => {
+                    let Some(ranks) = model_bad_ranks.as_ref() else {
+                        continue;
+                    };
+                    if ranks[bad_idx] >= options.student_bad_top_k {
+                        continue;
+                    }
+                }
+                BadCandidateScope::AllCandidates => {}
             }
             if bad.regret < options.min_regret_cp {
                 continue;
@@ -445,7 +503,7 @@ fn evaluate_batch(
             }
         }
 
-        for (good_idx, bad_idx) in pair_indices(sample, pair_options) {
+        for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model)) {
             let good = &sample.candidates[good_idx];
             let bad = &sample.candidates[bad_idx];
             let (good_features, good_material) = candidate_leaf_features(good, true);
@@ -485,7 +543,7 @@ fn update_batch_with_softplus(
     let mut pair_count = 0usize;
 
     for sample in batch {
-        for (good_idx, bad_idx) in pair_indices(sample, pair_options) {
+        for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model)) {
             let good = &sample.candidates[good_idx];
             let bad = &sample.candidates[bad_idx];
             let (good_features, good_material) = candidate_leaf_features(good, true);
@@ -858,8 +916,14 @@ fn main() -> Result<()> {
     if args.teacher_top_k == 0 {
         return Err(anyhow!("--teacher-top-k must be greater than 0"));
     }
-    if args.student_bad_top_k == 0 {
-        return Err(anyhow!("--student-bad-top-k must be greater than 0"));
+    if matches!(
+        args.bad_candidate_scope,
+        BadCandidateScope::StudentTop | BadCandidateScope::ModelTop
+    ) && args.student_bad_top_k == 0
+    {
+        return Err(anyhow!(
+            "--student-bad-top-k must be greater than 0 for student-top or model-top"
+        ));
     }
     if !args.min_regret_cp.is_finite() || args.min_regret_cp < 0.0 {
         return Err(anyhow!("--min-regret-cp must be non-negative"));
@@ -890,6 +954,7 @@ fn main() -> Result<()> {
     let pair_options = PairOptions {
         teacher_top_k: args.teacher_top_k,
         student_bad_top_k: args.student_bad_top_k,
+        bad_candidate_scope: args.bad_candidate_scope,
         min_regret_cp: args.min_regret_cp,
         max_pairs_per_sample: args.max_pairs_per_sample,
     };

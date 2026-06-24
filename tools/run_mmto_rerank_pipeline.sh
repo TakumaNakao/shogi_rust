@@ -9,12 +9,14 @@ fi
 cd "$(dirname "$0")/.."
 
 WEIGHTS="${WEIGHTS:-policy_weights_v2.1.0.binary}"
+TEACHER_WEIGHTS="${TEACHER_WEIGHTS:-$WEIGHTS}"
 POSITIONS="${POSITIONS:-taya36.sfen}"
 MAX_POSITIONS="${MAX_POSITIONS:-3000}"
 VALID_PERCENT="${VALID_PERCENT:-10}"
 JOBS="${JOBS:-$(nproc)}"
 TEACHER_SCORE_TOP="${TEACHER_SCORE_TOP:-16}"
 CANDIDATE_TOP="${CANDIDATE_TOP:-16}"
+SCORE_ALL_LEGAL_FOR_VALID="${SCORE_ALL_LEGAL_FOR_VALID:-0}"
 
 TEACHER_DEPTH="${TEACHER_DEPTH:-4}"
 STUDENT_DEPTH="${STUDENT_DEPTH:-3}"
@@ -24,7 +26,11 @@ RERANK_MAX_POSITIONS="${RERANK_MAX_POSITIONS:-300}"
 EPOCHS="${EPOCHS:-5}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 LEARNING_RATE="${LEARNING_RATE:-0.0002}"
+TEACHER_TOP_K="${TEACHER_TOP_K:-2}"
+STUDENT_BAD_TOP_K="${STUDENT_BAD_TOP_K:-6}"
+BAD_CANDIDATE_SCOPE="${BAD_CANDIDATE_SCOPE:-student-top}"
 MIN_REGRET_CP="${MIN_REGRET_CP:-50}"
+MAX_PAIRS_PER_SAMPLE="${MAX_PAIRS_PER_SAMPLE:-16}"
 MAX_WEIGHT_DELTA="${MAX_WEIGHT_DELTA:-0.05}"
 ANCHOR_L2="${ANCHOR_L2:-0.0002}"
 BLEND_RATIOS="${BLEND_RATIOS:-0.01 0.02 0.05 0.10}"
@@ -39,6 +45,11 @@ if [[ ! -f "$WEIGHTS" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$TEACHER_WEIGHTS" ]]; then
+  echo "missing teacher weights: $TEACHER_WEIGHTS" >&2
+  exit 1
+fi
+
 if [[ ! -f "$POSITIONS" ]]; then
   echo "missing positions: $POSITIONS" >&2
   exit 1
@@ -46,9 +57,12 @@ fi
 
 echo "RUN_DIR=$RUN_DIR"
 echo "WEIGHTS=$WEIGHTS"
+echo "TEACHER_WEIGHTS=$TEACHER_WEIGHTS"
 echo "POSITIONS=$POSITIONS"
 echo "MAX_POSITIONS=$MAX_POSITIONS"
 echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH"
+echo "TEACHER_SCORE_TOP=$TEACHER_SCORE_TOP CANDIDATE_TOP=$CANDIDATE_TOP SCORE_ALL_LEGAL_FOR_VALID=$SCORE_ALL_LEGAL_FOR_VALID"
+echo "BAD_CANDIDATE_SCOPE=$BAD_CANDIDATE_SCOPE MIN_REGRET_CP=$MIN_REGRET_CP MAX_PAIRS_PER_SAMPLE=$MAX_PAIRS_PER_SAMPLE"
 
 FREE_KB="$(df -Pk . | awk 'NR==2 {print $4}')"
 MIN_FREE_KB=$((MIN_FREE_GB * 1024 * 1024))
@@ -65,23 +79,31 @@ env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
   --bin mmto_rerank_gate \
   --bin adjust_weights
 
+dump_args=(
+  --student-weights "$WEIGHTS"
+  --teacher-weights "$TEACHER_WEIGHTS"
+  --input "$POSITIONS"
+  --train-output "$RUN_DIR/train.tree.jsonl"
+  --valid-output "$RUN_DIR/valid.tree.jsonl"
+  --teacher-depth "$TEACHER_DEPTH"
+  --student-depth "$STUDENT_DEPTH"
+  --teacher-score-top "$TEACHER_SCORE_TOP"
+  --candidate-top "$CANDIDATE_TOP"
+  --max-positions "$MAX_POSITIONS"
+  --valid-percent "$VALID_PERCENT"
+  --seed 7101
+  --jobs "$JOBS"
+  --min-legal-moves 2
+  --exclude-in-check
+  --max-abs-root-score 3000
+)
+
+if [[ "$SCORE_ALL_LEGAL_FOR_VALID" == "1" ]]; then
+  dump_args+=(--score-all-legal-for-valid)
+fi
+
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_dump \
-  --student-weights "$WEIGHTS" \
-  --teacher-weights "$WEIGHTS" \
-  --input "$POSITIONS" \
-  --train-output "$RUN_DIR/train.tree.jsonl" \
-  --valid-output "$RUN_DIR/valid.tree.jsonl" \
-  --teacher-depth "$TEACHER_DEPTH" \
-  --student-depth "$STUDENT_DEPTH" \
-  --teacher-score-top "$TEACHER_SCORE_TOP" \
-  --candidate-top "$CANDIDATE_TOP" \
-  --max-positions "$MAX_POSITIONS" \
-  --valid-percent "$VALID_PERCENT" \
-  --seed 7101 \
-  --jobs "$JOBS" \
-  --min-legal-moves 2 \
-  --exclude-in-check \
-  --max-abs-root-score 3000 \
+  "${dump_args[@]}" \
   | tee "$RUN_DIR/dump_stdout.log"
 
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
@@ -93,10 +115,11 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --epochs "$EPOCHS" \
   --batch-size "$BATCH_SIZE" \
   --learning-rate "$LEARNING_RATE" \
-  --teacher-top-k 2 \
-  --student-bad-top-k 6 \
+  --teacher-top-k "$TEACHER_TOP_K" \
+  --student-bad-top-k "$STUDENT_BAD_TOP_K" \
+  --bad-candidate-scope "$BAD_CANDIDATE_SCOPE" \
   --min-regret-cp "$MIN_REGRET_CP" \
-  --max-pairs-per-sample 16 \
+  --max-pairs-per-sample "$MAX_PAIRS_PER_SAMPLE" \
   --optimizer adagrad \
   --margin-cp 50 \
   --softplus-temp-cp 100 \
@@ -137,10 +160,11 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_score_gate \
   --json-output "$RUN_DIR/score_gate.json" \
   | tee "$RUN_DIR/score_gate_stdout.log"
 
+set +e
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
   --baseline-weights "$WEIGHTS" \
   --candidate-weights "$RUN_DIR/best.raw.binary" \
-  --teacher-weights "$WEIGHTS" \
+  --teacher-weights "$TEACHER_WEIGHTS" \
   --input "$RUN_DIR/valid.tree.jsonl" \
   --max-positions "$RERANK_MAX_POSITIONS" \
   --seed 7202 \
@@ -155,8 +179,11 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
   --hard-position-limit 1000 \
   --json-output "$RUN_DIR/rerank_gate.json" \
   | tee "$RUN_DIR/rerank_gate_stdout.log"
+rerank_status="${PIPESTATUS[0]}"
+set -e
 
-python3 - "$RUN_DIR/rerank_gate.json" > "$RUN_DIR/hard_positions.sfen" <<'PY'
+if [[ -f "$RUN_DIR/rerank_gate.json" ]]; then
+  python3 - "$RUN_DIR/rerank_gate.json" > "$RUN_DIR/hard_positions.sfen" <<'PY'
 import json
 import sys
 
@@ -164,6 +191,16 @@ payload = json.load(open(sys.argv[1]))
 for pos in payload.get("hard_positions", []):
     print(pos["sfen"])
 PY
+fi
+
+if [[ "$rerank_status" != "0" ]]; then
+  echo "rerank gate failed. Hard positions were saved to $RUN_DIR/hard_positions.sfen when available."
+  if [[ "$KEEP_CANDIDATE_RAW" != "1" ]]; then
+    rm -f "$RUN_DIR/candidate.raw.binary"
+  fi
+  echo "RUN_DIR=$RUN_DIR"
+  exit "$rerank_status"
+fi
 
 for R in $BLEND_RATIOS; do
   env RUST_FONTCONFIG_DLOPEN=1 target/release/adjust_weights \
