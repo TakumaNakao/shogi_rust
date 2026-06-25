@@ -55,6 +55,65 @@ cargo build --release --bin kpp_learn
 
 新しく重みを試す場合は、まず `ce` 方式と `--freeze-material` の組み合わせを推奨します。駒得係数を固定し、KPP重みだけを安全に更新します。
 
+#### scratch と warm-start
+
+`kpp_learn` では初期化方法を `--init-mode` で明示できます。
+
+- `auto`（既定）: `--weights` があれば読み込み、なければ新規作成して保存。
+- `load`: `--weights` が必須。存在しなければ終了。
+- `scratch`: `--weights` を読まず `SparseModel::new` から開始。baseline誤上書きを避けるため、`--output` は `--weights` と別パスにする必要があります。
+
+`scratch` 時は `--scratch-material-coeff` で `material_coeff` を指定します（既定値 `1.0`）。`auto/load` では既存重みの値を引き継ぎます。
+
+同条件比較するときは、warm-start は既知重み（例: `policy_weights_v2.1.0.binary`）を読み込み、scratch は `scratch` を使って比較します。
+
+```bash
+# warm-start（v2.1.0ベース）
+env RUST_FONTCONFIG_DLOPEN=1 target/release/kpp_learn \
+  --init-mode load \
+  --input-dir data/wdoor/extract/2026 \
+  --weights ./policy_weights_v2.1.0.binary \
+  --output /tmp/policy_weights_wdoor2026_v210_warm.binary \
+  --loss ce \
+  --softmax-temperature 150 \
+  --learning-rate 0.005 \
+  --seed 20260620
+
+# scratch（同条件）
+env RUST_FONTCONFIG_DLOPEN=1 target/release/kpp_learn \
+  --init-mode scratch \
+  --input-dir data/wdoor/extract/2026 \
+  --weights ./policy_weights_v2.1.0.binary \
+  --scratch-material-coeff 1.0 \
+  --output /tmp/policy_weights_wdoor2026_scratch.binary \
+  --loss ce \
+  --softmax-temperature 150 \
+  --learning-rate 0.005 \
+  --seed 20260620
+```
+
+scratch と warm-start を同条件で順番に回すスクリプトもあります。
+
+```bash
+RUN_ROOT="data/wdoor/runs/kpp_supervised_compare_$(date -u +%Y%m%d_%H%M%S)"
+mkdir -p "$RUN_ROOT"
+
+nohup env RUST_FONTCONFIG_DLOPEN=1 \
+  RUN_ROOT="$RUN_ROOT" \
+  YEARS="2023 2024 2025 2026" \
+  RUN_KIND=both \
+  EPOCHS=4 \
+  MIN_PLAYER_RATE=4000 \
+  bash tools/run_kpp_supervised_compare.sh \
+  > "$RUN_ROOT/compare_stdout.log" 2>&1 &
+
+echo "RUN_ROOT=$RUN_ROOT"
+echo "tail -f $RUN_ROOT/compare_stdout.log"
+```
+
+`RUN_KIND=scratch` または `RUN_KIND=warm` にすると片方だけ実行できます。
+既定ではscratchの `material_coeff` は `policy_weights_v2.1.0.binary` に近い `0.14564776` を使います。変更する場合は `SCRATCH_MATERIAL_COEFF=1.0` のように指定します。
+
 #### wdoor/floodgate棋譜の取得
 
 東京大学のwdoor/floodgateアーカイブからCSA棋譜を取得できます。棋譜本体は大きいため `data/wdoor/` に保存し、Git管理対象にはしません。
