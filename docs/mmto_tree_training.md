@@ -184,6 +184,9 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --best-metric p95-regret \
   --bad-regret-cp 300 \
   --bad-regret-thresholds-cp 50,100,200,300 \
+  --pair-weight-mode bad-regret \
+  --pair-weight-scale-cp 100 \
+  --max-pair-weight 4 \
   --selected-regret-cap-cp 300 \
   --freeze-material \
   --anchor-l2 0.0002 \
@@ -193,6 +196,9 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
 
 `--best-metric` は `selected-regret` のほかに `p90-regret`, `p95-regret`, `bad50-regret`（別名: `bad-regret-50`）, `capped-selected-regret` を利用できます。
 `capped-selected-regret` の上限は `--selected-regret-cap-cp`（既定値 300）で制御し、外れ値に引っ張られにくい選択ができます。
+
+`--pair-weight-mode bad-regret` は、teacherから見て悪い候補ほどpairwise lossの重みを大きくします。
+既定値は後方互換のため `none` ですが、標準スクリプトでは `bad-regret` を使い、15cp程度の小さな悪手よりも100cp以上の悪手を強く押し下げます。
 
 必須チェック:
 
@@ -312,6 +318,9 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --learning-rate 0.0002 \
   --bad-regret-cp 300 \
   --bad-regret-thresholds-cp 50,100,200,300 \
+  --pair-weight-mode bad-regret \
+  --pair-weight-scale-cp 100 \
+  --max-pair-weight 4 \
   --best-metric p95-regret \
   --selected-regret-cap-cp 300 \
   --freeze-material \

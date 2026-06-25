@@ -49,6 +49,12 @@ struct Args {
     bad_candidate_scope: BadCandidateScope,
     #[arg(long, default_value_t = 16)]
     max_pairs_per_sample: usize,
+    #[arg(long, value_enum, default_value_t = PairWeightMode::None)]
+    pair_weight_mode: PairWeightMode,
+    #[arg(long, default_value_t = 100.0)]
+    pair_weight_scale_cp: f32,
+    #[arg(long, default_value_t = 4.0)]
+    max_pair_weight: f32,
     #[arg(long, value_enum, default_value_t = OptimizerKind::Adagrad)]
     optimizer: OptimizerKind,
     #[arg(long, default_value_t = 1e-6)]
@@ -108,6 +114,15 @@ enum BadCandidateScope {
     ModelTop,
     #[value(name = "all-candidates")]
     AllCandidates,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PairWeightMode {
+    None,
+    #[value(name = "bad-regret")]
+    BadRegret,
+    #[value(name = "score-gap")]
+    ScoreGap,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,6 +204,7 @@ struct NamedBatch {
 struct Metrics {
     samples: usize,
     pair_count: usize,
+    pair_weight_sum: f32,
     loss: f32,
     selected_regret_sum: f32,
     regrets: Vec<f32>,
@@ -203,6 +219,9 @@ struct PairOptions {
     bad_candidate_scope: BadCandidateScope,
     min_regret_cp: f32,
     max_pairs_per_sample: usize,
+    pair_weight_mode: PairWeightMode,
+    pair_weight_scale_cp: f32,
+    max_pair_weight: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -480,6 +499,17 @@ fn pair_indices(
     pairs
 }
 
+fn pair_weight(good: &CandidateSample, bad: &CandidateSample, options: &PairOptions) -> f32 {
+    let raw = match options.pair_weight_mode {
+        PairWeightMode::None => return 1.0,
+        PairWeightMode::BadRegret => bad.regret / options.pair_weight_scale_cp,
+        PairWeightMode::ScoreGap => {
+            (good.teacher_score - bad.teacher_score).max(0.0) / options.pair_weight_scale_cp
+        }
+    };
+    raw.clamp(1.0, options.max_pair_weight)
+}
+
 fn evaluate_batch(
     model: &SparseModel,
     batch: &[Sample],
@@ -531,7 +561,9 @@ fn evaluate_batch(
                 - model.predict_with_material(bad_features, bad_material);
             let x = (loss_options.margin_cp - diff) / loss_options.softplus_temp_cp;
             if x.is_finite() {
-                metrics.loss += loss_options.softplus_temp_cp * softplus(x);
+                let weight = pair_weight(good, bad, pair_options);
+                metrics.loss += weight * loss_options.softplus_temp_cp * softplus(x);
+                metrics.pair_weight_sum += weight;
                 metrics.pair_count += 1;
             }
         }
@@ -540,8 +572,8 @@ fn evaluate_batch(
     if metrics.samples > 0 {
         metrics.selected_regret_sum /= metrics.samples as f32;
     }
-    if metrics.pair_count > 0 {
-        metrics.loss /= metrics.pair_count as f32;
+    if metrics.pair_weight_sum > 0.0 {
+        metrics.loss /= metrics.pair_weight_sum;
     }
     metrics
 }
@@ -560,6 +592,7 @@ fn update_sample_refs_with_softplus(
     let mut material_grad_total = 0.0f32;
     let mut loss = 0.0f32;
     let mut pair_count = 0usize;
+    let mut pair_weight_sum = 0.0f32;
 
     for sample in samples {
         for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model)) {
@@ -574,9 +607,11 @@ fn update_sample_refs_with_softplus(
                 continue;
             }
 
-            loss += options.loss.softplus_temp_cp * softplus(x);
-            let grad_diff = -sigmoid(x);
+            let weight = pair_weight(good, bad, pair_options);
+            loss += weight * options.loss.softplus_temp_cp * softplus(x);
+            let grad_diff = -sigmoid(x) * weight;
             pair_count += 1;
+            pair_weight_sum += weight;
 
             for &feature_idx in good_features {
                 *w_grads.entry(feature_idx).or_insert(0.0) += grad_diff;
@@ -593,7 +628,7 @@ fn update_sample_refs_with_softplus(
     if pair_count == 0 {
         return (0.0, 0);
     }
-    let avg = 1.0 / pair_count as f32;
+    let avg = 1.0 / pair_weight_sum.max(f32::EPSILON);
     let l2 = options.l2_lambda;
     for (idx, grad_sum) in w_grads {
         let grad = grad_sum * avg;
@@ -629,7 +664,7 @@ fn update_sample_refs_with_softplus(
         }
     }
 
-    (loss / pair_count as f32, pair_count)
+    (loss / pair_weight_sum.max(f32::EPSILON), pair_count)
 }
 
 fn parse_candidate(
@@ -1017,6 +1052,12 @@ fn main() -> Result<()> {
     if args.max_pairs_per_sample == 0 {
         return Err(anyhow!("--max-pairs-per-sample must be greater than 0"));
     }
+    if !args.pair_weight_scale_cp.is_finite() || args.pair_weight_scale_cp <= 0.0 {
+        return Err(anyhow!("--pair-weight-scale-cp must be positive"));
+    }
+    if !args.max_pair_weight.is_finite() || args.max_pair_weight < 1.0 {
+        return Err(anyhow!("--max-pair-weight must be finite and >= 1"));
+    }
     if !args.bad_regret_cp.is_finite() || args.bad_regret_cp < 0.0 {
         return Err(anyhow!("--bad-regret-cp must be non-negative"));
     }
@@ -1046,6 +1087,9 @@ fn main() -> Result<()> {
         bad_candidate_scope: args.bad_candidate_scope,
         min_regret_cp: args.min_regret_cp,
         max_pairs_per_sample: args.max_pairs_per_sample,
+        pair_weight_mode: args.pair_weight_mode,
+        pair_weight_scale_cp: args.pair_weight_scale_cp,
+        max_pair_weight: args.max_pair_weight,
     };
     let loss_options = LossOptions {
         margin_cp: args.margin_cp,
