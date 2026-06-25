@@ -350,6 +350,14 @@ fn ensure_finite_model(model: &SparseModel) -> Result<()> {
     Ok(())
 }
 
+fn copy_model_into(dst: &mut SparseModel, src: &SparseModel) {
+    dst.w.clone_from(&src.w);
+    dst.bias = src.bias;
+    dst.material_coeff = src.material_coeff;
+    dst.kpp_eta = src.kpp_eta;
+    dst.l2_lambda = src.l2_lambda;
+}
+
 fn create_writer(path: &PathBuf) -> Result<BufWriter<File>> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -527,9 +535,9 @@ fn evaluate_batch(
     metrics
 }
 
-fn update_batch_with_softplus(
+fn update_sample_refs_with_softplus(
     model: &mut SparseModel,
-    batch: &[Sample],
+    samples: &[&Sample],
     options: &TrainOptions,
     pair_options: &PairOptions,
     optimizer: OptimizerKind,
@@ -542,7 +550,7 @@ fn update_batch_with_softplus(
     let mut loss = 0.0f32;
     let mut pair_count = 0usize;
 
-    for sample in batch {
+    for sample in samples {
         for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model)) {
             let good = &sample.candidates[good_idx];
             let bad = &sample.candidates[bad_idx];
@@ -1124,16 +1132,19 @@ fn main() -> Result<()> {
     ));
     let mut best_epoch = 0usize;
     let mut rng = ChaCha8Rng::seed_from_u64(0x1234);
+    let mut train_indices: Vec<usize> = (0..train_samples.len()).collect();
+    let mut batch_refs: Vec<&Sample> = Vec::with_capacity(args.batch_size);
 
     for epoch in 1..=args.epochs {
-        let mut train_shuffled = train_samples.clone();
-        train_shuffled.shuffle(&mut rng);
+        train_indices.shuffle(&mut rng);
 
         let mut clamped_weights = 0usize;
-        for chunk in train_shuffled.chunks(args.batch_size) {
-            let _ = update_batch_with_softplus(
+        for chunk in train_indices.chunks(args.batch_size) {
+            batch_refs.clear();
+            batch_refs.extend(chunk.iter().map(|idx| &train_samples[*idx]));
+            let _ = update_sample_refs_with_softplus(
                 &mut model,
-                chunk,
+                &batch_refs,
                 &train_options,
                 &pair_options,
                 args.optimizer,
@@ -1179,13 +1190,13 @@ fn main() -> Result<()> {
             .map(|(w, anchor)| (w - anchor).abs())
             .collect();
         let max_abs_delta = delta_abs.iter().copied().fold(0.0_f32, f32::max);
-        let p95_abs_delta = percentile(delta_abs.clone(), 0.95);
+        let p95_abs_delta = percentile(delta_abs, 0.95);
 
         let current_metric = compute_best_metric_value(args.best_metric, &valid, &train);
         if best_metric_score.is_none()
             || current_metric < best_metric_score.unwrap_or(f32::INFINITY)
         {
-            best_model_checkpoint = model.clone();
+            copy_model_into(&mut best_model_checkpoint, &model);
             best_metric_score = Some(current_metric);
             best_epoch = epoch;
         }
