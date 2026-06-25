@@ -22,6 +22,10 @@ TEACHER_DEPTH="${TEACHER_DEPTH:-4}"
 STUDENT_DEPTH="${STUDENT_DEPTH:-3}"
 RERANK_TEACHER_DEPTH="${RERANK_TEACHER_DEPTH:-5}"
 RERANK_MAX_POSITIONS="${RERANK_MAX_POSITIONS:-300}"
+RERANK_REQUIRE_MEAN_REGRET_IMPROVEMENT_CP="${RERANK_REQUIRE_MEAN_REGRET_IMPROVEMENT_CP:-0.5}"
+RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP="${RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP:-0.0}"
+RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP="${RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP:-0.0}"
+RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT="${RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT:-0.0}"
 
 EPOCHS="${EPOCHS:-5}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
@@ -125,7 +129,8 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --softplus-temp-cp 100 \
   --bad-regret-cp 300 \
   --bad-regret-thresholds-cp 50,100,200,300 \
-  --best-metric selected-regret \
+  --best-metric p95-regret \
+  --selected-regret-cap-cp 300 \
   --freeze-material \
   --anchor-l2 "$ANCHOR_L2" \
   --max-weight-delta "$MAX_WEIGHT_DELTA" \
@@ -172,10 +177,10 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
   --candidate-depth "$STUDENT_DEPTH" \
   --teacher-depth "$RERANK_TEACHER_DEPTH" \
   --bad-regret-thresholds-cp 50,100,200,300 \
-  --allow-mean-regret-increase-cp 0 \
-  --allow-p90-regret-increase-cp 0 \
-  --allow-p95-regret-increase-cp 0 \
-  --allow-bad-ratio-increase 0 \
+  --require-mean-regret-improvement-cp "$RERANK_REQUIRE_MEAN_REGRET_IMPROVEMENT_CP" \
+  --require-p90-regret-improvement-cp "$RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP" \
+  --require-p95-regret-improvement-cp "$RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP" \
+  --require-match-rate-improvement-pct "$RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT" \
   --hard-position-limit 1000 \
   --json-output "$RUN_DIR/rerank_gate.json" \
   | tee "$RUN_DIR/rerank_gate_stdout.log"

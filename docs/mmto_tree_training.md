@@ -181,14 +181,18 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --batch-size 128 \
   --learning-rate 0.0002 \
   --optimizer adagrad \
-  --best-metric selected-regret \
+  --best-metric p95-regret \
   --bad-regret-cp 300 \
   --bad-regret-thresholds-cp 50,100,200,300 \
+  --selected-regret-cap-cp 300 \
   --freeze-material \
   --anchor-l2 0.0002 \
   --max-weight-delta 0.05 \
   --log-path "$RUN_DIR/train.log"
 ```
+
+`--best-metric` は `selected-regret` のほかに `p90-regret`, `p95-regret`, `bad50-regret`（別名: `bad-regret-50`）, `capped-selected-regret` を利用できます。
+`capped-selected-regret` の上限は `--selected-regret-cap-cp`（既定値 300）で制御し、外れ値に引っ張られにくい選択ができます。
 
 必須チェック:
 
@@ -234,10 +238,10 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
   --candidate-depth 3 \
   --teacher-depth 5 \
   --bad-regret-thresholds-cp 50,100,200,300 \
-  --allow-mean-regret-increase-cp 0 \
-  --allow-p90-regret-increase-cp 0 \
-  --allow-p95-regret-increase-cp 0 \
-  --allow-bad-ratio-increase 0 \
+  --require-mean-regret-improvement-cp 0.5 \
+  --require-p90-regret-improvement-cp 0 \
+  --require-p95-regret-improvement-cp 0 \
+  --require-match-rate-improvement-pct 0 \
   --hard-position-limit 1000 \
   --json-output "$RUN_DIR/mmto_rerank_gate.json"
 ```
@@ -308,7 +312,8 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --learning-rate 0.0002 \
   --bad-regret-cp 300 \
   --bad-regret-thresholds-cp 50,100,200,300 \
-  --best-metric selected-regret \
+  --best-metric p95-regret \
+  --selected-regret-cap-cp 300 \
   --freeze-material \
   --anchor-l2 0.0002 \
   --max-weight-delta 0.05 \

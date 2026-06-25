@@ -63,6 +63,8 @@ struct Args {
     best_checkpoint_path: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = BestMetric::ValidLoss)]
     best_metric: BestMetric,
+    #[arg(long, default_value_t = 300.0)]
+    selected_regret_cap_cp: f32,
     #[arg(long, default_value_t = 100.0)]
     bad_regret_cp: f32,
     #[arg(long, default_value = "50,100,200,300")]
@@ -87,6 +89,15 @@ enum BestMetric {
     SelectedRegret,
     #[value(name = "bad-regret")]
     BadRegret,
+    #[value(name = "p90-regret")]
+    P90Regret,
+    #[value(name = "p95-regret")]
+    P95Regret,
+    #[value(name = "bad50-regret")]
+    #[value(alias = "bad-regret-50")]
+    Bad50Regret,
+    #[value(name = "capped-selected-regret")]
+    CappedSelectedRegret,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -843,7 +854,38 @@ fn log_summary(
     )
 }
 
-fn compute_best_metric_value(metric: BestMetric, valid: &Metrics, train: &Metrics) -> f32 {
+fn regret_ratio_above(metrics: &Metrics, threshold_cp: f32) -> f32 {
+    metrics
+        .regrets
+        .iter()
+        .copied()
+        .filter(|regret| *regret > threshold_cp)
+        .count() as f32
+        / metrics.samples.max(1) as f32
+}
+
+fn capped_selected_regret_mean(metrics: &Metrics, cap_cp: f32) -> f32 {
+    if metrics.regrets.is_empty() {
+        return 0.0;
+    }
+    let cap = if cap_cp.is_sign_negative() {
+        0.0
+    } else {
+        cap_cp
+    };
+    let mut total = 0.0;
+    for regret in &metrics.regrets {
+        total += regret.min(cap);
+    }
+    total / metrics.regrets.len() as f32
+}
+
+fn compute_best_metric_value(
+    metric: BestMetric,
+    valid: &Metrics,
+    train: &Metrics,
+    selected_regret_cap_cp: f32,
+) -> f32 {
     match metric {
         BestMetric::ValidLoss => {
             if valid.samples > 0 {
@@ -868,6 +910,42 @@ fn compute_best_metric_value(metric: BestMetric, valid: &Metrics, train: &Metric
                 valid.bad_regret_count as f32 / valid.samples.max(1) as f32
             } else if train.samples > 0 {
                 train.bad_regret_count as f32 / train.samples.max(1) as f32
+            } else {
+                f32::INFINITY
+            }
+        }
+        BestMetric::P90Regret => {
+            if valid.samples > 0 {
+                percentile(valid.regrets.clone(), 0.90)
+            } else if train.samples > 0 {
+                percentile(train.regrets.clone(), 0.90)
+            } else {
+                f32::INFINITY
+            }
+        }
+        BestMetric::P95Regret => {
+            if valid.samples > 0 {
+                percentile(valid.regrets.clone(), 0.95)
+            } else if train.samples > 0 {
+                percentile(train.regrets.clone(), 0.95)
+            } else {
+                f32::INFINITY
+            }
+        }
+        BestMetric::Bad50Regret => {
+            if valid.samples > 0 {
+                regret_ratio_above(valid, 50.0)
+            } else if train.samples > 0 {
+                regret_ratio_above(train, 50.0)
+            } else {
+                f32::INFINITY
+            }
+        }
+        BestMetric::CappedSelectedRegret => {
+            if valid.samples > 0 {
+                capped_selected_regret_mean(valid, selected_regret_cap_cp)
+            } else if train.samples > 0 {
+                capped_selected_regret_mean(train, selected_regret_cap_cp)
             } else {
                 f32::INFINITY
             }
@@ -941,6 +1019,9 @@ fn main() -> Result<()> {
     }
     if !args.bad_regret_cp.is_finite() || args.bad_regret_cp < 0.0 {
         return Err(anyhow!("--bad-regret-cp must be non-negative"));
+    }
+    if !args.selected_regret_cap_cp.is_finite() || args.selected_regret_cap_cp < 0.0 {
+        return Err(anyhow!("--selected-regret-cap-cp must be non-negative"));
     }
     let bad_regret_thresholds_cp = parse_bad_regret_thresholds(&args.bad_regret_thresholds_cp)?;
     if let Some(max_delta) = args.max_weight_delta {
@@ -1129,6 +1210,7 @@ fn main() -> Result<()> {
         args.best_metric,
         &baseline_valid,
         &baseline_train,
+        args.selected_regret_cap_cp,
     ));
     let mut best_epoch = 0usize;
     let mut rng = ChaCha8Rng::seed_from_u64(0x1234);
@@ -1192,7 +1274,12 @@ fn main() -> Result<()> {
         let max_abs_delta = delta_abs.iter().copied().fold(0.0_f32, f32::max);
         let p95_abs_delta = percentile(delta_abs, 0.95);
 
-        let current_metric = compute_best_metric_value(args.best_metric, &valid, &train);
+        let current_metric = compute_best_metric_value(
+            args.best_metric,
+            &valid,
+            &train,
+            args.selected_regret_cap_cp,
+        );
         if best_metric_score.is_none()
             || current_metric < best_metric_score.unwrap_or(f32::INFINITY)
         {

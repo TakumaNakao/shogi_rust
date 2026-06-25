@@ -52,6 +52,16 @@ struct Args {
     allow_p95_regret_increase_cp: f32,
     #[arg(long, default_value_t = 0.0)]
     allow_bad_ratio_increase: f32,
+    #[arg(long, default_value_t = 0.0)]
+    require_mean_regret_improvement_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    require_p90_regret_improvement_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    require_p95_regret_improvement_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    require_match_rate_improvement_pct: f32,
+    #[arg(long)]
+    require_bad_regret_improvement: Vec<String>,
     #[arg(long)]
     json_output: Option<PathBuf>,
     #[arg(long, default_value_t = 20)]
@@ -134,6 +144,11 @@ struct GateReport {
     seed: u64,
     max_positions: Option<usize>,
     thresholds_cp: Vec<f32>,
+    require_mean_regret_improvement_cp: f32,
+    require_p90_regret_improvement_cp: f32,
+    require_p95_regret_improvement_cp: f32,
+    require_match_rate_improvement_pct: f32,
+    require_bad_regret_improvement: Vec<String>,
     baseline: RegretSummary,
     candidate: RegretSummary,
     passed: bool,
@@ -176,6 +191,47 @@ fn parse_thresholds(spec: &str) -> Result<Vec<f32>> {
     thresholds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
     thresholds.dedup_by(|a, b| (*a - *b).abs() < f32::EPSILON);
     Ok(thresholds)
+}
+
+fn bad_ratio_key(threshold: f32) -> String {
+    format!("{threshold:.0}")
+}
+
+fn parse_bad_regret_improvements(specs: &[String], thresholds: &[f32]) -> Result<Vec<(f32, f32)>> {
+    let mut requirements = Vec::new();
+    for spec in specs {
+        let (threshold_text, improvement_text) = spec.split_once(':').ok_or_else(|| {
+            anyhow!("--require-bad-regret-improvement must be threshold:improvement, got `{spec}`")
+        })?;
+        let threshold = threshold_text.parse::<f32>().map_err(|error| {
+            anyhow!("invalid threshold in --require-bad-regret-improvement `{spec}`: {error}")
+        })?;
+        let improvement = improvement_text.parse::<f32>().map_err(|error| {
+            anyhow!("invalid improvement in --require-bad-regret-improvement `{spec}`: {error}")
+        })?;
+        if !threshold.is_finite() || threshold < 0.0 {
+            return Err(anyhow!(
+                "bad-regret threshold in --require-bad-regret-improvement must be finite and non-negative: {spec}"
+            ));
+        }
+        if !improvement.is_finite() || improvement < 0.0 {
+            return Err(anyhow!(
+                "bad-regret improvement in --require-bad-regret-improvement must be finite and non-negative: {spec}"
+            ));
+        }
+        if !thresholds
+            .iter()
+            .any(|value| (value - threshold).abs() < f32::EPSILON)
+        {
+            return Err(anyhow!(
+                "--require-bad-regret-improvement references unknown threshold {threshold} (not in --bad-regret-thresholds-cp)"
+            ));
+        }
+        requirements.push((threshold, improvement));
+    }
+    requirements.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+    requirements.dedup_by(|a, b| (a.0 - b.0).abs() < f32::EPSILON);
+    Ok(requirements)
 }
 
 fn mean(values: &[f32]) -> f32 {
@@ -326,7 +382,7 @@ fn summarize(results: &[ProbeResult], thresholds: &[f32]) -> RegretSummary {
             .filter(|&&regret| regret > *threshold)
             .count();
         bad_ratios.insert(
-            format!("{threshold:.0}"),
+            bad_ratio_key(*threshold),
             count as f32 / results.len().max(1) as f32,
         );
     }
@@ -398,12 +454,30 @@ fn main() -> Result<()> {
             args.allow_p95_regret_increase_cp,
         ),
         ("--allow-bad-ratio-increase", args.allow_bad_ratio_increase),
+        (
+            "--require-mean-regret-improvement-cp",
+            args.require_mean_regret_improvement_cp,
+        ),
+        (
+            "--require-p90-regret-improvement-cp",
+            args.require_p90_regret_improvement_cp,
+        ),
+        (
+            "--require-p95-regret-improvement-cp",
+            args.require_p95_regret_improvement_cp,
+        ),
+        (
+            "--require-match-rate-improvement-pct",
+            args.require_match_rate_improvement_pct,
+        ),
     ] {
         if !value.is_finite() || value < 0.0 {
             return Err(anyhow!("{name} must be finite and non-negative"));
         }
     }
     let thresholds = parse_thresholds(&args.bad_regret_thresholds_cp)?;
+    let bad_regret_improvements =
+        parse_bad_regret_improvements(&args.require_bad_regret_improvement, &thresholds)?;
     let hard_threshold = thresholds.first().copied().unwrap_or(0.0);
     if args.jobs > 0 {
         rayon::ThreadPoolBuilder::new()
@@ -471,6 +545,16 @@ fn main() -> Result<()> {
             args.allow_mean_regret_increase_cp
         ));
     }
+    if candidate_summary.mean_regret_cp
+        > baseline_summary.mean_regret_cp - args.require_mean_regret_improvement_cp
+    {
+        fail_reasons.push(format!(
+            "mean regret failed improvement requirement: {:.2} > {:.2} - {:.2}",
+            candidate_summary.mean_regret_cp,
+            baseline_summary.mean_regret_cp,
+            args.require_mean_regret_improvement_cp
+        ));
+    }
     if candidate_summary.p90_regret_cp
         > baseline_summary.p90_regret_cp + args.allow_p90_regret_increase_cp
     {
@@ -479,6 +563,16 @@ fn main() -> Result<()> {
             candidate_summary.p90_regret_cp,
             baseline_summary.p90_regret_cp,
             args.allow_p90_regret_increase_cp
+        ));
+    }
+    if candidate_summary.p90_regret_cp
+        > baseline_summary.p90_regret_cp - args.require_p90_regret_improvement_cp
+    {
+        fail_reasons.push(format!(
+            "p90 regret failed improvement requirement: {:.2} > {:.2} - {:.2}",
+            candidate_summary.p90_regret_cp,
+            baseline_summary.p90_regret_cp,
+            args.require_p90_regret_improvement_cp
         ));
     }
     if candidate_summary.p95_regret_cp
@@ -491,8 +585,18 @@ fn main() -> Result<()> {
             args.allow_p95_regret_increase_cp
         ));
     }
+    if candidate_summary.p95_regret_cp
+        > baseline_summary.p95_regret_cp - args.require_p95_regret_improvement_cp
+    {
+        fail_reasons.push(format!(
+            "p95 regret failed improvement requirement: {:.2} > {:.2} - {:.2}",
+            candidate_summary.p95_regret_cp,
+            baseline_summary.p95_regret_cp,
+            args.require_p95_regret_improvement_cp
+        ));
+    }
     for threshold in &thresholds {
-        let key = format!("{threshold:.0}");
+        let key = bad_ratio_key(*threshold);
         let baseline_ratio = baseline_summary
             .bad_ratios
             .get(&key)
@@ -509,6 +613,33 @@ fn main() -> Result<()> {
                 candidate_ratio, baseline_ratio, args.allow_bad_ratio_increase
             ));
         }
+    }
+    for (threshold, required_improvement) in &bad_regret_improvements {
+        let key = bad_ratio_key(*threshold);
+        let baseline_ratio = baseline_summary
+            .bad_ratios
+            .get(&key)
+            .copied()
+            .unwrap_or(0.0);
+        let candidate_ratio = candidate_summary
+            .bad_ratios
+            .get(&key)
+            .copied()
+            .unwrap_or(0.0);
+        if candidate_ratio > baseline_ratio - required_improvement {
+            fail_reasons.push(format!(
+                "bad{key} ratio failed improvement requirement: {:.4} > {:.4} - {:.4}",
+                candidate_ratio, baseline_ratio, required_improvement
+            ));
+        }
+    }
+    let baseline_match_rate = baseline_summary.exact_match_ratio * 100.0;
+    let candidate_match_rate = candidate_summary.exact_match_ratio * 100.0;
+    if candidate_match_rate < baseline_match_rate + args.require_match_rate_improvement_pct {
+        fail_reasons.push(format!(
+            "match rate failed improvement requirement: {:.2}% < {:.2}% + {:.2}%",
+            candidate_match_rate, baseline_match_rate, args.require_match_rate_improvement_pct
+        ));
     }
 
     let comparisons = paired
@@ -585,6 +716,11 @@ fn main() -> Result<()> {
             candidate_depth: args.candidate_depth,
             seed: args.seed,
             max_positions: args.max_positions,
+            require_mean_regret_improvement_cp: args.require_mean_regret_improvement_cp,
+            require_p90_regret_improvement_cp: args.require_p90_regret_improvement_cp,
+            require_p95_regret_improvement_cp: args.require_p95_regret_improvement_cp,
+            require_match_rate_improvement_pct: args.require_match_rate_improvement_pct,
+            require_bad_regret_improvement: args.require_bad_regret_improvement,
             thresholds_cp: thresholds,
             baseline: baseline_summary,
             candidate: candidate_summary,
