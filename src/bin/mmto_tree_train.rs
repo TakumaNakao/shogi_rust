@@ -49,6 +49,8 @@ struct Args {
     bad_candidate_scope: BadCandidateScope,
     #[arg(long, default_value_t = 16)]
     max_pairs_per_sample: usize,
+    #[arg(long, value_enum, default_value_t = PairMiningMode::First)]
+    pair_mining: PairMiningMode,
     #[arg(long, value_enum, default_value_t = PairWeightMode::None)]
     pair_weight_mode: PairWeightMode,
     #[arg(long, default_value_t = 100.0)]
@@ -114,6 +116,13 @@ enum BadCandidateScope {
     ModelTop,
     #[value(name = "all-candidates")]
     AllCandidates,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PairMiningMode {
+    First,
+    #[value(name = "loss-top")]
+    LossTop,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -219,6 +228,7 @@ struct PairOptions {
     bad_candidate_scope: BadCandidateScope,
     min_regret_cp: f32,
     max_pairs_per_sample: usize,
+    pair_mining: PairMiningMode,
     pair_weight_mode: PairWeightMode,
     pair_weight_scale_cp: f32,
     max_pair_weight: f32,
@@ -430,6 +440,7 @@ fn pair_indices(
     sample: &Sample,
     options: &PairOptions,
     model: Option<&SparseModel>,
+    loss_options: &LossOptions,
 ) -> Vec<(usize, usize)> {
     let model_bad_ranks = if matches!(options.bad_candidate_scope, BadCandidateScope::ModelTop) {
         model.map(|model| {
@@ -491,10 +502,26 @@ fn pair_indices(
                 continue;
             }
             pairs.push((good_idx, bad_idx));
-            if pairs.len() >= options.max_pairs_per_sample {
+            if matches!(options.pair_mining, PairMiningMode::First)
+                && pairs.len() >= options.max_pairs_per_sample
+            {
                 return pairs;
             }
         }
+    }
+    if matches!(options.pair_mining, PairMiningMode::LossTop) {
+        if let Some(model) = model {
+            pairs.sort_by(|&(lhs_good, lhs_bad), &(rhs_good, rhs_bad)| {
+                let lhs_priority =
+                    pair_loss_priority(sample, lhs_good, lhs_bad, options, loss_options, model);
+                let rhs_priority =
+                    pair_loss_priority(sample, rhs_good, rhs_bad, options, loss_options, model);
+                rhs_priority
+                    .partial_cmp(&lhs_priority)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        pairs.truncate(options.max_pairs_per_sample);
     }
     pairs
 }
@@ -508,6 +535,28 @@ fn pair_weight(good: &CandidateSample, bad: &CandidateSample, options: &PairOpti
         }
     };
     raw.clamp(1.0, options.max_pair_weight)
+}
+
+fn pair_loss_priority(
+    sample: &Sample,
+    good_idx: usize,
+    bad_idx: usize,
+    pair_options: &PairOptions,
+    loss_options: &LossOptions,
+    model: &SparseModel,
+) -> f32 {
+    let good = &sample.candidates[good_idx];
+    let bad = &sample.candidates[bad_idx];
+    let (good_features, good_material) = candidate_leaf_features(good, true);
+    let (bad_features, bad_material) = candidate_leaf_features(bad, false);
+    let diff = model.predict_with_material(good_features, good_material)
+        - model.predict_with_material(bad_features, bad_material);
+    let x = (loss_options.margin_cp - diff) / loss_options.softplus_temp_cp;
+    if x.is_finite() {
+        pair_weight(good, bad, pair_options) * loss_options.softplus_temp_cp * softplus(x)
+    } else {
+        f32::NEG_INFINITY
+    }
 }
 
 fn evaluate_batch(
@@ -552,7 +601,7 @@ fn evaluate_batch(
             }
         }
 
-        for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model)) {
+        for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model), loss_options) {
             let good = &sample.candidates[good_idx];
             let bad = &sample.candidates[bad_idx];
             let (good_features, good_material) = candidate_leaf_features(good, true);
@@ -595,7 +644,7 @@ fn update_sample_refs_with_softplus(
     let mut pair_weight_sum = 0.0f32;
 
     for sample in samples {
-        for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model)) {
+        for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model), &options.loss) {
             let good = &sample.candidates[good_idx];
             let bad = &sample.candidates[bad_idx];
             let (good_features, good_material) = candidate_leaf_features(good, true);
@@ -1087,6 +1136,7 @@ fn main() -> Result<()> {
         bad_candidate_scope: args.bad_candidate_scope,
         min_regret_cp: args.min_regret_cp,
         max_pairs_per_sample: args.max_pairs_per_sample,
+        pair_mining: args.pair_mining,
         pair_weight_mode: args.pair_weight_mode,
         pair_weight_scale_cp: args.pair_weight_scale_cp,
         max_pair_weight: args.max_pair_weight,

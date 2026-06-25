@@ -61,17 +61,20 @@
 
 標準パイプラインは `--best-metric p95-regret` に変更した。これにより、極端な外れ値を含むmeanだけが少し改善した候補ではなく、悪い分位を改善する候補を選びやすくする。
 
-### 4. pairwise lossに悪手度重みを追加
+### 4. pairwise lossにloss-aware miningと悪手度重みを追加
 
 `mmto_tree_train` に以下のCLIを追加した。
 
+- `--pair-mining first|loss-top`
 - `--pair-weight-mode none|bad-regret|score-gap`
 - `--pair-weight-scale-cp`
 - `--max-pair-weight`
 
-既定値は `none` で後方互換を維持する。標準スクリプトでは `bad-regret` を使う。
+既定値は `first` / `none` で後方互換を維持する。標準スクリプトでは `loss-top` / `bad-regret` を使う。
 
 従来のpairwise lossでは、teacherから見て `15cp` 悪い候補と `300cp` 悪い候補が同じ1pairとして扱われていた。新設定では、悪手度の大きい候補ほど大きい重みで押し下げる。勾配は重み合計で正規化するため、学習率の実効スケールが極端に変わらない。
+
+また従来はeligible pairを見つけた順に使っていたため、現在モデルがすでに正しく並べられるeasy pairが混ざりやすかった。`loss-top` ではeligible pairを一度集め、現在モデル上のweighted softplus lossが大きいpairを優先する。これにより同じ `max-pairs-per-sample` でも、更新を「まだ間違えているpair」に集中させる。
 
 ## 検証
 
