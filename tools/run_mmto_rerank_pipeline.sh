@@ -161,6 +161,7 @@ if [[ -z "$BEST_EPOCH" || "$BEST_EPOCH" == "0" ]]; then
   exit 0
 fi
 
+set +e
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_score_gate \
   --baseline-weights "$WEIGHTS" \
   --candidate-weights "$RUN_DIR/best.raw.binary" \
@@ -173,6 +174,17 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_score_gate \
   --fail-on-material-drift-cp 5 \
   --json-output "$RUN_DIR/score_gate.json" \
   | tee "$RUN_DIR/score_gate_stdout.log"
+score_status="${PIPESTATUS[0]}"
+set -e
+
+if [[ "$score_status" != "0" ]]; then
+  echo "score gate failed. Rejecting this run."
+  if [[ "$KEEP_CANDIDATE_RAW" != "1" ]]; then
+    rm -f "$RUN_DIR/candidate.raw.binary" "$RUN_DIR/best.raw.binary"
+  fi
+  echo "RUN_DIR=$RUN_DIR"
+  exit "$score_status"
+fi
 
 set +e
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
@@ -210,7 +222,7 @@ fi
 if [[ "$rerank_status" != "0" ]]; then
   echo "rerank gate failed. Hard positions were saved to $RUN_DIR/hard_positions.sfen when available."
   if [[ "$KEEP_CANDIDATE_RAW" != "1" ]]; then
-    rm -f "$RUN_DIR/candidate.raw.binary"
+    rm -f "$RUN_DIR/candidate.raw.binary" "$RUN_DIR/best.raw.binary"
   fi
   echo "RUN_DIR=$RUN_DIR"
   exit "$rerank_status"
