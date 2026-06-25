@@ -116,6 +116,23 @@ BASE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> bash tools/run_mmto_har
 
 hard stage は `BASE_RUN_DIR/best.raw.binary` をstudent初期値にし、`policy_weights_v2.1.0.binary` をteacherとして再dumpする。通常valid/rerankも通すため、hard局面だけに過適合した候補は採用しない。
 
+既存のdumpを再利用して、dumpをやり直さずにtrain以降だけ回す場合:
+
+```bash
+SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> bash tools/run_mmto_from_dump.sh
+```
+
+デフォルトでは `SOURCE_RUN_DIR/train.tree.jsonl` から9000行、`valid.tree.jsonl` から1000行を切り出して使う。20k dumpが完了したが `mmto_tree_train` がメモリ不足で落ちた場合は、このスクリプトで10k相当のsubset学習に切り替える。
+
+行数を変える場合:
+
+```bash
+SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> \
+TRAIN_LINES=7000 \
+VALID_LINES=800 \
+bash tools/run_mmto_from_dump.sh
+```
+
 古いMMTO run生成物を消す場合:
 
 ```bash
