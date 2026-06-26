@@ -561,3 +561,34 @@ did not pass rerank. The conservative setting avoided hard-valid regression, yet
 small searched-move regressions. It was rejected and candidate weights were deleted.
 Scaling to 9K should wait until the objective/gate uses a stricter searched-root signal,
 or until PV sibling records are mixed with stronger root constraints.
+
+Training, ultra-conservative setting:
+
+`data/mmto/runs/mmto_pv_sibling_weighted_3k_train_ultrasafe_20260626_231622`
+
+- `learning-rate=0.00025`, `max-weight-delta=0.0005`, hard replay weight `0.005`
+- valid `selected_regret=436.02 -> 435.85`
+- valid `p95=177.02 -> 175.00`
+- hard valid `selected_regret=86.09 -> 86.07`
+- score gate passed: `mean_abs_delta=0.01cp`, `p95=0.04cp`, `max=0.09cp`
+- rerank 800 passed without measurable regression:
+  - baseline: `mean=15.52`, `p90=55.12`, `p95=72.91`, `bad50=0.1112`, `bad100=0.0250`, `match=43.88%`
+  - candidate: same regret values, `match=43.88%`
+
+Weight-only game benchmark against `policy_weights_v2.1.0.binary` with the same engine:
+
+- seed `10901`, 20 games: `11-7-2`
+- seed `11001`, 20 games: `10-8-2`
+- seed `11101`, 60 games: `30-25-5`
+- combined 100 games: `51-40-9`
+- decisive win rate: `56.04%`
+- total score rate: `55.50%`
+
+Conclusion:
+
+The ultra-conservative 3K PV sibling candidate is the first MMTO-family weight in this
+series to show a positive 100-game weight-only score, but the margin is too small for
+adoption and far below a release threshold. The result suggests the PV sibling signal is
+not random noise, but the update is still too weak and unstable to justify keeping the
+849MB candidate weight. The weight was rejected and deleted; logs and JSONL records were
+kept for analysis.
