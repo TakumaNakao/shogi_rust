@@ -25,6 +25,8 @@ struct Args {
     valid: PathBuf,
     #[arg(long, value_name = "LABEL=PATH")]
     extra_valid: Vec<String>,
+    #[arg(long, default_value_t = 0.0)]
+    extra_valid_best_weight: f32,
     #[arg(long)]
     output: PathBuf,
     #[arg(long, default_value_t = 1)]
@@ -1401,6 +1403,29 @@ fn compute_best_metric_value(
     }
 }
 
+fn compute_best_metric_score(
+    metric: BestMetric,
+    valid: &Metrics,
+    train: &Metrics,
+    selected_regret_cap_cp: f32,
+    extra_valid: &[Metrics],
+    extra_valid_best_weight: f32,
+) -> f32 {
+    let main_metric = compute_best_metric_value(metric, valid, train, selected_regret_cap_cp);
+    if extra_valid_best_weight <= 0.0 || extra_valid.is_empty() {
+        return main_metric;
+    }
+
+    let extra_metric_sum: f32 = extra_valid
+        .iter()
+        .map(|batch| {
+            compute_best_metric_value(metric, batch, &Metrics::default(), selected_regret_cap_cp)
+        })
+        .sum();
+    let extra_metric_mean = extra_metric_sum / extra_valid.len() as f32;
+    main_metric + extra_valid_best_weight * extra_metric_mean
+}
+
 fn apply_weight_constraints(
     model: &mut SparseModel,
     initial_weights: &[f32],
@@ -1467,6 +1492,11 @@ fn main() -> Result<()> {
     }
     if !args.min_regret_cp.is_finite() || args.min_regret_cp < 0.0 {
         return Err(anyhow!("--min-regret-cp must be non-negative"));
+    }
+    if !args.extra_valid_best_weight.is_finite() || args.extra_valid_best_weight < 0.0 {
+        return Err(anyhow!(
+            "--extra-valid-best-weight must be finite and non-negative"
+        ));
     }
     if args.max_pairs_per_sample == 0 {
         return Err(anyhow!("--max-pairs-per-sample must be greater than 0"));
@@ -1593,6 +1623,7 @@ fn main() -> Result<()> {
         &pair_options,
         &loss_options,
     );
+    let mut baseline_extra_metrics = Vec::with_capacity(extra_valid.len());
 
     println!(
         "baseline train: {}",
@@ -1621,6 +1652,10 @@ fn main() -> Result<()> {
             &pair_options,
             &loss_options,
         );
+        baseline_extra_metrics.push(metrics);
+        let metrics = baseline_extra_metrics
+            .last()
+            .expect("extra metric should exist");
         println!(
             "baseline extra_valid[{}]: {}",
             batch.label,
@@ -1632,6 +1667,18 @@ fn main() -> Result<()> {
             )
         );
     }
+    let baseline_best_metric_score = compute_best_metric_score(
+        args.best_metric,
+        &baseline_valid,
+        &baseline_train,
+        args.selected_regret_cap_cp,
+        &baseline_extra_metrics,
+        args.extra_valid_best_weight,
+    );
+    println!(
+        "baseline best_metric_score={:.6}",
+        baseline_best_metric_score
+    );
 
     if args.dry_run {
         ensure_finite_model(&model)?;
@@ -1703,11 +1750,13 @@ fn main() -> Result<()> {
         w_acc: HashMap::new(),
         material_acc: 0.0,
     };
-    let mut best_metric_score = Some(compute_best_metric_value(
+    let mut best_metric_score = Some(compute_best_metric_score(
         args.best_metric,
         &baseline_valid,
         &baseline_train,
         args.selected_regret_cap_cp,
+        &baseline_extra_metrics,
+        args.extra_valid_best_weight,
     ));
     let mut best_epoch = 0usize;
     let mut rng = ChaCha8Rng::seed_from_u64(0x1234);
@@ -1800,6 +1849,7 @@ fn main() -> Result<()> {
             &pair_options,
             &loss_options,
         );
+        let mut current_epoch_extra_metrics = Vec::with_capacity(extra_valid.len());
 
         let (max_abs_delta, p95_abs_delta) = if let Some(initial_weights) = initial_weights.as_ref()
         {
@@ -1816,12 +1866,24 @@ fn main() -> Result<()> {
         } else {
             (0.0, 0.0)
         };
-
-        let current_metric = compute_best_metric_value(
+        for batch in &extra_valid {
+            let metrics = evaluate_batch(
+                &model,
+                &batch.samples,
+                args.bad_regret_cp,
+                &bad_regret_thresholds_cp,
+                &pair_options,
+                &loss_options,
+            );
+            current_epoch_extra_metrics.push(metrics);
+        }
+        let current_metric = compute_best_metric_score(
             args.best_metric,
             &valid,
             &train,
             args.selected_regret_cap_cp,
+            &current_epoch_extra_metrics,
+            args.extra_valid_best_weight,
         );
         if best_metric_score.is_none()
             || current_metric < best_metric_score.unwrap_or(f32::INFINITY)
@@ -1861,21 +1923,14 @@ fn main() -> Result<()> {
             p95_abs_delta,
             clamped_weights
         );
-        for batch in &extra_valid {
-            let metrics = evaluate_batch(
-                &model,
-                &batch.samples,
-                args.bad_regret_cp,
-                &bad_regret_thresholds_cp,
-                &pair_options,
-                &loss_options,
-            );
+        println!("epoch {} best_metric_score={:.6}", epoch, current_metric);
+        for (batch, metrics) in extra_valid.iter().zip(current_epoch_extra_metrics.iter()) {
             println!(
                 "epoch {} extra_valid[{}]: {}",
                 epoch,
                 batch.label,
                 log_summary(
-                    &metrics,
+                    metrics,
                     args.bad_regret_cp,
                     &bad_regret_thresholds_cp,
                     "extra_valid"
