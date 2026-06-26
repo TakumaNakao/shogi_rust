@@ -4,8 +4,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{Evaluator, SparseModel};
-use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
-use shogi_core::{Color, Move};
+use shogi_ai::utils::{format_move_usi, parse_usi_move, position_from_sfen_or_usi};
+use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -88,6 +88,7 @@ struct CandidateRecord {
     student_leaf_score: Option<f32>,
     searched_by_teacher: bool,
     selected_by_student: bool,
+    is_game_teacher_move: bool,
 }
 
 #[derive(Serialize)]
@@ -106,12 +107,23 @@ struct TreeRecord {
     sample_weight: f32,
     teacher_best_move: String,
     student_best_move: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    game_teacher_move: Option<String>,
     candidates: Vec<CandidateRecord>,
 }
 
 #[derive(Deserialize)]
 struct PositionLine {
     sfen: String,
+    #[serde(default)]
+    teacher_move: Option<String>,
+}
+
+#[derive(Clone)]
+struct InputPosition {
+    position: Position,
+    teacher_move: Option<Move>,
+    invalid_teacher_move: bool,
 }
 
 #[derive(Clone)]
@@ -185,16 +197,57 @@ fn skip_reason_key(reason: SkipReason) -> &'static str {
     }
 }
 
-fn parse_position_line(line: &str) -> Option<Position> {
+fn parse_move_for_position(position: &Position, move_text: &str) -> Option<Move> {
+    parse_usi_move(move_text).map(|mv| match mv {
+        Move::Drop { piece, to } => Move::Drop {
+            piece: Piece::new(piece.piece_kind(), position.side_to_move()),
+            to,
+        },
+        normal => normal,
+    })
+}
+
+fn parse_game_teacher_move(
+    position: &Position,
+    teacher_move: Option<String>,
+) -> (Option<Move>, bool) {
+    let Some(raw) = teacher_move else {
+        return (None, false);
+    };
+    let move_text = raw.trim();
+    if move_text.is_empty() {
+        return (None, true);
+    }
+    let Some(move_parsed) = parse_move_for_position(position, move_text) else {
+        return (None, true);
+    };
+    if !position.legal_moves().contains(&move_parsed) {
+        return (None, true);
+    }
+    (Some(move_parsed), false)
+}
+
+fn parse_position_line(line: &str) -> Option<InputPosition> {
     let line = line.trim();
     if line.is_empty() {
         return None;
     }
     if line.starts_with('{') {
         let record = serde_json::from_str::<PositionLine>(line).ok()?;
-        position_from_sfen_or_usi(&record.sfen)
+        let position = position_from_sfen_or_usi(&record.sfen)?;
+        let (teacher_move, invalid_teacher_move) =
+            parse_game_teacher_move(&position, record.teacher_move);
+        Some(InputPosition {
+            position,
+            teacher_move,
+            invalid_teacher_move,
+        })
     } else {
-        position_from_sfen_or_usi(line)
+        position_from_sfen_or_usi(line).map(|position| InputPosition {
+            position,
+            teacher_move: None,
+            invalid_teacher_move: false,
+        })
     }
 }
 
@@ -293,6 +346,7 @@ fn gather_pv_sibling_records(
             let sibling_record = make_record(
                 sibling_index,
                 sibling_position.clone(),
+                None,
                 teacher_model,
                 student_model,
                 args,
@@ -333,8 +387,26 @@ fn child_oriented_static_score(
     Some(evaluate_root_oriented(model, root_turn, &child))
 }
 
-fn contains_move(candidates: &[ScoredMove], mv: Move) -> bool {
-    candidates.iter().any(|candidate| candidate.mv == mv)
+fn ensure_candidate_score(
+    candidates: &mut Vec<ScoredMove>,
+    root: &Position,
+    root_turn: Color,
+    mv: Move,
+    model: &SparseModel,
+    depth: u8,
+) -> bool {
+    if candidates.iter().any(|candidate| candidate.mv == mv) {
+        return true;
+    }
+    let scored = child_search_candidate(model, root, mv, depth).or_else(|| {
+        child_oriented_static_score(model, root, mv, root_turn).map(|score| (score, Vec::new()))
+    });
+    if let Some((score, pv)) = scored {
+        candidates.push(ScoredMove { mv, score, pv });
+        true
+    } else {
+        false
+    }
 }
 
 fn apply_root_plus_pv(
@@ -362,6 +434,7 @@ fn apply_root_plus_pv(
 fn make_record(
     index: usize,
     position: Position,
+    game_teacher_move: Option<Move>,
     teacher_model: &SparseModel,
     student_model: &SparseModel,
     args: &Args,
@@ -453,21 +526,14 @@ fn make_record(
     }
 
     for student_candidate in &student_top_candidates {
-        if contains_move(&teacher_candidates, student_candidate.mv) {
-            continue;
-        }
-        if let Some((score, pv)) = child_search_candidate(
-            teacher_model,
+        ensure_candidate_score(
+            &mut teacher_candidates,
             &position,
+            root_turn,
             student_candidate.mv,
+            teacher_model,
             args.teacher_depth,
-        ) {
-            teacher_candidates.push(ScoredMove {
-                mv: student_candidate.mv,
-                score,
-                pv,
-            });
-        }
+        );
     }
     teacher_candidates.sort_by(|lhs, rhs| {
         rhs.score
@@ -500,28 +566,30 @@ fn make_record(
         .or_else(|| legal_moves.first().copied())
         .unwrap_or(teacher_candidates[0].mv);
 
-    if !contains_move(&teacher_candidates, student_best_move_for_selection) {
-        let teacher_score_pv = child_search_candidate(
-            teacher_model,
-            &position,
-            student_best_move_for_selection,
-            args.teacher_depth,
-        )
-        .or_else(|| {
-            child_oriented_static_score(
-                teacher_model,
-                &position,
-                student_best_move_for_selection,
-                root_turn,
-            )
-            .map(|score| (score, Vec::new()))
+    if ensure_candidate_score(
+        &mut teacher_candidates,
+        &position,
+        root_turn,
+        student_best_move_for_selection,
+        teacher_model,
+        args.teacher_depth,
+    ) {
+        teacher_candidates.sort_by(|lhs, rhs| {
+            rhs.score
+                .partial_cmp(&lhs.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
-        if let Some((score, pv)) = teacher_score_pv {
-            teacher_candidates.push(ScoredMove {
-                mv: student_best_move_for_selection,
-                score,
-                pv,
-            });
+    }
+
+    if let Some(game_teacher_move) = game_teacher_move {
+        if ensure_candidate_score(
+            &mut teacher_candidates,
+            &position,
+            root_turn,
+            game_teacher_move,
+            teacher_model,
+            args.teacher_depth,
+        ) {
             teacher_candidates.sort_by(|lhs, rhs| {
                 rhs.score
                     .partial_cmp(&lhs.score)
@@ -630,6 +698,7 @@ fn make_record(
             student_leaf_score,
             searched_by_teacher: true,
             selected_by_student: candidate.mv == student_best_move_for_selection,
+            is_game_teacher_move: game_teacher_move.is_some_and(|mv| mv == candidate.mv),
         });
     }
 
@@ -655,6 +724,7 @@ fn make_record(
         sample_weight,
         teacher_best_move,
         student_best_move,
+        game_teacher_move: game_teacher_move.map(format_move_usi),
         candidates,
     };
 
@@ -683,6 +753,7 @@ fn make_record(
 struct DumpStats {
     total_positions: usize,
     invalid_positions: usize,
+    invalid_teacher_moves: usize,
     train_count: usize,
     valid_count: usize,
     root_records: usize,
@@ -695,6 +766,7 @@ impl DumpStats {
         Self {
             total_positions: 0,
             invalid_positions: 0,
+            invalid_teacher_moves: 0,
             train_count: 0,
             valid_count: 0,
             root_records: 0,
@@ -720,7 +792,7 @@ fn is_valid_position(index: usize, valid_percent: u8) -> bool {
 }
 
 fn process_position_chunk(
-    chunk: Vec<(usize, Position)>,
+    chunk: Vec<(usize, InputPosition)>,
     teacher_model: &SparseModel,
     student_model: &SparseModel,
     args: &Args,
@@ -730,12 +802,13 @@ fn process_position_chunk(
 ) -> Result<()> {
     let mut results = chunk
         .into_par_iter()
-        .map(|(index, position)| {
+        .map(|(index, input)| {
             let is_valid = is_valid_position(index, args.valid_percent);
             if args.emit_pv_sibling_nodes {
                 let mut root_result = make_record(
                     index,
-                    position.clone(),
+                    input.position.clone(),
+                    input.teacher_move,
                     teacher_model,
                     student_model,
                     args,
@@ -745,7 +818,7 @@ fn process_position_chunk(
                 if root_result.reason.is_none() {
                     let sibling_records = gather_pv_sibling_records(
                         index,
-                        position,
+                        input.position,
                         teacher_model,
                         student_model,
                         args,
@@ -758,7 +831,8 @@ fn process_position_chunk(
             } else {
                 make_record(
                     index,
-                    position,
+                    input.position,
+                    input.teacher_move,
                     teacher_model,
                     student_model,
                     args,
@@ -891,6 +965,9 @@ fn main() -> Result<()> {
                 stats.invalid_positions += 1;
                 continue;
             };
+            if position.invalid_teacher_move {
+                stats.invalid_teacher_moves += 1;
+            }
             if parsed_positions < args.skip_positions {
                 parsed_positions += 1;
                 continue;
@@ -946,6 +1023,12 @@ fn main() -> Result<()> {
     );
     if stats.invalid_positions > 0 {
         println!("skipped[invalid_sfen]: {}", stats.invalid_positions);
+    }
+    if stats.invalid_teacher_moves > 0 {
+        println!(
+            "positions_with_invalid_teacher_move: {}",
+            stats.invalid_teacher_moves
+        );
     }
     for (reason, count) in stats.skip_reasons {
         println!("skipped[{reason}]: {count}");
