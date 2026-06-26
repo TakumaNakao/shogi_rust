@@ -121,3 +121,52 @@ Rejected large candidate files were removed:
 - `candidate.raw.binary`
 
 Run metadata, logs, and small JSON outputs were kept under `data/mmto/runs/` for analysis.
+
+## Addendum: Listwise Leaf Experiments
+
+After this report was first written, `mmto_tree_train` was extended with:
+
+- `--loss-mode listwise-leaf`
+- `--teacher-temperature-cp`
+- `--model-temperature-cp`
+- `--listwise-feature-source teacher-leaf|student-leaf|move`
+- `--extra-valid-best-weight`
+
+The feature-source comparison was important:
+
+- `teacher-leaf` reduced listwise loss but worsened static validation regret.
+- `move` improved some static metrics, but failed light rerank due p90/p95 regressions.
+- `student-leaf` was the first clearly promising variant.
+
+The best small result was:
+
+`data/mmto/runs/mmto_listwise_smoke9k_studentleaf_lr001_20260626_202526`
+
+- 9K smoke, `student-leaf`, `learning-rate=0.01`
+- static valid improved: `selected_regret=147.28 -> 146.48`, `p90=114.48 -> 109.59`, `p95=157.20 -> 153.67`
+- light rerank depth3/teacher4 400 positions passed:
+  - baseline: `mean=515.99`, `p90=43.75`, `p95=71.92`, `bad50=0.0900`, `match=39.25%`
+  - candidate: `mean=515.66`, `p90=42.98`, `p95=70.56`, `bad50=0.0850`, `match=40.25%`
+- 20-game weight-only benchmark: new 12, baseline 8
+
+This was not adopted because 20 games are not enough and the candidate weight was a small experimental artifact. The large weight files were deleted after logging the result.
+
+Scaling the same idea to the full 100K dump did not work:
+
+- `lr=0.01`, `l2=0.0001`: validation improved, but the max weight shrank from about `1.76` to about `1.00`, and rerank failed.
+- `lr=0.002`, `l2=0`, `max-weight-delta=0.02`: validation improved strongly, score gate passed, but rerank failed on `p95`, `bad100`, and match rate.
+- `lr=0.001`, `l2=0`, `max-weight-delta=0.005`: score gate passed, but rerank still failed on mean, p90, p95, bad50, and match rate.
+
+The rerank failures show a consistent pattern: broad static improvements can introduce a small number of severe root move flips. Static tree validation does not reliably catch these failures.
+
+Hard positions were extracted from failed rerank JSON reports:
+
+`data/mmto/hard_valid/listwise_100k_studentleaf_rerank_hard_20260626.jsonl`
+
+This produced 73 matched tree records. However, using it as `--extra-valid hard=... --extra-valid-best-weight 2.0` did not catch the rerank problem, because the static extra-valid metrics still improved while searched root moves could degrade.
+
+Updated conclusion:
+
+- `student-leaf listwise` is the most promising learning direction so far.
+- Pure static listwise is insufficient for full 100K training.
+- The next algorithmic improvement must explicitly handle current selected mistakes or rerank hard negatives, not just improve fixed static validation loss.
