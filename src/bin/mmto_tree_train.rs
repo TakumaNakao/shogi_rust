@@ -89,6 +89,8 @@ struct Args {
     stream_train: bool,
     #[arg(long, value_enum, default_value_t = LossMode::Pairwise)]
     loss_mode: LossMode,
+    #[arg(long, value_enum, default_value_t = ListwiseFeatureSource::TeacherLeaf)]
+    listwise_feature_source: ListwiseFeatureSource,
     #[arg(long, default_value_t = 0)]
     stream_train_eval_max_samples: usize,
 }
@@ -123,6 +125,15 @@ enum LossMode {
     Pairwise,
     #[value(name = "listwise-leaf")]
     ListwiseLeaf,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ListwiseFeatureSource {
+    #[value(name = "teacher-leaf")]
+    TeacherLeaf,
+    #[value(name = "student-leaf")]
+    StudentLeaf,
+    Move,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -258,6 +269,7 @@ struct LossOptions {
     softplus_temp_cp: f32,
     model_temperature_cp: f32,
     teacher_temperature_cp: f32,
+    listwise_feature_source: ListwiseFeatureSource,
 }
 
 #[derive(Clone, Copy)]
@@ -408,6 +420,7 @@ fn listwise_distribution(
     model: &SparseModel,
     model_temperature_cp: f32,
     teacher_temperature_cp: f32,
+    feature_source: ListwiseFeatureSource,
 ) -> Option<(Vec<f32>, Vec<f32>)> {
     if sample.candidates.is_empty()
         || !model_temperature_cp.is_finite()
@@ -422,7 +435,7 @@ fn listwise_distribution(
     let mut teacher_scores = Vec::with_capacity(sample.candidates.len());
     let mut model_scores = Vec::with_capacity(sample.candidates.len());
     for candidate in &sample.candidates {
-        let (features, material) = candidate_leaf_features_listwise(candidate);
+        let (features, material) = candidate_listwise_features(candidate, feature_source);
         teacher_scores.push(candidate.teacher_score);
         model_scores.push(model.predict_with_material(features, material));
     }
@@ -532,13 +545,30 @@ fn candidate_leaf_features<'a>(
     (&candidate.move_features, candidate.move_material)
 }
 
-fn candidate_leaf_features_listwise<'a>(candidate: &'a CandidateSample) -> (&'a Vec<usize>, f32) {
-    if let Some((features, material)) = candidate.teacher_leaf.as_ref() {
-        return (features, *material);
+fn candidate_listwise_features<'a>(
+    candidate: &'a CandidateSample,
+    source: ListwiseFeatureSource,
+) -> (&'a Vec<usize>, f32) {
+    match source {
+        ListwiseFeatureSource::TeacherLeaf => {
+            if let Some((features, material)) = candidate.teacher_leaf.as_ref() {
+                return (features, *material);
+            }
+            if let Some((features, material)) = candidate.student_leaf.as_ref() {
+                return (features, *material);
+            }
+        }
+        ListwiseFeatureSource::StudentLeaf => {
+            if let Some((features, material)) = candidate.student_leaf.as_ref() {
+                return (features, *material);
+            }
+            if let Some((features, material)) = candidate.teacher_leaf.as_ref() {
+                return (features, *material);
+            }
+        }
+        ListwiseFeatureSource::Move => {}
     }
-    if let Some((features, material)) = candidate.student_leaf.as_ref() {
-        return (features, *material);
-    }
+
     (&candidate.move_features, candidate.move_material)
 }
 
@@ -728,6 +758,7 @@ fn accumulate_sample_metrics(
                 model,
                 loss_options.model_temperature_cp,
                 loss_options.teacher_temperature_cp,
+                loss_options.listwise_feature_source,
             ) {
                 let mut sample_loss = 0.0;
                 for (idx, target_prob) in teacher_probs.iter().copied().enumerate() {
@@ -833,6 +864,7 @@ fn update_sample_refs_with_softplus(
                     model,
                     options.loss.model_temperature_cp,
                     options.loss.teacher_temperature_cp,
+                    options.loss.listwise_feature_source,
                 ) {
                     let mut sample_loss = 0.0f32;
                     for (idx, (teacher_prob, model_prob)) in
@@ -842,8 +874,10 @@ fn update_sample_refs_with_softplus(
                             sample_loss -= *teacher_prob * model_prob.max(1e-7).ln();
                         }
                         let delta = (model_prob - teacher_prob) / options.loss.model_temperature_cp;
-                        let (features, material) =
-                            candidate_leaf_features_listwise(&sample.candidates[idx]);
+                        let (features, material) = candidate_listwise_features(
+                            &sample.candidates[idx],
+                            options.loss.listwise_feature_source,
+                        );
                         for &feature_idx in features {
                             *w_grads.entry(feature_idx).or_insert(0.0) += delta;
                         }
@@ -1483,6 +1517,7 @@ fn main() -> Result<()> {
         softplus_temp_cp: args.softplus_temp_cp,
         model_temperature_cp: args.model_temperature_cp,
         teacher_temperature_cp: args.teacher_temperature_cp,
+        listwise_feature_source: args.listwise_feature_source,
     };
     let train_options = TrainOptions {
         loss: loss_options,
