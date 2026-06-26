@@ -342,3 +342,59 @@ weight-only benchmark. The next learning change should focus on the objective, n
 simple hard-set repetition sweep. In particular, hard cases should probably be used as a
 separate constrained penalty or replay buffer with per-position caps, rather than repeated
 inside the same listwise stream where they can worsen hard-valid tails.
+
+## Addendum: Separate Hard Replay Trial
+
+`mmto_tree_train` was extended with a low-memory replay mechanism:
+
+- `--replay-train PATH` can be specified multiple times.
+- `--replay-weight` scales the learning rate for replay updates.
+- `--replay-max-samples` caps the total replay samples per epoch.
+- replay records are streamed from their own files after the normal train pass.
+
+This avoids building another 900 MB mixed train file just to repeat a small hard set.
+
+### Replay experiment
+
+Run:
+
+`data/mmto/runs/mmto_replay100k_hard_r1r2_20260626_215625`
+
+Training used the existing 100K stream dump as normal training and the two hard DAgger
+sets as replay:
+
+- replay records: 202
+- `replay-weight=0.05`
+- `learning-rate=0.0008`
+- `max-weight-delta=0.005`
+- `listwise-hard-negative-weight=0.01`
+
+Static validation:
+
+- valid `selected_regret=109.46 -> 109.02`
+- valid `p95=143.37 -> 143.05`
+- valid `bad50=0.2263 -> 0.2255`
+- valid `bad100=0.1072 -> 0.1060`
+- hard valid worsened: `selected_regret=86.09 -> 90.34`
+
+Offline gates:
+
+- score gate passed: `mean_abs_delta=0.38cp`, `p95=1.64cp`, `max=2.53cp`
+- rerank depth3/teacher4, 1200 positions passed:
+  - baseline: `mean=13.85`, `p90=43.78`, `p95=71.61`, `bad50=0.0925`, `bad100=0.0250`, `match=39.67%`
+  - candidate: `mean=13.83`, `p90=43.62`, `p95=71.61`, `bad50=0.0900`, `bad100=0.0250`, `match=39.67%`
+
+Weight-only game tests:
+
+- seed 9801 / 20 games: 11-8-1, total score 57.50%
+- seed 9901 / 20 games: 11-7-2, total score 60.00%
+- seed 10001 / 60 games: 23-36-1, total score 39.17%
+- combined 100 games: 45-51-4, total score 47.00%
+
+Conclusion:
+
+The replay mechanism is useful infrastructure, but this replay objective did not produce a
+stronger weight. The candidate was rejected and its large weight files were deleted. The
+positive first 40 games were noise; the 60-game follow-up exposed the regression. Future
+learning work should not adopt weights until at least 100 games or multiple seeds confirm
+the result.

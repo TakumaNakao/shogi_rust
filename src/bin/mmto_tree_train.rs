@@ -89,6 +89,12 @@ struct Args {
     dry_run: bool,
     #[arg(long, default_value_t = false)]
     stream_train: bool,
+    #[arg(long)]
+    replay_train: Vec<PathBuf>,
+    #[arg(long, default_value_t = 0.0)]
+    replay_weight: f32,
+    #[arg(long, default_value_t = 0)]
+    replay_max_samples: usize,
     #[arg(long, value_enum, default_value_t = LossMode::Pairwise)]
     loss_mode: LossMode,
     #[arg(long, value_enum, default_value_t = ListwiseFeatureSource::TeacherLeaf)]
@@ -1327,10 +1333,69 @@ fn evaluate_streaming_train(
     Ok(metrics)
 }
 
+fn evaluate_replay_streaming_train(
+    model: &SparseModel,
+    paths: &[PathBuf],
+    max_samples: usize,
+    bad_regret_cp: f32,
+    bad_regret_thresholds: &[f32],
+    pair_options: &PairOptions,
+    loss_options: &LossOptions,
+) -> Result<(usize, usize, f32, f32)> {
+    let mut total_samples = 0usize;
+    let mut total_pairs = 0usize;
+    let mut total_pair_weight_sum = 0.0f32;
+    let mut weighted_loss_sum = 0.0f32;
+    let mut weighted_selected_regret_sum = 0.0f32;
+    let mut remaining = max_samples;
+
+    for path in paths {
+        let file_limit = if max_samples == 0 { 0 } else { remaining };
+        if max_samples > 0 && remaining == 0 {
+            break;
+        }
+
+        let metrics = evaluate_streaming_train(
+            model,
+            path,
+            file_limit,
+            bad_regret_cp,
+            bad_regret_thresholds,
+            pair_options,
+            loss_options,
+        )?;
+        total_samples += metrics.samples;
+        total_pairs += metrics.pair_count;
+        total_pair_weight_sum += metrics.pair_weight_sum;
+        weighted_loss_sum += metrics.loss * metrics.pair_weight_sum;
+        weighted_selected_regret_sum += metrics.selected_regret_sum * metrics.samples as f32;
+
+        if max_samples > 0 {
+            remaining = remaining.saturating_sub(metrics.samples);
+            if remaining == 0 {
+                break;
+            }
+        }
+    }
+
+    let total_loss = if total_pair_weight_sum > 0.0 {
+        weighted_loss_sum / total_pair_weight_sum
+    } else {
+        0.0
+    };
+    let selected_regret = if total_samples > 0 {
+        weighted_selected_regret_sum / total_samples as f32
+    } else {
+        0.0
+    };
+    Ok((total_samples, total_pairs, total_loss, selected_regret))
+}
+
 fn update_streaming_train_epoch(
     model: &mut SparseModel,
     train_path: &PathBuf,
     batch_size: usize,
+    max_samples: usize,
     train_options: &TrainOptions,
     pair_options: &PairOptions,
     optimizer: OptimizerKind,
@@ -1341,9 +1406,10 @@ fn update_streaming_train_epoch(
     initial_weights: Option<&Vec<f32>>,
     anchor_l2: f32,
     max_weight_delta: Option<f32>,
-) -> Result<usize> {
+) -> Result<(usize, usize)> {
     let mut clamped_weights = 0usize;
     let mut batch_samples: Vec<Sample> = Vec::with_capacity(batch_size);
+    let mut processed_samples = 0usize;
     let mut process_batch = |batch: &mut Vec<Sample>| -> Result<()> {
         let batch_refs: Vec<&Sample> = batch.iter().collect();
         let _ = update_sample_refs_with_softplus(
@@ -1372,8 +1438,11 @@ fn update_streaming_train_epoch(
 
     let file = File::open(train_path)?;
     let reader = BufReader::new(file);
-    let mut parsed_samples = 0usize;
     for (line_index, line) in reader.lines().enumerate() {
+        if max_samples > 0 && processed_samples >= max_samples {
+            break;
+        }
+
         let line = line?;
         let line_number = line_index + 1;
         if line.trim().is_empty() {
@@ -1398,13 +1467,13 @@ fn update_streaming_train_epoch(
         }
 
         batch_samples.push(sample_from_record(train_path, line_number, record)?);
-        parsed_samples += 1;
+        processed_samples += 1;
         if batch_samples.len() == batch_size {
             process_batch(&mut batch_samples)?;
         }
     }
 
-    if parsed_samples == 0 {
+    if processed_samples == 0 {
         return Err(anyhow!(
             "{} contains no usable samples",
             train_path.display()
@@ -1413,7 +1482,7 @@ fn update_streaming_train_epoch(
     if !batch_samples.is_empty() {
         process_batch(&mut batch_samples)?;
     }
-    Ok(clamped_weights)
+    Ok((processed_samples, clamped_weights))
 }
 
 fn log_summary(
@@ -1642,6 +1711,9 @@ fn main() -> Result<()> {
         return Err(anyhow!(
             "--listwise-hard-negative-min-regret-cp must be finite and non-negative"
         ));
+    }
+    if !args.replay_weight.is_finite() || args.replay_weight < 0.0 {
+        return Err(anyhow!("--replay-weight must be finite and non-negative"));
     }
     if args.max_pairs_per_sample == 0 {
         return Err(anyhow!("--max-pairs-per-sample must be greater than 0"));
@@ -1912,14 +1984,16 @@ fn main() -> Result<()> {
     } else {
         Some((0..train_samples.as_ref().unwrap().len()).collect())
     };
+    let replay_enabled = args.replay_weight > 0.0 && !args.replay_train.is_empty();
 
     for epoch in 1..=args.epochs {
         let mut clamped_weights = 0usize;
         if args.stream_train {
-            clamped_weights = update_streaming_train_epoch(
+            let (_, clamped) = update_streaming_train_epoch(
                 &mut model,
                 &args.train,
                 args.batch_size,
+                0,
                 &train_options,
                 &pair_options,
                 args.optimizer,
@@ -1931,6 +2005,7 @@ fn main() -> Result<()> {
                 args.anchor_l2,
                 args.max_weight_delta,
             )?;
+            clamped_weights = clamped;
         } else {
             let train_samples = train_samples.as_ref().unwrap();
             let indices = train_indices.as_mut().unwrap();
@@ -1964,6 +2039,66 @@ fn main() -> Result<()> {
                     }
                 }
                 ensure_finite_model(&model)?;
+            }
+        }
+
+        let mut replay_samples = 0usize;
+        let mut replay_pairs = 0usize;
+        let mut replay_loss = 0.0f32;
+        let mut replay_selected_regret = 0.0f32;
+        if replay_enabled {
+            let original_learning_rate = model.kpp_eta;
+            model.kpp_eta = original_learning_rate * args.replay_weight;
+            let mut remaining_replay_samples = args.replay_max_samples;
+            for replay_path in args.replay_train.iter() {
+                if args.replay_max_samples > 0 && remaining_replay_samples == 0 {
+                    break;
+                }
+                let replay_limit = if args.replay_max_samples == 0 {
+                    0
+                } else {
+                    remaining_replay_samples
+                };
+                let (used_samples, replay_clamped) = update_streaming_train_epoch(
+                    &mut model,
+                    replay_path,
+                    args.batch_size,
+                    replay_limit,
+                    &train_options,
+                    &pair_options,
+                    args.optimizer,
+                    &mut optimizer_state,
+                    args.adagrad_epsilon,
+                    args.freeze_material,
+                    initial_material,
+                    initial_weights.as_ref(),
+                    args.anchor_l2,
+                    args.max_weight_delta,
+                )?;
+                replay_samples += used_samples;
+                clamped_weights += replay_clamped;
+                if args.replay_max_samples > 0 {
+                    remaining_replay_samples =
+                        remaining_replay_samples.saturating_sub(used_samples);
+                }
+            }
+            model.kpp_eta = original_learning_rate;
+            ensure_finite_model(&model)?;
+
+            if replay_samples > 0 {
+                let (samples, pairs, loss, selected_regret) = evaluate_replay_streaming_train(
+                    &model,
+                    &args.replay_train,
+                    args.replay_max_samples,
+                    args.bad_regret_cp,
+                    &bad_regret_thresholds_cp,
+                    &pair_options,
+                    &loss_options,
+                )?;
+                replay_samples = samples;
+                replay_pairs = pairs;
+                replay_loss = loss;
+                replay_selected_regret = selected_regret;
             }
         }
 
@@ -2070,6 +2205,12 @@ fn main() -> Result<()> {
             p95_abs_delta,
             clamped_weights
         );
+        if replay_enabled {
+            println!(
+                "epoch {} replay: samples={} pairs={} loss={:.6} selected_regret={:.2}",
+                epoch, replay_samples, replay_pairs, replay_loss, replay_selected_regret
+            );
+        }
         println!("epoch {} best_metric_score={:.6}", epoch, current_metric);
         for (batch, metrics) in extra_valid.iter().zip(current_epoch_extra_metrics.iter()) {
             println!(
