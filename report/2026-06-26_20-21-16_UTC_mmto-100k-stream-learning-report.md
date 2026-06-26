@@ -398,3 +398,120 @@ stronger weight. The candidate was rejected and its large weight files were dele
 positive first 40 games were noise; the 60-game follow-up exposed the regression. Future
 learning work should not adopt weights until at least 100 games or multiple seeds confirm
 the result.
+
+## Addendum: PV Sibling Dump Smoke
+
+The next objective change is to train on sibling decisions inside the searched PV, not only
+on root candidates. `mmto_tree_dump` was extended with:
+
+- `--emit-pv-sibling-nodes`
+- `--pv-sibling-max-plies`
+
+When enabled, the dumper writes the normal root record and then follows the teacher and
+student PVs for a small number of plies, dumping those intermediate positions as additional
+`mmto_tree_v1` records. The purpose is to expose local choices where the searched PV can
+drift, instead of repeatedly replaying the same root hard positions.
+
+### 50-position validation
+
+Run:
+
+`data/mmto/runs/mmto_pv_sibling_smoke_20260626_221854`
+
+Result:
+
+- root records: 50
+- PV sibling records: 199
+- total records: 249
+- duplicate `root_index`: 0
+- records missing candidates or selected-student marker: 0
+
+### 1000-position Wdoor smoke
+
+Run:
+
+`data/mmto/runs/mmto_pv_sibling_1k_20260626_221954`
+
+Dump result:
+
+- input positions: 1000
+- root records: 932
+- PV sibling records: 3269
+- total records: 4201
+- skipped positions: 68
+- peak RSS: about 1.7 GB with `jobs=4`
+
+Rank statistics:
+
+- selected regret mean: `39.79`
+- p90: `44.28`
+- p95: `72.87`
+- bad50: `0.0938`
+- bad100: `0.0324`
+
+### 1K training smoke
+
+Two one-epoch listwise `student-leaf` training trials were run on the PV sibling 1K dump.
+Both improved the PV-sibling validation split, but both slightly worsened the existing
+hard-valid selected regret:
+
+- `learning-rate=0.003`, `max-weight-delta=0.005`
+  - valid `selected_regret=735.79 -> 731.22`
+  - valid `p95=172.64 -> 165.04`
+  - hard valid `selected_regret=86.09 -> 86.58`
+- `learning-rate=0.001`, `max-weight-delta=0.002`
+  - valid `selected_regret=735.79 -> 731.42`
+  - valid `p95=172.64 -> 161.50`
+  - hard valid `selected_regret=86.09 -> 86.58`
+
+The conservative candidate passed score gate and a 400-position light rerank:
+
+- score gate: `mean_abs_delta=0.04cp`, `p95=0.13cp`, `max=0.31cp`
+- rerank 400:
+  - baseline: `mean=16.89`, `p90=55.09`, `p95=73.34`, `bad50=0.1175`, `match=42.50%`
+  - candidate: `mean=16.80`, `p90=55.09`, `p95=73.34`, `bad50=0.1175`, `match=42.75%`
+
+Conclusion:
+
+PV sibling dumping works and produces useful-looking validation improvements, but equal
+record weighting lets sibling records dominate the root data. The next required change is
+`sample_weight`: root records should remain weight `1.0`, while PV sibling records should
+start around `0.25`. No PV sibling weight was adopted; the experimental candidate weights
+were deleted.
+
+## Addendum: PV Sibling Sample Weight
+
+`mmto_tree_dump` and `mmto_tree_train` were extended with `sample_weight` support:
+
+- root records emit `sample_weight=1.0`
+- PV sibling records default to `sample_weight=0.25`
+- old JSONL without `sample_weight` is treated as `1.0`
+- pairwise/listwise loss and gradients are scaled by `sample_weight`
+
+Weighted 1K dump:
+
+`data/mmto/runs/mmto_pv_sibling_weighted_1k_20260626_223356`
+
+- root records: 932 at weight `1.0`
+- PV sibling records: 3269 at weight `0.25`
+- total records: 4201
+
+Weighted 1K training:
+
+`data/mmto/runs/mmto_pv_sibling_weighted_1k_train_20260626_224242`
+
+- valid `selected_regret=735.79 -> 732.61`
+- valid `p95=172.64 -> 165.04`
+- hard valid `selected_regret=86.09 -> 86.08`
+- score gate passed: `mean_abs_delta=0.04cp`, `p95=0.13cp`, `max=0.31cp`
+- rerank 400 passed:
+  - baseline: `mean=16.55`, `p90=55.09`, `p95=72.79`, `bad50=0.1125`, `match=43.00%`
+  - candidate: `mean=16.45`, `p90=55.09`, `p95=72.79`, `bad50=0.1125`, `match=43.50%`
+
+Conclusion:
+
+`sample_weight` fixed the immediate issue seen in the unweighted PV sibling smoke: the PV
+sibling validation still improved, while hard-valid selected regret no longer worsened.
+This is not an adoption-level result because it is only a 1K smoke. The next step is a
+9K-scale weighted PV sibling experiment, followed by score/rerank gates and only then a
+game benchmark if hard-valid and rerank remain non-worse.

@@ -181,6 +181,8 @@ struct TreeRecord {
     #[serde(default)]
     version: Option<u8>,
     #[serde(default)]
+    sample_weight: Option<f32>,
+    #[serde(default)]
     sfen: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
@@ -237,6 +239,7 @@ struct CandidateSample {
 struct Sample {
     #[allow(dead_code)]
     position: Position,
+    sample_weight: f32,
     teacher_root_score: f32,
     #[allow(dead_code)]
     student_root_score: f32,
@@ -793,6 +796,7 @@ fn accumulate_sample_metrics(
     if sample.candidates.is_empty() {
         return;
     }
+    let sample_weight = sample.sample_weight;
 
     let mut selected_idx = 0usize;
     let mut selected_score = f32::NEG_INFINITY;
@@ -832,8 +836,9 @@ fn accumulate_sample_metrics(
                 let x = (loss_options.margin_cp - diff) / loss_options.softplus_temp_cp;
                 if x.is_finite() {
                     let weight = pair_weight(good, bad, pair_options);
-                    metrics.loss += weight * loss_options.softplus_temp_cp * softplus(x);
-                    metrics.pair_weight_sum += weight;
+                    let scaled_weight = sample_weight * weight;
+                    metrics.loss += scaled_weight * loss_options.softplus_temp_cp * softplus(x);
+                    metrics.pair_weight_sum += scaled_weight;
                     metrics.pair_count += 1;
                 }
             }
@@ -854,8 +859,8 @@ fn accumulate_sample_metrics(
                     }
                     metrics.pair_count += 1;
                 }
-                metrics.loss += sample_loss;
-                metrics.pair_weight_sum += 1.0;
+                metrics.loss += sample_weight * sample_loss;
+                metrics.pair_weight_sum += sample_weight;
             }
             if let Some((good_idx, bad_idx)) = current_selected_hard_pair(
                 sample,
@@ -872,8 +877,9 @@ fn accumulate_sample_metrics(
                     loss_options.listwise_feature_source,
                     loss_options.listwise_hard_negative_weight,
                 ) {
-                    metrics.loss += hard_loss;
-                    metrics.pair_weight_sum += loss_options.listwise_hard_negative_weight;
+                    let weight = sample_weight * loss_options.listwise_hard_negative_weight;
+                    metrics.loss += sample_weight * hard_loss;
+                    metrics.pair_weight_sum += weight;
                     metrics.pair_count += 1;
                 }
             }
@@ -931,6 +937,7 @@ fn update_sample_refs_with_softplus(
     let mut pair_weight_sum = 0.0f32;
 
     for sample in samples {
+        let sample_weight = sample.sample_weight;
         match options.loss.mode {
             LossMode::Pairwise => {
                 for (good_idx, bad_idx) in
@@ -948,10 +955,11 @@ fn update_sample_refs_with_softplus(
                     }
 
                     let weight = pair_weight(good, bad, pair_options);
-                    loss += weight * options.loss.softplus_temp_cp * softplus(x);
-                    let grad_diff = -sigmoid(x) * weight;
+                    let scaled_weight = sample_weight * weight;
+                    loss += scaled_weight * options.loss.softplus_temp_cp * softplus(x);
+                    let grad_diff = -sigmoid(x) * weight * sample_weight;
                     pair_count += 1;
-                    pair_weight_sum += weight;
+                    pair_weight_sum += scaled_weight;
 
                     for &feature_idx in good_features {
                         *w_grads.entry(feature_idx).or_insert(0.0) += grad_diff;
@@ -980,6 +988,7 @@ fn update_sample_refs_with_softplus(
                             sample_loss -= *teacher_prob * model_prob.max(1e-7).ln();
                         }
                         let delta = (model_prob - teacher_prob) / options.loss.model_temperature_cp;
+                        let delta = delta * sample_weight;
                         let (features, material) = candidate_listwise_features(
                             &sample.candidates[idx],
                             options.loss.listwise_feature_source,
@@ -992,8 +1001,8 @@ fn update_sample_refs_with_softplus(
                         }
                         pair_count += 1;
                     }
-                    loss += sample_loss;
-                    pair_weight_sum += 1.0;
+                    loss += sample_weight * sample_loss;
+                    pair_weight_sum += sample_weight;
                 }
                 if let Some((good_idx, bad_idx)) = current_selected_hard_pair(
                     sample,
@@ -1016,17 +1025,19 @@ fn update_sample_refs_with_softplus(
                             candidate_listwise_features(good, options.loss.listwise_feature_source);
                         let (bad_features, bad_material) =
                             candidate_listwise_features(bad, options.loss.listwise_feature_source);
-                        loss += hard_loss;
+                        loss += sample_weight * hard_loss;
                         pair_count += 1;
-                        pair_weight_sum += options.loss.listwise_hard_negative_weight;
+                        pair_weight_sum +=
+                            sample_weight * options.loss.listwise_hard_negative_weight;
                         for &feature_idx in good_features {
-                            *w_grads.entry(feature_idx).or_insert(0.0) += grad_diff;
+                            *w_grads.entry(feature_idx).or_insert(0.0) += grad_diff * sample_weight;
                         }
                         for &feature_idx in bad_features {
-                            *w_grads.entry(feature_idx).or_insert(0.0) -= grad_diff;
+                            *w_grads.entry(feature_idx).or_insert(0.0) -= grad_diff * sample_weight;
                         }
                         if !freeze_material {
-                            material_grad_total += grad_diff * (good_material - bad_material);
+                            material_grad_total +=
+                                grad_diff * sample_weight * (good_material - bad_material);
                         }
                     }
                 }
@@ -1208,6 +1219,14 @@ fn sample_from_record(path: &PathBuf, line_number: usize, record: TreeRecord) ->
             root_turn,
         )?);
     }
+    let sample_weight = record.sample_weight.unwrap_or(1.0);
+    if !sample_weight.is_finite() || sample_weight <= 0.0 {
+        return Err(anyhow!(
+            "{}:{} invalid sample_weight: must be finite and greater than 0",
+            path.display(),
+            line_number
+        ));
+    }
     if candidates.is_empty() {
         return Err(anyhow!(
             "{}:{} has no usable candidates",
@@ -1218,6 +1237,7 @@ fn sample_from_record(path: &PathBuf, line_number: usize, record: TreeRecord) ->
 
     let mut sample = Sample {
         position,
+        sample_weight,
         teacher_root_score: record.teacher_root_score.unwrap_or(f32::NAN),
         student_root_score: record.student_root_score.unwrap_or(f32::NAN),
         candidates: dedupe_candidates(candidates),

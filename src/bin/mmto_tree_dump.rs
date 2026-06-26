@@ -61,6 +61,8 @@ struct Args {
     emit_pv_sibling_nodes: bool,
     #[arg(long, default_value_t = 2)]
     pv_sibling_max_plies: usize,
+    #[arg(long, default_value_t = 0.25)]
+    pv_sibling_sample_weight: f32,
     #[arg(long, default_value_t = 1)]
     jsonl_version: u8,
 }
@@ -101,6 +103,7 @@ struct TreeRecord {
     student_weights: String,
     teacher_root_score: f32,
     student_root_score: f32,
+    sample_weight: f32,
     teacher_best_move: String,
     student_best_move: String,
     candidates: Vec<CandidateRecord>,
@@ -293,6 +296,7 @@ fn gather_pv_sibling_records(
                 teacher_model,
                 student_model,
                 args,
+                args.pv_sibling_sample_weight,
                 is_valid,
             );
             sibling_ordinal = sibling_ordinal.saturating_add(1);
@@ -361,6 +365,7 @@ fn make_record(
     teacher_model: &SparseModel,
     student_model: &SparseModel,
     args: &Args,
+    sample_weight: f32,
     is_valid: bool,
 ) -> PerRootResult {
     let legal_moves = position.legal_moves();
@@ -647,6 +652,7 @@ fn make_record(
         student_weights: args.student_weights.to_string_lossy().to_string(),
         teacher_root_score,
         student_root_score,
+        sample_weight,
         teacher_best_move,
         student_best_move,
         candidates,
@@ -733,6 +739,7 @@ fn process_position_chunk(
                     teacher_model,
                     student_model,
                     args,
+                    1.0,
                     is_valid,
                 );
                 if root_result.reason.is_none() {
@@ -755,6 +762,7 @@ fn process_position_chunk(
                     teacher_model,
                     student_model,
                     args,
+                    1.0,
                     is_valid,
                 )
             }
@@ -822,6 +830,11 @@ fn main() -> Result<()> {
     }
     if args.jsonl_version == 0 {
         return Err(anyhow!("--jsonl-version must be at least 1"));
+    }
+    if !args.pv_sibling_sample_weight.is_finite() || args.pv_sibling_sample_weight <= 0.0 {
+        return Err(anyhow!(
+            "--pv-sibling-sample-weight must be finite and greater than 0"
+        ));
     }
     if args.position_chunk_size == 0 {
         return Err(anyhow!("--position-chunk-size must be greater than zero"));
