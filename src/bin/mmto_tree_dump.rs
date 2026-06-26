@@ -38,6 +38,8 @@ struct Args {
     candidate_top: usize,
     #[arg(long)]
     max_positions: Option<usize>,
+    #[arg(long, default_value_t = 0)]
+    skip_positions: usize,
     #[arg(long, default_value_t = 1024)]
     position_chunk_size: usize,
     #[arg(long, default_value_t = 10)]
@@ -713,6 +715,7 @@ fn main() -> Result<()> {
 
     println!("student model: {}", args.student_weights.display());
     println!("teacher model: {}", teacher_weights.display());
+    println!("skip positions: {}", args.skip_positions);
     println!(
         "streaming positions with chunk size {}",
         args.position_chunk_size
@@ -722,6 +725,7 @@ fn main() -> Result<()> {
     let mut valid_writer = create_writer(&args.valid_output)?;
     let mut stats = DumpStats::new();
     let mut chunk = Vec::with_capacity(args.position_chunk_size);
+    let mut parsed_positions = 0usize;
 
     'outer: for path in &args.input {
         let file =
@@ -739,6 +743,11 @@ fn main() -> Result<()> {
                 stats.invalid_positions += 1;
                 continue;
             };
+            if parsed_positions < args.skip_positions {
+                parsed_positions += 1;
+                continue;
+            }
+            parsed_positions += 1;
             let index = stats.total_positions;
             stats.total_positions += 1;
             chunk.push((index, position));
