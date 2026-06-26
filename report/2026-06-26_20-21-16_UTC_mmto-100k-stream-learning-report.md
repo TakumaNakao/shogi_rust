@@ -515,3 +515,49 @@ sibling validation still improved, while hard-valid selected regret no longer wo
 This is not an adoption-level result because it is only a 1K smoke. The next step is a
 9K-scale weighted PV sibling experiment, followed by score/rerank gates and only then a
 game benchmark if hard-valid and rerank remain non-worse.
+
+### 3K weighted PV sibling follow-up
+
+Run:
+
+`data/mmto/runs/mmto_pv_sibling_weighted_3k_20260626_224541`
+
+Dump result:
+
+- input positions: 3000
+- root records: 2798
+- PV sibling records: 9928
+- total records: 12726
+- skipped positions: 202
+- sample weights: `1.0` for 2798 root records, `0.25` for 9928 PV sibling records
+
+Training, first setting:
+
+`data/mmto/runs/mmto_pv_sibling_weighted_3k_train_20260626_231038`
+
+- `learning-rate=0.001`, `max-weight-delta=0.002`
+- valid `selected_regret=436.02 -> 434.68`
+- valid `p95=177.02 -> 174.88`
+- hard valid worsened: `selected_regret=86.09 -> 86.56`
+- rejected before game testing
+
+Training, conservative setting:
+
+`data/mmto/runs/mmto_pv_sibling_weighted_3k_train_safe_20260626_231152`
+
+- `learning-rate=0.0005`, `max-weight-delta=0.001`
+- valid `selected_regret=436.02 -> 435.69`
+- valid `p95=177.02 -> 175.00`
+- hard valid `selected_regret=86.09 -> 86.07`
+- score gate passed: `mean_abs_delta=0.03cp`, `p95=0.08cp`, `max=0.19cp`
+- rerank 800 failed:
+  - baseline: `mean=14.75`, `p90=45.31`, `p95=71.97`, `bad50=0.0975`, `match=44.00%`
+  - candidate: `mean=14.82`, `p90=45.31`, `p95=71.97`, `bad50=0.0975`, `match=43.75%`
+
+Conclusion:
+
+Weighted PV sibling remains promising as a data-generation mechanism, but the 3K follow-up
+did not pass rerank. The conservative setting avoided hard-valid regression, yet introduced
+small searched-move regressions. It was rejected and candidate weights were deleted.
+Scaling to 9K should wait until the objective/gate uses a stricter searched-root signal,
+or until PV sibling records are mixed with stronger root constraints.
