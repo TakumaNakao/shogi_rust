@@ -81,6 +81,10 @@ struct Args {
     log_path: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     dry_run: bool,
+    #[arg(long, default_value_t = false)]
+    stream_train: bool,
+    #[arg(long, default_value_t = 0)]
+    stream_train_eval_max_samples: usize,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -559,6 +563,61 @@ fn pair_loss_priority(
     }
 }
 
+fn accumulate_sample_metrics(
+    sample: &Sample,
+    model: &SparseModel,
+    bad_regret_cp: f32,
+    bad_regret_thresholds: &[f32],
+    pair_options: &PairOptions,
+    loss_options: &LossOptions,
+    metrics: &mut Metrics,
+) {
+    if sample.candidates.is_empty() {
+        return;
+    }
+
+    let mut selected_idx = 0usize;
+    let mut selected_score = f32::NEG_INFINITY;
+    for (idx, candidate) in sample.candidates.iter().enumerate() {
+        let model_score =
+            model.predict_with_material(&candidate.move_features, candidate.move_material);
+        if model_score > selected_score {
+            selected_score = model_score;
+            selected_idx = idx;
+        }
+    }
+
+    let selected_regret =
+        (sample.teacher_root_score - sample.candidates[selected_idx].teacher_score).max(0.0);
+    metrics.samples += 1;
+    metrics.selected_regret_sum += selected_regret;
+    metrics.regrets.push(selected_regret);
+    if selected_regret > bad_regret_cp {
+        metrics.bad_regret_count += 1;
+    }
+    for (idx, threshold) in bad_regret_thresholds.iter().enumerate() {
+        if selected_regret > *threshold {
+            metrics.bad_regret_threshold_counts[idx] += 1;
+        }
+    }
+
+    for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model), loss_options) {
+        let good = &sample.candidates[good_idx];
+        let bad = &sample.candidates[bad_idx];
+        let (good_features, good_material) = candidate_leaf_features(good, true);
+        let (bad_features, bad_material) = candidate_leaf_features(bad, false);
+        let diff = model.predict_with_material(good_features, good_material)
+            - model.predict_with_material(bad_features, bad_material);
+        let x = (loss_options.margin_cp - diff) / loss_options.softplus_temp_cp;
+        if x.is_finite() {
+            let weight = pair_weight(good, bad, pair_options);
+            metrics.loss += weight * loss_options.softplus_temp_cp * softplus(x);
+            metrics.pair_weight_sum += weight;
+            metrics.pair_count += 1;
+        }
+    }
+}
+
 fn evaluate_batch(
     model: &SparseModel,
     batch: &[Sample],
@@ -572,50 +631,15 @@ fn evaluate_batch(
         ..Metrics::default()
     };
     for sample in batch {
-        if sample.candidates.is_empty() {
-            continue;
-        }
-
-        let mut selected_idx = 0usize;
-        let mut selected_score = f32::NEG_INFINITY;
-        for (idx, candidate) in sample.candidates.iter().enumerate() {
-            let model_score =
-                model.predict_with_material(&candidate.move_features, candidate.move_material);
-            if model_score > selected_score {
-                selected_score = model_score;
-                selected_idx = idx;
-            }
-        }
-
-        let selected_regret =
-            (sample.teacher_root_score - sample.candidates[selected_idx].teacher_score).max(0.0);
-        metrics.samples += 1;
-        metrics.selected_regret_sum += selected_regret;
-        metrics.regrets.push(selected_regret);
-        if selected_regret > bad_regret_cp {
-            metrics.bad_regret_count += 1;
-        }
-        for (idx, threshold) in bad_regret_thresholds.iter().enumerate() {
-            if selected_regret > *threshold {
-                metrics.bad_regret_threshold_counts[idx] += 1;
-            }
-        }
-
-        for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model), loss_options) {
-            let good = &sample.candidates[good_idx];
-            let bad = &sample.candidates[bad_idx];
-            let (good_features, good_material) = candidate_leaf_features(good, true);
-            let (bad_features, bad_material) = candidate_leaf_features(bad, false);
-            let diff = model.predict_with_material(good_features, good_material)
-                - model.predict_with_material(bad_features, bad_material);
-            let x = (loss_options.margin_cp - diff) / loss_options.softplus_temp_cp;
-            if x.is_finite() {
-                let weight = pair_weight(good, bad, pair_options);
-                metrics.loss += weight * loss_options.softplus_temp_cp * softplus(x);
-                metrics.pair_weight_sum += weight;
-                metrics.pair_count += 1;
-            }
-        }
+        accumulate_sample_metrics(
+            sample,
+            model,
+            bad_regret_cp,
+            bad_regret_thresholds,
+            pair_options,
+            loss_options,
+            &mut metrics,
+        );
     }
 
     if metrics.samples > 0 {
@@ -827,11 +851,74 @@ fn assign_missing_ranks(candidates: &mut [CandidateSample]) {
     }
 }
 
-fn load_samples(path: &PathBuf) -> Result<Vec<Sample>> {
+fn sample_from_record(path: &PathBuf, line_number: usize, record: TreeRecord) -> Result<Sample> {
+    let sfen = record.sfen.ok_or_else(|| {
+        anyhow!(
+            "{}:{} missing required field `sfen`",
+            path.display(),
+            line_number
+        )
+    })?;
+    let position = position_from_sfen_or_usi(&sfen)
+        .ok_or_else(|| anyhow!("{}:{} invalid sfen: {}", path.display(), line_number, sfen))?;
+    let root_turn = position.side_to_move();
+
+    let mut candidates = Vec::with_capacity(record.candidates.len());
+    for raw_candidate in &record.candidates {
+        candidates.push(parse_candidate(
+            line_number,
+            raw_candidate,
+            &position,
+            root_turn,
+        )?);
+    }
+    if candidates.is_empty() {
+        return Err(anyhow!(
+            "{}:{} has no usable candidates",
+            path.display(),
+            line_number
+        ));
+    }
+
+    let mut sample = Sample {
+        position,
+        teacher_root_score: record.teacher_root_score.unwrap_or(f32::NAN),
+        student_root_score: record.student_root_score.unwrap_or(f32::NAN),
+        candidates: dedupe_candidates(candidates),
+    };
+
+    if !sample.teacher_root_score.is_finite() {
+        sample.teacher_root_score = sample
+            .candidates
+            .iter()
+            .map(|candidate| candidate.teacher_score)
+            .fold(f32::NEG_INFINITY, f32::max);
+        if !sample.teacher_root_score.is_finite() {
+            return Err(anyhow!(
+                "{}:{} has no finite teacher_root_score nor teacher score",
+                path.display(),
+                line_number
+            ));
+        }
+    }
+
+    for candidate in sample.candidates.iter_mut() {
+        if !candidate.regret.is_finite() {
+            candidate.regret = (sample.teacher_root_score - candidate.teacher_score).max(0.0);
+        }
+    }
+    assign_missing_ranks(&mut sample.candidates);
+    Ok(sample)
+}
+
+fn for_each_sample_in_file<F>(path: &PathBuf, mut visit: F) -> Result<usize>
+where
+    F: FnMut(usize, Sample) -> Result<bool>,
+{
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    let mut samples = Vec::new();
 
+    let mut sample_count = 0usize;
     for (line_index, line) in reader.lines().enumerate() {
         let line = line?;
         let line_number = line_index + 1;
@@ -845,76 +932,158 @@ fn load_samples(path: &PathBuf) -> Result<Vec<Sample>> {
             .schema
             .as_deref()
             .is_some_and(|schema| schema != "mmto_tree_v1")
+            || record.version == Some(0)
         {
             continue;
         }
-        if record.version == Some(0) {
+
+        let sample = sample_from_record(path, line_number, record)?;
+        if !visit(sample_count, sample)? {
+            break;
+        }
+        sample_count += 1;
+    }
+
+    if sample_count == 0 {
+        return Err(anyhow!("{} contains no usable samples", path.display()));
+    }
+    Ok(sample_count)
+}
+
+fn load_samples(path: &PathBuf) -> Result<Vec<Sample>> {
+    let mut samples = Vec::new();
+    for_each_sample_in_file(path, |_, sample| {
+        samples.push(sample);
+        Ok(true)
+    })?;
+    Ok(samples)
+}
+
+fn evaluate_streaming_train(
+    model: &SparseModel,
+    path: &PathBuf,
+    max_samples: usize,
+    bad_regret_cp: f32,
+    bad_regret_thresholds: &[f32],
+    pair_options: &PairOptions,
+    loss_options: &LossOptions,
+) -> Result<Metrics> {
+    let mut metrics = Metrics {
+        bad_regret_threshold_counts: vec![0; bad_regret_thresholds.len()],
+        ..Metrics::default()
+    };
+    for_each_sample_in_file(path, |sample_index, sample| {
+        if max_samples > 0 && sample_index >= max_samples {
+            return Ok(false);
+        }
+        accumulate_sample_metrics(
+            &sample,
+            model,
+            bad_regret_cp,
+            bad_regret_thresholds,
+            pair_options,
+            loss_options,
+            &mut metrics,
+        );
+        Ok(true)
+    })?;
+
+    if metrics.pair_weight_sum > 0.0 {
+        metrics.loss /= metrics.pair_weight_sum;
+    }
+    if metrics.samples > 0 {
+        metrics.selected_regret_sum /= metrics.samples as f32;
+    }
+    Ok(metrics)
+}
+
+fn update_streaming_train_epoch(
+    model: &mut SparseModel,
+    train_path: &PathBuf,
+    batch_size: usize,
+    train_options: &TrainOptions,
+    pair_options: &PairOptions,
+    optimizer: OptimizerKind,
+    adagrad: &mut AdagradState,
+    adagrad_epsilon: f32,
+    freeze_material: bool,
+    initial_material: f32,
+    initial_weights: Option<&Vec<f32>>,
+    anchor_l2: f32,
+    max_weight_delta: Option<f32>,
+) -> Result<usize> {
+    let mut clamped_weights = 0usize;
+    let mut batch_samples: Vec<Sample> = Vec::with_capacity(batch_size);
+    let mut process_batch = |batch: &mut Vec<Sample>| -> Result<()> {
+        let batch_refs: Vec<&Sample> = batch.iter().collect();
+        let _ = update_sample_refs_with_softplus(
+            model,
+            &batch_refs,
+            train_options,
+            pair_options,
+            optimizer,
+            adagrad,
+            adagrad_epsilon,
+            freeze_material,
+        );
+        if freeze_material {
+            model.material_coeff = initial_material;
+        }
+        if let Some(initial_weights) = initial_weights {
+            if anchor_l2 > 0.0 || max_weight_delta.is_some() {
+                clamped_weights +=
+                    apply_weight_constraints(model, initial_weights, anchor_l2, max_weight_delta);
+            }
+        }
+        ensure_finite_model(model)?;
+        batch.clear();
+        Ok(())
+    };
+
+    let file = File::open(train_path)?;
+    let reader = BufReader::new(file);
+    let mut parsed_samples = 0usize;
+    for (line_index, line) in reader.lines().enumerate() {
+        let line = line?;
+        let line_number = line_index + 1;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: TreeRecord = serde_json::from_str(&line).map_err(|e| {
+            anyhow!(
+                "{}:{} invalid json: {}",
+                train_path.display(),
+                line_number,
+                e
+            )
+        })?;
+
+        if record
+            .schema
+            .as_deref()
+            .is_some_and(|schema| schema != "mmto_tree_v1")
+            || record.version == Some(0)
+        {
             continue;
         }
 
-        let sfen = record.sfen.ok_or_else(|| {
-            anyhow!(
-                "{}:{} missing required field `sfen`",
-                path.display(),
-                line_number
-            )
-        })?;
-        let position = position_from_sfen_or_usi(&sfen)
-            .ok_or_else(|| anyhow!("{}:{} invalid sfen: {}", path.display(), line_number, sfen))?;
-        let root_turn = position.side_to_move();
-
-        let mut candidates = Vec::with_capacity(record.candidates.len());
-        for raw_candidate in &record.candidates {
-            candidates.push(parse_candidate(
-                line_number,
-                raw_candidate,
-                &position,
-                root_turn,
-            )?);
+        batch_samples.push(sample_from_record(train_path, line_number, record)?);
+        parsed_samples += 1;
+        if batch_samples.len() == batch_size {
+            process_batch(&mut batch_samples)?;
         }
-        if candidates.is_empty() {
-            return Err(anyhow!(
-                "{}:{} has no usable candidates",
-                path.display(),
-                line_number
-            ));
-        }
-
-        let mut sample = Sample {
-            position,
-            teacher_root_score: record.teacher_root_score.unwrap_or(f32::NAN),
-            student_root_score: record.student_root_score.unwrap_or(f32::NAN),
-            candidates: dedupe_candidates(candidates),
-        };
-
-        if !sample.teacher_root_score.is_finite() {
-            sample.teacher_root_score = sample
-                .candidates
-                .iter()
-                .map(|candidate| candidate.teacher_score)
-                .fold(f32::NEG_INFINITY, f32::max);
-            if !sample.teacher_root_score.is_finite() {
-                return Err(anyhow!(
-                    "{}:{} has no finite teacher_root_score nor teacher score",
-                    path.display(),
-                    line_number
-                ));
-            }
-        }
-
-        for candidate in sample.candidates.iter_mut() {
-            if !candidate.regret.is_finite() {
-                candidate.regret = (sample.teacher_root_score - candidate.teacher_score).max(0.0);
-            }
-        }
-        assign_missing_ranks(&mut sample.candidates);
-        samples.push(sample);
     }
 
-    if samples.is_empty() {
-        return Err(anyhow!("{} contains no usable samples", path.display()));
+    if parsed_samples == 0 {
+        return Err(anyhow!(
+            "{} contains no usable samples",
+            train_path.display()
+        ));
     }
-    Ok(samples)
+    if !batch_samples.is_empty() {
+        process_batch(&mut batch_samples)?;
+    }
+    Ok(clamped_weights)
 }
 
 fn log_summary(
@@ -1172,7 +1341,11 @@ fn main() -> Result<()> {
     };
     let mut best_checkpoint_written = false;
 
-    let train_samples = load_samples(&args.train)?;
+    let train_samples = if args.stream_train {
+        None
+    } else {
+        Some(load_samples(&args.train)?)
+    };
     let valid_samples = load_samples(&args.valid)?;
     let extra_valid = args
         .extra_valid
@@ -1184,14 +1357,29 @@ fn main() -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let baseline_train = evaluate_batch(
-        &model,
-        &train_samples,
-        args.bad_regret_cp,
-        &bad_regret_thresholds_cp,
-        &pair_options,
-        &loss_options,
-    );
+    let baseline_train = if args.stream_train {
+        evaluate_streaming_train(
+            &model,
+            &args.train,
+            args.stream_train_eval_max_samples,
+            args.bad_regret_cp,
+            &bad_regret_thresholds_cp,
+            &pair_options,
+            &loss_options,
+        )?
+    } else {
+        evaluate_batch(
+            &model,
+            train_samples
+                .as_ref()
+                .map(Vec::as_slice)
+                .expect("non-stream mode requires train samples loaded"),
+            args.bad_regret_cp,
+            &bad_regret_thresholds_cp,
+            &pair_options,
+            &loss_options,
+        )
+    };
     let baseline_valid = evaluate_batch(
         &model,
         &valid_samples,
@@ -1318,50 +1506,87 @@ fn main() -> Result<()> {
     ));
     let mut best_epoch = 0usize;
     let mut rng = ChaCha8Rng::seed_from_u64(0x1234);
-    let mut train_indices: Vec<usize> = (0..train_samples.len()).collect();
-    let mut batch_refs: Vec<&Sample> = Vec::with_capacity(args.batch_size);
+    let mut train_indices: Option<Vec<usize>> = if args.stream_train {
+        None
+    } else {
+        Some((0..train_samples.as_ref().unwrap().len()).collect())
+    };
 
     for epoch in 1..=args.epochs {
-        train_indices.shuffle(&mut rng);
-
         let mut clamped_weights = 0usize;
-        for chunk in train_indices.chunks(args.batch_size) {
-            batch_refs.clear();
-            batch_refs.extend(chunk.iter().map(|idx| &train_samples[*idx]));
-            let _ = update_sample_refs_with_softplus(
+        if args.stream_train {
+            clamped_weights = update_streaming_train_epoch(
                 &mut model,
-                &batch_refs,
+                &args.train,
+                args.batch_size,
                 &train_options,
                 &pair_options,
                 args.optimizer,
                 &mut optimizer_state,
                 args.adagrad_epsilon,
                 args.freeze_material,
-            );
-            if args.freeze_material {
-                model.material_coeff = initial_material;
-            }
-            if let Some(initial_weights) = initial_weights.as_ref() {
-                if args.anchor_l2 > 0.0 || args.max_weight_delta.is_some() {
-                    clamped_weights += apply_weight_constraints(
-                        &mut model,
-                        initial_weights,
-                        args.anchor_l2,
-                        args.max_weight_delta,
-                    );
+                initial_material,
+                initial_weights.as_ref(),
+                args.anchor_l2,
+                args.max_weight_delta,
+            )?;
+        } else {
+            let train_samples = train_samples.as_ref().unwrap();
+            let indices = train_indices.as_mut().unwrap();
+            indices.shuffle(&mut rng);
+
+            let mut batch_refs: Vec<&Sample> = Vec::with_capacity(args.batch_size);
+            for chunk in indices.chunks(args.batch_size) {
+                batch_refs.clear();
+                batch_refs.extend(chunk.iter().map(|idx| &train_samples[*idx]));
+                let _ = update_sample_refs_with_softplus(
+                    &mut model,
+                    &batch_refs,
+                    &train_options,
+                    &pair_options,
+                    args.optimizer,
+                    &mut optimizer_state,
+                    args.adagrad_epsilon,
+                    args.freeze_material,
+                );
+                if args.freeze_material {
+                    model.material_coeff = initial_material;
                 }
+                if let Some(initial_weights) = initial_weights.as_ref() {
+                    if args.anchor_l2 > 0.0 || args.max_weight_delta.is_some() {
+                        clamped_weights += apply_weight_constraints(
+                            &mut model,
+                            initial_weights,
+                            args.anchor_l2,
+                            args.max_weight_delta,
+                        );
+                    }
+                }
+                ensure_finite_model(&model)?;
             }
-            ensure_finite_model(&model)?;
         }
 
-        let train = evaluate_batch(
-            &model,
-            &train_samples,
-            args.bad_regret_cp,
-            &bad_regret_thresholds_cp,
-            &pair_options,
-            &loss_options,
-        );
+        let train = if args.stream_train {
+            evaluate_streaming_train(
+                &model,
+                &args.train,
+                args.stream_train_eval_max_samples,
+                args.bad_regret_cp,
+                &bad_regret_thresholds_cp,
+                &pair_options,
+                &loss_options,
+            )?
+        } else {
+            let train_samples = train_samples.as_ref().unwrap();
+            evaluate_batch(
+                &model,
+                train_samples,
+                args.bad_regret_cp,
+                &bad_regret_thresholds_cp,
+                &pair_options,
+                &loss_options,
+            )
+        };
         let valid = evaluate_batch(
             &model,
             &valid_samples,
