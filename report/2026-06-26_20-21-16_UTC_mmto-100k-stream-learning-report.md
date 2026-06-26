@@ -221,3 +221,124 @@ Next priority should be a DAgger-style re-dump:
 2. rerun `mmto_tree_dump` with that candidate as the student and v2.1.0 as teacher;
 3. ensure the actual student-selected bad move is force-included in the candidate set;
 4. train on a mixture of normal Wdoor positions and these current-student mistakes.
+
+## Addendum: Low-Memory DAgger Loop Trial
+
+After the force-include change in `mmto_tree_dump`, a low-memory DAgger loop was tested.
+The goal was not to adopt a short-run weight, but to check whether current-student hard
+positions can be mined and mixed without crashing the 16 GB machine.
+
+### Seed student-leaf candidate
+
+Run:
+
+`data/mmto/runs/mmto_dagger_seed_studentleaf_20260626_212044`
+
+This regenerated the previously promising 9K `student-leaf` listwise candidate:
+
+- static valid improved: `selected_regret=147.28 -> 146.45`, `p95=157.20 -> 153.67`
+- holdout rerank depth3/teacher4, 1200 positions failed slightly:
+  - baseline: `mean=263.29`, `p90=43.65`, `p95=67.99`, `bad50=0.0858`, `match=38.92%`
+  - candidate: `mean=263.44`, `p90=43.74`, `p95=67.99`, `bad50=0.0875`, `match=38.58%`
+
+The weight was rejected as an adoption candidate, but its rerank output produced 138
+unique hard positions. Re-dumping those positions with the candidate as student produced:
+
+- `data/mmto/runs/mmto_dagger_hard149_20260626_212525`
+- `hard_train`: 110 records
+- `hard_valid`: 28 records
+
+Peak RSS for the dump was about 1.7 GB with `jobs=2` and `position-chunk-size=32`.
+
+### 9K normal plus hard mix
+
+Run:
+
+`data/mmto/runs/mmto_dagger_mix9k_hard110x5_l2zero_20260626_213122`
+
+The training set used 9K normal records plus the 110 hard records repeated 5 times.
+Settings used `student-leaf`, `listwise-hard-negative-weight=0.02`, `min-regret=100`,
+`l2=0`, and `max-weight-delta=0.01`.
+
+Result:
+
+- normal valid improved slightly: `selected_regret=147.28 -> 146.71`, `p95=157.20 -> 154.16`
+- hard valid worsened: `selected_regret=72.03 -> 73.42`
+- `best_epoch=0`
+
+Rejected. Large candidate weights were deleted.
+
+### 100K stream plus first hard set
+
+Run:
+
+`data/mmto/runs/mmto_stream100k_hard110x10_safe_20260626_213340`
+
+The training file used the existing 100K stream dump plus the first hard set repeated 10
+times. Training used `--stream-train`, `learning-rate=0.0008`, `max-weight-delta=0.005`,
+and `listwise-hard-negative-weight=0.01`.
+
+Static validation:
+
+- valid `selected_regret=109.46 -> 109.01`
+- valid `p95=143.37 -> 143.05`
+- valid `bad50=0.2263 -> 0.2253`
+- valid `bad100=0.1072 -> 0.1058`
+
+Offline gates:
+
+- score gate passed: `mean_abs_delta=0.37cp`, `p95=1.61cp`, `max=2.49cp`
+- rerank depth3/teacher4, 1200 positions passed:
+  - baseline: `mean=96.77`, `p90=43.82`, `p95=71.35`, `bad50=0.0925`, `bad100=0.0158`, `match=40.25%`
+  - candidate: `mean=96.53`, `p90=43.69`, `p95=71.05`, `bad50=0.0883`, `bad100=0.0158`, `match=40.25%`
+
+20-game weight-only benchmark:
+
+- new: 10
+- baseline: 10
+- draws: 0
+- paired starts: new sweeps 3, baseline sweeps 3, splits 4
+
+Conclusion:
+
+The candidate was safe enough to pass rerank, but not stronger in games. It was rejected
+and the large weight file was deleted after using it to mine the next hard set.
+
+### Second hard set and mixed retry
+
+The accepted-for-mining candidate above produced 115 unique hard positions from rerank.
+Re-dumping with it as student produced:
+
+- `data/mmto/runs/mmto_dagger_hard116_r2_20260626_214339`
+- `hard_train`: 92 records
+- `hard_valid`: 23 records
+
+A second 100K stream mix used both hard sets repeated 10 times:
+
+`data/mmto/runs/mmto_stream100k_hard_r1r2_safe_20260626_214759`
+
+Result:
+
+- valid `selected_regret=109.46 -> 109.17`
+- valid `bad50=0.2263 -> 0.2257`
+- valid `p95=143.37 -> 143.47` worsened
+- combined hard valid worsened: `selected_regret=86.09 -> 89.67`
+- `best_epoch=0`
+
+Rejected. Large candidate weights and large temporary mixed train files were deleted.
+
+### Updated conclusion
+
+The low-memory DAgger mechanics now work:
+
+- hard positions can be mined from rerank JSON,
+- `mmto_tree_dump` can re-dump current-student mistakes with bounded memory,
+- 100K stream training can include small hard sets without OOM,
+- strict score/rerank/game gates prevent bad weights from being adopted.
+
+However, the current objective still does not produce a clearly stronger weight. The best
+DAgger candidate improved static validation and rerank but only scored 10-10 in a 20-game
+weight-only benchmark. The next learning change should focus on the objective, not another
+simple hard-set repetition sweep. In particular, hard cases should probably be used as a
+separate constrained penalty or replay buffer with per-position caps, rather than repeated
+inside the same listwise stream where they can worsen hard-valid tails.
