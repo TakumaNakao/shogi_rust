@@ -1157,10 +1157,20 @@ fn main() -> Result<()> {
     model.kpp_eta = args.learning_rate;
     model.l2_lambda = args.l2_lambda;
 
-    let initial_weights = model.w.clone();
+    let needs_anchor_weights = args.anchor_l2 > 0.0 || args.max_weight_delta.is_some();
+    let initial_weights = if needs_anchor_weights {
+        Some(model.w.clone())
+    } else {
+        None
+    };
     let initial_material = model.material_coeff;
 
-    let mut best_model_checkpoint = model.clone();
+    let mut best_model_checkpoint = if args.best_checkpoint_path.is_none() {
+        Some(model.clone())
+    } else {
+        None
+    };
+    let mut best_checkpoint_written = false;
 
     let train_samples = load_samples(&args.train)?;
     let valid_samples = load_samples(&args.valid)?;
@@ -1331,13 +1341,15 @@ fn main() -> Result<()> {
             if args.freeze_material {
                 model.material_coeff = initial_material;
             }
-            if args.anchor_l2 > 0.0 || args.max_weight_delta.is_some() {
-                clamped_weights += apply_weight_constraints(
-                    &mut model,
-                    &initial_weights,
-                    args.anchor_l2,
-                    args.max_weight_delta,
-                );
+            if let Some(initial_weights) = initial_weights.as_ref() {
+                if args.anchor_l2 > 0.0 || args.max_weight_delta.is_some() {
+                    clamped_weights += apply_weight_constraints(
+                        &mut model,
+                        initial_weights,
+                        args.anchor_l2,
+                        args.max_weight_delta,
+                    );
+                }
             }
             ensure_finite_model(&model)?;
         }
@@ -1359,14 +1371,21 @@ fn main() -> Result<()> {
             &loss_options,
         );
 
-        let delta_abs: Vec<f32> = model
-            .w
-            .iter()
-            .zip(initial_weights.iter())
-            .map(|(w, anchor)| (w - anchor).abs())
-            .collect();
-        let max_abs_delta = delta_abs.iter().copied().fold(0.0_f32, f32::max);
-        let p95_abs_delta = percentile(delta_abs, 0.95);
+        let (max_abs_delta, p95_abs_delta) = if let Some(initial_weights) = initial_weights.as_ref()
+        {
+            let delta_abs: Vec<f32> = model
+                .w
+                .iter()
+                .zip(initial_weights.iter())
+                .map(|(w, anchor)| (w - anchor).abs())
+                .collect();
+            (
+                delta_abs.iter().copied().fold(0.0_f32, f32::max),
+                percentile(delta_abs, 0.95),
+            )
+        } else {
+            (0.0, 0.0)
+        };
 
         let current_metric = compute_best_metric_value(
             args.best_metric,
@@ -1377,7 +1396,12 @@ fn main() -> Result<()> {
         if best_metric_score.is_none()
             || current_metric < best_metric_score.unwrap_or(f32::INFINITY)
         {
-            copy_model_into(&mut best_model_checkpoint, &model);
+            if let Some(path) = &args.best_checkpoint_path {
+                model.save(path)?;
+                best_checkpoint_written = true;
+            } else if let Some(best_model_checkpoint) = best_model_checkpoint.as_mut() {
+                copy_model_into(best_model_checkpoint, &model);
+            }
             best_metric_score = Some(current_metric);
             best_epoch = epoch;
         }
@@ -1469,7 +1493,9 @@ fn main() -> Result<()> {
     }
 
     if let Some(path) = &args.best_checkpoint_path {
-        best_model_checkpoint.save(path)?;
+        if !best_checkpoint_written {
+            fs::copy(&args.weights, path)?;
+        }
         println!(
             "Best checkpoint saved to {} (epoch={})",
             path.display(),
@@ -1477,7 +1503,13 @@ fn main() -> Result<()> {
         );
     }
 
-    best_model_checkpoint.save(&args.output)?;
+    if let Some(path) = &args.best_checkpoint_path {
+        fs::copy(path, &args.output)?;
+    } else if let Some(best_model_checkpoint) = best_model_checkpoint.as_ref() {
+        best_model_checkpoint.save(&args.output)?;
+    } else {
+        return Err(anyhow!("internal error: no best model available"));
+    }
     if !args.freeze_material {
         println!("saved final model to {}", args.output.display());
     } else {
@@ -1487,17 +1519,21 @@ fn main() -> Result<()> {
         );
     }
 
-    ensure_finite_model(&best_model_checkpoint)?;
-    if args.freeze_material && best_model_checkpoint.material_coeff != initial_material {
+    let mut final_model = SparseModel::new(args.learning_rate, args.l2_lambda);
+    final_model
+        .load(&args.output)
+        .map_err(|e| anyhow!("failed to load {}: {}", args.output.display(), e))?;
+    ensure_finite_model(&final_model)?;
+    if args.freeze_material && final_model.material_coeff != initial_material {
         return Err(anyhow!(
             "material_coeff changed despite --freeze-material: {} -> {}",
             initial_material,
-            best_model_checkpoint.material_coeff
+            final_model.material_coeff
         ));
     }
     for batch in &extra_valid {
         let metrics = evaluate_batch(
-            &best_model_checkpoint,
+            &final_model,
             &batch.samples,
             args.bad_regret_cp,
             &bad_regret_thresholds_cp,
