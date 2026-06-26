@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
@@ -99,6 +99,11 @@ struct TreeRecord {
     candidates: Vec<CandidateRecord>,
 }
 
+#[derive(Deserialize)]
+struct PositionLine {
+    sfen: String,
+}
+
 #[derive(Clone)]
 struct SharedModelEvaluator<'a> {
     model: &'a SparseModel,
@@ -166,6 +171,19 @@ fn skip_reason_key(reason: SkipReason) -> &'static str {
         SkipReason::NoCandidateScores => "no_candidate_scores",
         SkipReason::RootScoreOutOfRange => "max_abs_root_score",
         SkipReason::SearchFailed => "search_failed",
+    }
+}
+
+fn parse_position_line(line: &str) -> Option<Position> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    if line.starts_with('{') {
+        let record = serde_json::from_str::<PositionLine>(line).ok()?;
+        position_from_sfen_or_usi(&record.sfen)
+    } else {
+        position_from_sfen_or_usi(line)
     }
 }
 
@@ -717,7 +735,7 @@ fn main() -> Result<()> {
                 break 'outer;
             }
             let line = line.with_context(|| format!("failed to read {}", path.display()))?;
-            let Some(position) = position_from_sfen_or_usi(&line) else {
+            let Some(position) = parse_position_line(&line) else {
                 stats.invalid_positions += 1;
                 continue;
             };
