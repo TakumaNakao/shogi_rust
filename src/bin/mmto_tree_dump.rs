@@ -428,6 +428,36 @@ fn make_record(
         .or_else(|| legal_moves.first().copied())
         .unwrap_or(teacher_candidates[0].mv);
 
+    if !contains_move(&teacher_candidates, student_best_move_for_selection) {
+        let teacher_score_pv = child_search_candidate(
+            teacher_model,
+            &position,
+            student_best_move_for_selection,
+            args.teacher_depth,
+        )
+        .or_else(|| {
+            child_oriented_static_score(
+                teacher_model,
+                &position,
+                student_best_move_for_selection,
+                root_turn,
+            )
+            .map(|score| (score, Vec::new()))
+        });
+        if let Some((score, pv)) = teacher_score_pv {
+            teacher_candidates.push(ScoredMove {
+                mv: student_best_move_for_selection,
+                score,
+                pv,
+            });
+            teacher_candidates.sort_by(|lhs, rhs| {
+                rhs.score
+                    .partial_cmp(&lhs.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+    }
+
     let mut student_scores = Vec::with_capacity(teacher_candidates.len());
     let mut student_pvs = Vec::with_capacity(teacher_candidates.len());
 
