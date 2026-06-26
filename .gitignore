@@ -1,6 +1,7 @@
 csa_files/
 data/wdoor/
 data/mmto/
+data/training/
 target/
 *.png
 *.binary
