@@ -170,3 +170,54 @@ Updated conclusion:
 - `student-leaf listwise` is the most promising learning direction so far.
 - Pure static listwise is insufficient for full 100K training.
 - The next algorithmic improvement must explicitly handle current selected mistakes or rerank hard negatives, not just improve fixed static validation loss.
+
+## Addendum: Current-Selected Hard Negative
+
+`mmto_tree_train` was extended again with:
+
+- `--listwise-hard-negative-weight`
+- `--listwise-hard-negative-min-regret-cp`
+
+This adds a small pairwise penalty to `listwise-leaf` when the current model's root static selection is at least the configured regret threshold worse than the teacher-best candidate. The hard-negative pair uses the same feature source as `--listwise-feature-source`.
+
+Key results:
+
+### 9K, weight 0.05, min regret 50
+
+Run:
+
+`data/mmto/runs/mmto_listwise_hardneg9k_studentleaf_w005_20260626_205457`
+
+- static valid improved: `selected_regret=147.28 -> 145.45`, `bad50=0.2533 -> 0.2433`
+- score gate passed: `p95_abs_delta_cp=4.00`, `max=6.87`
+- light rerank depth3/teacher4 400 positions passed:
+  - baseline: `mean=515.99`, `p90=43.75`, `p95=71.92`, `bad50=0.0900`, `match=39.25%`
+  - candidate: `mean=515.32`, `p90=42.98`, `p95=70.47`, `bad50=0.0850`, `match=40.25%`
+- 20-game benchmark: 10-10
+
+This is safe-looking but not stronger than the earlier 9K student-leaf-only 12-8 smoke.
+
+### 100K, weight 0.05, min regret 50
+
+Run:
+
+`data/mmto/runs/mmto_listwise_hardneg100k_studentleaf_w005_lr0002_delta002_20260626_205816`
+
+- score gate passed: `p95_abs_delta_cp=3.47`, `max=5.57`
+- light rerank improved mean, p90, bad50, and match, but failed on bad100:
+  - baseline: `mean=12.76`, `p90=41.27`, `p95=67.99`, `bad50=0.0875`, `bad100=0.0150`, `match=45.25%`
+  - candidate: `mean=12.48`, `p90=38.22`, `p95=67.99`, `bad50=0.0800`, `bad100=0.0200`, `match=46.25%`
+- 20-game benchmark: 6-14
+
+The 100K hard-negative candidate was rejected and its large weight files were deleted.
+
+### Interpretation
+
+The hard-negative term helps the static and light-rerank average case, but full 100K fixed-dump learning still creates severe tail mistakes that show up in games. Continuing to tune only `learning-rate`, `max-weight-delta`, and hard-negative weight is unlikely to solve the core issue.
+
+Next priority should be a DAgger-style re-dump:
+
+1. keep a failed candidate long enough to extract `hard_positions.sfen`;
+2. rerun `mmto_tree_dump` with that candidate as the student and v2.1.0 as teacher;
+3. ensure the actual student-selected bad move is force-included in the candidate set;
+4. train on a mixture of normal Wdoor positions and these current-student mistakes.
