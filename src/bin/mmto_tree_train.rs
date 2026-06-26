@@ -93,6 +93,10 @@ struct Args {
     loss_mode: LossMode,
     #[arg(long, value_enum, default_value_t = ListwiseFeatureSource::TeacherLeaf)]
     listwise_feature_source: ListwiseFeatureSource,
+    #[arg(long, default_value_t = 0.0)]
+    listwise_hard_negative_weight: f32,
+    #[arg(long, default_value_t = 50.0)]
+    listwise_hard_negative_min_regret_cp: f32,
     #[arg(long, default_value_t = 0)]
     stream_train_eval_max_samples: usize,
 }
@@ -272,6 +276,8 @@ struct LossOptions {
     model_temperature_cp: f32,
     teacher_temperature_cp: f32,
     listwise_feature_source: ListwiseFeatureSource,
+    listwise_hard_negative_weight: f32,
+    listwise_hard_negative_min_regret_cp: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -697,6 +703,78 @@ fn pair_loss_priority(
     }
 }
 
+fn current_selected_hard_pair(
+    sample: &Sample,
+    model: &SparseModel,
+    min_regret_cp: f32,
+) -> Option<(usize, usize)> {
+    if sample.candidates.len() < 2 {
+        return None;
+    }
+
+    let mut good_idx = 0usize;
+    let mut good_score = f32::NEG_INFINITY;
+    for (idx, candidate) in sample.candidates.iter().enumerate() {
+        if candidate.teacher_score > good_score {
+            good_score = candidate.teacher_score;
+            good_idx = idx;
+        }
+    }
+    if !good_score.is_finite() {
+        return None;
+    }
+
+    let mut selected_idx = 0usize;
+    let mut selected_score = f32::NEG_INFINITY;
+    for (idx, candidate) in sample.candidates.iter().enumerate() {
+        let score = model.predict_with_material(&candidate.move_features, candidate.move_material);
+        if score > selected_score {
+            selected_score = score;
+            selected_idx = idx;
+        }
+    }
+    if selected_idx == good_idx {
+        return None;
+    }
+
+    let bad = &sample.candidates[selected_idx];
+    let regret = (sample.teacher_root_score - bad.teacher_score).max(0.0);
+    if regret < min_regret_cp || good_score <= bad.teacher_score {
+        return None;
+    }
+
+    Some((good_idx, selected_idx))
+}
+
+fn root_move_pair_loss_and_grad(
+    sample: &Sample,
+    good_idx: usize,
+    bad_idx: usize,
+    model: &SparseModel,
+    margin_cp: f32,
+    softplus_temp_cp: f32,
+    feature_source: ListwiseFeatureSource,
+    weight: f32,
+) -> Option<(f32, f32)> {
+    if weight <= 0.0 {
+        return None;
+    }
+    let good = &sample.candidates[good_idx];
+    let bad = &sample.candidates[bad_idx];
+    let (good_features, good_material) = candidate_listwise_features(good, feature_source);
+    let (bad_features, bad_material) = candidate_listwise_features(bad, feature_source);
+    let diff = model.predict_with_material(good_features, good_material)
+        - model.predict_with_material(bad_features, bad_material);
+    let x = (margin_cp - diff) / softplus_temp_cp;
+    if !x.is_finite() {
+        return None;
+    }
+    Some((
+        weight * softplus_temp_cp * softplus(x),
+        -sigmoid(x) * weight,
+    ))
+}
+
 fn accumulate_sample_metrics(
     sample: &Sample,
     model: &SparseModel,
@@ -772,6 +850,26 @@ fn accumulate_sample_metrics(
                 }
                 metrics.loss += sample_loss;
                 metrics.pair_weight_sum += 1.0;
+            }
+            if let Some((good_idx, bad_idx)) = current_selected_hard_pair(
+                sample,
+                model,
+                loss_options.listwise_hard_negative_min_regret_cp,
+            ) {
+                if let Some((hard_loss, _)) = root_move_pair_loss_and_grad(
+                    sample,
+                    good_idx,
+                    bad_idx,
+                    model,
+                    loss_options.margin_cp,
+                    loss_options.softplus_temp_cp,
+                    loss_options.listwise_feature_source,
+                    loss_options.listwise_hard_negative_weight,
+                ) {
+                    metrics.loss += hard_loss;
+                    metrics.pair_weight_sum += loss_options.listwise_hard_negative_weight;
+                    metrics.pair_count += 1;
+                }
             }
         }
     }
@@ -890,6 +988,41 @@ fn update_sample_refs_with_softplus(
                     }
                     loss += sample_loss;
                     pair_weight_sum += 1.0;
+                }
+                if let Some((good_idx, bad_idx)) = current_selected_hard_pair(
+                    sample,
+                    model,
+                    options.loss.listwise_hard_negative_min_regret_cp,
+                ) {
+                    if let Some((hard_loss, grad_diff)) = root_move_pair_loss_and_grad(
+                        sample,
+                        good_idx,
+                        bad_idx,
+                        model,
+                        options.loss.margin_cp,
+                        options.loss.softplus_temp_cp,
+                        options.loss.listwise_feature_source,
+                        options.loss.listwise_hard_negative_weight,
+                    ) {
+                        let good = &sample.candidates[good_idx];
+                        let bad = &sample.candidates[bad_idx];
+                        let (good_features, good_material) =
+                            candidate_listwise_features(good, options.loss.listwise_feature_source);
+                        let (bad_features, bad_material) =
+                            candidate_listwise_features(bad, options.loss.listwise_feature_source);
+                        loss += hard_loss;
+                        pair_count += 1;
+                        pair_weight_sum += options.loss.listwise_hard_negative_weight;
+                        for &feature_idx in good_features {
+                            *w_grads.entry(feature_idx).or_insert(0.0) += grad_diff;
+                        }
+                        for &feature_idx in bad_features {
+                            *w_grads.entry(feature_idx).or_insert(0.0) -= grad_diff;
+                        }
+                        if !freeze_material {
+                            material_grad_total += grad_diff * (good_material - bad_material);
+                        }
+                    }
                 }
             }
         }
@@ -1498,6 +1631,18 @@ fn main() -> Result<()> {
             "--extra-valid-best-weight must be finite and non-negative"
         ));
     }
+    if !args.listwise_hard_negative_weight.is_finite() || args.listwise_hard_negative_weight < 0.0 {
+        return Err(anyhow!(
+            "--listwise-hard-negative-weight must be finite and non-negative"
+        ));
+    }
+    if !args.listwise_hard_negative_min_regret_cp.is_finite()
+        || args.listwise_hard_negative_min_regret_cp < 0.0
+    {
+        return Err(anyhow!(
+            "--listwise-hard-negative-min-regret-cp must be finite and non-negative"
+        ));
+    }
     if args.max_pairs_per_sample == 0 {
         return Err(anyhow!("--max-pairs-per-sample must be greater than 0"));
     }
@@ -1548,6 +1693,8 @@ fn main() -> Result<()> {
         model_temperature_cp: args.model_temperature_cp,
         teacher_temperature_cp: args.teacher_temperature_cp,
         listwise_feature_source: args.listwise_feature_source,
+        listwise_hard_negative_weight: args.listwise_hard_negative_weight,
+        listwise_hard_negative_min_regret_cp: args.listwise_hard_negative_min_regret_cp,
     };
     let train_options = TrainOptions {
         loss: loss_options,
