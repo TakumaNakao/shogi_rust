@@ -289,3 +289,50 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/search_profile \
 ```
 
 候補重みは、まず現行重みとの40局以上の比較で悪化しないことを確認し、良い候補だけ100局以上で検証します。採用する重みはGit管理せず、GitHub Releaseのassetとして手動アップロードします。
+
+### 長期学習向けデータ基盤
+
+短期的な棋譜手一致率だけではなく、探索と整合する強い評価関数を作るため、CSAから再現可能なdataset manifest付きJSONLを作成できます。出力はストリーミングされるため、大量棋譜でも局面を全件メモリに保持しません。
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin dataset_build
+
+env RUST_FONTCONFIG_DLOPEN=1 target/release/dataset_build \
+  --input data/wdoor/extract/2023 \
+  --input data/wdoor/extract/2024 \
+  --input data/wdoor/extract/2025 \
+  --input data/wdoor/extract/2026 \
+  --output-dir data/training/rank_value_v2_wdoor2023_2026_r4000 \
+  --min-player-rate 4000 \
+  --decisive-only \
+  --exclude-loser-after-ply 100 \
+  --min-ply 1 \
+  --max-ply 140 \
+  --valid-percent 5 \
+  --test-percent 5 \
+  --seed 9601
+```
+
+出力:
+
+- `train.jsonl`
+- `valid.jsonl`
+- `test.jsonl`
+- `manifest.json`
+
+MMTO/tree dumpはチャンク処理に対応しています。`POSITION_CHUNK_SIZE` を小さくするとメモリ使用量を抑えられ、大きくすると並列処理の効率が上がります。
+
+```bash
+POSITION_CHUNK_SIZE=1024 JOBS="$(nproc)" bash tools/run_mmto_rerank_pipeline.sh
+```
+
+既存dumpや新規dumpの品質確認には `rank_stats` を使います。
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin rank_stats
+
+env RUST_FONTCONFIG_DLOPEN=1 target/release/rank_stats \
+  --input data/mmto/runs/<run>/train.tree.jsonl \
+  --input data/mmto/runs/<run>/valid.tree.jsonl \
+  --json-output data/mmto/runs/<run>/rank_stats.json
+```

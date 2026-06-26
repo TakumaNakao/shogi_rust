@@ -12,6 +12,7 @@ WEIGHTS="${WEIGHTS:-policy_weights_v2.1.0.binary}"
 TEACHER_WEIGHTS="${TEACHER_WEIGHTS:-$WEIGHTS}"
 POSITIONS="${POSITIONS:-taya36.sfen}"
 MAX_POSITIONS="${MAX_POSITIONS:-3000}"
+POSITION_CHUNK_SIZE="${POSITION_CHUNK_SIZE:-1024}"
 VALID_PERCENT="${VALID_PERCENT:-10}"
 JOBS="${JOBS:-$(nproc)}"
 TEACHER_SCORE_TOP="${TEACHER_SCORE_TOP:-16}"
@@ -68,6 +69,7 @@ echo "WEIGHTS=$WEIGHTS"
 echo "TEACHER_WEIGHTS=$TEACHER_WEIGHTS"
 echo "POSITIONS=$POSITIONS"
 echo "MAX_POSITIONS=$MAX_POSITIONS"
+echo "POSITION_CHUNK_SIZE=$POSITION_CHUNK_SIZE"
 echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH"
 echo "TEACHER_SCORE_TOP=$TEACHER_SCORE_TOP CANDIDATE_TOP=$CANDIDATE_TOP SCORE_ALL_LEGAL_FOR_VALID=$SCORE_ALL_LEGAL_FOR_VALID"
 echo "BAD_CANDIDATE_SCOPE=$BAD_CANDIDATE_SCOPE MIN_REGRET_CP=$MIN_REGRET_CP MAX_PAIRS_PER_SAMPLE=$MAX_PAIRS_PER_SAMPLE"
@@ -83,6 +85,7 @@ fi
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
   --bin mmto_tree_dump \
+  --bin rank_stats \
   --bin mmto_tree_train \
   --bin mmto_score_gate \
   --bin mmto_rerank_gate \
@@ -99,6 +102,7 @@ dump_args=(
   --teacher-score-top "$TEACHER_SCORE_TOP"
   --candidate-top "$CANDIDATE_TOP"
   --max-positions "$MAX_POSITIONS"
+  --position-chunk-size "$POSITION_CHUNK_SIZE"
   --valid-percent "$VALID_PERCENT"
   --seed 7101
   --jobs "$JOBS"
@@ -114,6 +118,12 @@ fi
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_dump \
   "${dump_args[@]}" \
   | tee "$RUN_DIR/dump_stdout.log"
+
+env RUST_FONTCONFIG_DLOPEN=1 target/release/rank_stats \
+  --input "$RUN_DIR/train.tree.jsonl" \
+  --input "$RUN_DIR/valid.tree.jsonl" \
+  --json-output "$RUN_DIR/rank_stats.json" \
+  | tee "$RUN_DIR/rank_stats_stdout.log"
 
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --weights "$WEIGHTS" \

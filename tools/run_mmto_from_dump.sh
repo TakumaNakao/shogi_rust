@@ -110,10 +110,17 @@ print(f"score_positions={len(seen)}")
 PY
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+  --bin rank_stats \
   --bin mmto_tree_train \
   --bin mmto_score_gate \
   --bin mmto_rerank_gate \
   --bin adjust_weights
+
+env RUST_FONTCONFIG_DLOPEN=1 target/release/rank_stats \
+  --input "$RUN_DIR/train.tree.jsonl" \
+  --input "$RUN_DIR/valid.tree.jsonl" \
+  --json-output "$RUN_DIR/rank_stats.json" \
+  | tee "$RUN_DIR/rank_stats_stdout.log"
 
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --weights "$WEIGHTS" \

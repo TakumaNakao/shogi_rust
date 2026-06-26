@@ -89,3 +89,11 @@ path = "src/bin/mmto_rerank_gate.rs"
 [[bin]]
 name = "csa_policy_dump"
 path = "src/bin/csa_policy_dump.rs"
+
+[[bin]]
+name = "dataset_build"
+path = "src/bin/dataset_build.rs"
+
+[[bin]]
+name = "rank_stats"
+path = "src/bin/rank_stats.rs"

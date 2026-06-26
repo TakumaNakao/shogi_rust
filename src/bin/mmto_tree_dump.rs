@@ -1,7 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use rand::prelude::*;
-use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use serde::Serialize;
 use shogi_ai::ai::ShogiAI;
@@ -11,7 +9,7 @@ use shogi_core::{Color, Move};
 use shogi_lib::Position;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 const HISTORY_CAPACITY: usize = 256;
@@ -40,6 +38,8 @@ struct Args {
     candidate_top: usize,
     #[arg(long)]
     max_positions: Option<usize>,
+    #[arg(long, default_value_t = 1024)]
+    position_chunk_size: usize,
     #[arg(long, default_value_t = 10)]
     valid_percent: u8,
     #[arg(long, default_value_t = 9601)]
@@ -148,38 +148,6 @@ fn sanitize_score(score: f32) -> f32 {
     }
 }
 
-fn load_positions(
-    paths: &[PathBuf],
-    max_positions: Option<usize>,
-    seed: u64,
-) -> Result<(Vec<Position>, usize)> {
-    let mut positions = Vec::new();
-    let mut invalid_positions = 0usize;
-
-    for path in paths {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        for line in content.lines() {
-            if let Some(position) = position_from_sfen_or_usi(line) {
-                positions.push(position);
-            } else {
-                invalid_positions += 1;
-            }
-        }
-    }
-
-    if positions.is_empty() {
-        return Err(anyhow!("no valid positions loaded"));
-    }
-
-    let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    positions.shuffle(&mut rng);
-    if let Some(max_positions) = max_positions {
-        positions.truncate(max_positions);
-    }
-    Ok((positions, invalid_positions))
-}
-
 fn create_writer(path: &Path) -> Result<BufWriter<File>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -188,6 +156,17 @@ fn create_writer(path: &Path) -> Result<BufWriter<File>> {
     Ok(BufWriter::new(File::create(path).with_context(|| {
         format!("failed to create {}", path.display())
     })?))
+}
+
+fn skip_reason_key(reason: SkipReason) -> &'static str {
+    match reason {
+        SkipReason::EmptyLegalMoves => "empty_legal_moves",
+        SkipReason::InCheck => "exclude_in_check",
+        SkipReason::FewLegalMoves => "min_legal_moves",
+        SkipReason::NoCandidateScores => "no_candidate_scores",
+        SkipReason::RootScoreOutOfRange => "max_abs_root_score",
+        SkipReason::SearchFailed => "search_failed",
+    }
 }
 
 fn child_search_candidate(
@@ -575,6 +554,91 @@ fn make_record(
     }
 }
 
+struct DumpStats {
+    total_positions: usize,
+    invalid_positions: usize,
+    train_count: usize,
+    valid_count: usize,
+    skip_reasons: BTreeMap<String, usize>,
+}
+
+impl DumpStats {
+    fn new() -> Self {
+        Self {
+            total_positions: 0,
+            invalid_positions: 0,
+            train_count: 0,
+            valid_count: 0,
+            skip_reasons: BTreeMap::new(),
+        }
+    }
+
+    fn record_skip(&mut self, reason: SkipReason) {
+        *self
+            .skip_reasons
+            .entry(skip_reason_key(reason).to_string())
+            .or_insert(0) += 1;
+    }
+}
+
+fn is_valid_position(index: usize, valid_percent: u8) -> bool {
+    if valid_percent == 0 {
+        return false;
+    }
+    let stride = (100 / valid_percent as usize).max(1);
+    index % stride == 0
+}
+
+fn process_position_chunk(
+    chunk: Vec<(usize, Position)>,
+    teacher_model: &SparseModel,
+    student_model: &SparseModel,
+    args: &Args,
+    train_writer: &mut BufWriter<File>,
+    valid_writer: &mut BufWriter<File>,
+    stats: &mut DumpStats,
+) -> Result<()> {
+    let mut results = chunk
+        .into_par_iter()
+        .map(|(index, position)| {
+            let is_valid = is_valid_position(index, args.valid_percent);
+            make_record(
+                index,
+                position,
+                teacher_model,
+                student_model,
+                args,
+                is_valid,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut dumped = Vec::new();
+    for item in results.drain(..) {
+        if let Some(reason) = item.reason {
+            stats.record_skip(reason);
+            continue;
+        }
+        if let Some(record) = item.record {
+            dumped.push(record);
+        }
+    }
+    dumped.sort_unstable_by_key(|record| record.index);
+
+    for record in dumped {
+        if record.is_valid {
+            writeln!(valid_writer, "{}", record.line)
+                .with_context(|| format!("failed to write {}", args.valid_output.display()))?;
+            stats.valid_count += 1;
+        } else {
+            writeln!(train_writer, "{}", record.line)
+                .with_context(|| format!("failed to write {}", args.train_output.display()))?;
+            stats.train_count += 1;
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -604,6 +668,9 @@ fn main() -> Result<()> {
     if args.jsonl_version == 0 {
         return Err(anyhow!("--jsonl-version must be at least 1"));
     }
+    if args.position_chunk_size == 0 {
+        return Err(anyhow!("--position-chunk-size must be greater than zero"));
+    }
     if args.jobs > 0 {
         rayon::ThreadPoolBuilder::new()
             .num_threads(args.jobs)
@@ -628,74 +695,64 @@ fn main() -> Result<()> {
 
     println!("student model: {}", args.student_weights.display());
     println!("teacher model: {}", teacher_weights.display());
-
-    let (positions, invalid_positions) =
-        load_positions(&args.input, args.max_positions, args.seed)?;
-    let total_positions = positions.len();
-    let valid_stride = if args.valid_percent == 0 {
-        usize::MAX
-    } else {
-        (100 / args.valid_percent as usize).max(1)
-    };
-
-    let mut skip_reasons: BTreeMap<String, usize> = BTreeMap::new();
-    if invalid_positions > 0 {
-        skip_reasons.insert("invalid_sfen".to_string(), invalid_positions);
-    }
-
-    let mut results = positions
-        .into_par_iter()
-        .enumerate()
-        .map(|(index, position)| {
-            let is_valid = valid_stride != usize::MAX && index % valid_stride == 0;
-            make_record(
-                index,
-                position,
-                &teacher_model,
-                &student_model,
-                &args,
-                is_valid,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let mut dumped = Vec::new();
-    for item in results.drain(..) {
-        if let Some(reason) = item.reason {
-            let key = match reason {
-                SkipReason::EmptyLegalMoves => "empty_legal_moves",
-                SkipReason::InCheck => "exclude_in_check",
-                SkipReason::FewLegalMoves => "min_legal_moves",
-                SkipReason::NoCandidateScores => "no_candidate_scores",
-                SkipReason::RootScoreOutOfRange => "max_abs_root_score",
-                SkipReason::SearchFailed => "search_failed",
-            };
-            *skip_reasons.entry(key.to_string()).or_insert(0) += 1;
-            continue;
-        }
-        if let Some(record) = item.record {
-            dumped.push(record);
-        }
-    }
-
-    dumped.sort_unstable_by_key(|record| record.index);
+    println!(
+        "streaming positions with chunk size {}",
+        args.position_chunk_size
+    );
 
     let mut train_writer = create_writer(&args.train_output)?;
     let mut valid_writer = create_writer(&args.valid_output)?;
-    let mut train_count = 0usize;
-    let mut valid_count = 0usize;
+    let mut stats = DumpStats::new();
+    let mut chunk = Vec::with_capacity(args.position_chunk_size);
 
-    for record in dumped {
-        if record.is_valid {
-            writeln!(valid_writer, "{}", record.line)
-                .with_context(|| format!("failed to write {}", args.valid_output.display()))?;
-            valid_count += 1;
-        } else {
-            writeln!(train_writer, "{}", record.line)
-                .with_context(|| format!("failed to write {}", args.train_output.display()))?;
-            train_count += 1;
+    'outer: for path in &args.input {
+        let file =
+            File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            if args
+                .max_positions
+                .is_some_and(|limit| stats.total_positions >= limit)
+            {
+                break 'outer;
+            }
+            let line = line.with_context(|| format!("failed to read {}", path.display()))?;
+            let Some(position) = position_from_sfen_or_usi(&line) else {
+                stats.invalid_positions += 1;
+                continue;
+            };
+            let index = stats.total_positions;
+            stats.total_positions += 1;
+            chunk.push((index, position));
+            if chunk.len() >= args.position_chunk_size {
+                let current = std::mem::take(&mut chunk);
+                process_position_chunk(
+                    current,
+                    &teacher_model,
+                    &student_model,
+                    &args,
+                    &mut train_writer,
+                    &mut valid_writer,
+                    &mut stats,
+                )?;
+            }
         }
     }
+    if !chunk.is_empty() {
+        process_position_chunk(
+            chunk,
+            &teacher_model,
+            &student_model,
+            &args,
+            &mut train_writer,
+            &mut valid_writer,
+            &mut stats,
+        )?;
+    }
+    if stats.total_positions == 0 {
+        return Err(anyhow!("no valid positions loaded"));
+    }
+
     train_writer
         .flush()
         .with_context(|| format!("failed to flush {}", args.train_output.display()))?;
@@ -703,14 +760,19 @@ fn main() -> Result<()> {
         .flush()
         .with_context(|| format!("failed to flush {}", args.valid_output.display()))?;
 
-    println!("total positions: {total_positions}");
-    println!("train records: {train_count}");
-    println!("valid records: {valid_count}");
+    println!("total positions: {}", stats.total_positions);
+    println!("train records: {}", stats.train_count);
+    println!("valid records: {}", stats.valid_count);
     println!(
         "skipped positions: {}",
-        total_positions.saturating_sub(train_count + valid_count)
+        stats
+            .total_positions
+            .saturating_sub(stats.train_count + stats.valid_count)
     );
-    for (reason, count) in skip_reasons {
+    if stats.invalid_positions > 0 {
+        println!("skipped[invalid_sfen]: {}", stats.invalid_positions);
+    }
+    for (reason, count) in stats.skip_reasons {
         println!("skipped[{reason}]: {count}");
     }
 
