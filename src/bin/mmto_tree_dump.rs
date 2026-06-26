@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 const HISTORY_CAPACITY: usize = 256;
 const SCORE_LIMIT: f32 = 100_000.0;
+const PV_SIBLING_ROOT_INDEX_OFFSET: usize = 1_000_000_000;
 
 #[derive(Parser, Debug)]
 #[command(about = "Dump root candidate tree records for MMTO tree regeneration")]
@@ -56,6 +57,10 @@ struct Args {
     max_abs_root_score: Option<f32>,
     #[arg(long, default_value_t = false)]
     score_all_legal_for_valid: bool,
+    #[arg(long, default_value_t = false)]
+    emit_pv_sibling_nodes: bool,
+    #[arg(long, default_value_t = 2)]
+    pv_sibling_max_plies: usize,
     #[arg(long, default_value_t = 1)]
     jsonl_version: u8,
 }
@@ -142,6 +147,7 @@ struct ProcessedRecord {
 
 struct PerRootResult {
     record: Option<ProcessedRecord>,
+    sibling_records: Vec<ProcessedRecord>,
     reason: Option<SkipReason>,
 }
 
@@ -245,6 +251,60 @@ fn search_root(model: &SparseModel, root: &Position, depth: u8) -> Option<(f32, 
         .map(|(score, pv)| (sanitize_score(score), pv))
 }
 
+fn gather_pv_sibling_records(
+    root_index: usize,
+    root_position: Position,
+    teacher_model: &SparseModel,
+    student_model: &SparseModel,
+    args: &Args,
+    is_valid: bool,
+    max_plies: usize,
+) -> Vec<ProcessedRecord> {
+    if max_plies == 0 {
+        return Vec::new();
+    }
+    let (_, teacher_root_pv) = match search_root(teacher_model, &root_position, args.teacher_depth)
+    {
+        Some(value) => value,
+        None => return Vec::new(),
+    };
+    let (_, student_root_pv) = match search_root(student_model, &root_position, args.student_depth)
+    {
+        Some(value) => value,
+        None => return Vec::new(),
+    };
+
+    let mut sibling_records = Vec::new();
+    let mut sibling_ordinal = 0usize;
+
+    for pv in [&teacher_root_pv, &student_root_pv] {
+        let mut sibling_position = root_position.clone();
+        for mv in pv.iter().take(max_plies) {
+            if !sibling_position.legal_moves().contains(mv) {
+                break;
+            }
+            sibling_position.do_move(*mv);
+            let sibling_index = PV_SIBLING_ROOT_INDEX_OFFSET
+                .saturating_add(root_index.saturating_mul(1000))
+                .saturating_add(sibling_ordinal + 1);
+            let sibling_record = make_record(
+                sibling_index,
+                sibling_position.clone(),
+                teacher_model,
+                student_model,
+                args,
+                is_valid,
+            );
+            sibling_ordinal = sibling_ordinal.saturating_add(1);
+            if let Some(record) = sibling_record.record {
+                sibling_records.push(record);
+            }
+        }
+    }
+
+    sibling_records
+}
+
 fn evaluate_root_oriented(model: &SparseModel, root_turn: Color, position: &Position) -> f32 {
     let score = model.predict_from_position(position);
     let oriented = if position.side_to_move() == root_turn {
@@ -307,18 +367,21 @@ fn make_record(
     if legal_moves.is_empty() {
         return PerRootResult {
             record: None,
+            sibling_records: Vec::new(),
             reason: Some(SkipReason::EmptyLegalMoves),
         };
     }
     if args.min_legal_moves > 0 && legal_moves.len() < args.min_legal_moves {
         return PerRootResult {
             record: None,
+            sibling_records: Vec::new(),
             reason: Some(SkipReason::FewLegalMoves),
         };
     }
     if args.exclude_in_check && position.in_check() {
         return PerRootResult {
             record: None,
+            sibling_records: Vec::new(),
             reason: Some(SkipReason::InCheck),
         };
     }
@@ -349,6 +412,7 @@ fn make_record(
     if teacher_candidates.is_empty() {
         return PerRootResult {
             record: None,
+            sibling_records: Vec::new(),
             reason: Some(SkipReason::NoCandidateScores),
         };
     }
@@ -366,6 +430,7 @@ fn make_record(
             None => {
                 return PerRootResult {
                     record: None,
+                    sibling_records: Vec::new(),
                     reason: Some(SkipReason::SearchFailed),
                 };
             }
@@ -377,6 +442,7 @@ fn make_record(
     {
         return PerRootResult {
             record: None,
+            sibling_records: Vec::new(),
             reason: Some(SkipReason::RootScoreOutOfRange),
         };
     }
@@ -410,6 +476,7 @@ fn make_record(
             None => {
                 return PerRootResult {
                     record: None,
+                    sibling_records: Vec::new(),
                     reason: Some(SkipReason::SearchFailed),
                 };
             }
@@ -486,6 +553,7 @@ fn make_record(
     if student_scores.is_empty() {
         return PerRootResult {
             record: None,
+            sibling_records: Vec::new(),
             reason: Some(SkipReason::SearchFailed),
         };
     }
@@ -589,6 +657,7 @@ fn make_record(
         Err(_) => {
             return PerRootResult {
                 record: None,
+                sibling_records: Vec::new(),
                 reason: Some(SkipReason::SearchFailed),
             };
         }
@@ -600,6 +669,7 @@ fn make_record(
             is_valid,
             line,
         }),
+        sibling_records: Vec::new(),
         reason: None,
     }
 }
@@ -609,6 +679,8 @@ struct DumpStats {
     invalid_positions: usize,
     train_count: usize,
     valid_count: usize,
+    root_records: usize,
+    pv_sibling_records: usize,
     skip_reasons: BTreeMap<String, usize>,
 }
 
@@ -619,6 +691,8 @@ impl DumpStats {
             invalid_positions: 0,
             train_count: 0,
             valid_count: 0,
+            root_records: 0,
+            pv_sibling_records: 0,
             skip_reasons: BTreeMap::new(),
         }
     }
@@ -652,14 +726,38 @@ fn process_position_chunk(
         .into_par_iter()
         .map(|(index, position)| {
             let is_valid = is_valid_position(index, args.valid_percent);
-            make_record(
-                index,
-                position,
-                teacher_model,
-                student_model,
-                args,
-                is_valid,
-            )
+            if args.emit_pv_sibling_nodes {
+                let mut root_result = make_record(
+                    index,
+                    position.clone(),
+                    teacher_model,
+                    student_model,
+                    args,
+                    is_valid,
+                );
+                if root_result.reason.is_none() {
+                    let sibling_records = gather_pv_sibling_records(
+                        index,
+                        position,
+                        teacher_model,
+                        student_model,
+                        args,
+                        is_valid,
+                        args.pv_sibling_max_plies,
+                    );
+                    root_result.sibling_records = sibling_records;
+                }
+                root_result
+            } else {
+                make_record(
+                    index,
+                    position,
+                    teacher_model,
+                    student_model,
+                    args,
+                    is_valid,
+                )
+            }
         })
         .collect::<Vec<_>>();
 
@@ -670,7 +768,14 @@ fn process_position_chunk(
             continue;
         }
         if let Some(record) = item.record {
+            stats.root_records = stats.root_records.saturating_add(1);
             dumped.push(record);
+        }
+        if !item.sibling_records.is_empty() {
+            stats.pv_sibling_records = stats
+                .pv_sibling_records
+                .saturating_add(item.sibling_records.len());
+            dumped.extend(item.sibling_records);
         }
     }
     dumped.sort_unstable_by_key(|record| record.index);
@@ -820,11 +925,11 @@ fn main() -> Result<()> {
     println!("total positions: {}", stats.total_positions);
     println!("train records: {}", stats.train_count);
     println!("valid records: {}", stats.valid_count);
+    println!("root records: {}", stats.root_records);
+    println!("pv sibling records: {}", stats.pv_sibling_records);
     println!(
         "skipped positions: {}",
-        stats
-            .total_positions
-            .saturating_sub(stats.train_count + stats.valid_count)
+        stats.total_positions.saturating_sub(stats.root_records)
     );
     if stats.invalid_positions > 0 {
         println!("skipped[invalid_sfen]: {}", stats.invalid_positions);
