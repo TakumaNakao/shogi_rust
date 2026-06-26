@@ -39,6 +39,10 @@ struct Args {
     margin_cp: f32,
     #[arg(long, default_value_t = 100.0)]
     softplus_temp_cp: f32,
+    #[arg(long, default_value_t = 80.0)]
+    teacher_temperature_cp: f32,
+    #[arg(long, default_value_t = 80.0)]
+    model_temperature_cp: f32,
     #[arg(long, default_value_t = 2)]
     teacher_top_k: usize,
     #[arg(long, default_value_t = 5)]
@@ -83,6 +87,8 @@ struct Args {
     dry_run: bool,
     #[arg(long, default_value_t = false)]
     stream_train: bool,
+    #[arg(long, value_enum, default_value_t = LossMode::Pairwise)]
+    loss_mode: LossMode,
     #[arg(long, default_value_t = 0)]
     stream_train_eval_max_samples: usize,
 }
@@ -110,6 +116,13 @@ enum BestMetric {
     Bad50Regret,
     #[value(name = "capped-selected-regret")]
     CappedSelectedRegret,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LossMode {
+    Pairwise,
+    #[value(name = "listwise-leaf")]
+    ListwiseLeaf,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -240,8 +253,11 @@ struct PairOptions {
 
 #[derive(Clone, Copy)]
 struct LossOptions {
+    mode: LossMode,
     margin_cp: f32,
     softplus_temp_cp: f32,
+    model_temperature_cp: f32,
+    teacher_temperature_cp: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -387,6 +403,82 @@ fn softplus(x: f32) -> f32 {
     }
 }
 
+fn listwise_distribution(
+    sample: &Sample,
+    model: &SparseModel,
+    model_temperature_cp: f32,
+    teacher_temperature_cp: f32,
+) -> Option<(Vec<f32>, Vec<f32>)> {
+    if sample.candidates.is_empty()
+        || !model_temperature_cp.is_finite()
+        || model_temperature_cp <= 0.0
+    {
+        return None;
+    }
+    if !teacher_temperature_cp.is_finite() || teacher_temperature_cp <= 0.0 {
+        return None;
+    }
+
+    let mut teacher_scores = Vec::with_capacity(sample.candidates.len());
+    let mut model_scores = Vec::with_capacity(sample.candidates.len());
+    for candidate in &sample.candidates {
+        let (features, material) = candidate_leaf_features_listwise(candidate);
+        teacher_scores.push(candidate.teacher_score);
+        model_scores.push(model.predict_with_material(features, material));
+    }
+
+    let max_teacher = teacher_scores
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    if !max_teacher.is_finite() {
+        return None;
+    }
+    let max_model = model_scores
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    if !max_model.is_finite() {
+        return None;
+    }
+
+    let mut teacher_exp = Vec::with_capacity(sample.candidates.len());
+    let mut teacher_total = 0.0f32;
+    for score in teacher_scores {
+        let exp = ((score - max_teacher) / teacher_temperature_cp).exp();
+        if !exp.is_finite() {
+            return None;
+        }
+        teacher_exp.push(exp);
+        teacher_total += exp;
+    }
+    if teacher_total <= 0.0 || !teacher_total.is_finite() {
+        return None;
+    }
+
+    let mut model_exp = Vec::with_capacity(sample.candidates.len());
+    let mut model_total = 0.0f32;
+    for score in model_scores {
+        let exp = ((score - max_model) / model_temperature_cp).exp();
+        if !exp.is_finite() {
+            return None;
+        }
+        model_exp.push(exp);
+        model_total += exp;
+    }
+    if model_total <= 0.0 || !model_total.is_finite() {
+        return None;
+    }
+
+    for p in &mut teacher_exp {
+        *p /= teacher_total;
+    }
+    for p in &mut model_exp {
+        *p /= model_total;
+    }
+    Some((teacher_exp, model_exp))
+}
+
 fn ensure_finite_model(model: &SparseModel) -> Result<()> {
     if !model.w.iter().all(|value| value.is_finite()) || !model.material_coeff.is_finite() {
         return Err(anyhow!("model contains NaN or inf"));
@@ -435,6 +527,16 @@ fn candidate_leaf_features<'a>(
             return (features, *material);
         }
     } else if let Some((features, material)) = candidate.student_leaf.as_ref() {
+        return (features, *material);
+    }
+    (&candidate.move_features, candidate.move_material)
+}
+
+fn candidate_leaf_features_listwise<'a>(candidate: &'a CandidateSample) -> (&'a Vec<usize>, f32) {
+    if let Some((features, material)) = candidate.teacher_leaf.as_ref() {
+        return (features, *material);
+    }
+    if let Some((features, material)) = candidate.student_leaf.as_ref() {
         return (features, *material);
     }
     (&candidate.move_features, candidate.move_material)
@@ -601,19 +703,43 @@ fn accumulate_sample_metrics(
         }
     }
 
-    for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model), loss_options) {
-        let good = &sample.candidates[good_idx];
-        let bad = &sample.candidates[bad_idx];
-        let (good_features, good_material) = candidate_leaf_features(good, true);
-        let (bad_features, bad_material) = candidate_leaf_features(bad, false);
-        let diff = model.predict_with_material(good_features, good_material)
-            - model.predict_with_material(bad_features, bad_material);
-        let x = (loss_options.margin_cp - diff) / loss_options.softplus_temp_cp;
-        if x.is_finite() {
-            let weight = pair_weight(good, bad, pair_options);
-            metrics.loss += weight * loss_options.softplus_temp_cp * softplus(x);
-            metrics.pair_weight_sum += weight;
-            metrics.pair_count += 1;
+    match loss_options.mode {
+        LossMode::Pairwise => {
+            for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model), loss_options)
+            {
+                let good = &sample.candidates[good_idx];
+                let bad = &sample.candidates[bad_idx];
+                let (good_features, good_material) = candidate_leaf_features(good, true);
+                let (bad_features, bad_material) = candidate_leaf_features(bad, false);
+                let diff = model.predict_with_material(good_features, good_material)
+                    - model.predict_with_material(bad_features, bad_material);
+                let x = (loss_options.margin_cp - diff) / loss_options.softplus_temp_cp;
+                if x.is_finite() {
+                    let weight = pair_weight(good, bad, pair_options);
+                    metrics.loss += weight * loss_options.softplus_temp_cp * softplus(x);
+                    metrics.pair_weight_sum += weight;
+                    metrics.pair_count += 1;
+                }
+            }
+        }
+        LossMode::ListwiseLeaf => {
+            if let Some((teacher_probs, model_probs)) = listwise_distribution(
+                sample,
+                model,
+                loss_options.model_temperature_cp,
+                loss_options.teacher_temperature_cp,
+            ) {
+                let mut sample_loss = 0.0;
+                for (idx, target_prob) in teacher_probs.iter().copied().enumerate() {
+                    let student_prob = model_probs[idx];
+                    if target_prob > 0.0 {
+                        sample_loss -= target_prob * student_prob.max(1e-7).ln();
+                    }
+                    metrics.pair_count += 1;
+                }
+                metrics.loss += sample_loss;
+                metrics.pair_weight_sum += 1.0;
+            }
         }
     }
 }
@@ -668,32 +794,67 @@ fn update_sample_refs_with_softplus(
     let mut pair_weight_sum = 0.0f32;
 
     for sample in samples {
-        for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model), &options.loss) {
-            let good = &sample.candidates[good_idx];
-            let bad = &sample.candidates[bad_idx];
-            let (good_features, good_material) = candidate_leaf_features(good, true);
-            let (bad_features, bad_material) = candidate_leaf_features(bad, false);
-            let diff = model.predict_with_material(good_features, good_material)
-                - model.predict_with_material(bad_features, bad_material);
-            let x = (options.loss.margin_cp - diff) / options.loss.softplus_temp_cp;
-            if !x.is_finite() {
-                continue;
-            }
+        match options.loss.mode {
+            LossMode::Pairwise => {
+                for (good_idx, bad_idx) in
+                    pair_indices(sample, pair_options, Some(model), &options.loss)
+                {
+                    let good = &sample.candidates[good_idx];
+                    let bad = &sample.candidates[bad_idx];
+                    let (good_features, good_material) = candidate_leaf_features(good, true);
+                    let (bad_features, bad_material) = candidate_leaf_features(bad, false);
+                    let diff = model.predict_with_material(good_features, good_material)
+                        - model.predict_with_material(bad_features, bad_material);
+                    let x = (options.loss.margin_cp - diff) / options.loss.softplus_temp_cp;
+                    if !x.is_finite() {
+                        continue;
+                    }
 
-            let weight = pair_weight(good, bad, pair_options);
-            loss += weight * options.loss.softplus_temp_cp * softplus(x);
-            let grad_diff = -sigmoid(x) * weight;
-            pair_count += 1;
-            pair_weight_sum += weight;
+                    let weight = pair_weight(good, bad, pair_options);
+                    loss += weight * options.loss.softplus_temp_cp * softplus(x);
+                    let grad_diff = -sigmoid(x) * weight;
+                    pair_count += 1;
+                    pair_weight_sum += weight;
 
-            for &feature_idx in good_features {
-                *w_grads.entry(feature_idx).or_insert(0.0) += grad_diff;
+                    for &feature_idx in good_features {
+                        *w_grads.entry(feature_idx).or_insert(0.0) += grad_diff;
+                    }
+                    for &feature_idx in bad_features {
+                        *w_grads.entry(feature_idx).or_insert(0.0) -= grad_diff;
+                    }
+                    if !freeze_material {
+                        material_grad_total += grad_diff * (good_material - bad_material);
+                    }
+                }
             }
-            for &feature_idx in bad_features {
-                *w_grads.entry(feature_idx).or_insert(0.0) -= grad_diff;
-            }
-            if !freeze_material {
-                material_grad_total += grad_diff * (good_material - bad_material);
+            LossMode::ListwiseLeaf => {
+                if let Some((teacher_probs, model_probs)) = listwise_distribution(
+                    sample,
+                    model,
+                    options.loss.model_temperature_cp,
+                    options.loss.teacher_temperature_cp,
+                ) {
+                    let mut sample_loss = 0.0f32;
+                    for (idx, (teacher_prob, model_prob)) in
+                        teacher_probs.iter().zip(model_probs.iter()).enumerate()
+                    {
+                        if *teacher_prob > 0.0 {
+                            sample_loss -= *teacher_prob * model_prob.max(1e-7).ln();
+                        }
+                        let delta = (model_prob - teacher_prob) / options.loss.model_temperature_cp;
+                        let (features, material) =
+                            candidate_leaf_features_listwise(&sample.candidates[idx]);
+                        for &feature_idx in features {
+                            *w_grads.entry(feature_idx).or_insert(0.0) += delta;
+                        }
+                        if !freeze_material {
+                            material_grad_total += delta * material;
+                        }
+                        pair_count += 1;
+                    }
+                    loss += sample_loss;
+                    pair_weight_sum += 1.0;
+                }
             }
         }
     }
@@ -1252,6 +1413,12 @@ fn main() -> Result<()> {
     if !args.softplus_temp_cp.is_finite() || args.softplus_temp_cp <= 0.0 {
         return Err(anyhow!("--softplus-temp-cp must be positive"));
     }
+    if !args.teacher_temperature_cp.is_finite() || args.teacher_temperature_cp <= 0.0 {
+        return Err(anyhow!("--teacher-temperature-cp must be positive"));
+    }
+    if !args.model_temperature_cp.is_finite() || args.model_temperature_cp <= 0.0 {
+        return Err(anyhow!("--model-temperature-cp must be positive"));
+    }
     if args.teacher_top_k == 0 {
         return Err(anyhow!("--teacher-top-k must be greater than 0"));
     }
@@ -1311,8 +1478,11 @@ fn main() -> Result<()> {
         max_pair_weight: args.max_pair_weight,
     };
     let loss_options = LossOptions {
+        mode: args.loss_mode,
         margin_cp: args.margin_cp,
         softplus_temp_cp: args.softplus_temp_cp,
+        model_temperature_cp: args.model_temperature_cp,
+        teacher_temperature_cp: args.teacher_temperature_cp,
     };
     let train_options = TrainOptions {
         loss: loss_options,
