@@ -105,3 +105,7 @@ path = "src/bin/rank_stats.rs"
 [[bin]]
 name = "bench_failure_miner"
 path = "src/bin/bench_failure_miner.rs"
+
+[[bin]]
+name = "bench_failure_feedback"
+path = "src/bin/bench_failure_feedback.rs"
