@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, ValueEnum};
 use rand::prelude::*;
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha8Rng;
@@ -32,6 +32,10 @@ struct Args {
     batch_size: usize,
     #[arg(long, default_value_t = 0.02)]
     learning_rate: f32,
+    #[arg(long, value_enum, default_value_t = OptimizerKind::Sgd)]
+    optimizer: OptimizerKind,
+    #[arg(long, default_value_t = 1.0e-6)]
+    adagrad_epsilon: f32,
     #[arg(long, default_value_t = 0.0)]
     l2_lambda: f32,
     #[arg(long, default_value_t = 0.0)]
@@ -54,6 +58,12 @@ struct Args {
     freeze_material: bool,
     #[arg(long, default_value_t = 9601)]
     seed: u64,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum OptimizerKind {
+    Sgd,
+    Adagrad,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +114,12 @@ struct EpochMetrics {
     loss_pairs: usize,
     clamped_weights: usize,
     max_abs_delta: f32,
+}
+
+#[derive(Default)]
+struct OptimizerState {
+    w_acc: HashMap<usize, f32>,
+    material_acc: f32,
 }
 
 fn parse_move_for_position(position: &Position, move_text: &str) -> Option<Move> {
@@ -234,7 +250,10 @@ fn gather_candidate_evals(
 
 fn update_batch(
     model: &mut SparseModel,
+    optimizer_state: &mut OptimizerState,
     batch: &[Sample],
+    optimizer: OptimizerKind,
+    adagrad_epsilon: f32,
     margin_cp: f32,
     softplus_temp_cp: f32,
     hard_negatives: usize,
@@ -310,7 +329,16 @@ fn update_batch(
 
     for idx in touched_features {
         let grad = feature_grads.remove(&idx).unwrap_or(0.0) / pair_count;
-        let mut updated = model.w[idx] - model.kpp_eta * (grad + l2_lambda * model.w[idx]);
+        let grad = grad + l2_lambda * model.w[idx];
+        let step = match optimizer {
+            OptimizerKind::Sgd => model.kpp_eta * grad,
+            OptimizerKind::Adagrad => {
+                let acc = optimizer_state.w_acc.entry(idx).or_insert(0.0);
+                *acc += grad * grad;
+                model.kpp_eta * grad / (acc.sqrt() + adagrad_epsilon)
+            }
+        };
+        let mut updated = model.w[idx] - step;
 
         if anchor_l2 > 0.0 {
             updated += anchor_l2 * (initial_weights[idx] - updated);
@@ -332,8 +360,16 @@ fn update_batch(
     }
 
     if !freeze_material {
-        let mut updated = model.material_coeff
-            - model.kpp_eta * (material_grad / pair_count + l2_lambda * model.material_coeff);
+        let material_grad = material_grad / pair_count + l2_lambda * model.material_coeff;
+        let material_step = match optimizer {
+            OptimizerKind::Sgd => model.kpp_eta * material_grad,
+            OptimizerKind::Adagrad => {
+                optimizer_state.material_acc += material_grad * material_grad;
+                model.kpp_eta * material_grad
+                    / (optimizer_state.material_acc.sqrt() + adagrad_epsilon)
+            }
+        };
+        let mut updated = model.material_coeff - material_step;
         if anchor_l2 > 0.0 {
             updated += anchor_l2 * (initial_material - updated);
         }
@@ -460,6 +496,7 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
 
 fn run_training_epoch(
     model: &mut SparseModel,
+    optimizer_state: &mut OptimizerState,
     args: &Args,
     train_paths: &[PathBuf],
     initial_w: &[f32],
@@ -492,7 +529,10 @@ fn run_training_epoch(
             if batch.len() >= args.batch_size {
                 let (batch_metrics, constraints) = update_batch(
                     model,
+                    optimizer_state,
                     &batch,
+                    args.optimizer,
+                    args.adagrad_epsilon,
                     args.margin_cp,
                     args.softplus_temp_cp,
                     args.hard_negatives,
@@ -521,7 +561,10 @@ fn run_training_epoch(
     if !batch.is_empty() {
         let (batch_metrics, constraints) = update_batch(
             model,
+            optimizer_state,
             &batch,
+            args.optimizer,
+            args.adagrad_epsilon,
             args.margin_cp,
             args.softplus_temp_cp,
             args.hard_negatives,
@@ -585,6 +628,9 @@ fn main() -> Result<()> {
     if args.learning_rate <= 0.0 || !args.learning_rate.is_finite() {
         return Err(anyhow!("--learning-rate must be positive"));
     }
+    if args.adagrad_epsilon <= 0.0 || !args.adagrad_epsilon.is_finite() {
+        return Err(anyhow!("--adagrad-epsilon must be positive"));
+    }
     if args.l2_lambda < 0.0 || !args.l2_lambda.is_finite() {
         return Err(anyhow!("--l2-lambda must be non-negative"));
     }
@@ -619,7 +665,13 @@ fn main() -> Result<()> {
         l2_lambda: model.l2_lambda,
     };
 
+    println!(
+        "optimizer={:?} learning_rate={} adagrad_epsilon={}",
+        args.optimizer, args.learning_rate, args.adagrad_epsilon
+    );
+
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
+    let mut optimizer_state = OptimizerState::default();
 
     let mut log_file = if let Some(path) = &args.log_path {
         ensure_parent_dir(path)?;
@@ -678,6 +730,7 @@ fn main() -> Result<()> {
     for epoch in 1..=args.epochs {
         let train_metrics = run_training_epoch(
             &mut model,
+            &mut optimizer_state,
             &args,
             &args.train,
             &initial_model.w,
