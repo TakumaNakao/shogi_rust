@@ -117,12 +117,23 @@ struct PositionLine {
     sfen: String,
     #[serde(default)]
     teacher_move: Option<String>,
+    #[serde(default)]
+    teacher_best_move: Option<String>,
+    #[serde(default)]
+    student_move: Option<String>,
+    #[serde(default)]
+    selected_move: Option<String>,
+    #[serde(default)]
+    candidate_move: Option<String>,
+    #[serde(default)]
+    bad_move: Option<String>,
 }
 
 #[derive(Clone)]
 struct InputPosition {
     position: Position,
     teacher_move: Option<Move>,
+    forced_student_move: Option<Move>,
     invalid_teacher_move: bool,
 }
 
@@ -227,6 +238,19 @@ fn parse_game_teacher_move(
     (Some(move_parsed), false)
 }
 
+fn parse_optional_legal_move(position: &Position, move_text: Option<String>) -> Option<Move> {
+    let raw = move_text?;
+    let move_text = raw.trim();
+    if move_text.is_empty() {
+        return None;
+    }
+    let move_parsed = parse_move_for_position(position, move_text)?;
+    position
+        .legal_moves()
+        .contains(&move_parsed)
+        .then_some(move_parsed)
+}
+
 fn parse_position_line(line: &str) -> Option<InputPosition> {
     let line = line.trim();
     if line.is_empty() {
@@ -235,17 +259,28 @@ fn parse_position_line(line: &str) -> Option<InputPosition> {
     if line.starts_with('{') {
         let record = serde_json::from_str::<PositionLine>(line).ok()?;
         let position = position_from_sfen_or_usi(&record.sfen)?;
+        let teacher_move_text = record.teacher_move.or(record.teacher_best_move);
         let (teacher_move, invalid_teacher_move) =
-            parse_game_teacher_move(&position, record.teacher_move);
+            parse_game_teacher_move(&position, teacher_move_text);
+        let forced_student_move = parse_optional_legal_move(
+            &position,
+            record
+                .student_move
+                .or(record.selected_move)
+                .or(record.candidate_move)
+                .or(record.bad_move),
+        );
         Some(InputPosition {
             position,
             teacher_move,
+            forced_student_move,
             invalid_teacher_move,
         })
     } else {
         position_from_sfen_or_usi(line).map(|position| InputPosition {
             position,
             teacher_move: None,
+            forced_student_move: None,
             invalid_teacher_move: false,
         })
     }
@@ -347,6 +382,7 @@ fn gather_pv_sibling_records(
                 sibling_index,
                 sibling_position.clone(),
                 None,
+                None,
                 teacher_model,
                 student_model,
                 args,
@@ -435,6 +471,7 @@ fn make_record(
     index: usize,
     position: Position,
     game_teacher_move: Option<Move>,
+    forced_student_move: Option<Move>,
     teacher_model: &SparseModel,
     student_model: &SparseModel,
     args: &Args,
@@ -565,12 +602,13 @@ fn make_record(
         .copied()
         .or_else(|| legal_moves.first().copied())
         .unwrap_or(teacher_candidates[0].mv);
+    let selected_student_move = forced_student_move.unwrap_or(student_best_move_for_selection);
 
     if ensure_candidate_score(
         &mut teacher_candidates,
         &position,
         root_turn,
-        student_best_move_for_selection,
+        selected_student_move,
         teacher_model,
         args.teacher_depth,
     ) {
@@ -697,12 +735,12 @@ fn make_record(
             teacher_leaf_score,
             student_leaf_score,
             searched_by_teacher: true,
-            selected_by_student: candidate.mv == student_best_move_for_selection,
+            selected_by_student: candidate.mv == selected_student_move,
             is_game_teacher_move: game_teacher_move.is_some_and(|mv| mv == candidate.mv),
         });
     }
 
-    let student_best_move = format_move_usi(student_best_move_for_selection);
+    let student_best_move = format_move_usi(selected_student_move);
 
     let record = TreeRecord {
         schema: "mmto_tree_v1".to_string(),
@@ -809,6 +847,7 @@ fn process_position_chunk(
                     index,
                     input.position.clone(),
                     input.teacher_move,
+                    input.forced_student_move,
                     teacher_model,
                     student_model,
                     args,
@@ -833,6 +872,7 @@ fn process_position_chunk(
                     index,
                     input.position,
                     input.teacher_move,
+                    input.forced_student_move,
                     teacher_model,
                     student_model,
                     args,

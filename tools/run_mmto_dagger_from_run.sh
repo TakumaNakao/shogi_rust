@@ -20,6 +20,10 @@ CANDIDATE_WEIGHTS="${CANDIDATE_WEIGHTS:-$SOURCE_RUN_DIR/best.raw.binary}"
 BASE_TRAIN="${BASE_TRAIN:-$SOURCE_RUN_DIR/train.tree.jsonl}"
 BASE_VALID="${BASE_VALID:-$SOURCE_RUN_DIR/valid.tree.jsonl}"
 DAGGER_INPUT="${DAGGER_INPUT:-$SOURCE_RUN_DIR/hard_positions.sfen}"
+RERANK_JSON="${RERANK_JSON:-$SOURCE_RUN_DIR/rerank_gate.json}"
+USE_EXPLICIT_HARD_PAIRS="${USE_EXPLICIT_HARD_PAIRS:-1}"
+EXPLICIT_MIN_REGRET_DELTA_CP="${EXPLICIT_MIN_REGRET_DELTA_CP:-0}"
+EXPLICIT_MIN_CANDIDATE_REGRET_CP="${EXPLICIT_MIN_CANDIDATE_REGRET_CP:-0}"
 RUN_DIR="${RUN_DIR:-data/mmto/runs/mmto_dagger_$(date -u +%Y%m%d_%H%M%S)}"
 MIN_FREE_GB="${MIN_FREE_GB:-6}"
 
@@ -73,16 +77,12 @@ RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT="${RERANK_REQUIRE_MATCH_RATE_IMPROVEME
 KEEP_CANDIDATE_RAW="${KEEP_CANDIDATE_RAW:-0}"
 BLEND_RATIOS="${BLEND_RATIOS:-}"
 
-for path in "$WEIGHTS" "$TEACHER_WEIGHTS" "$CANDIDATE_WEIGHTS" "$BASE_TRAIN" "$BASE_VALID" "$DAGGER_INPUT"; do
+for path in "$WEIGHTS" "$TEACHER_WEIGHTS" "$CANDIDATE_WEIGHTS" "$BASE_TRAIN" "$BASE_VALID"; do
   if [[ ! -f "$path" ]]; then
     echo "missing required file: $path" >&2
     exit 1
   fi
 done
-if [[ ! -s "$DAGGER_INPUT" ]]; then
-  echo "dagger input is empty: $DAGGER_INPUT" >&2
-  exit 1
-fi
 
 FREE_KB="$(df -Pk . | awk 'NR==2 {print $4}')"
 MIN_FREE_KB=$((MIN_FREE_GB * 1024 * 1024))
@@ -93,6 +93,27 @@ fi
 
 mkdir -p "$RUN_DIR"
 
+if [[ "$USE_EXPLICIT_HARD_PAIRS" == "1" ]]; then
+  if [[ ! -f "$RERANK_JSON" ]]; then
+    echo "missing rerank json for explicit hard pairs: $RERANK_JSON" >&2
+    exit 1
+  fi
+  DAGGER_INPUT="$RUN_DIR/dagger_input_pairs.jsonl"
+  tools/extract_rerank_hard_pairs.py \
+    --input "$RERANK_JSON" \
+    --output "$DAGGER_INPUT" \
+    --min-regret-delta-cp "$EXPLICIT_MIN_REGRET_DELTA_CP" \
+    --min-candidate-regret-cp "$EXPLICIT_MIN_CANDIDATE_REGRET_CP"
+fi
+if [[ ! -f "$DAGGER_INPUT" ]]; then
+  echo "missing dagger input: $DAGGER_INPUT" >&2
+  exit 1
+fi
+if [[ ! -s "$DAGGER_INPUT" ]]; then
+  echo "dagger input is empty: $DAGGER_INPUT" >&2
+  exit 1
+fi
+
 echo "Starting MMTO DAgger replay stage."
 echo "SOURCE_RUN_DIR=$SOURCE_RUN_DIR"
 echo "RUN_DIR=$RUN_DIR"
@@ -100,7 +121,7 @@ echo "WEIGHTS=$WEIGHTS"
 echo "TEACHER_WEIGHTS=$TEACHER_WEIGHTS"
 echo "CANDIDATE_WEIGHTS=$CANDIDATE_WEIGHTS"
 echo "BASE_TRAIN=$BASE_TRAIN BASE_VALID=$BASE_VALID"
-echo "DAGGER_INPUT=$DAGGER_INPUT DAGGER_MAX_POSITIONS=$DAGGER_MAX_POSITIONS"
+echo "DAGGER_INPUT=$DAGGER_INPUT DAGGER_MAX_POSITIONS=$DAGGER_MAX_POSITIONS USE_EXPLICIT_HARD_PAIRS=$USE_EXPLICIT_HARD_PAIRS"
 echo "REPLAY_WEIGHT=$REPLAY_WEIGHT CURRENT_TOP_MARGIN_WEIGHT=$CURRENT_TOP_MARGIN_WEIGHT LISTWISE_HARD_NEGATIVE_WEIGHT=$LISTWISE_HARD_NEGATIVE_WEIGHT"
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \

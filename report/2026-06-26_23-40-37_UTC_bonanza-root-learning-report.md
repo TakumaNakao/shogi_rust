@@ -514,3 +514,62 @@ DAgger dump:
 現在の結論:
 
 「もっとエポックを回す」だけでは不十分。current-top lossでオフライン指標は改善するが、探索選択手の悪化を完全には防げない。次の実装対象は、rerank gateのhard outputから `(teacher_move, candidate_move)` を直接学習する明示ペア損失、またはcandidate refresh dumpを本体データとして扱う反復学習パイプラインである。
+
+### explicit hard pair入力の実装
+
+rerank gateのhard outputをそのまま明示ペア教師にできるようにした。
+
+実装:
+
+- `mmto_tree_dump`
+  - JSONL入力で以下の別名を受け付ける。
+    - teacher側: `teacher_move`, `teacher_best_move`
+    - bad側: `student_move`, `selected_move`, `candidate_move`, `bad_move`
+  - bad側の手が合法なら、通常のstudent探索結果ではなく、その手を `selected_by_student=true` として出力する。
+  - teacher側の手は従来通り `is_game_teacher_move=true` として候補集合に強制追加する。
+- `tools/extract_rerank_hard_pairs.py`
+  - `mmto_rerank_gate` の `hard_positions` から、`sfen`, `teacher_move`, `student_move` のJSONLを生成する。
+  - `--min-regret-delta-cp`
+  - `--min-candidate-regret-cp`
+  - `--limit`
+- `tools/run_mmto_dagger_from_run.sh`
+  - 既定で `SOURCE_RUN_DIR/rerank_gate.json` から明示ペアJSONLを作ってDAgger dumpに使う。
+  - `USE_EXPLICIT_HARD_PAIRS=0` で従来の `hard_positions.sfen` 入力に戻せる。
+
+検証:
+
+```bash
+tools/extract_rerank_hard_pairs.py \
+  --input data/mmto/runs/mmto_current_top_2k_20260627_033620/rerank_gate.json \
+  --output /tmp/mmto_explicit_pairs.jsonl \
+  --limit 3
+
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_dump \
+  --student-weights policy_weights_v2.1.0.binary \
+  --teacher-weights policy_weights_v2.1.0.binary \
+  --input /tmp/mmto_explicit_pairs.jsonl \
+  --train-output /tmp/mmto_explicit_pairs.train.tree.jsonl \
+  --valid-output /tmp/mmto_explicit_pairs.valid.tree.jsonl \
+  --teacher-depth 4 \
+  --student-depth 3 \
+  --teacher-score-top 24 \
+  --candidate-top 24 \
+  --valid-percent 0 \
+  --position-chunk-size 3 \
+  --jobs 1 \
+  --min-legal-moves 2 \
+  --exclude-in-check \
+  --max-positions 3
+```
+
+確認結果:
+
+- `2b3c / 2b3a`
+- `2a3c / 2b3a`
+- `2b4d / 2b5e`
+
+いずれも、teacher側が `is_game_teacher_move=true`、bad側が `selected_by_student=true` としてdumpされた。
+
+次の検証:
+
+明示ペア入力を使ったDAgger stageを2K条件で再実行する。これで `2b3a` 系の悪化手が消え、rerank p90/meanが非悪化になるかを確認する。通らなければ、hardだけの小replayではなく、候補重みによるrefresh dumpを数百から数千局面単位で作る。
