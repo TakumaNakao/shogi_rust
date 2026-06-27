@@ -1068,3 +1068,28 @@ Smoke:
 解釈:
 
 rerankで実際に悪化した手を、悪化度に応じて強く学習へ戻す経路ができた。次の実験では、低LR・小更新幅・tail guardに加えて、このweighted rerank-hardを通常refreshデータへ混ぜる。これにより、単純な長時間学習ではなく「実探索で失敗した手を反復的に回収する」方向へ進める。
+
+追加smoke:
+
+`data/mmto/runs/mmto_weighted_dagger_smoke_20260627_044127`
+
+目的:
+
+不採用候補の `.binary` を削除した後でも、rerank JSONからweighted hard pairを再利用できるか確認した。
+
+変更:
+
+- `tools/run_mmto_dagger_from_run.sh` は、`USE_EXPLICIT_HARD_PAIRS=1` かつ `CANDIDATE_WEIGHTS` が存在しない場合、dump scoring用に `WEIGHTS` へfallbackする。
+- explicit hard pairでは `student_move` がJSONで強制されるため、候補重みを保持しなくてもhard pair dumpを再生成できる。
+
+結果:
+
+- 削除済み候補重みなしで起動できた。
+- hard pair抽出: `written=9 skipped=0`
+- dagger dump: train `5`, valid `0`
+- trainerはtail guardで `best_epoch=0` となり安全停止。
+- `.binary` 生成物は削除済み。
+
+解釈:
+
+これで、不採用候補の849MB重みを残さずに、rerank失敗情報だけを次の学習へ渡せる。ディスク制約下で反復的なhard feedbackを回すための前提が整った。

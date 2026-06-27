@@ -82,6 +82,11 @@ RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT="${RERANK_REQUIRE_MATCH_RATE_IMPROVEME
 KEEP_CANDIDATE_RAW="${KEEP_CANDIDATE_RAW:-0}"
 BLEND_RATIOS="${BLEND_RATIOS:-}"
 
+if [[ "$USE_EXPLICIT_HARD_PAIRS" == "1" && ! -f "$CANDIDATE_WEIGHTS" ]]; then
+  echo "explicit hard pairs do not require preserved candidate weights; using WEIGHTS for dump scoring: $WEIGHTS"
+  CANDIDATE_WEIGHTS="$WEIGHTS"
+fi
+
 for path in "$WEIGHTS" "$TEACHER_WEIGHTS" "$CANDIDATE_WEIGHTS" "$BASE_TRAIN" "$BASE_VALID"; do
   if [[ ! -f "$path" ]]; then
     echo "missing required file: $path" >&2
