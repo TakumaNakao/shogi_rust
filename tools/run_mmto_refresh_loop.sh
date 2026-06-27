@@ -20,6 +20,9 @@ LOOP_DIR="${LOOP_DIR:-data/mmto/runs/mmto_refresh_loop_$(date -u +%Y%m%d_%H%M%S)
 ITERATIONS="${ITERATIONS:-3}"
 KEEP_PASSED_WEIGHTS="${KEEP_PASSED_WEIGHTS:-0}"
 MIN_FREE_GB="${MIN_FREE_GB:-6}"
+BEST_METRIC="${BEST_METRIC:-p95-regret}"
+BEST_GUARD_MAX_REGRET_INCREASE_CP="${BEST_GUARD_MAX_REGRET_INCREASE_CP:-0}"
+BEST_GUARD_BAD100_INCREASE="${BEST_GUARD_BAD100_INCREASE:-0}"
 
 if [[ ! -f "$INITIAL_CANDIDATE_WEIGHTS" ]]; then
   echo "missing initial candidate weights: $INITIAL_CANDIDATE_WEIGHTS" >&2
@@ -47,7 +50,9 @@ echo "LOOP_DIR=$LOOP_DIR"
 echo "SOURCE_RUN_DIR=$SOURCE_RUN_DIR"
 echo "INITIAL_CANDIDATE_WEIGHTS=$INITIAL_CANDIDATE_WEIGHTS"
 echo "ITERATIONS=$ITERATIONS"
-echo "BEST_METRIC=${BEST_METRIC:-max-regret}"
+echo "BEST_METRIC=$BEST_METRIC"
+echo "BEST_GUARD_MAX_REGRET_INCREASE_CP=$BEST_GUARD_MAX_REGRET_INCREASE_CP"
+echo "BEST_GUARD_BAD100_INCREASE=$BEST_GUARD_BAD100_INCREASE"
 
 for iteration in $(seq 1 "$ITERATIONS"); do
   iter_dir="$LOOP_DIR/iter_${iteration}"
@@ -59,7 +64,9 @@ for iteration in $(seq 1 "$ITERATIONS"); do
     CANDIDATE_WEIGHTS="$current_candidate" \
     RUN_DIR="$iter_dir" \
     KEEP_CANDIDATE_RAW=1 \
-    BEST_METRIC="${BEST_METRIC:-max-regret}" \
+    BEST_METRIC="$BEST_METRIC" \
+    BEST_GUARD_MAX_REGRET_INCREASE_CP="$BEST_GUARD_MAX_REGRET_INCREASE_CP" \
+    BEST_GUARD_BAD100_INCREASE="$BEST_GUARD_BAD100_INCREASE" \
     bash tools/run_mmto_refresh_from_candidate.sh \
     > "$iter_dir/pipeline_stdout.log" 2>&1
   status=$?

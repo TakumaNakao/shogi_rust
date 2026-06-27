@@ -844,7 +844,7 @@ Probe:
 
 - `INITIAL_CANDIDATE_WEIGHTS` を起点にする。
 - 各iterationで `tools/run_mmto_refresh_from_candidate.sh` を実行する。
-- 既定の `BEST_METRIC` は `max-regret`。
+- 当初の既定 `BEST_METRIC=max-regret` は安全だが保守的すぎるため、best checkpoint guard追加後は `BEST_METRIC=p95-regret` とし、`BEST_GUARD_MAX_REGRET_INCREASE_CP=0` / `BEST_GUARD_BAD100_INCREASE=0` で尾部悪化を禁止する設定に変更した。
 - offline gatesを通った場合だけ、`iter_N/best.raw.binary` を次iterationの候補にする。
 - gate失敗、score失敗、best_epoch 0では停止する。
 - `candidate.raw.binary` は各iterationで削除する。
@@ -883,3 +883,92 @@ Smoke:
 解釈:
 
 反復制御は想定通り動作した。改善候補がない場合は次iterationへ進まず、長時間実行でも不採用重みを残さない。次の実験では、このloopにより `BEST_METRIC=max-regret` または `bad100-regret` で候補が出るまで、小さめのrefresh条件を広げていく。
+
+### best checkpoint guard
+
+日時: 2026-06-27 04:29 UTC
+
+背景:
+
+`BEST_METRIC=max-regret` は安全だが、p95やlossの改善を拾いにくい。一方で `BEST_METRIC=p95-regret` のままでは、p95は改善しても最大悪化やbad100率が悪化するepochをbest checkpointとして採用してしまう。そこで、主指標とは別に尾部リスクのガードを追加した。
+
+実装:
+
+- `mmto_tree_train` に以下を追加:
+  - `--best-guard-max-regret-increase-cp`
+  - `--best-guard-bad100-increase`
+- 負値なら無効。
+- 0を指定すると、baselineより `max-regret` または `bad100-regret` が少しでも悪化したepochをbest候補から除外する。
+- extra-validを使う場合、主指標と同じく `extra-valid-best-weight` を掛けた合成スコアで判定する。
+- 主要MMTOスクリプトから以下の環境変数で指定可能にした:
+  - `BEST_GUARD_MAX_REGRET_INCREASE_CP`
+  - `BEST_GUARD_BAD100_INCREASE`
+
+Probe:
+
+`data/mmto/runs/mmto_guard_probe_20260627_042736`
+
+設定:
+
+- train/valid: `data/mmto/runs/mmto_refresh_candidate_20260627_040733`
+- `--best-metric p95-regret`
+- `--best-guard-max-regret-increase-cp 0`
+- `--best-guard-bad100-increase 0`
+- `--extra-valid refresh=.../refresh.valid.tree.jsonl`
+- `--extra-valid-best-weight 0.25`
+
+結果:
+
+- baseline:
+  - best metric score `49.562458`
+  - guard max-regret score `325.526733`
+  - guard bad100 score `0.013043`
+- epoch 1:
+  - p95 best metric scoreは `40.642563` へ改善
+  - しかしguard max-regret scoreが `325.855927` へ悪化
+  - `best_guard_passed=false`
+- epoch 1から5まで全てguard不合格
+- `best_epoch=0`
+- `.binary` 生成物は削除済み
+
+解釈:
+
+狙い通り、p95改善だけでは候補を採用せず、少数の大悪化を検出してbaselineに戻せた。次の長時間学習では、主指標は `p95-regret` や `capped-selected-regret` のままにしつつ、まず以下の厳しめのガードを使う。
+
+```bash
+BEST_GUARD_MAX_REGRET_INCREASE_CP=0
+BEST_GUARD_BAD100_INCREASE=0
+```
+
+これで候補が全く出ない場合だけ、`BEST_GUARD_MAX_REGRET_INCREASE_CP=10` のように許容幅を小さく緩める。長時間学習は、このガードを通る候補が小規模で出ることを確認してから拡大する。
+
+### refresh loop guard smoke
+
+Probe:
+
+`data/mmto/runs/mmto_refresh_loop_guard_smoke_20260627_043055`
+
+設定:
+
+- `BEST_METRIC=p95-regret`
+- `BEST_GUARD_MAX_REGRET_INCREASE_CP=0`
+- `BEST_GUARD_BAD100_INCREASE=0`
+- `BASE_TRAIN_LINES=100`
+- `BASE_VALID_LINES=20`
+- `REFRESH_MAX_POSITIONS=40`
+- `EPOCHS=1`
+
+結果:
+
+- baseline best metric score `34.101116`
+- baseline guard max-regret score `35.231255`
+- epoch 1 best metric score `35.257175`
+- epoch 1 guard max-regret score `36.720306`
+- `best_guard_passed=false`
+- `best_epoch=0`
+- loopは `FINAL_CANDIDATE=policy_weights_v2.1.0.binary` で停止
+- `.binary` 生成物は削除済み
+
+解釈:
+
+長時間用の入口スクリプトでも、主指標だけで危険な候補へ進まず、baselineを維持して停止できた。これで「小さく試し、危険な候補を通さず、通った候補だけ次refreshへ進める」反復学習の安全性が上がった。

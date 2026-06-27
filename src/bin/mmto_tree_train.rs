@@ -77,6 +77,10 @@ struct Args {
     best_checkpoint_path: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = BestMetric::ValidLoss)]
     best_metric: BestMetric,
+    #[arg(long, default_value_t = -1.0)]
+    best_guard_max_regret_increase_cp: f32,
+    #[arg(long, default_value_t = -1.0)]
+    best_guard_bad100_increase: f32,
     #[arg(long, default_value_t = 300.0)]
     selected_regret_cap_cp: f32,
     #[arg(long, default_value_t = 100.0)]
@@ -2001,6 +2005,51 @@ fn compute_best_metric_score(
     main_metric + extra_valid_best_weight * extra_metric_mean
 }
 
+fn compute_best_guard_scores(
+    valid: &Metrics,
+    train: &Metrics,
+    selected_regret_cap_cp: f32,
+    extra_valid: &[Metrics],
+    extra_valid_best_weight: f32,
+) -> (f32, f32) {
+    let max_regret = compute_best_metric_score(
+        BestMetric::MaxRegret,
+        valid,
+        train,
+        selected_regret_cap_cp,
+        extra_valid,
+        extra_valid_best_weight,
+    );
+    let bad100 = compute_best_metric_score(
+        BestMetric::Bad100Regret,
+        valid,
+        train,
+        selected_regret_cap_cp,
+        extra_valid,
+        extra_valid_best_weight,
+    );
+    (max_regret, bad100)
+}
+
+fn best_guard_passes(
+    current_max_regret: f32,
+    current_bad100: f32,
+    baseline_max_regret: f32,
+    baseline_bad100: f32,
+    max_regret_increase_cp: f32,
+    bad100_increase: f32,
+) -> bool {
+    if max_regret_increase_cp >= 0.0
+        && current_max_regret > baseline_max_regret + max_regret_increase_cp
+    {
+        return false;
+    }
+    if bad100_increase >= 0.0 && current_bad100 > baseline_bad100 + bad100_increase {
+        return false;
+    }
+    true
+}
+
 fn apply_weight_constraints(
     model: &mut SparseModel,
     initial_weights: &[f32],
@@ -2071,6 +2120,16 @@ fn main() -> Result<()> {
     if !args.extra_valid_best_weight.is_finite() || args.extra_valid_best_weight < 0.0 {
         return Err(anyhow!(
             "--extra-valid-best-weight must be finite and non-negative"
+        ));
+    }
+    if !args.best_guard_max_regret_increase_cp.is_finite() {
+        return Err(anyhow!(
+            "--best-guard-max-regret-increase-cp must be finite; use a negative value to disable"
+        ));
+    }
+    if !args.best_guard_bad100_increase.is_finite() {
+        return Err(anyhow!(
+            "--best-guard-bad100-increase must be finite; use a negative value to disable"
         ));
     }
     if !args.listwise_hard_negative_weight.is_finite() || args.listwise_hard_negative_weight < 0.0 {
@@ -2302,6 +2361,17 @@ fn main() -> Result<()> {
         "baseline best_metric_score={:.6}",
         baseline_best_metric_score
     );
+    let (baseline_guard_max_regret, baseline_guard_bad100) = compute_best_guard_scores(
+        &baseline_valid,
+        &baseline_train,
+        args.selected_regret_cap_cp,
+        &baseline_extra_metrics,
+        args.extra_valid_best_weight,
+    );
+    println!(
+        "baseline best_guard max_regret_score={:.6} bad100_score={:.6}",
+        baseline_guard_max_regret, baseline_guard_bad100
+    );
 
     if args.dry_run {
         ensure_finite_model(&model)?;
@@ -2373,14 +2443,7 @@ fn main() -> Result<()> {
         w_acc: HashMap::new(),
         material_acc: 0.0,
     };
-    let mut best_metric_score = Some(compute_best_metric_score(
-        args.best_metric,
-        &baseline_valid,
-        &baseline_train,
-        args.selected_regret_cap_cp,
-        &baseline_extra_metrics,
-        args.extra_valid_best_weight,
-    ));
+    let mut best_metric_score = Some(baseline_best_metric_score);
     let mut best_epoch = 0usize;
     let mut rng = ChaCha8Rng::seed_from_u64(0x1234);
     let mut train_indices: Option<Vec<usize>> = if args.stream_train {
@@ -2571,8 +2634,24 @@ fn main() -> Result<()> {
             &current_epoch_extra_metrics,
             args.extra_valid_best_weight,
         );
-        if best_metric_score.is_none()
-            || current_metric < best_metric_score.unwrap_or(f32::INFINITY)
+        let (current_guard_max_regret, current_guard_bad100) = compute_best_guard_scores(
+            &valid,
+            &train,
+            args.selected_regret_cap_cp,
+            &current_epoch_extra_metrics,
+            args.extra_valid_best_weight,
+        );
+        let guard_passed = best_guard_passes(
+            current_guard_max_regret,
+            current_guard_bad100,
+            baseline_guard_max_regret,
+            baseline_guard_bad100,
+            args.best_guard_max_regret_increase_cp,
+            args.best_guard_bad100_increase,
+        );
+        if guard_passed
+            && (best_metric_score.is_none()
+                || current_metric < best_metric_score.unwrap_or(f32::INFINITY))
         {
             if let Some(path) = &args.best_checkpoint_path {
                 model.save(path)?;
@@ -2615,7 +2694,10 @@ fn main() -> Result<()> {
                 epoch, replay_samples, replay_pairs, replay_loss, replay_selected_regret
             );
         }
-        println!("epoch {} best_metric_score={:.6}", epoch, current_metric);
+        println!(
+            "epoch {} best_metric_score={:.6} best_guard_max_regret={:.6} best_guard_bad100={:.6} best_guard_passed={}",
+            epoch, current_metric, current_guard_max_regret, current_guard_bad100, guard_passed
+        );
         for (batch, metrics) in extra_valid.iter().zip(current_epoch_extra_metrics.iter()) {
             println!(
                 "epoch {} extra_valid[{}]: {}",

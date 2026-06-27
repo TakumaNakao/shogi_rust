@@ -62,6 +62,8 @@ GAME_TEACHER_MIN_BAD_REGRET_CP="${GAME_TEACHER_MIN_BAD_REGRET_CP:-15}"
 CURRENT_TOP_MARGIN_WEIGHT="${CURRENT_TOP_MARGIN_WEIGHT:-0.0}"
 CURRENT_TOP_MIN_BAD_REGRET_CP="${CURRENT_TOP_MIN_BAD_REGRET_CP:-15}"
 BEST_METRIC="${BEST_METRIC:-p95-regret}"
+BEST_GUARD_MAX_REGRET_INCREASE_CP="${BEST_GUARD_MAX_REGRET_INCREASE_CP:--1}"
+BEST_GUARD_BAD100_INCREASE="${BEST_GUARD_BAD100_INCREASE:--1}"
 ANCHOR_L2="${ANCHOR_L2:-0.0002}"
 MAX_WEIGHT_DELTA="${MAX_WEIGHT_DELTA:-0.001}"
 
@@ -243,6 +245,8 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --bad-regret-cp 300 \
   --bad-regret-thresholds-cp 50,100,200,300 \
   --best-metric "$BEST_METRIC" \
+  --best-guard-max-regret-increase-cp "$BEST_GUARD_MAX_REGRET_INCREASE_CP" \
+  --best-guard-bad100-increase "$BEST_GUARD_BAD100_INCREASE" \
   --selected-regret-cap-cp 300 \
   --freeze-material \
   --anchor-l2 "$ANCHOR_L2" \
