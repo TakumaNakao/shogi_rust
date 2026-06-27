@@ -74,3 +74,44 @@ GPT-5.3-codex-spark サブエージェントに極小スモークを委任した
 - `WINNER_ONLY` と `DECISIVE_ONLY` の有無
 
 採用判断はtrain lossではなく、held-out top1、pair accuracy、mean rank、既存rerank gate、短時間対局ベンチで行う。ここでも10局程度の良結果だけでは採用しない。
+
+## 小規模A/B結果
+
+GPT-5.3-codex-spark サブエージェントに、`MAX_RECORDS=2000` の小規模比較を2本委任した。どちらも候補重みは採用せず削除済み。
+
+共通条件:
+
+- input: `data/wdoor/extract/2026`
+- `VALID_PERCENT=10`
+- `MIN_PLY=16`
+- `MAX_PLY=120`
+- `EPOCHS=2`
+- `BATCH_SIZE=128`
+- `VALID_MAX_SAMPLES=500`
+- `LEARNING_RATE=0.003`
+- `MAX_WEIGHT_DELTA=0.001`
+- `ANCHOR_L2=0.0002`
+- `FREEZE_MATERIAL=1`
+
+### A: hard negatives 4
+
+- `RUN_DIR=data/bonanza_pairwise_runs/sweep_a_h4_lr003_20260627_112949`
+- baseline valid: top1=20.00%, pair_acc=70.67%, mean_rank=22.89, loss=0.841781
+- epoch1 valid: top1=20.00%, pair_acc=70.67%, mean_rank=22.88, loss=0.841780
+- epoch2 valid: top1=20.00%, pair_acc=70.67%, mean_rank=22.88, loss=0.841780
+- best epoch: 2
+
+### B: hard negatives 8
+
+- `RUN_DIR=data/bonanza_pairwise_runs/sweep_b_h8_lr003_20260627_112946`
+- baseline valid: top1=20.00%, pair_acc=70.67%, mean_rank=22.89, loss=0.727741
+- epoch1 valid: top1=20.00%, pair_acc=70.66%, mean_rank=22.89, loss=0.727741
+- epoch2 valid: top1=20.00%, pair_acc=70.66%, mean_rank=22.89, loss=0.727741
+- best epoch: 0
+
+判断:
+
+- top1、pair accuracy、mean rank はどちらも実質改善なし。
+- A/Bのlossはhard negative数が違うため直接比較しない。
+- 更新量が小さすぎる可能性がある。次は `LEARNING_RATE` と `MAX_WEIGHT_DELTA` を少し緩めるか、より多いrecordsで動くかを確認する。
+- ただし、単にepochを増やすだけではなく、valid top1/pair/rankが動く設定を先に探す。
