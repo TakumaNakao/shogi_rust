@@ -196,6 +196,17 @@ enum BestMetric {
     CappedSelectedRegret,
     #[value(name = "teacher-mismatch")]
     TeacherMismatch,
+    #[value(name = "feedback-loss")]
+    FeedbackLoss,
+    #[value(name = "feedback-violation")]
+    FeedbackViolation,
+}
+
+fn best_metric_requires_feedback(metric: BestMetric) -> bool {
+    matches!(
+        metric,
+        BestMetric::FeedbackLoss | BestMetric::FeedbackViolation
+    )
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -3214,6 +3225,7 @@ fn compute_best_metric_value(
                 f32::INFINITY
             }
         }
+        BestMetric::FeedbackLoss | BestMetric::FeedbackViolation => f32::INFINITY,
     }
 }
 
@@ -3224,7 +3236,23 @@ fn compute_best_metric_score(
     selected_regret_cap_cp: f32,
     extra_valid: &[Metrics],
     extra_valid_best_weight: f32,
+    feedback: Option<&FeedbackMetrics>,
 ) -> f32 {
+    match metric {
+        BestMetric::FeedbackLoss => {
+            return feedback
+                .filter(|metrics| metrics.samples > 0)
+                .map(|metrics| metrics.loss)
+                .unwrap_or(f32::INFINITY);
+        }
+        BestMetric::FeedbackViolation => {
+            return feedback
+                .filter(|metrics| metrics.samples > 0)
+                .map(|metrics| metrics.violation_count as f32 / metrics.samples.max(1) as f32)
+                .unwrap_or(f32::INFINITY);
+        }
+        _ => {}
+    }
     let main_metric = compute_best_metric_value(metric, valid, train, selected_regret_cap_cp);
     if extra_valid_best_weight <= 0.0 || extra_valid.is_empty() {
         return main_metric;
@@ -3254,6 +3282,7 @@ fn compute_best_guard_scores(
         selected_regret_cap_cp,
         extra_valid,
         extra_valid_best_weight,
+        None,
     );
     let bad100 = compute_best_metric_score(
         BestMetric::Bad100Regret,
@@ -3262,6 +3291,7 @@ fn compute_best_guard_scores(
         selected_regret_cap_cp,
         extra_valid,
         extra_valid_best_weight,
+        None,
     );
     (max_regret, bad100)
 }
@@ -3458,6 +3488,11 @@ fn main() -> Result<()> {
     if args.feedback_weight > 0.0 && args.feedback_json.is_empty() {
         return Err(anyhow!(
             "--feedback-json is required when --feedback-weight is positive"
+        ));
+    }
+    if best_metric_requires_feedback(args.best_metric) && args.feedback_json.is_empty() {
+        return Err(anyhow!(
+            "--feedback-json is required when --best-metric is feedback-loss or feedback-violation"
         ));
     }
     if !args.feedback_min_regret_delta_cp.is_finite() || args.feedback_min_regret_delta_cp < 0.0 {
@@ -3721,6 +3756,15 @@ fn main() -> Result<()> {
             )
         );
     }
+    let baseline_feedback_metrics = if !feedback_samples.is_empty() {
+        Some(evaluate_feedback_batch(
+            &model,
+            &feedback_samples,
+            &loss_options,
+        ))
+    } else {
+        None
+    };
     let baseline_best_metric_score = compute_best_metric_score(
         args.best_metric,
         &baseline_valid,
@@ -3728,6 +3772,7 @@ fn main() -> Result<()> {
         args.selected_regret_cap_cp,
         &baseline_extra_metrics,
         args.extra_valid_best_weight,
+        baseline_feedback_metrics.as_ref(),
     );
     println!(
         "baseline best_metric_score={:.6}",
@@ -3750,8 +3795,7 @@ fn main() -> Result<()> {
         "baseline best_guard max_regret_score={:.6} bad100_score={:.6} teacher_match_score={:.6}",
         baseline_guard_max_regret, baseline_guard_bad100, baseline_guard_teacher_match
     );
-    if !feedback_samples.is_empty() {
-        let baseline_feedback = evaluate_feedback_batch(&model, &feedback_samples, &loss_options);
+    if let Some(baseline_feedback) = baseline_feedback_metrics.as_ref() {
         println!(
             "baseline feedback: {} weight={:.4}",
             log_feedback_summary(&baseline_feedback, "feedback"),
@@ -4275,6 +4319,7 @@ fn main() -> Result<()> {
             args.selected_regret_cap_cp,
             &current_epoch_extra_metrics,
             args.extra_valid_best_weight,
+            feedback_metrics.as_ref(),
         );
         let (current_guard_max_regret, current_guard_bad100) = compute_best_guard_scores(
             &valid,
