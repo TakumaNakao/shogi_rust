@@ -1806,3 +1806,33 @@ draw/mixed: 0
 - そのため、教師手へ寄せる信号自体は作れるが、v2.1.0基準の実戦勝率改善にはつながっていない。
 - この113件セットをさらに強く・長く学習する方針は打ち切る。
 - 次は `regret_delta > 0`、つまり「candidateがbaselineより悪くなった局面」だけを集めるdirect counterexampleに切り替える。
+
+## Direct feedback集合のdelta確認
+
+113件feedbackが対局勝率へ移らなかった理由を確認するため、元JSONの `regret_delta` を集計した。
+
+対象:
+
+```text
+data/mmto/runs/direct_feedback_sample_probe_20260627_161423/max1000_d3_3_5.json
+```
+
+結果:
+
+```text
+hard_positions: 113
+regret_delta > 0: 0
+regret_delta >= 1: 0
+regret_delta >= 10: 0
+regret_delta min/max/mean: 0.0 / 0.0 / 0.0
+candidate_regret mean: 72127.0
+baseline_regret mean: 72127.0
+```
+
+判断:
+
+- このfeedback集合は、candidateがbaselineより悪くなった局面ではない。
+- baselineとcandidateが同じ悪手を選ぶ局面に対して、teacher手を上げる補正だった。
+- v2.1.0からの小さなdelta学習としては、既存baselineの弱点も同時に押すため、勝率改善に直結しにくい。
+- 今後のdirect feedback候補は、学習前に `regret_delta > 0` の件数を必ず確認する。
+- `tools/run_mmto_direct_feedback_sample_probe.sh` に `delta_gt0`, `delta_ge1`, `delta_ge10` のsummary列を追加した。
