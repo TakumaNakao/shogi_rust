@@ -1152,3 +1152,48 @@ Smoke:
 解釈:
 
 refresh失敗からweighted hard feedbackへ入る自動制御は動作した。今回は強制的なrerank失敗条件なので採用候補は出していないが、長時間学習では「refreshで候補生成 -> rerankで失敗 -> 失敗手をweighted hard pairとして回収 -> 通った候補だけ継続」というループが可能になった。smoke生成物は大容量化を避けるため削除する。
+
+### refresh loop accept smoke
+
+Probe:
+
+`data/mmto/runs/mmto_refresh_loop_accept_smoke_20260627_044825`
+
+目的:
+
+強制失敗ではなく、通常のrerank gateでrefresh loopが候補を受理できるか確認した。小規模条件なので、重みの採用判断ではなく制御経路の確認である。
+
+設定:
+
+- `ITERATIONS=1`
+- `REFRESH_MAX_POSITIONS=30`
+- `EPOCHS=1`
+- `LEARNING_RATE=0.0002`
+- `MAX_WEIGHT_DELTA=0.001`
+- `BEST_GUARD_MAX_REGRET_INCREASE_CP=1000`
+- `BEST_GUARD_BAD100_INCREASE=1`
+- `RERANK_MAX_POSITIONS=50`
+
+結果:
+
+- trainer:
+  - baseline best metric score `34.000725`
+  - epoch 1 best metric score `33.402618`
+  - guard max-regret scoreはbaseline同値 `318.859650`
+  - `best_epoch=1`
+- score gate:
+  - mean abs delta `0.23cp`
+  - p95 `0.45cp`
+  - max `0.54cp`
+  - passed
+- rerank gate:
+  - baseline mean `5.10`, candidate mean `5.08`
+  - baseline match `30.00%`, candidate match `32.00%`
+  - p95は同値 `11.55`
+  - passed
+- loop:
+  - `iteration=1 refresh accepted candidate=.../best.raw.binary`
+
+解釈:
+
+小規模ではあるが、低LR・小更新幅・tail guard付きrefreshで、offline gatesを通る候補を作り、loopが次candidateとして受け入れる経路を確認できた。これは「長時間学習の価値がある条件」に近づく重要な兆候。ただし検証局面が少ないため、この重みは採用せず削除する。次は同じ安全設定で `RERANK_MAX_POSITIONS` と `REFRESH_MAX_POSITIONS` を段階的に増やす。
