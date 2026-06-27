@@ -1614,3 +1614,69 @@ teacher-top CEは、train 1000 / valid 200でもtrainer上のteacher match、tai
 1. 同設定でtrain 2000 / valid 400から500、rerank 400から500を実施する。
 2. その結果も通る場合、`TEACHER_TOP_CE_WEIGHT=0.2/0.5/1.0` の比較を2000規模で行う。
 3. 2k/500で安定したら10k級の数時間学習に進む。
+
+### teacher-top CE 2k comparison
+
+Probe:
+
+- `data/mmto/runs/mmto_teacher_top_ce_2k_20260627_052904` (`w=0.5`)
+- `data/mmto/runs/mmto_teacher_top_ce_2k_w02_20260627_053205` (`w=0.2`)
+- `data/mmto/runs/mmto_teacher_top_ce_2k_w10_20260627_053206` (`w=1.0`)
+
+目的:
+
+同じdump全体に近いtrain 2000 / valid 230で、teacher-top CE weightの感度を確認した。valid件数が230しかないため、rerankも230局面で実施した。
+
+共通設定:
+
+- `SOURCE_RUN_DIR=data/mmto/runs/mmto_refresh_candidate_20260627_040733`
+- `TRAIN_LINES=2000`
+- `VALID_LINES=230`
+- `LOSS_MODE=listwise-leaf`
+- `BEST_METRIC=teacher-mismatch`
+- `BEST_GUARD_MAX_REGRET_INCREASE_CP=0`
+- `BEST_GUARD_BAD100_INCREASE=0`
+- `BEST_GUARD_TEACHER_MATCH_DROP_PCT=0`
+- `EPOCHS=3`
+- `LEARNING_RATE=0.0005`
+- `MAX_WEIGHT_DELTA=0.003`
+- `RERANK_MAX_POSITIONS=230`
+
+baseline valid:
+
+- selected regret mean `10.74`
+- p90 `26.41`
+- p95 `42.74`
+- teacher_match `17.83%`
+- bad50 `4.35%`
+
+trainer結果:
+
+| weight | best_epoch | valid selected regret | valid p95 | valid teacher_match | valid bad50 |
+|---:|---:|---:|---:|---:|---:|
+| `0.2` | 1 | `10.51` | `32.06` | `21.30%` | `3.04%` |
+| `0.5` | 3 | `10.57` | `33.37` | `21.74%` | `3.04%` |
+| `1.0` | 3 | `10.50` | `33.37` | `23.04%` | `3.04%` |
+
+rerank 230結果:
+
+| weight | mean | p90 | p95 | match |
+|---:|---:|---:|---:|---:|
+| baseline | `5.88` | `18.91` | `29.17` | `17.39%` |
+| `0.2` | `5.63` | `18.48` | `28.62` | `17.39%` |
+| `0.5` | `5.59` | `18.48` | `28.62` | `17.39%` |
+| `1.0` | `5.55` | `18.48` | `28.62` | `17.39%` |
+
+解釈:
+
+2k/230では `0.2`, `0.5`, `1.0` がすべてoffline gateを通った。rerankのp90/p95/matchは同等だが、mean regretは `1.0` が最良で、trainer上のteacher_matchも最も高い。このデータ源では `TEACHER_TOP_CE_WEIGHT=1.0` を次の本命にする。
+
+注意:
+
+全runで `max_weight_delta=0.003` によるclampが多い。長時間学習では単にepochを伸ばすより、`learning-rate` と `max_weight_delta` の組み合わせを調整する必要がある。
+
+次の検証:
+
+1. より大きい `teacher_wdoor50k_d3s2_top16_20260626_164759` dumpでtrain 5000 / valid 500を実施する。
+2. まず `TEACHER_TOP_CE_WEIGHT=1.0` を試し、通れば `0.5` を比較する。
+3. rerank 500でmatch低下なし、mean/p90/p95改善を確認できた場合のみ、10k以上へ進む。
