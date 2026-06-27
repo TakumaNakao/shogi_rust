@@ -835,3 +835,51 @@ Probe:
 解釈:
 
 `max-regret` は、今回のようにp95が改善しても最大悪化を改善できない候補を採用しない方向に働いた。これは長時間学習用の安全装置として有効。次の長めのrefresh実験では、まず `BEST_METRIC=max-regret` または `BEST_METRIC=bad100-regret` を使い、採用候補が出るかを確認する。
+
+### refresh loop smoke
+
+長時間学習では、1回のrefreshだけでなく「候補がgateを通った時だけ次のrefreshへ進む」反復制御が必要になる。そのため、`tools/run_mmto_refresh_loop.sh` を追加した。
+
+実装:
+
+- `INITIAL_CANDIDATE_WEIGHTS` を起点にする。
+- 各iterationで `tools/run_mmto_refresh_from_candidate.sh` を実行する。
+- 既定の `BEST_METRIC` は `max-regret`。
+- offline gatesを通った場合だけ、`iter_N/best.raw.binary` を次iterationの候補にする。
+- gate失敗、score失敗、best_epoch 0では停止する。
+- `candidate.raw.binary` は各iterationで削除する。
+- `KEEP_PASSED_WEIGHTS=0` の場合、過去iterationの採用済み重みも次候補以外は削除する。
+
+Smoke:
+
+`data/mmto/runs/mmto_refresh_loop_smoke_20260627_042019`
+
+設定:
+
+- `INITIAL_CANDIDATE_WEIGHTS=policy_weights_v2.1.0.binary`
+- `ITERATIONS=1`
+- `BEST_METRIC=max-regret`
+- `BASE_TRAIN_LINES=100`
+- `BASE_VALID_LINES=20`
+- `REFRESH_MAX_POSITIONS=40`
+- `EPOCHS=1`
+
+結果:
+
+- refresh dump:
+  - train 36 / valid 4
+  - selected regret mean `15.42`
+  - p90 `54.85`
+  - p95 `68.51`
+  - max `165.62`
+- mixed train/valid:
+  - train 136 / valid 24
+- baseline best metric score `35.23`
+- epoch 1 best metric score `36.72`
+- `best_epoch=0`
+- loop stopped with `FINAL_CANDIDATE=policy_weights_v2.1.0.binary`
+- `.binary` 生成物は削除済み
+
+解釈:
+
+反復制御は想定通り動作した。改善候補がない場合は次iterationへ進まず、長時間実行でも不採用重みを残さない。次の実験では、このloopにより `BEST_METRIC=max-regret` または `bad100-regret` で候補が出るまで、小さめのrefresh条件を広げていく。
