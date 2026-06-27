@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use glob::glob;
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
 use shogi_ai::utils::format_move_usi;
 use shogi_core::{Color, Move, Piece, PieceKind, Square};
@@ -20,6 +23,8 @@ struct Args {
     output_dir: PathBuf,
     #[arg(long, default_value_t = 9601)]
     seed: u64,
+    #[arg(long, default_value_t = false)]
+    shuffle_games: bool,
     #[arg(long, default_value_t = 5)]
     valid_percent: u8,
     #[arg(long, default_value_t = 5)]
@@ -28,6 +33,8 @@ struct Args {
     max_games: Option<usize>,
     #[arg(long)]
     max_records: Option<usize>,
+    #[arg(long)]
+    max_records_per_game: Option<usize>,
     #[arg(long, default_value_t = 0)]
     min_ply: usize,
     #[arg(long)]
@@ -101,10 +108,12 @@ struct DatasetManifest {
     input: Vec<String>,
     output_dir: String,
     seed: u64,
+    shuffle_games: bool,
     valid_percent: u8,
     test_percent: u8,
     max_games: Option<usize>,
     max_records: Option<usize>,
+    max_records_per_game: Option<usize>,
     min_ply: usize,
     max_ply: Option<usize>,
     min_player_rate: Option<i32>,
@@ -411,6 +420,12 @@ fn process_game(
         {
             break;
         }
+        if args
+            .max_records_per_game
+            .is_some_and(|limit| written >= limit)
+        {
+            break;
+        }
         let ply = ply_index + 1;
         if args.max_ply.is_some_and(|max_ply| ply > max_ply) {
             break;
@@ -493,7 +508,11 @@ fn main() -> Result<()> {
             "--valid-percent + --test-percent must be <= 90 to leave training data"
         ));
     }
-    let files = collect_csa_files(&args.input)?;
+    let mut files = collect_csa_files(&args.input)?;
+    if args.shuffle_games {
+        let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
+        files.shuffle(&mut rng);
+    }
     let mut writers = create_writers(&args.output_dir)?;
     let mut stats = DatasetStats::default();
 
@@ -535,10 +554,12 @@ fn main() -> Result<()> {
             .collect(),
         output_dir: args.output_dir.to_string_lossy().to_string(),
         seed: args.seed,
+        shuffle_games: args.shuffle_games,
         valid_percent: args.valid_percent,
         test_percent: args.test_percent,
         max_games: args.max_games,
         max_records: args.max_records,
+        max_records_per_game: args.max_records_per_game,
         min_ply: args.min_ply,
         max_ply: args.max_ply,
         min_player_rate: args.min_player_rate,

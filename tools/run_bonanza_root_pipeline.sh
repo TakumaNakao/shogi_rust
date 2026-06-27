@@ -16,6 +16,8 @@ SEED="${SEED:-9601}"
 MIN_FREE_GB="${MIN_FREE_GB:-6}"
 
 MAX_RECORDS="${MAX_RECORDS:-2000}"
+MAX_RECORDS_PER_GAME="${MAX_RECORDS_PER_GAME:-8}"
+SHUFFLE_GAMES="${SHUFFLE_GAMES:-1}"
 MIN_PLY="${MIN_PLY:-16}"
 MAX_PLY="${MAX_PLY:-120}"
 MIN_PLAYER_RATE="${MIN_PLAYER_RATE:-4000}"
@@ -93,7 +95,7 @@ echo "RUN_DIR=$RUN_DIR"
 echo "INPUTS=$INPUTS"
 echo "WEIGHTS=$WEIGHTS"
 echo "TEACHER_WEIGHTS=$TEACHER_WEIGHTS"
-echo "MAX_RECORDS=$MAX_RECORDS MIN_PLAYER_RATE=$MIN_PLAYER_RATE MIN_PLY=$MIN_PLY MAX_PLY=$MAX_PLY"
+echo "MAX_RECORDS=$MAX_RECORDS MAX_RECORDS_PER_GAME=$MAX_RECORDS_PER_GAME SHUFFLE_GAMES=$SHUFFLE_GAMES MIN_PLAYER_RATE=$MIN_PLAYER_RATE MIN_PLY=$MIN_PLY MAX_PLY=$MAX_PLY"
 echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH TOP=$TEACHER_SCORE_TOP/$CANDIDATE_TOP"
 echo "GAME_TEACHER_MARGIN_WEIGHT=$GAME_TEACHER_MARGIN_WEIGHT GAME_TEACHER_MAX_REGRET_CP=$GAME_TEACHER_MAX_REGRET_CP"
 
@@ -112,6 +114,7 @@ dataset_args=(
   --valid-percent "$VALID_PERCENT"
   --test-percent "$TEST_PERCENT"
   --max-records "$MAX_RECORDS"
+  --max-records-per-game "$MAX_RECORDS_PER_GAME"
   --min-ply "$MIN_PLY"
   --min-legal-moves "$DATASET_MIN_LEGAL_MOVES"
 )
@@ -131,6 +134,9 @@ fi
 if [[ "$WINNER_ONLY" == "1" ]]; then
   dataset_args+=(--winner-only)
 fi
+if [[ "$SHUFFLE_GAMES" == "1" ]]; then
+  dataset_args+=(--shuffle-games)
+fi
 if [[ -n "$EXCLUDE_LOSER_AFTER_PLY" ]]; then
   dataset_args+=(--exclude-loser-after-ply "$EXCLUDE_LOSER_AFTER_PLY")
 fi
@@ -144,6 +150,28 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/dataset_build "${dataset_args[@]}" \
 cat "$RUN_DIR/dataset/train.jsonl" "$RUN_DIR/dataset/valid.jsonl" "$RUN_DIR/dataset/test.jsonl" \
   > "$RUN_DIR/dataset/all.jsonl"
 wc -l "$RUN_DIR/dataset/"*.jsonl | tee "$RUN_DIR/dataset_counts.txt"
+
+python3 - "$RUN_DIR/dataset/all.jsonl" "$RUN_DIR/score_positions.sfen" <<'PY'
+import json
+import sys
+
+input_path, output_path = sys.argv[1:3]
+seen = set()
+with open(output_path, "w", encoding="utf-8") as out:
+    with open(input_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("{"):
+                sfen = json.loads(line).get("sfen", "").strip()
+            else:
+                sfen = line
+            if sfen and sfen not in seen:
+                seen.add(sfen)
+                out.write(sfen + "\n")
+print(f"score_positions={len(seen)}")
+PY
 
 dump_args=(
   --student-weights "$WEIGHTS"
@@ -234,7 +262,7 @@ set +e
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_score_gate \
   --baseline-weights "$WEIGHTS" \
   --candidate-weights "$RUN_DIR/best.raw.binary" \
-  --input "$RUN_DIR/dataset/all.jsonl" \
+  --input "$RUN_DIR/score_positions.sfen" \
   --max-positions "$TREE_MAX_POSITIONS" \
   --seed 7201 \
   --p95-limit-cp 50 \

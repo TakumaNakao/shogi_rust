@@ -109,3 +109,61 @@ env RUST_FONTCONFIG_DLOPEN=1 cargo test --all-targets
 4. game-teacher margin weight、max regret、listwise feature sourceを小さく振り、validだけでなくrerank gateと対局ベンチで判断する。
 
 現時点ではリリース対象の重みはない。次の本命は、自己蒸留MMTO拡大ではなく、外部棋譜手を探索と整合させるBonanza型root選択学習である。
+
+## Addendum: データ偏り対策
+
+最初の小規模実験では、`dataset_build` がファイル名順に処理し、`--max-records` 到達時点で停止するため、100局面が2から3局程度の棋譜に偏る問題が見つかった。これは小規模実験ほど強く出るため、学習・valid指標の信頼性を落とす。
+
+対策として `dataset_build` に以下を追加した。
+
+- `--shuffle-games`: `--seed` に基づいてCSAファイル順をシャッフルする。
+- `--max-records-per-game`: 1棋譜から採用する最大局面数を制限する。
+
+`tools/run_bonanza_root_pipeline.sh` ではデフォルトで以下にした。
+
+- `SHUFFLE_GAMES=1`
+- `MAX_RECORDS_PER_GAME=8`
+
+これにより、2026年Wdoor高レートデータの100局面スモークは以下になった。
+
+- 変更前: 100局面が2から3局程度に偏る。
+- 変更後: 100局面が13局から生成される。
+
+## Addendum: 修正版pipeline smoke
+
+実行条件:
+
+```bash
+MAX_RECORDS=100 MAX_RECORDS_PER_GAME=8 TREE_MAX_POSITIONS=100 \
+RERANK_MAX_POSITIONS=40 JOBS=2 POSITION_CHUNK_SIZE=8 EPOCHS=1 BATCH_SIZE=32 \
+TEACHER_DEPTH=3 STUDENT_DEPTH=2 TEACHER_SCORE_TOP=16 CANDIDATE_TOP=16 \
+SCORE_ALL_LEGAL_FOR_VALID=0 \
+RUN_DIR=data/mmto/runs/bonanza_root_pergame_smoke_20260627_000404 \
+bash tools/run_bonanza_root_pipeline.sh
+```
+
+結果:
+
+- dataset: 100局面、13局から生成
+- dump: train 90 / valid 10
+- rank stats:
+  - selected regret mean: `8.19`
+  - p90: `18.43`
+  - p95: `24.05`
+  - bad50: `0.0100`
+- training:
+  - baseline valid p95: `30.30`
+  - epoch 1 valid p95: `29.55`
+  - `best_epoch=1`
+- score gate:
+  - mean abs delta: `0.05cp`
+  - p95: `0.12cp`
+  - max: `0.20cp`
+  - passed
+- rerank gate:
+  - baseline/candidateともに mean `6.91`, p90 `22.53`, p95 `28.19`
+  - passed
+
+この重みは100局面だけのスモークなので採用しない。`best.raw.binary` は削除済み。重要なのは、偏り対策後のBonanza-root pipelineがdataset生成、探索dump、game-teacher margin学習、score gate、rerank gateまで一通り完走した点である。
+
+次は `MAX_RECORDS=500` 以上でも `MAX_RECORDS_PER_GAME=8` を維持し、valid件数を増やしたうえでオフライン指標を見る。2K以上の実験へ進む前に、game-teacher marginがvalid/rerankで安定して非悪化になる条件を探す。
