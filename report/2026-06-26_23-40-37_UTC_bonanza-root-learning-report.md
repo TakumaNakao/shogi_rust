@@ -342,3 +342,49 @@ Rerank gate:
 - match rateを絶対条件にするか、mean/p95改善と悪化幅を合わせた複合gateにするか再検討する。
 - `worst_delta[1]` は candidate が `B*4e -> 2b3a` に変わって regret +18.55cp。こうした単発悪化をhard replayへ戻す。
 - 2K規模では学習信号は出ているため、次はhard replayを組み込んだ2K再学習か、rerank gateで生成されたhard positionsを追加validにする。
+
+### hard replay追試
+
+2K候補のrerank gateが出したhard positions 17件を `mmto_tree_dump` で再dumpし、extra-validとreplayに入れた。
+
+Run:
+
+`data/mmto/runs/bonanza_root_2k_leaf_gt010_hard17_20260627_004507`
+
+設定:
+
+- base train/valid: `bonanza_root_pergame_2k_leaf_gt010_20260627_001929`
+- hard records: 17
+- `--extra-valid hard=...`
+- `--extra-valid-best-weight 0.5`
+- `--replay-train hard.tree.jsonl`
+- `--replay-weight 0.05`
+
+結果:
+
+- baseline hard:
+  - selected regret mean `10.97`
+  - p90 `26.18`
+  - p95 `31.53`
+- epoch 1 hardは一度悪化:
+  - p95 `46.52`
+- epoch 5 hardは回復:
+  - selected regret mean `10.37`
+  - p90 `26.11`
+  - p95 `33.08`
+- main valid epoch 5:
+  - selected regret mean `10.36`
+  - p95 `33.34`
+- score gate:
+  - mean abs delta `1.08cp`
+  - p95 `2.40cp`
+  - max `3.26cp`
+  - passed
+- rerank gate:
+  - baseline match `43.00%`
+  - candidate match `42.50%`
+  - failed with the same match-rate regression
+
+結論:
+
+hard replayを追加しても、実探索rerank上の選択悪化は消えなかった。現在の追加lossは評価値分布とvalid p95を改善するが、探索が選ぶroot moveを十分に制御できていない。次は単純なhard replay増量ではなく、rerankで悪化した「candidate selected move」を明示的に下げる目的関数、またはgateで見ているdepthのsearched moveを直接学習対象にする必要がある。
