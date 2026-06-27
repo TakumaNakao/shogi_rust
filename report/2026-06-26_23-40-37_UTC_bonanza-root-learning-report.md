@@ -1968,3 +1968,141 @@ rerank:
 運用メモ:
 
 このrunに残った `.binary` は削除済み。結果は `rerank_gate.json`、`score_gate.json`、`train_stdout.log` に残っている。
+
+### rerank feedback loss
+
+目的:
+
+`teacher-top CE` と `explicit student margin` は、小規模では改善しても9k/1kで再現しなかった。そこで `mmto_tree_train` に `--feedback-json` を追加し、`mmto_rerank_gate` の `hard_positions` に含まれる実探索上の差分を直接学習するfeedback lossを実装した。
+
+設計:
+
+- `rerank_gate.json` の `hard_positions` を読む。
+- `good_move` は既定で `baseline_move`、なければ `teacher_best_move`。
+- `bad_move` は `candidate_move`。
+- `candidate_regret` / `regret_delta` でfilterし、重みは `1 + max(regret_delta, candidate_regret) / feedback_weight_scale_cp` を `feedback_max_sample_weight` でclampする。
+- 既存KPP特徴から root move 後局面の特徴を作り、`score(good)-score(bad)` にsoftplus marginを張る。
+- dump再生成を不要にし、rerankで壊れた局面を直接戻すことを狙う。
+
+実装:
+
+- `src/bin/mmto_tree_train.rs`
+  - `--feedback-json`
+  - `--feedback-weight`
+  - `--feedback-good-move baseline|teacher`
+  - `--feedback-min-regret-delta-cp`
+  - `--feedback-min-candidate-regret-cp`
+  - `--feedback-weight-scale-cp`
+  - `--feedback-max-sample-weight`
+  - `--feedback-limit`
+- `tools/run_mmto_from_dump.sh`
+  - 上記feedback系オプションを環境変数から渡せるようにした。
+
+検証:
+
+- `cargo fmt --check`
+- `bash -n tools/run_mmto_from_dump.sh`
+- `FONTCONFIG_NO_PKG_CONFIG=1 RUST_FONTCONFIG_DLOPEN=1 cargo check --bin mmto_tree_train`
+- `FONTCONFIG_NO_PKG_CONFIG=1 RUST_FONTCONFIG_DLOPEN=1 cargo test --all-targets`
+- dry-runで `rerank_gate.json` のparse、SFEN/USI合法手変換、baseline feedback metric出力を確認。
+
+#### 5k/500 feedback diagnostic
+
+source:
+
+`data/mmto/runs/mmto_teacher_top_ce_wdoor5k_w05_dedup_20260627_055717`
+
+設定:
+
+- `LOSS_MODE=listwise-leaf`
+- `TEACHER_TOP_CE_WEIGHT=0.5`
+- `FEEDBACK_JSON=data/mmto/runs/mmto_teacher_top_ce_wdoor5k_w05_dedup_20260627_055717/rerank_gate.json`
+- `FEEDBACK_GOOD_MOVE=baseline`
+- `FEEDBACK_WEIGHT_SCALE_CP=25`
+- `FEEDBACK_MAX_SAMPLE_WEIGHT=5`
+- `FEEDBACK_LIMIT=200`
+- `EPOCHS=3`
+- `LEARNING_RATE=0.0003`
+- `MAX_WEIGHT_DELTA=0.003`
+- `RERANK_DEDUPE_SFEN=1`
+
+`FEEDBACK_WEIGHT=1.0`:
+
+- run: `data/mmto/runs/mmto_rerank_feedback_5k_gate_w1_20260627_074057`
+- baseline feedback: loss `92.022507`, margin_mean `10.88`, violation `44.83%`
+- final feedback: loss `91.761314`, margin_mean `11.35`, violation `31.03%`
+- score gate: pass
+- rerank gate: failed
+- candidate:
+  - mean `216.68782` vs baseline `216.78363`
+  - p90 `27.491108` vs `27.265059` worse
+  - p95 `42.42036` vs `42.50051`
+  - match `45.093945%` vs `44.676408%`
+  - bad50 `3.3402923%` vs `3.5490606%`
+  - bad100 unchanged
+
+`FEEDBACK_WEIGHT=3.0`:
+
+- run: `data/mmto/runs/mmto_rerank_feedback_5k_gate_w3_20260627_074636`
+- baseline feedback: loss `92.022507`, margin_mean `10.88`, violation `44.83%`
+- final feedback: loss `91.317993`, margin_mean `12.10`, violation `20.69%`
+- score gate: pass
+- rerank gate: pass
+- candidate:
+  - mean `216.55235` vs baseline `216.78363`
+  - p90 `26.615944` vs `27.265059`
+  - p95 `42.42036` vs `42.50051`
+  - match `45.51148%` vs `44.676408%`
+  - bad50 `3.3402923%` vs `3.5490606%`
+  - bad100 unchanged
+
+解釈:
+
+5k/500では `FEEDBACK_WEIGHT=3.0` が初めて、feedback metricとrerank gateの両方で明確に改善した。これは「rerank差分を直接目的関数化する」方向が、少なくとも小規模では正しいことを示す。
+
+#### 9k/1k feedback repro
+
+source:
+
+`data/mmto/runs/mmto_100k_pilot_balanced9k_20260626_191235`
+
+run:
+
+`data/mmto/runs/mmto_rerank_feedback_9k_gate_w3_20260627_075414`
+
+設定:
+
+5k/500と同じく `FEEDBACK_WEIGHT=3.0`、`FEEDBACK_LIMIT=500`、`RERANK_DEDUPE_SFEN=1`。
+
+結果:
+
+- baseline feedback: samples `18`, loss `81.285339`, margin_mean `26.30`, violation `33.33%`
+- final feedback: samples `18`, loss `80.829010`, margin_mean `27.13`, violation `22.22%`
+- best_epoch: `2`
+- score gate: pass
+  - mean abs delta `0.2485cp`
+  - p95 `0.6936cp`
+  - max `1.6717cp`
+- rerank gate: failed
+
+rerank:
+
+| side | mean | p90 | p95 | match | bad50 | bad100 |
+|---|---:|---:|---:|---:|---:|---:|
+| baseline | `243.65791` | `27.491108` | `42.636803` | `44.155845%` | `3.423849%` | `0.590319%` |
+| candidate | `243.70686` | `27.491108` | `42.636803` | `44.155845%` | `3.423849%` | `0.590319%` |
+
+失敗理由:
+
+- mean regret worsened: `243.71 > 243.66`
+
+解釈:
+
+feedback lossは9kでも対象局面のviolationを改善したが、全体meanをわずかに悪化させた。p90/p95/match/bad50/bad100は維持できているため破壊的ではないが、長時間学習へ進む条件は満たさない。feedbackだけでは局所修正が他局面へ微小な副作用を出すため、次はbaseline root-policy anchor / KL trust regionで、確証のない局面のroot分布を守る必要がある。
+
+判断:
+
+- `rerank feedback loss` は有望な部品として残す。
+- 単独では長時間学習に進まない。
+- 次の実装は `anchor_weights` による baseline root-policy KL / CE anchor。
+- 目標は、5kの改善を維持しつつ、9kのmean悪化を消すこと。
