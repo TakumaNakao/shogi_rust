@@ -54,7 +54,7 @@ mkdir -p "$RUN_DIR"
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin mmto_rerank_gate
 
 summary_path="$RUN_DIR/summary.tsv"
-printf "max_positions\tstatus\tseconds\tsamples\thard_positions\tteacher_candidate_diff\tcandidate_mean\tcandidate_p95\tbaseline_mean\tbaseline_p95\tjson_bytes\n" \
+printf "max_positions\tstatus\tseconds\tsamples\thard_positions\tteacher_candidate_diff\tdelta_gt0\tdelta_ge1\tdelta_ge10\tcandidate_mean\tcandidate_p95\tbaseline_mean\tbaseline_p95\tjson_bytes\n" \
   > "$summary_path"
 
 for max_positions in $MAX_POSITIONS_LIST; do
@@ -92,7 +92,7 @@ import sys
 
 path, max_positions, status, seconds = sys.argv[1:5]
 if not os.path.exists(path):
-    print(f"{max_positions}\t{status}\t{seconds}\t0\t0\t0\t0\t0\t0\t0\t0")
+    print(f"{max_positions}\t{status}\t{seconds}\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0")
     raise SystemExit
 
 with open(path, "r", encoding="utf-8") as handle:
@@ -100,9 +100,19 @@ with open(path, "r", encoding="utf-8") as handle:
 
 hard = payload.get("hard_positions", [])
 diff = 0
+delta_gt0 = 0
+delta_ge1 = 0
+delta_ge10 = 0
 for item in hard:
     if item.get("teacher_best_move") != item.get("candidate_move"):
         diff += 1
+    delta = float(item.get("regret_delta") or 0.0)
+    if delta > 0.0:
+        delta_gt0 += 1
+    if delta >= 1.0:
+        delta_ge1 += 1
+    if delta >= 10.0:
+        delta_ge10 += 1
 
 baseline = payload.get("baseline", {})
 candidate = payload.get("candidate", {})
@@ -116,6 +126,9 @@ print(
             str(candidate.get("samples", 0)),
             str(len(hard)),
             str(diff),
+            str(delta_gt0),
+            str(delta_ge1),
+            str(delta_ge10),
             f"{float(candidate.get('mean_regret_cp', 0.0)):.2f}",
             f"{float(candidate.get('p95_regret_cp', 0.0)):.2f}",
             f"{float(baseline.get('mean_regret_cp', 0.0)):.2f}",
