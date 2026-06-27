@@ -101,3 +101,7 @@ path = "src/bin/dataset_build.rs"
 [[bin]]
 name = "rank_stats"
 path = "src/bin/rank_stats.rs"
+
+[[bin]]
+name = "bench_failure_miner"
+path = "src/bin/bench_failure_miner.rs"
