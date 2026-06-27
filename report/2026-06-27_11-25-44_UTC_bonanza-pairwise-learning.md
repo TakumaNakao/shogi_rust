@@ -610,3 +610,73 @@ benchで負けた原因候補:
 - ただし、同じKPP目的関数の長時間化を主路線にはしない。
 - `current-top mistake`、bench/self-play hard positions、深めteacher、hard replay を明示的に使う root/search-aligned objective へ寄せる。
 - それでも複数seed benchで改善しない場合、KPP-only長時間学習は打ち切り、KPPを土台にした residual NNUE へ進む。
+
+## Bench-aligned gate runner
+
+bench-aligned gateを手動コマンドで実行したところ、以下が分かった。
+
+実験:
+
+- run: `data/mmto/runs/mmto_refresh_loop_guarded200_benchgate_20260627_122544`
+- guarded refresh: pass
+- candidate: `iter_1/best.raw.binary`
+
+60局bench:
+
+```text
+seed 12001: new 8, baseline 12, draw 0
+seed 12101: new 10, baseline 9, draw 1
+seed 12201: new 12, baseline 8, draw 0
+
+total:
+  new 30
+  baseline 29
+  draw 1
+  score: 61 / 120 = 50.83%
+```
+
+paired starts:
+
+```text
+seed 12001:
+  new sweeps: 0
+  baseline sweeps: 2
+  splits: 8
+
+seed 12101:
+  new sweeps: 2
+  baseline sweeps: 1
+  splits: 6
+  draw/mixed: 1
+
+seed 12201:
+  new sweeps: 2
+  baseline sweeps: 0
+  splits: 8
+```
+
+bench-aligned rerank:
+
+- 最初に `max_positions=300`, depth `5/5/7` で実行した。
+- 30分以上かかり、`positions: 300 (invalid=1 duplicate=493)` から進捗が見えなかったため中断した。
+- 親スクリプト側が失敗扱いで候補binaryを削除したため、軽量rerankへ切り替えた時点で候補が存在しなかった。
+- このrunではbench-aligned rerankは未完了。
+
+判断:
+
+- 60局benchは 50.83% で、前回単一seedの 35% より中立。
+- ただし明確な改善とは言えない。
+- deep bench-aligned rerank は重すぎる。
+- 今後は最初から軽量rerankを使い、候補削除はbench/rerank判定後だけに行う専用runnerで実施する。
+
+追加:
+
+- `tools/run_mmto_benchgate_probe.sh`
+
+このrunnerは以下を標準化する。
+
+- guarded refresh候補生成。
+- 複数seed 20局bench。
+- `record_analyze` による `baseline_sweep_starts` / `drop_windows` 抽出。
+- `taya36 + bench由来SFEN` の軽量bench-aligned rerank。
+- 60局score rateが閾値未満、またはrerank失敗なら候補binary削除。
