@@ -1,6 +1,7 @@
 csa_files/
 data/wdoor/
 data/mmto/
+data/bonanza_pairwise_runs/
 data/training/
 target/
 *.png

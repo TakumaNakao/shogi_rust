@@ -269,6 +269,44 @@ kill "$(cat "$RUN_DIR/pid")"
 --decisive-only --loser-sample-rate 0.5
 ```
 
+#### Bonanza式 pairwise KPP 学習
+
+`bonanza_pairwise_train` は、棋譜手と兄弟合法手を直接比較してKPP重みを更新する実験用学習器です。局面値の回帰ではなく、同一局面で「棋譜手を指した後の子局面」が「現モデルで上位に来る兄弟手の子局面」より高くなるように学習します。
+
+小実験は以下で実行できます。候補重みは大きいため、採用しないものは削除してください。
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+  --bin csa_policy_dump --bin bonanza_pairwise_train
+
+RUN_DIR="data/bonanza_pairwise_runs/pairwise_$(date -u +%Y%m%d_%H%M%S)"
+
+INPUTS="data/wdoor/extract/2026" \
+RUN_DIR="$RUN_DIR" \
+MAX_RECORDS=2000 \
+VALID_PERCENT=10 \
+MIN_PLY=16 \
+MAX_PLY=120 \
+EPOCHS=1 \
+BATCH_SIZE=128 \
+VALID_MAX_SAMPLES=500 \
+HARD_NEGATIVES=4 \
+LEARNING_RATE=0.003 \
+MAX_WEIGHT_DELTA=0.001 \
+ANCHOR_L2=0.0002 \
+FREEZE_MATERIAL=1 \
+bash tools/run_bonanza_pairwise_pipeline.sh
+```
+
+主な確認指標:
+
+- `valid top1`: held-out局面で棋譜手がモデル最善になった割合。
+- `valid pair_acc`: 棋譜手が兄弟合法手より高く評価された割合。
+- `valid mean_rank`: 棋譜手のモデル順位。小さいほど良い。
+- `valid loss`: pairwise margin loss。
+
+この学習器は、現行MMTO-liteの代替候補です。`valid loss` だけで採用せず、rerank gate と対局ベンチで確認してください。
+
 #### 採用前の検証
 
 学習後の重みは短い対局だけで採用しないでください。最低限、以下を確認します。

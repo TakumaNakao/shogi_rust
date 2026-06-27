@@ -31,6 +31,10 @@ name = "kpp_learn"
 path = "src/kpp_learn.rs"
 
 [[bin]]
+name = "bonanza_pairwise_train"
+path = "src/bin/bonanza_pairwise_train.rs"
+
+[[bin]]
 name = "shogi_game"
 path = "src/bin/shogi_game.rs"
 
