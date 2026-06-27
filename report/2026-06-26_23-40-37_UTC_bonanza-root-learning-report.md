@@ -652,3 +652,141 @@ Rerank gate:
 2. refresh dumpをreplayではなく通常trainの一部として扱い、validもrefresh側から十分な数を取る。
 3. 明示bad pairだけでなく、新しく出る大悪化を反復的にrefreshへ戻す。
 4. 小replay重みを強くする方向は一旦避ける。今回の結果では局所対策が別局面の大悪化を生んだ。
+
+### candidate refresh pipeline実装と追試
+
+hard 16件だけのreplayでは副作用を抑えられなかったため、候補重みで通常train側を再探索し、数百局面規模のrefresh dumpを作るスクリプトを追加した。
+
+実装:
+
+- `tools/run_mmto_refresh_from_candidate.sh`
+  - `CANDIDATE_WEIGHTS` をstudentとして `mmto_tree_dump` を実行。
+  - `REFRESH_MAX_POSITIONS` / `REFRESH_VALID_PERCENT` でrefresh train/validを生成。
+  - `TRAIN_MODE=mixed` ではbase train/validへrefresh train/validを連結して通常trainとして扱う。
+  - `TRAIN_MODE=refresh-only` ではrefresh dumpだけで学習できる。
+  - 長時間学習向けに `STREAM_TRAIN=1` を渡せる。
+  - score gate / rerank gate / hard positions抽出 / 失敗時重み削除まで実行する。
+
+Smoke:
+
+`data/mmto/runs/mmto_refresh_smoke_20260627_040344`
+
+設定:
+
+- `CANDIDATE_WEIGHTS=policy_weights_v2.1.0.binary`
+- `BASE_TRAIN_LINES=100`
+- `BASE_VALID_LINES=20`
+- `REFRESH_MAX_POSITIONS=40`
+- `REFRESH_VALID_PERCENT=10`
+- `TRAIN_MODE=mixed`
+- `EPOCHS=1`
+
+結果:
+
+- refresh dump:
+  - train 36 / valid 4
+  - selected regret mean `15.42`
+  - p90 `54.85`
+  - p95 `68.51`
+- mixed train/valid:
+  - train 136 / valid 24
+- best epoch `0`
+- baselineが最良のため不採用
+- 重み削除済み
+
+このsmokeで、refresh dump作成、mixed train構築、学習、不採用時の重み削除まで動作確認した。
+
+300局面refresh追試:
+
+まずcurrent-top候補を再作成した。
+
+`data/mmto/runs/mmto_current_top_for_refresh_20260627_040457`
+
+結果は前回と同じ傾向:
+
+- score gate passed
+- rerank gate failed
+- p95 `27.09 -> 23.67`
+- match `43.00% -> 44.00%`
+- p90 `11.05 -> 11.20` で微悪化
+- worst: `B*4e -> 2b3a`, delta `18.55`
+
+この候補をstudentとして300局面refreshを実行した。
+
+`data/mmto/runs/mmto_refresh_candidate_20260627_040733`
+
+設定:
+
+- `CANDIDATE_WEIGHTS=data/mmto/runs/mmto_current_top_for_refresh_20260627_040457/best.raw.binary`
+- `BASE_TRAIN_LINES=1800`
+- `BASE_VALID_LINES=200`
+- `REFRESH_MAX_POSITIONS=300`
+- `REFRESH_VALID_PERCENT=10`
+- `TRAIN_MODE=mixed`
+- `EPOCHS=5`
+- `MAX_WEIGHT_DELTA=0.005`
+
+refresh dump:
+
+- train 270 / valid 30
+- selected regret mean `17.24`
+- p90 `55.17`
+- p95 `70.68`
+- bad50 `0.1200`
+- bad100 `0.0267`
+
+mixed train:
+
+- train 2070
+- valid 230
+
+再学習:
+
+- best epoch 3
+- mixed valid:
+  - baseline p95 `42.74`
+  - epoch 3 p95 `33.34`
+- refresh extra-valid:
+  - baseline selected regret mean `5.25`
+  - epoch 3 selected regret mean `6.50`
+  - p95 `27.28` 維持
+- score gate:
+  - mean abs delta `1.47cp`
+  - p95 `2.57cp`
+  - max `3.05cp`
+  - passed
+
+Rerank gate:
+
+- baseline:
+  - mean `5.73`
+  - p90 `11.05`
+  - p95 `27.09`
+  - match `43.00%`
+  - bad50 `0.0250`
+  - bad100 `0.0150`
+- candidate:
+  - mean `6.38`
+  - p90 `11.05`
+  - p95 `27.09`
+  - match `43.50%`
+  - bad50 `0.0300`
+  - bad100 `0.0200`
+- failed
+
+観察:
+
+- `2b3a` 系の悪化はさらに弱まった。
+  - `2b3c` 局面は `candidate_move=2a1c`, delta `0.91`
+- しかし `B*8d -> B*1d` の大悪化が残った。
+  - delta `162.77`
+- matchは `43.00% -> 43.50%` と少し改善したが、meanとbad ratioが悪化した。
+
+結論:
+
+candidate refresh dumpはhard 16件replayより分布が広く、狙った悪化手を弱める効果はある。ただし、現状の目的関数では別の大悪化を抑えられず、長時間学習へ進むにはまだ危険。次は以下のどちらかが必要。
+
+1. best metric / gateに最大悪化・bad100を強く入れ、`B*1d` のような少数大悪化を学習中に止める。
+2. refreshを1回で終わらせず、rerank gateで出た新しい大悪化を次のrefreshへ戻す反復ループにする。
+
+現時点では、単純な長時間学習はまだ回さない。長時間化の前に「大悪化を発生させない制約」を学習器に追加する。
