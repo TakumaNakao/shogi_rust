@@ -859,3 +859,41 @@ candidate kept for further evaluation
 - 候補生成 -> bench -> hard SFEN抽出 -> gate判定までのフローは動作した。
 - 今回は初回候補が軽量benchgateを通ったため、feedback repair stage は未実行である。
 - 次の検証では、benchgateを落ちる候補または閾値を高めた条件で、bench hard positions が実際に repair stage に入ることを確認する。
+
+## Bench-feedback forced smoke
+
+feedback repair stage の分岐を確認するため、`MIN_SCORE_RATE_PCT=101` で初回benchgateを意図的に不合格にした。
+
+1回目:
+
+- run: `data/mmto/runs/mmto_bench_feedback_forced_20260627_135218`
+- `bench_feedback_positions=10`
+- `bench_feedback_stage` は実行された。
+- `dagger` は `total positions=10`, `train records=5`, `valid records=0`
+- `mmto_tree_train` は `best_epoch=0` でreject。
+- `.binary` は残らなかった。
+
+この実行で、reject時に `final_summary.txt` が残らない問題が見つかった。
+
+修正:
+
+- すべての早期終了分岐で `final_summary.txt` を出すようにした。
+- `final_status` を追加した。
+- `binary_files_after.txt`, `du_after.txt`, `df_after.txt` を共通関数で必ず出すようにした。
+- feedback stage 内部rerankの上限を `FEEDBACK_RERANK_MAX_POSITIONS` で指定可能にした。
+
+修正後の確認:
+
+- run: `data/mmto/runs/mmto_bench_feedback_forced_summary_20260627_135718`
+- `bench_feedback_positions=8`
+- `bench_feedback_stage` は実行された。
+- feedback候補は `best_epoch=0` でreject。
+- `final_summary.txt` は作成された。
+- `final_status=feedback_rejected_no_candidate`
+- `.binary` は残らなかった。
+
+判断:
+
+- bench hard positions を feedback stage に流す経路は動作した。
+- reject時の機械可読summaryも残るようになった。
+- 次は強制不合格ではなく、通常条件の候補でfeedback stageが有効に働くかを確認する。

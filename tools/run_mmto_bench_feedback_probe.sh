@@ -39,6 +39,7 @@ FEEDBACK_MAX_WEIGHT_DELTA="${FEEDBACK_MAX_WEIGHT_DELTA:-0.001}"
 FEEDBACK_ANCHOR_L2="${FEEDBACK_ANCHOR_L2:-0.0005}"
 FEEDBACK_BASE_TRAIN_LINES="${FEEDBACK_BASE_TRAIN_LINES:-1800}"
 FEEDBACK_BASE_VALID_LINES="${FEEDBACK_BASE_VALID_LINES:-200}"
+FEEDBACK_RERANK_MAX_POSITIONS="${FEEDBACK_RERANK_MAX_POSITIONS:-300}"
 
 RERANK_MAX_POSITIONS="${RERANK_MAX_POSITIONS:-80}"
 RERANK_BASELINE_DEPTH="${RERANK_BASELINE_DEPTH:-4}"
@@ -75,6 +76,7 @@ echo "BENCH_SEEDS=$BENCH_SEEDS BENCH_GAMES=$BENCH_GAMES BENCH_DEPTH=$BENCH_DEPTH
 echo "INITIAL_REFRESH_MAX_POSITIONS=$INITIAL_REFRESH_MAX_POSITIONS INITIAL_REFRESH_EPOCHS=$INITIAL_REFRESH_EPOCHS"
 echo "INITIAL_REFRESH_RERANK_MAX_POSITIONS=$INITIAL_REFRESH_RERANK_MAX_POSITIONS"
 echo "FEEDBACK_START_WEIGHTS=$FEEDBACK_START_WEIGHTS FEEDBACK_MAX_POSITIONS=$FEEDBACK_MAX_POSITIONS"
+echo "FEEDBACK_RERANK_MAX_POSITIONS=$FEEDBACK_RERANK_MAX_POSITIONS"
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
   --bin usi_engine \
@@ -203,6 +205,12 @@ passes_score_gate() {
   (( score_num * 100 >= score_den * MIN_SCORE_RATE_PCT ))
 }
 
+write_artifact_summary() {
+  find "$RUN_DIR" -type f -name '*.binary' -printf '%s %p\n' | tee "$RUN_DIR/binary_files_after.txt"
+  du -sh "$RUN_DIR" | tee "$RUN_DIR/du_after.txt"
+  df -h . | tee "$RUN_DIR/df_after.txt"
+}
+
 INITIAL_DIR="$RUN_DIR/initial_benchgate"
 KEEP_FAILED_CANDIDATE=1 \
   LOOP_DIR="$INITIAL_DIR" \
@@ -236,13 +244,24 @@ fi
 INITIAL_CAND="$(awk -F= '/^CAND=/ {print $2}' "$INITIAL_DIR/benchgate_summary.txt" | tail -1)"
 if [[ -z "$INITIAL_CAND" || "$INITIAL_CAND" == "$WEIGHTS" || ! -f "$INITIAL_CAND" ]]; then
   echo "No initial candidate available for feedback."
-  echo "RUN_DIR=$RUN_DIR"
+  {
+    echo "RUN_DIR=$RUN_DIR"
+    echo "final_status=no_initial_candidate"
+    cat "$INITIAL_DIR/benchgate_summary.txt"
+  } | tee "$RUN_DIR/final_summary.txt"
+  write_artifact_summary
   exit 0
 fi
 
 if grep -q "candidate kept for further evaluation" "$INITIAL_DIR/benchgate_summary.txt"; then
   echo "Initial candidate passed benchgate; no feedback repair needed."
-  echo "FINAL_CANDIDATE=$INITIAL_CAND" | tee "$RUN_DIR/final_summary.txt"
+  {
+    echo "RUN_DIR=$RUN_DIR"
+    echo "final_status=initial_candidate_kept"
+    echo "FINAL_CANDIDATE=$INITIAL_CAND"
+    cat "$INITIAL_DIR/benchgate_summary.txt"
+  } | tee "$RUN_DIR/final_summary.txt"
+  write_artifact_summary
   exit 0
 fi
 
@@ -253,7 +272,14 @@ echo "bench_feedback_positions=$HARD_LINES" | tee "$RUN_DIR/feedback_input_summa
 if (( HARD_LINES == 0 )); then
   echo "No bench hard positions were exported. Deleting failed initial candidate."
   rm -f "$INITIAL_CAND"
-  echo "RUN_DIR=$RUN_DIR"
+  {
+    echo "RUN_DIR=$RUN_DIR"
+    echo "final_status=no_bench_hard_positions"
+    echo "INITIAL_CAND=$INITIAL_CAND"
+    echo "bench_feedback_positions=$HARD_LINES"
+    cat "$INITIAL_DIR/benchgate_summary.txt"
+  } | tee "$RUN_DIR/final_summary.txt"
+  write_artifact_summary
   exit 0
 fi
 
@@ -291,7 +317,7 @@ SOURCE_RUN_DIR="$SOURCE_RUN_DIR" \
   BEST_METRIC=p95-regret \
   BEST_GUARD_MAX_REGRET_INCREASE_CP=0 \
   BEST_GUARD_BAD100_INCREASE=0 \
-  RERANK_MAX_POSITIONS=300 \
+  RERANK_MAX_POSITIONS="$FEEDBACK_RERANK_MAX_POSITIONS" \
   RERANK_DEDUPE_SFEN=1 \
   RERANK_ALLOW_MEAN_REGRET_INCREASE_CP=0.05 \
   RERANK_ALLOW_P90_REGRET_INCREASE_CP=0 \
@@ -306,7 +332,16 @@ FEEDBACK_CAND="$FEEDBACK_DIR/best.raw.binary"
 if (( feedback_status != 0 )) || [[ ! -f "$FEEDBACK_CAND" ]]; then
   echo "bench feedback did not produce a gated candidate. Deleting failed initial candidate."
   rm -f "$INITIAL_CAND" "$FEEDBACK_DIR/candidate.raw.binary" "$FEEDBACK_CAND"
-  echo "RUN_DIR=$RUN_DIR"
+  {
+    echo "RUN_DIR=$RUN_DIR"
+    echo "final_status=feedback_rejected_no_candidate"
+    echo "INITIAL_CAND=$INITIAL_CAND"
+    echo "FEEDBACK_CAND=$FEEDBACK_CAND"
+    echo "bench_feedback_positions=$HARD_LINES"
+    echo "feedback_status=$feedback_status"
+    cat "$INITIAL_DIR/benchgate_summary.txt"
+  } | tee "$RUN_DIR/final_summary.txt"
+  write_artifact_summary
   exit 0
 fi
 rm -f "$FEEDBACK_DIR/candidate.raw.binary"
@@ -321,20 +356,22 @@ FEEDBACK_SUMMARY="$FEEDBACK_BENCH_DIR/feedback_bench_summary.txt"
 FEEDBACK_RERANK_STATUS="$(cat "$FEEDBACK_BENCH_DIR/feedback_bench_aligned_rerank.status")"
 {
   echo "RUN_DIR=$RUN_DIR"
+  echo "final_status=feedback_candidate_evaluated"
   echo "INITIAL_CAND=$INITIAL_CAND"
   echo "FEEDBACK_CAND=$FEEDBACK_CAND"
+  echo "bench_feedback_positions=$HARD_LINES"
   cat "$FEEDBACK_SUMMARY"
   echo "feedback_bench_aligned_rerank_status=$FEEDBACK_RERANK_STATUS"
 } | tee "$RUN_DIR/final_summary.txt"
 
 if passes_score_gate "$FEEDBACK_SUMMARY" && [[ "$FEEDBACK_RERANK_STATUS" == "0" ]]; then
+  sed -i 's/^final_status=.*/final_status=feedback_candidate_kept/' "$RUN_DIR/final_summary.txt"
   echo "feedback candidate kept for further evaluation" | tee -a "$RUN_DIR/final_summary.txt"
   rm -f "$INITIAL_CAND"
 else
+  sed -i 's/^final_status=.*/final_status=feedback_candidate_rejected/' "$RUN_DIR/final_summary.txt"
   echo "feedback candidate rejected and deleted" | tee -a "$RUN_DIR/final_summary.txt"
   rm -f "$INITIAL_CAND" "$FEEDBACK_CAND"
 fi
 
-find "$RUN_DIR" -type f -name '*.binary' -printf '%s %p\n' | tee "$RUN_DIR/binary_files_after.txt"
-du -sh "$RUN_DIR" | tee "$RUN_DIR/du_after.txt"
-df -h . | tee "$RUN_DIR/df_after.txt"
+write_artifact_summary
