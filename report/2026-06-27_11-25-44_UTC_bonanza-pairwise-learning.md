@@ -951,3 +951,63 @@ best_epoch=0
 
 - `tools/run_mmto_benchgate_probe.sh` の `NO_CANDIDATE` summary に、`best_epoch` と `best_guard` 関連ログを残すようにした。
 - 次に試すなら、guardを完全に外すのではなく、`teacher_match` / `max_regret` のどちらが実戦悪化と相関するかを分けて確認する。
+
+## Softguard benchgate probe
+
+GPT-5.5 xhigh の分析では、今は単純に学習時間を伸ばす段階ではなく、まず候補生成gateを二段化するべきと判断された。
+
+理由:
+
+- A/B probeでは p95系metricは改善していた。
+- しかし `max_regret` / `bad100` / `teacher_match` のguardがゼロ許容で、候補が外へ出なかった。
+- 小規模validでゼロ許容にすると、候補をbenchで落とす前に止まりすぎる。
+
+そこで、最小変更として `tools/run_mmto_benchgate_probe.sh` と `tools/run_mmto_bench_feedback_probe.sh` に best guard slack を環境変数で渡せるようにした。
+
+追加:
+
+- `BEST_GUARD_MAX_REGRET_INCREASE_CP`
+- `BEST_GUARD_BAD100_INCREASE`
+- `BEST_GUARD_TEACHER_MATCH_DROP_PCT`
+- `INITIAL_BEST_GUARD_*`
+- `FEEDBACK_BEST_GUARD_*`
+
+実験:
+
+- run: `data/mmto/runs/mmto_softguard_probe_20260627_140949`
+- `BEST_GUARD_MAX_REGRET_INCREASE_CP=1.0`
+- `BEST_GUARD_BAD100_INCREASE=0.01`
+- `BEST_GUARD_TEACHER_MATCH_DROP_PCT=1.0`
+- `BENCH_GAMES=10`
+- seeds: `12001 12101 12201`
+
+候補生成:
+
+```text
+best_epoch=1
+best_value=38.503777
+score gate: pass
+refresh rerank: pass
+bench-aligned rerank: pass
+```
+
+bench:
+
+```text
+seed 12001: 8-2
+seed 12101: 2-8
+seed 12201: 5-5
+
+total:
+  new 15
+  baseline 15
+  draw 0
+  score rate 50.00%
+```
+
+判断:
+
+- softguardにより、候補を外へ出してbenchで評価する二段gateは成立した。
+- ただしbenchは50%ちょうどで、seed間の揺れが大きい。
+- 採用候補ではないため、残った `best.raw.binary` は削除した。
+- 次は `MIN_SCORE_RATE_PCT=55` で同系候補を落とし、bench hard positions を feedback repair へ送る。
