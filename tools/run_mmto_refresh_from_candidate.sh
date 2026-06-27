@@ -253,9 +253,9 @@ train_args=(
   --bad-regret-cp 300
   --bad-regret-thresholds-cp 50,100,200,300
   --best-metric "$BEST_METRIC"
-  --best-guard-max-regret-increase-cp "$BEST_GUARD_MAX_REGRET_INCREASE_CP"
-  --best-guard-bad100-increase "$BEST_GUARD_BAD100_INCREASE"
-  --best-guard-teacher-match-drop-pct "$BEST_GUARD_TEACHER_MATCH_DROP_PCT"
+  --best-guard-max-regret-increase-cp="$BEST_GUARD_MAX_REGRET_INCREASE_CP"
+  --best-guard-bad100-increase="$BEST_GUARD_BAD100_INCREASE"
+  --best-guard-teacher-match-drop-pct="$BEST_GUARD_TEACHER_MATCH_DROP_PCT"
   --selected-regret-cap-cp 300
   --freeze-material
   --anchor-l2 "$ANCHOR_L2"
