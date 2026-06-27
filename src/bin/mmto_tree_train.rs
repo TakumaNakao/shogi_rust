@@ -117,6 +117,14 @@ struct Args {
     feedback_max_sample_weight: f32,
     #[arg(long, default_value_t = 0)]
     feedback_limit: usize,
+    #[arg(long)]
+    policy_anchor_weights: Option<PathBuf>,
+    #[arg(long, default_value_t = 0.0)]
+    policy_anchor_weight: f32,
+    #[arg(long, default_value_t = 100.0)]
+    policy_anchor_temperature_cp: f32,
+    #[arg(long, value_enum, default_value_t = ListwiseFeatureSource::Move)]
+    policy_anchor_feature_source: ListwiseFeatureSource,
     #[arg(long, value_enum, default_value_t = LossMode::Pairwise)]
     loss_mode: LossMode,
     #[arg(long, value_enum, default_value_t = ListwiseFeatureSource::TeacherLeaf)]
@@ -375,6 +383,14 @@ struct FeedbackMetrics {
     candidate_regret_sum: f32,
 }
 
+#[derive(Default)]
+struct PolicyAnchorMetrics {
+    samples: usize,
+    loss: f32,
+    pair_weight_sum: f32,
+    top_match_count: usize,
+}
+
 #[derive(Clone, Copy)]
 struct PairOptions {
     teacher_top_k: usize,
@@ -627,6 +643,48 @@ fn listwise_distribution(
         *p /= model_total;
     }
     Some((teacher_exp, model_exp, teacher_top_idx))
+}
+
+fn model_policy_distribution(
+    sample: &Sample,
+    model: &SparseModel,
+    temperature_cp: f32,
+    feature_source: ListwiseFeatureSource,
+) -> Option<Vec<f32>> {
+    if sample.candidates.is_empty() || !temperature_cp.is_finite() || temperature_cp <= 0.0 {
+        return None;
+    }
+
+    let mut scores = Vec::with_capacity(sample.candidates.len());
+    let mut max_score = f32::NEG_INFINITY;
+    for candidate in &sample.candidates {
+        let (features, material) = candidate_listwise_features(candidate, feature_source);
+        let score = model.predict_with_material(features, material);
+        if !score.is_finite() {
+            return None;
+        }
+        max_score = max_score.max(score);
+        scores.push(score);
+    }
+    if !max_score.is_finite() {
+        return None;
+    }
+
+    let mut total = 0.0f32;
+    for score in &mut scores {
+        *score = ((*score - max_score) / temperature_cp).exp();
+        if !score.is_finite() {
+            return None;
+        }
+        total += *score;
+    }
+    if total <= 0.0 || !total.is_finite() {
+        return None;
+    }
+    for score in &mut scores {
+        *score /= total;
+    }
+    Some(scores)
 }
 
 fn ensure_finite_model(model: &SparseModel) -> Result<()> {
@@ -1370,6 +1428,77 @@ fn evaluate_feedback_batch(
     metrics
 }
 
+fn accumulate_policy_anchor_metrics(
+    sample: &Sample,
+    model: &SparseModel,
+    anchor_model: &SparseModel,
+    temperature_cp: f32,
+    feature_source: ListwiseFeatureSource,
+    metrics: &mut PolicyAnchorMetrics,
+) {
+    let Some(anchor_probs) =
+        model_policy_distribution(sample, anchor_model, temperature_cp, feature_source)
+    else {
+        return;
+    };
+    let Some(model_probs) =
+        model_policy_distribution(sample, model, temperature_cp, feature_source)
+    else {
+        return;
+    };
+
+    let mut loss = 0.0f32;
+    let mut anchor_top_idx = 0usize;
+    let mut model_top_idx = 0usize;
+    let mut anchor_top_prob = f32::NEG_INFINITY;
+    let mut model_top_prob = f32::NEG_INFINITY;
+    for (idx, (anchor_prob, model_prob)) in anchor_probs.iter().zip(model_probs.iter()).enumerate()
+    {
+        if *anchor_prob > 0.0 {
+            loss -= *anchor_prob * model_prob.max(1e-7).ln();
+        }
+        if *anchor_prob > anchor_top_prob {
+            anchor_top_prob = *anchor_prob;
+            anchor_top_idx = idx;
+        }
+        if *model_prob > model_top_prob {
+            model_top_prob = *model_prob;
+            model_top_idx = idx;
+        }
+    }
+
+    metrics.samples += 1;
+    metrics.loss += sample.sample_weight * loss;
+    metrics.pair_weight_sum += sample.sample_weight;
+    if anchor_top_idx == model_top_idx {
+        metrics.top_match_count += 1;
+    }
+}
+
+fn evaluate_policy_anchor_batch(
+    model: &SparseModel,
+    anchor_model: &SparseModel,
+    batch: &[Sample],
+    temperature_cp: f32,
+    feature_source: ListwiseFeatureSource,
+) -> PolicyAnchorMetrics {
+    let mut metrics = PolicyAnchorMetrics::default();
+    for sample in batch {
+        accumulate_policy_anchor_metrics(
+            sample,
+            model,
+            anchor_model,
+            temperature_cp,
+            feature_source,
+            &mut metrics,
+        );
+    }
+    if metrics.pair_weight_sum > 0.0 {
+        metrics.loss /= metrics.pair_weight_sum;
+    }
+    metrics
+}
+
 fn update_sample_refs_with_softplus(
     model: &mut SparseModel,
     samples: &[&Sample],
@@ -1759,6 +1888,100 @@ fn update_feedback_refs_with_softplus(
         if !freeze_material {
             material_grad_total += grad_diff * (sample.good_material - sample.bad_material);
         }
+    }
+
+    if pair_count == 0 {
+        return (0.0, 0);
+    }
+    let avg = 1.0 / pair_weight_sum.max(f32::EPSILON);
+    for (idx, grad_sum) in w_grads {
+        let grad = grad_sum * avg;
+        match optimizer {
+            OptimizerKind::Sgd => {
+                model.w[idx] -= model.kpp_eta * (grad + l2_lambda * model.w[idx]);
+            }
+            OptimizerKind::Adagrad => {
+                let acc = adagrad.w_acc.entry(idx).or_insert(adagrad_epsilon);
+                *acc += grad * grad;
+                let denom = acc.sqrt().max(adagrad_epsilon.sqrt());
+                let lr = model.kpp_eta / denom;
+                model.w[idx] -= lr * (grad + l2_lambda * model.w[idx]);
+            }
+        }
+    }
+
+    if !freeze_material {
+        let material_grad = material_grad_total * avg;
+        match optimizer {
+            OptimizerKind::Sgd => {
+                model.material_coeff -=
+                    model.kpp_eta * (material_grad + l2_lambda * model.material_coeff);
+            }
+            OptimizerKind::Adagrad => {
+                if adagrad.material_acc < adagrad_epsilon {
+                    adagrad.material_acc = adagrad_epsilon;
+                }
+                adagrad.material_acc += material_grad * material_grad;
+                let denom = adagrad.material_acc.sqrt().max(adagrad_epsilon.sqrt());
+                let lr = model.kpp_eta / denom;
+                model.material_coeff -= lr * (material_grad + l2_lambda * model.material_coeff);
+            }
+        }
+    }
+
+    (loss / pair_weight_sum.max(f32::EPSILON), pair_count)
+}
+
+fn update_policy_anchor_refs(
+    model: &mut SparseModel,
+    anchor_model: &SparseModel,
+    samples: &[&Sample],
+    temperature_cp: f32,
+    feature_source: ListwiseFeatureSource,
+    l2_lambda: f32,
+    optimizer: OptimizerKind,
+    adagrad: &mut AdagradState,
+    adagrad_epsilon: f32,
+    freeze_material: bool,
+) -> (f32, usize) {
+    let mut w_grads: HashMap<usize, f32> = HashMap::new();
+    let mut material_grad_total = 0.0f32;
+    let mut loss = 0.0f32;
+    let mut pair_weight_sum = 0.0f32;
+    let mut pair_count = 0usize;
+
+    for sample in samples {
+        let Some(anchor_probs) =
+            model_policy_distribution(sample, anchor_model, temperature_cp, feature_source)
+        else {
+            continue;
+        };
+        let Some(model_probs) =
+            model_policy_distribution(sample, model, temperature_cp, feature_source)
+        else {
+            continue;
+        };
+
+        let mut sample_loss = 0.0f32;
+        for (idx, (anchor_prob, model_prob)) in
+            anchor_probs.iter().zip(model_probs.iter()).enumerate()
+        {
+            if *anchor_prob > 0.0 {
+                sample_loss -= *anchor_prob * model_prob.max(1e-7).ln();
+            }
+            let delta = (*model_prob - *anchor_prob) / temperature_cp * sample.sample_weight;
+            let (features, material) =
+                candidate_listwise_features(&sample.candidates[idx], feature_source);
+            for &feature_idx in features {
+                *w_grads.entry(feature_idx).or_insert(0.0) += delta;
+            }
+            if !freeze_material {
+                material_grad_total += delta * material;
+            }
+            pair_count += 1;
+        }
+        loss += sample.sample_weight * sample_loss;
+        pair_weight_sum += sample.sample_weight;
     }
 
     if pair_count == 0 {
@@ -2364,6 +2587,104 @@ fn update_streaming_train_epoch(
     Ok((processed_samples, clamped_weights))
 }
 
+fn update_streaming_policy_anchor_epoch(
+    model: &mut SparseModel,
+    anchor_model: &SparseModel,
+    train_path: &PathBuf,
+    batch_size: usize,
+    max_samples: usize,
+    temperature_cp: f32,
+    feature_source: ListwiseFeatureSource,
+    l2_lambda: f32,
+    optimizer: OptimizerKind,
+    adagrad: &mut AdagradState,
+    adagrad_epsilon: f32,
+    freeze_material: bool,
+    initial_material: f32,
+    initial_weights: Option<&Vec<f32>>,
+    anchor_l2: f32,
+    max_weight_delta: Option<f32>,
+) -> Result<(usize, usize)> {
+    let mut clamped_weights = 0usize;
+    let mut batch_samples: Vec<Sample> = Vec::with_capacity(batch_size);
+    let mut processed_samples = 0usize;
+    let mut process_batch = |batch: &mut Vec<Sample>| -> Result<()> {
+        let batch_refs: Vec<&Sample> = batch.iter().collect();
+        let _ = update_policy_anchor_refs(
+            model,
+            anchor_model,
+            &batch_refs,
+            temperature_cp,
+            feature_source,
+            l2_lambda,
+            optimizer,
+            adagrad,
+            adagrad_epsilon,
+            freeze_material,
+        );
+        if freeze_material {
+            model.material_coeff = initial_material;
+        }
+        if let Some(initial_weights) = initial_weights {
+            if anchor_l2 > 0.0 || max_weight_delta.is_some() {
+                clamped_weights +=
+                    apply_weight_constraints(model, initial_weights, anchor_l2, max_weight_delta);
+            }
+        }
+        ensure_finite_model(model)?;
+        batch.clear();
+        Ok(())
+    };
+
+    let file = File::open(train_path)?;
+    let reader = BufReader::new(file);
+    for (line_index, line) in reader.lines().enumerate() {
+        if max_samples > 0 && processed_samples >= max_samples {
+            break;
+        }
+
+        let line = line?;
+        let line_number = line_index + 1;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: TreeRecord = serde_json::from_str(&line).map_err(|e| {
+            anyhow!(
+                "{}:{} invalid json: {}",
+                train_path.display(),
+                line_number,
+                e
+            )
+        })?;
+
+        if record
+            .schema
+            .as_deref()
+            .is_some_and(|schema| schema != "mmto_tree_v1")
+            || record.version == Some(0)
+        {
+            continue;
+        }
+
+        batch_samples.push(sample_from_record(train_path, line_number, record)?);
+        processed_samples += 1;
+        if batch_samples.len() == batch_size {
+            process_batch(&mut batch_samples)?;
+        }
+    }
+
+    if processed_samples == 0 {
+        return Err(anyhow!(
+            "{} contains no usable samples",
+            train_path.display()
+        ));
+    }
+    if !batch_samples.is_empty() {
+        process_batch(&mut batch_samples)?;
+    }
+    Ok((processed_samples, clamped_weights))
+}
+
 fn log_summary(
     metrics: &Metrics,
     _bad_regret_cp: f32,
@@ -2399,6 +2720,17 @@ fn log_feedback_summary(metrics: &FeedbackMetrics, sample_name: &str) -> String 
         violation_ratio,
         metrics.regret_delta_sum,
         metrics.candidate_regret_sum,
+    )
+}
+
+fn log_policy_anchor_summary(metrics: &PolicyAnchorMetrics, sample_name: &str) -> String {
+    let top_match = metrics.top_match_count as f32 / metrics.samples.max(1) as f32;
+    format!(
+        "{}: samples={} loss={:.6} top_match={:.2}%",
+        sample_name,
+        metrics.samples,
+        metrics.loss,
+        top_match * 100.0,
     )
 }
 
@@ -2821,6 +3153,19 @@ fn main() -> Result<()> {
             "--feedback-max-sample-weight must be finite and >= 1"
         ));
     }
+    if !args.policy_anchor_weight.is_finite() || args.policy_anchor_weight < 0.0 {
+        return Err(anyhow!(
+            "--policy-anchor-weight must be finite and non-negative"
+        ));
+    }
+    if args.policy_anchor_weight > 0.0 && args.policy_anchor_weights.is_none() {
+        return Err(anyhow!(
+            "--policy-anchor-weights is required when --policy-anchor-weight is positive"
+        ));
+    }
+    if !args.policy_anchor_temperature_cp.is_finite() || args.policy_anchor_temperature_cp <= 0.0 {
+        return Err(anyhow!("--policy-anchor-temperature-cp must be positive"));
+    }
     if args.max_pairs_per_sample == 0 {
         return Err(anyhow!("--max-pairs-per-sample must be greater than 0"));
     }
@@ -2892,6 +3237,15 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow!("failed to load {}: {}", args.weights.display(), e))?;
     model.kpp_eta = args.learning_rate;
     model.l2_lambda = args.l2_lambda;
+    let policy_anchor_model = if let Some(path) = args.policy_anchor_weights.as_ref() {
+        let mut anchor_model = SparseModel::new(args.learning_rate, args.l2_lambda);
+        anchor_model
+            .load(path)
+            .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
+        Some(anchor_model)
+    } else {
+        None
+    };
 
     let needs_anchor_weights = args.anchor_l2 > 0.0 || args.max_weight_delta.is_some();
     let initial_weights = if needs_anchor_weights {
@@ -3054,6 +3408,20 @@ fn main() -> Result<()> {
             args.feedback_weight
         );
     }
+    if let Some(anchor_model) = policy_anchor_model.as_ref() {
+        let baseline_anchor = evaluate_policy_anchor_batch(
+            &model,
+            anchor_model,
+            &valid_samples,
+            args.policy_anchor_temperature_cp,
+            args.policy_anchor_feature_source,
+        );
+        println!(
+            "baseline policy_anchor: {} weight={:.4}",
+            log_policy_anchor_summary(&baseline_anchor, "policy_anchor"),
+            args.policy_anchor_weight
+        );
+    }
 
     if args.dry_run {
         ensure_finite_model(&model)?;
@@ -3138,6 +3506,7 @@ fn main() -> Result<()> {
     let replay_enabled = args.replay_weight > 0.0 && !args.replay_train.is_empty();
     let feedback_enabled = args.feedback_weight > 0.0 && !feedback_samples.is_empty();
     let mut feedback_indices: Vec<usize> = (0..feedback_samples.len()).collect();
+    let policy_anchor_enabled = args.policy_anchor_weight > 0.0 && policy_anchor_model.is_some();
 
     for epoch in 1..=args.epochs {
         let mut clamped_weights = 0usize;
@@ -3297,6 +3666,79 @@ fn main() -> Result<()> {
             ));
         }
 
+        let mut policy_anchor_metrics = None;
+        if policy_anchor_enabled {
+            let anchor_model = policy_anchor_model
+                .as_ref()
+                .expect("policy anchor enabled requires anchor model");
+            let original_learning_rate = model.kpp_eta;
+            model.kpp_eta = original_learning_rate * args.policy_anchor_weight;
+            if args.stream_train {
+                let (_, anchor_clamped) = update_streaming_policy_anchor_epoch(
+                    &mut model,
+                    anchor_model,
+                    &args.train,
+                    args.batch_size,
+                    0,
+                    args.policy_anchor_temperature_cp,
+                    args.policy_anchor_feature_source,
+                    args.l2_lambda,
+                    args.optimizer,
+                    &mut optimizer_state,
+                    args.adagrad_epsilon,
+                    args.freeze_material,
+                    initial_material,
+                    initial_weights.as_ref(),
+                    args.anchor_l2,
+                    args.max_weight_delta,
+                )?;
+                clamped_weights += anchor_clamped;
+            } else {
+                let train_samples = train_samples.as_ref().unwrap();
+                let indices = train_indices.as_mut().unwrap();
+                indices.shuffle(&mut rng);
+                let mut anchor_batch_refs: Vec<&Sample> = Vec::with_capacity(args.batch_size);
+                for chunk in indices.chunks(args.batch_size) {
+                    anchor_batch_refs.clear();
+                    anchor_batch_refs.extend(chunk.iter().map(|idx| &train_samples[*idx]));
+                    let _ = update_policy_anchor_refs(
+                        &mut model,
+                        anchor_model,
+                        &anchor_batch_refs,
+                        args.policy_anchor_temperature_cp,
+                        args.policy_anchor_feature_source,
+                        args.l2_lambda,
+                        args.optimizer,
+                        &mut optimizer_state,
+                        args.adagrad_epsilon,
+                        args.freeze_material,
+                    );
+                    if args.freeze_material {
+                        model.material_coeff = initial_material;
+                    }
+                    if let Some(initial_weights) = initial_weights.as_ref() {
+                        if args.anchor_l2 > 0.0 || args.max_weight_delta.is_some() {
+                            clamped_weights += apply_weight_constraints(
+                                &mut model,
+                                initial_weights,
+                                args.anchor_l2,
+                                args.max_weight_delta,
+                            );
+                        }
+                    }
+                    ensure_finite_model(&model)?;
+                }
+            }
+            model.kpp_eta = original_learning_rate;
+            policy_anchor_metrics = Some(evaluate_policy_anchor_batch(
+                &model,
+                anchor_model,
+                &valid_samples,
+                args.policy_anchor_temperature_cp,
+                args.policy_anchor_feature_source,
+            ));
+        }
+
         let train = if args.stream_train {
             evaluate_streaming_train(
                 &model,
@@ -3440,6 +3882,13 @@ fn main() -> Result<()> {
                 log_feedback_summary(metrics, "feedback")
             );
         }
+        if let Some(metrics) = policy_anchor_metrics.as_ref() {
+            println!(
+                "epoch {} policy_anchor: {}",
+                epoch,
+                log_policy_anchor_summary(metrics, "policy_anchor")
+            );
+        }
         println!(
             "epoch {} best_metric_score={:.6} best_guard_max_regret={:.6} best_guard_bad100={:.6} best_guard_teacher_match={:.6} best_guard_passed={}",
             epoch,
@@ -3568,6 +4017,19 @@ fn main() -> Result<()> {
         println!(
             "final feedback: {}",
             log_feedback_summary(&metrics, "feedback")
+        );
+    }
+    if let Some(anchor_model) = policy_anchor_model.as_ref() {
+        let metrics = evaluate_policy_anchor_batch(
+            &final_model,
+            anchor_model,
+            &valid_samples,
+            args.policy_anchor_temperature_cp,
+            args.policy_anchor_feature_source,
+        );
+        println!(
+            "final policy_anchor: {}",
+            log_policy_anchor_summary(&metrics, "policy_anchor")
         );
     }
 
