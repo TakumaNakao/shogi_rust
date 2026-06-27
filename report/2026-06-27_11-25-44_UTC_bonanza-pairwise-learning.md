@@ -271,3 +271,69 @@ GPT-5.5 xhigh に再分析を依頼した結果、次の本命は **既存MMTO t
 - pair重みはscore差で軽くスケールし、上限を置く。
 - valid指標はteacher-best rank、large-margin pair accuracy、lossを主にする。
 - clamp数、更新norm、局面重複率をログに出す。
+
+## Large-margin teacher-pair probe
+
+既存 `mmto_tree_train` には `all-candidates`、`score-gap`、`teacher-mismatch` が既にあるため、まず専用runnerを追加して小実験した。
+
+追加:
+
+- `tools/run_mmto_large_margin_teacher_pairs.sh`
+- `tools/run_mmto_from_dump.sh` の `OPTIMIZER` / `ADAGRAD_EPSILON` 環境変数化。
+
+実験:
+
+- run: `data/mmto/runs/mmto_large_margin_teacher_pairs_probe_20260627_114408`
+- source dump: `data/mmto/runs/mmto_rerank_long_20260624_140151`
+- train/valid: `9000 / 1000`
+- `TEACHER_TOP_K=1`
+- `BAD_CANDIDATE_SCOPE=all-candidates`
+- `MIN_REGRET_CP=100`
+- `MAX_PAIRS_PER_SAMPLE=16`
+- `PAIR_MINING=loss-top`
+- `PAIR_WEIGHT_MODE=score-gap`
+- `PAIR_WEIGHT_SCALE_CP=150`
+- `BEST_METRIC=teacher-mismatch`
+- `OPTIMIZER=adagrad`
+
+結果:
+
+```text
+baseline valid:
+  loss=27.188143
+  selected_regret=684.24
+  p90=231.39
+  p95=262.88
+  teacher_match=18.40%
+  bad50=0.5290
+  bad100=0.3750
+
+epoch 1 valid:
+  loss=27.186134
+  selected_regret=684.30
+  teacher_match=18.30%
+  bad100=0.3750
+
+epoch 2 valid:
+  loss=27.185123
+  selected_regret=684.50
+  teacher_match=18.20%
+  bad100=0.3760
+
+epoch 6 valid:
+  loss=27.183174
+  selected_regret=684.57
+  teacher_match=18.20%
+  bad100=0.3770
+
+best_epoch=0
+```
+
+`score_gate` / `rerank_gate` は未実施。理由は `best_epoch=0` でbaselineが最良と判定され、学習候補が早期棄却されたため。
+
+判断:
+
+- large-margin pair objective のlossはわずかに下がった。
+- しかし teacher_match は下がり、selected_regret と bad100 は悪化した。
+- これは「epochを増やせばよい」兆候ではない。
+- 現設定を長時間化するより、目的関数・データ分割・teacher信号の作り方を再検討する。
