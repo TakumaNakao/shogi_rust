@@ -680,3 +680,107 @@ bench-aligned rerank:
 - `record_analyze` による `baseline_sweep_starts` / `drop_windows` 抽出。
 - `taya36 + bench由来SFEN` の軽量bench-aligned rerank。
 - 60局score rateが閾値未満、またはrerank失敗なら候補binary削除。
+
+## Benchgate runner result
+
+`tools/run_mmto_benchgate_probe.sh` を実行し、候補生成からbench-aligned gateまで一貫確認した。
+
+実験:
+
+- run: `data/mmto/runs/mmto_benchgate_runner_20260627_131106`
+- HEAD: `6938993`
+- `BENCH_SEEDS=12001 12101 12201`
+- `BENCH_GAMES=20`
+- `BENCH_DEPTH=10`
+- `RERANK_MAX_POSITIONS=80`
+- rerank depth: baseline/candidate/teacher = `4/4/6`
+
+候補生成:
+
+- guarded refresh: pass
+- `iteration=1 refresh accepted`
+- refresh内 `SCORE GATE PASSED`
+
+bench:
+
+```text
+seed 12001:
+  new wins: 10
+  baseline wins: 10
+  draws: 0
+  score rate: 50.00%
+
+seed 12101:
+  new wins: 7
+  baseline wins: 13
+  draws: 0
+  score rate: 35.00%
+
+seed 12201:
+  new wins: 11
+  baseline wins: 9
+  draws: 0
+  score rate: 55.00%
+
+total:
+  new 28
+  baseline 32
+  draw 0
+  score: 56 / 120 = 46.67%
+```
+
+paired starts:
+
+```text
+seed 12001:
+  new sweeps: 2
+  baseline sweeps: 2
+  splits: 6
+
+seed 12101:
+  new sweeps: 1
+  baseline sweeps: 4
+  splits: 5
+
+seed 12201:
+  new sweeps: 2
+  baseline sweeps: 1
+  splits: 7
+```
+
+bench-aligned rerank:
+
+```text
+positions: 80 (invalid=1 duplicate=497)
+
+baseline:
+  mean=1239.54
+  p90=17.88
+  p95=28.37
+  match=61.25%
+  bad50=0.0125
+  bad100=0.0125
+
+candidate:
+  mean=1239.52
+  p90=17.88
+  p95=28.37
+  match=62.50%
+  bad50=0.0125
+  bad100=0.0125
+
+RERANK GATE PASSED
+```
+
+最終判定:
+
+- 60局bench scoreが46.67%で、閾値50%未満。
+- 候補binaryは削除済み。
+- run容量は `78M`、残存binaryなし。
+
+判断:
+
+- bench-aligned rerankを通っても、実戦benchでは採用できなかった。
+- したがって、現行の guarded refresh 条件を単純に長く回すべきではない。
+- まずは benchgate runner を選抜ゲートとして固定し、学習条件やデータ生成を変えた候補だけを通す。
+- 長時間学習へ進める条件は、最低でも benchgate runner で50%以上、できれば55%以上またはbaseline sweep増加なしを満たすこと。
