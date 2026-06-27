@@ -1383,3 +1383,141 @@ Wilson approx: 40.1%..64.6%
 - 今回の学習信号は5サンプルだけで、feedback lossの改善も極小だったため、重みを長く残す価値は低い。
 - 次は候補重みを増やす前に、bench失敗局面からより多くのdirect feedbackサンプルを低コストに作る仕組みを整える。
 - 容量節約のため、この候補重みは結果記録後に削除した。
+
+## Direct feedbackサンプル生成プローブ
+
+direct feedback候補を増やす前に、bench失敗局面から軽量rerankでどれだけfeedback信号を得られるか測定した。実験はサブエージェントに委任した。
+
+追加した補助スクリプト:
+
+- `tools/run_mmto_direct_feedback_sample_probe.sh`
+
+入力:
+
+```text
+baseline weights: policy_weights_v2.1.0.binary
+candidate weights: data/mmto/runs/mmto_softguard_feedback_probe_20260627_141905/initial_benchgate/iter_1/best.raw.binary
+positions: data/mmto/runs/mmto_direct_feedback_probe_20260627_151908/direct_feedback_input.sfen
+depth: baseline/candidate/teacher = 3/3/5
+seed: 18001
+```
+
+実行:
+
+```text
+RUN_DIR=data/mmto/runs/direct_feedback_sample_probe_20260627_161147
+MAX_POSITIONS_LIST="40 80"
+BASELINE_DEPTH=3
+CANDIDATE_DEPTH=3
+TEACHER_DEPTH=5
+```
+
+結果:
+
+```text
+max_positions  status  seconds  samples  hard_positions  teacher_candidate_diff
+40             0       46       40       5               5
+80             0       55       80       9               9
+```
+
+出力サイズ:
+
+```text
+max40_d3_3_5.json: 21,408 bytes
+max80_d3_3_5.json: 23,271 bytes
+run_dir total: about 88 KiB
+```
+
+判断:
+
+- depth `3/3/5` なら、80局面でも1分未満で完了し、容量負荷もほぼない。
+- hard sample率は `9/80 = 11.25%` 程度で、前回の20局面5件よりは下がったが、全入力848局面へ広げれば数十から100件前後のfeedback候補を得られる可能性がある。
+- 次は `MAX_POSITIONS_LIST="200 1000"` で同じ軽量条件を測り、十分なサンプル数が出るか確認する。
+- ただしbaseline/candidate平均regretがほぼ同一で、今回のsoftguard候補はv2.1.0から探索選択が大きく変わっていない。feedback学習へ進む場合も、候補生成側を強く揺らす仕組みが必要になる可能性が高い。
+
+追加で全入力近くまで拡大した。
+
+実行:
+
+```text
+RUN_DIR=data/mmto/runs/direct_feedback_sample_probe_20260627_161423
+MAX_POSITIONS_LIST="200 1000"
+BASELINE_DEPTH=3
+CANDIDATE_DEPTH=3
+TEACHER_DEPTH=5
+```
+
+結果:
+
+```text
+max_positions  status  seconds  samples  hard_positions  teacher_candidate_diff
+200            0       129      200      22              22
+1000           0       342      848      113             113
+```
+
+`max_positions=1000` は入力848行を全件処理した。両方とも `RERANK GATE PASSED` で、`.binary` は生成していない。
+
+出力サイズ:
+
+```text
+max200_d3_3_5.json: 29,281 bytes
+max1000_d3_3_5.json: 70,563 bytes
+run_dir total: about 152 KiB
+```
+
+判断:
+
+- 848局面から113件の `teacher != candidate` pair が得られたため、feedback学習の最低限の信号密度は満たした。
+- 所要時間は全件で342秒、実験全体で約8分未満で、日常的に回せる。
+- 次は `max1000_d3_3_5.json` を `--feedback-json` に渡し、通常dumpの小さなreplayと組み合わせて1-2 epochだけ学習する。
+- ただしcandidateとbaselineの平均regretが同一に見えるため、このfeedbackはsoftguard候補固有の弱点というより、探索同士の局所的な選択差だけを拾っている可能性がある。採用判断はbenchで見る必要がある。
+
+## 学習停滞の分析
+
+GPT-5.5 xhighサブエージェントに、これまでの重み学習が採用候補を作れていない理由と、単純に長く回すべきかを分析させた。
+
+結論:
+
+- 現時点の主因は計算資源不足ではなく、目的関数と実戦で評価されるroot探索後の指し手選択のずれである。
+- 固定dumpのlossや静的rerankだけが改善しても、USI経由・時間制限・move ordering込みの対局勝率へ安定して移っていない。
+- `score gate` / `rerank gate` は「壊していない」検査には有用だが、「強くなった」証拠としては弱い。
+- v2.1.0自身の浅い探索をteacherにした自己蒸留だけを大規模化しても、新しい棋力情報が少ない。
+
+単純にもっと学習を回す方針が期待できる条件:
+
+```text
+- best_epochが0/1に張り付かず、複数epochでvalid・hard-valid・rerankが同時に改善する。
+- train lossだけでなく、searched rootのmatch、bad50/bad100、p90/p95が独立splitで非悪化になる。
+- bench由来hard positionsで、実際のcandidate bad moveをforce includeできている。
+- direct feedbackが数件ではなく、少なくとも数十から100件規模の teacher != candidate pair を安定生成できる。
+- 60局benchで55%以上、標準条件200局で53-55%以上を維持する。
+```
+
+期待しにくい条件:
+
+```text
+- fixed dumpのlossだけが下がる。
+- best_epochが1に張り付く。
+- clamp数が増える。
+- rerank meanだけ微改善し、matchやtailが動かない。
+- feedback sampleを少数重複で何度も流す。
+- v2.1.0 teacherの自己蒸留だけを大量化する。
+```
+
+次に実装・検証すべき優先事項:
+
+1. bench/direct counterexample DAggerを学習データの一級入力にする。
+   - benchのdrop windowから `sfen`, `candidate_move`, `teacher_move`, `regret`, `source_game`, `ply`, `sample_weight` を持つexplicit pairを作る。
+   - teacher move と candidate move を必ず候補に入れ、「teacher move > candidate move」の明示pair lossを通常データとは別replayとして扱う。
+   - 成功条件は848 drop windowsから50件以上の有効pair、feedback margin改善、通常valid/hard-valid非悪化、benchgate 60局55%以上、標準200局53%以上。
+   - 撤退条件は160局面まで広げても有効pair20件未満、またはfeedbackだけ改善してbenchが50%前後へ戻ること。
+2. weighted PV-sibling / Bonanza-rootをgroup-normalized化して補助データとして使う。
+   - PV siblingは完全なノイズではないが、単純拡大はtail悪化を起こしやすい。
+   - root 1件に対してPV sibling総重みをcapし、root/hard constraintsを満たす中でPV sibling loss最良のcheckpointを選ぶ。
+
+v2.1.0重みの扱い:
+
+- 採用候補作成はv2.1.0 warm-start継続が妥当。
+- ゼロ初期化は診断・長期研究用に限定する。
+- 巨大疎KPPをscratchから短期で育てるには、データ量・教師探索・目的関数の整備がまだ不足している。
+- 今は `freeze_material`, anchor, max-delta, hard replay上限で、v2.1.0から制御されたdelta学習として扱う。
