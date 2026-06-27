@@ -1442,3 +1442,97 @@ teacher top一致率を落とす候補を避けるため、`CURRENT_TOP_MIN_BAD_
 解釈:
 
 `CURRENT_TOP_MIN_BAD_REGRET_CP=0` は、teacher top維持を強める意図とは逆に、extra-valid上のteacher matchを大きく落とした。現時点ではこの単純な設定変更は不採用。matchを守るには、current-top hard pairの閾値を下げるだけでは不十分で、teacher topを明示的に維持する別の目的関数またはhard局面の重み設計が必要。
+
+### teacher-top CE objective
+
+背景:
+
+これまでのMMTO-lite/Bonanza-root系学習では、trainer上のlossや一部regret指標は下がる一方、rerank gateやteacher matchに効かない候補が多かった。単純に長時間回す前に、教師top手を直接維持する目的関数が必要と判断した。
+
+実装:
+
+- `mmto_tree_train` に `--teacher-top-ce-weight` を追加。
+- listwise候補集合上で、`teacher_score` 最大の候補をteacher topとして扱う。
+- 既存のteacher softmax CEに加え、`-w * ln(p_teacher_top)` を補助lossとして加算。
+- gradientは `w * (p_i - 1[i == teacher_top]) / model_temperature_cp` を既存listwise gradientへ加算。
+- weight `0` では既存挙動を維持する。
+- 主要MMTOスクリプトから `TEACHER_TOP_CE_WEIGHT` で指定可能にした。
+- `tools/run_mmto_from_dump.sh` は `BEST_METRIC` を環境変数で指定可能に修正した。
+
+Probe:
+
+`data/mmto/runs/mmto_teacher_top_ce_probe_20260627_051920`
+
+入力:
+
+- `data/mmto/runs/mmto_refresh_candidate_20260627_040733` のdumpからtrain 300 / valid 80を切り出し。
+- `loss-mode=listwise-leaf`
+- `learning-rate=0.0005`
+- `max-weight-delta=0.003`
+- `best-metric=teacher-mismatch`
+
+weight感度:
+
+- `TEACHER_TOP_CE_WEIGHT=0`
+  - valid teacher_match: baseline `21.25%`
+  - epoch 2: `21.25%`
+  - `best_epoch=0`
+- `0.02`
+  - epoch 2: `21.25%`
+  - `best_epoch=0`
+- `0.05`
+  - epoch 2: `21.25%`
+  - `best_epoch=0`
+- `0.2`
+  - epoch 2 valid teacher_match: `23.75%`
+  - `best_epoch=2`
+- `0.5`
+  - epoch 2 valid teacher_match: `26.25%`
+  - bad50: `3.75% -> 2.50%`
+  - `best_epoch=2`
+- `1.0`
+  - epoch 1 valid teacher_match: `26.25%`
+  - `best_epoch=1`
+
+Gate:
+
+`data/mmto/runs/mmto_teacher_top_ce_gate_20260627_052255`
+
+設定:
+
+- `TEACHER_TOP_CE_WEIGHT=0.5`
+- train 300 / valid 80
+- `best-metric=teacher-mismatch`
+- `best-guard-max-regret-increase-cp=0`
+- `best-guard-bad100-increase=0`
+- `best-guard-teacher-match-drop-pct=0`
+
+結果:
+
+- trainer:
+  - baseline valid teacher_match `21.25%`
+  - epoch 2 valid teacher_match `26.25%`
+  - `best_epoch=2`
+- score gate:
+  - mean abs delta `0.47cp`
+  - p95 `0.78cp`
+  - max `0.88cp`
+  - passed
+- rerank gate 80 positions:
+  - baseline mean regret `7.80`
+  - candidate mean regret `7.42`
+  - p90 `24.25 -> 23.67`
+  - p95 `33.33 -> 32.47`
+  - match `8.75% -> 10.00%`
+  - passed
+
+解釈:
+
+teacher-top CEは、少なくとも小規模dumpではteacher matchとrerank regretを同時に改善した。これは、これまでの「lossは下がるがrerankに効かない」実験群と異なる良い兆候である。ただしtrain 300 / valid 80の小規模検証であり、この結果だけで長時間学習へ進むのは早い。
+
+次の検証:
+
+1. `TEACHER_TOP_CE_WEIGHT=0.5` を第一候補、`0.2` と `1.0` を比較候補として、train 1000から2000 / valid 200以上で再確認する。
+2. `best-metric=teacher-mismatch` だけでなく、`p95-regret` とteacher-match guardを組み合わせた選択も比較する。
+3. 200から500局面rerank gateでmean/p90/p95/matchが同時に悪化しないことを確認する。
+4. ここまで通った場合のみ、10000局面級dumpで数時間学習へ進む。
