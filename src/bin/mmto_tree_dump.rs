@@ -63,6 +63,8 @@ struct Args {
     pv_sibling_max_plies: usize,
     #[arg(long, default_value_t = 0.25)]
     pv_sibling_sample_weight: f32,
+    #[arg(long)]
+    pv_sibling_total_weight_cap: Option<f32>,
     #[arg(long, default_value_t = 1)]
     jsonl_version: u8,
 }
@@ -374,7 +376,7 @@ fn gather_pv_sibling_records(
         None => return Vec::new(),
     };
 
-    let mut sibling_records = Vec::new();
+    let mut sibling_positions = Vec::new();
     let mut sibling_ordinal = 0usize;
 
     for pv in [&teacher_root_pv, &student_root_pv] {
@@ -387,21 +389,36 @@ fn gather_pv_sibling_records(
             let sibling_index = PV_SIBLING_ROOT_INDEX_OFFSET
                 .saturating_add(root_index.saturating_mul(1000))
                 .saturating_add(sibling_ordinal + 1);
-            let sibling_record = make_record(
-                sibling_index,
-                sibling_position.clone(),
-                None,
-                None,
-                teacher_model,
-                student_model,
-                args,
-                args.pv_sibling_sample_weight,
-                is_valid,
-            );
             sibling_ordinal = sibling_ordinal.saturating_add(1);
-            if let Some(record) = sibling_record.record {
-                sibling_records.push(record);
-            }
+            sibling_positions.push((sibling_index, sibling_position.clone()));
+        }
+    }
+
+    if sibling_positions.is_empty() {
+        return Vec::new();
+    }
+
+    let sibling_weight = if let Some(cap) = args.pv_sibling_total_weight_cap {
+        args.pv_sibling_sample_weight
+            .min(cap / sibling_positions.len() as f32)
+    } else {
+        args.pv_sibling_sample_weight
+    };
+    let mut sibling_records = Vec::new();
+    for (sibling_index, sibling_position) in sibling_positions {
+        let sibling_record = make_record(
+            sibling_index,
+            sibling_position,
+            None,
+            None,
+            teacher_model,
+            student_model,
+            args,
+            sibling_weight,
+            is_valid,
+        );
+        if let Some(record) = sibling_record.record {
+            sibling_records.push(record);
         }
     }
 
@@ -957,6 +974,14 @@ fn main() -> Result<()> {
     if !args.pv_sibling_sample_weight.is_finite() || args.pv_sibling_sample_weight <= 0.0 {
         return Err(anyhow!(
             "--pv-sibling-sample-weight must be finite and greater than 0"
+        ));
+    }
+    if args
+        .pv_sibling_total_weight_cap
+        .is_some_and(|value| !value.is_finite() || value <= 0.0)
+    {
+        return Err(anyhow!(
+            "--pv-sibling-total-weight-cap must be finite and greater than 0"
         ));
     }
     if args.position_chunk_size == 0 {
