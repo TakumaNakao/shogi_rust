@@ -477,3 +477,36 @@ hard feedback:
 - rerankでは p90 / p95 / max / match / bad50 / bad100 が同一で、meanだけ約 `0.0029cp` 悪化した。
 - この差は実質ノイズ幅なので、候補を即廃棄するより、平均regretに小さな許容幅を置いて独立rerankへ進める価値がある。
 - gate許容値をスクリプトから指定できるよう、`RERANK_ALLOW_MEAN_REGRET_INCREASE_CP` などをMMTO pipelineに追加した。
+
+## Rerank gate修正
+
+`RERANK_ALLOW_MEAN_REGRET_INCREASE_CP=0.05` を指定して再実験したが、候補は再び棄却された。
+
+原因:
+
+- `mmto_rerank_gate` には `allow_*_increase` と `require_*_improvement` が両方ある。
+- `allow_mean=0.05` は正しく渡っていた。
+- しかし `require_mean_regret_improvement_cp=0` が、「改善要求なし」ではなく「平均regretの悪化を一切許さない」として働いていた。
+- そのため、`+0.0029cp` の平均regret差でも `mean regret failed improvement requirement` で落ちていた。
+
+修正:
+
+- `require_mean_regret_improvement_cp`
+- `require_p90_regret_improvement_cp`
+- `require_p95_regret_improvement_cp`
+
+上記は、正の値を指定したときだけ追加の改善要求として判定するようにした。
+
+これにより:
+
+- 非悪化/許容幅は `allow_*_increase` が担当する。
+- 明確な改善要求は `require_*_improvement_cp > 0` のときだけ有効になる。
+- `require_match_rate_improvement_pct=0` は既存どおりmatch率の非低下要求として残す。
+
+次の確認:
+
+- `RERANK_ALLOW_MEAN_REGRET_INCREASE_CP=0.05`
+- `require_mean_regret_improvement_cp=0`
+- 他指標は非悪化
+
+この条件で guarded refresh を再実行し、通れば独立rerankへ進める。
