@@ -337,3 +337,44 @@ best_epoch=0
 - しかし teacher_match は下がり、selected_regret と bad100 は悪化した。
 - これは「epochを増やせばよい」兆候ではない。
 - 現設定を長時間化するより、目的関数・データ分割・teacher信号の作り方を再検討する。
+
+## GPT-5.5 xhigh 再分析
+
+large-margin teacher-pair probe 後に、次の研究判断をGPT-5.5 xhighへ依頼した。
+
+結論:
+
+- 現設定を単純に長時間化する見込みは低い。
+- `all-candidates` の `score-gap` pairwise loss は、root search / rerank の採用指標と噛み合っていない。
+- 次は広い `teacher_best vs all bad candidates` ではなく、探索が実際に選ぶ悪手を直接扱う目的へ寄せる。
+- scratch学習は今は主路線にしない。v2.1.0 は長時間学習済みの強い事前分布なので、まずは warm-start の段階学習で進める。
+
+推奨する目的関数:
+
+- `listwise-leaf` を主目的にする。
+- 現モデルtop悪手への `current-top margin` を入れる。
+- rerank gate が出した `(teacher_move, candidate_move)` の hard feedback を補助的に使う。
+- checkpoint選択は `p95-regret` だけでなく、`max-regret` / `bad100` guard を必須にする。
+
+推奨する検証段階:
+
+1. `best_epoch > 0`
+2. `best_guard_max_regret_increase=0`
+3. `best_guard_bad100_increase=0`
+4. score gate pass
+5. rerank gateで mean / p90 / p95 / bad50 / bad100 / match 非悪化
+6. 独立valid rerankでも非悪化
+7. 20局は破綻検知、採用は100局以上
+
+次の実験:
+
+- `tools/run_mmto_refresh_loop.sh` による guarded refresh。
+- base dump は `data/mmto/runs/bonanza_root_pergame_2k_leaf_gt010_20260627_001929` を使う。
+- `REFRESH_MAX_POSITIONS=200`
+- `BASE_TRAIN_LINES=1800`
+- `BASE_VALID_LINES=200`
+- `LOSS_MODE=listwise-leaf`
+- `CURRENT_TOP_MARGIN_WEIGHT=0.05`
+- `GAME_TEACHER_MARGIN_WEIGHT=0.05`
+- `BEST_GUARD_MAX_REGRET_INCREASE_CP=0`
+- `BEST_GUARD_BAD100_INCREASE=0`
