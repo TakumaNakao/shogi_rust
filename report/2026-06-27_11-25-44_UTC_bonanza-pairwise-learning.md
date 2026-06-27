@@ -510,3 +510,71 @@ hard feedback:
 - 他指標は非悪化
 
 この条件で guarded refresh を再実行し、通れば独立rerankへ進める。
+
+## Fixed-gate guarded refresh probe
+
+`require_*_improvement_cp=0` の扱いを修正した後、同じ guarded refresh を再実行した。
+
+実験:
+
+- run: `data/mmto/runs/mmto_refresh_loop_guarded200_tol005_fixedgate_20260627_121018`
+- HEAD: `91469ce`
+- `RERANK_ALLOW_MEAN_REGRET_INCREASE_CP=0.05`
+- 他条件は前回 guarded refresh と同等。
+
+offline gate:
+
+```text
+train best_epoch=1
+score_gate: PASS
+  mean_abs_delta_cp=0.2687
+  p95_abs_delta_cp=0.4756
+  max_abs_delta_cp=0.5552
+
+refresh rerank_gate: PASS
+```
+
+独立rerank:
+
+```text
+input: data/mmto/runs/mmto_rerank_long_20260624_140151/valid.tree.jsonl
+max_positions=500
+
+baseline:
+  mean=216.45844
+  match=48.80%
+
+candidate:
+  mean=216.40077
+  match=49.00%
+
+RERANK GATE PASSED
+```
+
+20局ベンチ:
+
+```text
+seed=12001
+games=20
+new wins: 7
+baseline wins: 13
+draws: 0
+new decisive win rate: 35.00%
+new total score rate: 35.00%
+decisive win rate 95% CI: 18.12%..56.71%
+```
+
+判断:
+
+- 初めて `guarded refresh -> score gate -> refresh rerank -> independent rerank` までは通過した。
+- しかし20局ベンチで 7-13 と負けたため、候補重みは不採用。
+- `best.raw.binary` は削除済み。
+- offline rerank gate が実戦勝率を十分に予測できていない。
+- 現在の学習設定を単純に長く回すのは危険。長時間化する前に、gateを実戦強さに近づける必要がある。
+
+次の研究課題:
+
+- offline gateに `taya36` / 実戦開始局面での小ベンチ相関を入れる。
+- rerank対象が実戦ベンチと乖離していないか確認する。
+- 20局smokeを学習候補選抜の必須段階にする。
+- 採用候補は最低でも複数seedの20局または40局で非悪化を確認してから長時間学習へ進める。
