@@ -1836,3 +1836,47 @@ baseline_regret mean: 72127.0
 - v2.1.0からの小さなdelta学習としては、既存baselineの弱点も同時に押すため、勝率改善に直結しにくい。
 - 今後のdirect feedback候補は、学習前に `regret_delta > 0` の件数を必ず確認する。
 - `tools/run_mmto_direct_feedback_sample_probe.sh` に `delta_gt0`, `delta_ge1`, `delta_ge10` のsummary列を追加した。
+
+## PV sibling group cap
+
+direct feedback 113件の単純学習は打ち切り、次の候補としてPV sibling信号を再検討する。過去の3K weighted PV sibling ultra-safe候補は100局で55.50%を出したが、PV sibling総重みがroot重みを超えやすい問題があった。
+
+実装:
+
+- `mmto_tree_dump` に `--pv-sibling-total-weight-cap` を追加した。
+- 指定時は、同じrootから生成されるPV sibling局面の総 `sample_weight` がcapを超えないよう、各PV sibling weightを `min(pv_sibling_sample_weight, cap / sibling_count)` にする。
+- 未指定時は従来通り、各PV siblingに固定 `--pv-sibling-sample-weight` を使う。
+
+smoke:
+
+```text
+RUN_DIR=data/mmto/runs/pv_sibling_cap_smoke_20260627_164717
+max_positions: 50
+teacher_depth: 4
+student_depth: 3
+pv_sibling_max_plies: 2
+pv_sibling_sample_weight: 0.25
+cap: none vs 0.25
+```
+
+結果:
+
+```text
+records:
+  no_cap:  root 50, pv sibling 200
+  cap025:  root 50, pv sibling 200
+
+sample_weight:
+  no_cap:  root 1.0 x50, pv sibling 0.25 x200
+  cap025:  root 1.0 x50, pv sibling 0.0625 x200
+
+per-root PV sibling total:
+  no_cap: max 1.0, mean 1.0
+  cap025: max 0.25, mean 0.25
+```
+
+判断:
+
+- capは期待通り動作した。
+- record数は変えず、PV siblingの総学習圧だけをroot比で抑えられる。
+- 次は3K PV sibling dumpをcapありで再生成し、過去ultra-safe条件に近い学習を行って、offline gateと短ベンチを見る。
