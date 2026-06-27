@@ -897,3 +897,57 @@ feedback repair stage の分岐を確認するため、`MIN_SCORE_RATE_PCT=101` 
 - bench hard positions を feedback stage に流す経路は動作した。
 - reject時の機械可読summaryも残るようになった。
 - 次は強制不合格ではなく、通常条件の候補でfeedback stageが有効に働くかを確認する。
+
+## Bench-feedback A/B probe
+
+通常寄りの条件で、候補修正型とbaseline再学習型を比較しようとした。
+
+共通条件:
+
+- `BENCH_GAMES=10`
+- `BENCH_DEPTH=8`
+- `BENCH_TIME_LIMIT_MS=80`
+- 3 seeds
+- `MIN_SCORE_RATE_PCT=55`
+- `INITIAL_REFRESH_MAX_POSITIONS=100`
+- `INITIAL_REFRESH_EPOCHS=2`
+- `FEEDBACK_MAX_POSITIONS=80`
+- `FEEDBACK_EPOCHS=2`
+
+実験A:
+
+- run: `data/mmto/runs/mmto_bench_feedback_probeA_candidate_20260627_140134`
+- `FEEDBACK_START_WEIGHTS=candidate`
+- `final_status=no_initial_candidate`
+- `.binary` 残存なし
+
+実験B:
+
+- run: `data/mmto/runs/mmto_bench_feedback_probeB_baseline_20260627_140147`
+- `FEEDBACK_START_WEIGHTS=baseline`
+- `final_status=no_initial_candidate`
+- `.binary` 残存なし
+
+初期refreshの状況:
+
+```text
+baseline best_metric_score=39.474091
+epoch 1 best_metric_score=38.503777
+epoch 1 best_guard_passed=false
+epoch 2 best_metric_score=38.726536
+epoch 2 best_guard_passed=false
+best_epoch=0
+```
+
+判断:
+
+- A/Bとも初期候補が作れず、feedback stage には進めなかった。
+- p95-regret系のbest metric自体は改善しているが、guardで落ちた。
+- 具体的には `teacher_match` や `max_regret` のguardが候補化を止めている。
+- これは安全側ではあるが、候補生成が狭すぎる可能性がある。
+- 比較目的の「候補修正型 vs baseline再学習型」は、この実験では判定不能。
+
+対応:
+
+- `tools/run_mmto_benchgate_probe.sh` の `NO_CANDIDATE` summary に、`best_epoch` と `best_guard` 関連ログを残すようにした。
+- 次に試すなら、guardを完全に外すのではなく、`teacher_match` / `max_regret` のどちらが実戦悪化と相関するかを分けて確認する。

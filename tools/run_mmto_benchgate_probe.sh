@@ -98,7 +98,13 @@ env RUST_FONTCONFIG_DLOPEN=1 \
   bash tools/run_mmto_refresh_loop.sh 2>&1 | tee "$LOOP_DIR/pipeline_stdout.log"
 
 if [[ ! -s "$LOOP_DIR/current_candidate_path.txt" ]]; then
-  echo "NO_CANDIDATE" | tee "$LOOP_DIR/benchgate_summary.txt"
+  {
+    echo "NO_CANDIDATE"
+    if [[ -f "$LOOP_DIR/pipeline_stdout.log" ]]; then
+      grep -E 'best_epoch=|best_guard|did not pass offline gates|FINAL_CANDIDATE=|failed with status=|refresh offline gates passed|hard feedback' \
+        "$LOOP_DIR/pipeline_stdout.log" | tail -40
+    fi
+  } | tee "$LOOP_DIR/benchgate_summary.txt"
   find "$LOOP_DIR" -type f -name '*.binary' -delete
   du -sh "$LOOP_DIR" | tee "$LOOP_DIR/du_after.txt"
   exit 0
@@ -106,7 +112,13 @@ fi
 
 CAND="$(cat "$LOOP_DIR/current_candidate_path.txt")"
 if [[ "$CAND" == "$WEIGHTS" || ! -f "$CAND" ]]; then
-  echo "NO_NEW_CANDIDATE CAND=$CAND" | tee "$LOOP_DIR/benchgate_summary.txt"
+  {
+    echo "NO_NEW_CANDIDATE CAND=$CAND"
+    if [[ -f "$LOOP_DIR/pipeline_stdout.log" ]]; then
+      grep -E 'best_epoch=|best_guard|did not pass offline gates|FINAL_CANDIDATE=|failed with status=|refresh offline gates passed|hard feedback' \
+        "$LOOP_DIR/pipeline_stdout.log" | tail -40
+    fi
+  } | tee "$LOOP_DIR/benchgate_summary.txt"
   find "$LOOP_DIR" -type f -name '*.binary' -delete
   du -sh "$LOOP_DIR" | tee "$LOOP_DIR/du_after.txt"
   exit 0
