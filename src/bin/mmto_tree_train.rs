@@ -81,6 +81,8 @@ struct Args {
     best_guard_max_regret_increase_cp: f32,
     #[arg(long, default_value_t = -1.0)]
     best_guard_bad100_increase: f32,
+    #[arg(long, default_value_t = -1.0)]
+    best_guard_teacher_match_drop_pct: f32,
     #[arg(long, default_value_t = 300.0)]
     selected_regret_cap_cp: f32,
     #[arg(long, default_value_t = 100.0)]
@@ -154,6 +156,8 @@ enum BestMetric {
     MaxRegret,
     #[value(name = "capped-selected-regret")]
     CappedSelectedRegret,
+    #[value(name = "teacher-mismatch")]
+    TeacherMismatch,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -294,6 +298,7 @@ struct Metrics {
     loss: f32,
     selected_regret_sum: f32,
     regrets: Vec<f32>,
+    teacher_match_count: usize,
     bad_regret_count: usize,
     bad_regret_threshold_counts: Vec<usize>,
 }
@@ -970,12 +975,18 @@ fn accumulate_sample_metrics(
 
     let mut selected_idx = 0usize;
     let mut selected_score = f32::NEG_INFINITY;
+    let mut teacher_best_idx = 0usize;
+    let mut teacher_best_score = f32::NEG_INFINITY;
     for (idx, candidate) in sample.candidates.iter().enumerate() {
         let model_score =
             model.predict_with_material(&candidate.move_features, candidate.move_material);
         if model_score > selected_score {
             selected_score = model_score;
             selected_idx = idx;
+        }
+        if candidate.teacher_score > teacher_best_score {
+            teacher_best_score = candidate.teacher_score;
+            teacher_best_idx = idx;
         }
     }
 
@@ -984,6 +995,9 @@ fn accumulate_sample_metrics(
     metrics.samples += 1;
     metrics.selected_regret_sum += selected_regret;
     metrics.regrets.push(selected_regret);
+    if selected_idx == teacher_best_idx {
+        metrics.teacher_match_count += 1;
+    }
     if selected_regret > bad_regret_cp {
         metrics.bad_regret_count += 1;
     }
@@ -1824,8 +1838,9 @@ fn log_summary(
     sample_name: &str,
 ) -> String {
     let bad_ratio = metrics.bad_regret_count as f32 / metrics.samples.max(1) as f32;
+    let teacher_match = teacher_match_rate(metrics);
     format!(
-        "{}: samples={} pairs={} loss={:.6} selected_regret_mean={:.2} p90={:.2} p95={:.2} max={:.2} bad_regret_ratio={:.4} {}",
+        "{}: samples={} pairs={} loss={:.6} selected_regret_mean={:.2} p90={:.2} p95={:.2} max={:.2} teacher_match={:.2}% bad_regret_ratio={:.4} {}",
         sample_name,
         metrics.samples,
         metrics.pair_count,
@@ -1834,9 +1849,14 @@ fn log_summary(
         percentile(metrics.regrets.clone(), 0.90),
         percentile(metrics.regrets.clone(), 0.95),
         max_regret(metrics),
+        teacher_match * 100.0,
         bad_ratio,
         bad_regret_thresholds_summary(metrics, bad_regret_thresholds)
     )
+}
+
+fn teacher_match_rate(metrics: &Metrics) -> f32 {
+    metrics.teacher_match_count as f32 / metrics.samples.max(1) as f32
 }
 
 fn regret_ratio_above(metrics: &Metrics, threshold_cp: f32) -> f32 {
@@ -1979,6 +1999,15 @@ fn compute_best_metric_value(
                 f32::INFINITY
             }
         }
+        BestMetric::TeacherMismatch => {
+            if valid.samples > 0 {
+                1.0 - teacher_match_rate(valid)
+            } else if train.samples > 0 {
+                1.0 - teacher_match_rate(train)
+            } else {
+                f32::INFINITY
+            }
+        }
     }
 }
 
@@ -2031,13 +2060,36 @@ fn compute_best_guard_scores(
     (max_regret, bad100)
 }
 
+fn compute_teacher_match_score(
+    valid: &Metrics,
+    train: &Metrics,
+    extra_valid: &[Metrics],
+    extra_valid_best_weight: f32,
+) -> f32 {
+    let main_match = if valid.samples > 0 {
+        teacher_match_rate(valid)
+    } else if train.samples > 0 {
+        teacher_match_rate(train)
+    } else {
+        0.0
+    };
+    if extra_valid_best_weight <= 0.0 || extra_valid.is_empty() {
+        return main_match;
+    }
+    let extra_match_sum: f32 = extra_valid.iter().map(teacher_match_rate).sum();
+    main_match + extra_valid_best_weight * (extra_match_sum / extra_valid.len() as f32)
+}
+
 fn best_guard_passes(
     current_max_regret: f32,
     current_bad100: f32,
+    current_teacher_match: f32,
     baseline_max_regret: f32,
     baseline_bad100: f32,
+    baseline_teacher_match: f32,
     max_regret_increase_cp: f32,
     bad100_increase: f32,
+    teacher_match_drop_pct: f32,
 ) -> bool {
     if max_regret_increase_cp >= 0.0
         && current_max_regret > baseline_max_regret + max_regret_increase_cp
@@ -2045,6 +2097,11 @@ fn best_guard_passes(
         return false;
     }
     if bad100_increase >= 0.0 && current_bad100 > baseline_bad100 + bad100_increase {
+        return false;
+    }
+    if teacher_match_drop_pct >= 0.0
+        && current_teacher_match < baseline_teacher_match - teacher_match_drop_pct / 100.0
+    {
         return false;
     }
     true
@@ -2130,6 +2187,11 @@ fn main() -> Result<()> {
     if !args.best_guard_bad100_increase.is_finite() {
         return Err(anyhow!(
             "--best-guard-bad100-increase must be finite; use a negative value to disable"
+        ));
+    }
+    if !args.best_guard_teacher_match_drop_pct.is_finite() {
+        return Err(anyhow!(
+            "--best-guard-teacher-match-drop-pct must be finite; use a negative value to disable"
         ));
     }
     if !args.listwise_hard_negative_weight.is_finite() || args.listwise_hard_negative_weight < 0.0 {
@@ -2368,9 +2430,15 @@ fn main() -> Result<()> {
         &baseline_extra_metrics,
         args.extra_valid_best_weight,
     );
+    let baseline_guard_teacher_match = compute_teacher_match_score(
+        &baseline_valid,
+        &baseline_train,
+        &baseline_extra_metrics,
+        args.extra_valid_best_weight,
+    );
     println!(
-        "baseline best_guard max_regret_score={:.6} bad100_score={:.6}",
-        baseline_guard_max_regret, baseline_guard_bad100
+        "baseline best_guard max_regret_score={:.6} bad100_score={:.6} teacher_match_score={:.6}",
+        baseline_guard_max_regret, baseline_guard_bad100, baseline_guard_teacher_match
     );
 
     if args.dry_run {
@@ -2392,7 +2460,7 @@ fn main() -> Result<()> {
     };
     if let Some(file) = log_file.as_mut() {
         let mut header = String::from(
-            "epoch,train_loss,train_pairs,train_selected_regret,train_p90,train_p95,train_bad_regret_ratio,train_samples,valid_loss,valid_pairs,valid_selected_regret,valid_p90,valid_p95,valid_bad_regret_ratio,valid_samples,max_abs_delta,p95_abs_delta,clamped_weights,material_coeff",
+            "epoch,train_loss,train_pairs,train_selected_regret,train_p90,train_p95,train_teacher_match,train_bad_regret_ratio,train_samples,valid_loss,valid_pairs,valid_selected_regret,valid_p90,valid_p95,valid_teacher_match,valid_bad_regret_ratio,valid_samples,max_abs_delta,p95_abs_delta,clamped_weights,material_coeff",
         );
         for threshold in bad_regret_thresholds_cp.iter() {
             let label = bad_regret_threshold_label(*threshold);
@@ -2414,12 +2482,13 @@ fn main() -> Result<()> {
         let valid_threshold_cols = write_row(&baseline_valid);
         writeln!(
             file,
-            "0,{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{:.6},{},{}{}{}",
+            "0,{:.6},{},{:.2},{:.2},{:.2},{:.6},{:.4},{},{:.6},{},{:.2},{:.2},{:.2},{:.6},{:.4},{},{:.6},{:.6},{},{}{}{}",
             baseline_train.loss,
             baseline_train.pair_count,
             baseline_train.selected_regret_sum,
             percentile(baseline_train.regrets.clone(), 0.90),
             percentile(baseline_train.regrets.clone(), 0.95),
+            teacher_match_rate(&baseline_train),
             baseline_train.bad_regret_count as f32 / baseline_train.samples.max(1) as f32,
             baseline_train.samples,
             baseline_valid.loss,
@@ -2427,6 +2496,7 @@ fn main() -> Result<()> {
             baseline_valid.selected_regret_sum,
             percentile(baseline_valid.regrets.clone(), 0.90),
             percentile(baseline_valid.regrets.clone(), 0.95),
+            teacher_match_rate(&baseline_valid),
             baseline_valid.bad_regret_count as f32 / baseline_valid.samples.max(1) as f32,
             baseline_valid.samples,
             0.0,
@@ -2641,13 +2711,22 @@ fn main() -> Result<()> {
             &current_epoch_extra_metrics,
             args.extra_valid_best_weight,
         );
+        let current_guard_teacher_match = compute_teacher_match_score(
+            &valid,
+            &train,
+            &current_epoch_extra_metrics,
+            args.extra_valid_best_weight,
+        );
         let guard_passed = best_guard_passes(
             current_guard_max_regret,
             current_guard_bad100,
+            current_guard_teacher_match,
             baseline_guard_max_regret,
             baseline_guard_bad100,
+            baseline_guard_teacher_match,
             args.best_guard_max_regret_increase_cp,
             args.best_guard_bad100_increase,
+            args.best_guard_teacher_match_drop_pct,
         );
         if guard_passed
             && (best_metric_score.is_none()
@@ -2664,24 +2743,26 @@ fn main() -> Result<()> {
         }
 
         println!(
-            "epoch {} train: loss={:.6} pairs={} selected_regret={:.2} p90={:.2} p95={:.2} bad_ratio={:.4} {}",
+            "epoch {} train: loss={:.6} pairs={} selected_regret={:.2} p90={:.2} p95={:.2} teacher_match={:.2}% bad_ratio={:.4} {}",
             epoch,
             train.loss,
             train.pair_count,
             train.selected_regret_sum,
             percentile(train.regrets.clone(), 0.90),
             percentile(train.regrets.clone(), 0.95),
+            teacher_match_rate(&train) * 100.0,
             train.bad_regret_count as f32 / train.samples.max(1) as f32,
             bad_regret_thresholds_summary(&train, &bad_regret_thresholds_cp)
         );
         println!(
-            "epoch {} valid: loss={:.6} pairs={} selected_regret={:.2} p90={:.2} p95={:.2} bad_ratio={:.4} {} max_abs_delta={:.6} p95_abs_delta={:.6} clamped_weights={}",
+            "epoch {} valid: loss={:.6} pairs={} selected_regret={:.2} p90={:.2} p95={:.2} teacher_match={:.2}% bad_ratio={:.4} {} max_abs_delta={:.6} p95_abs_delta={:.6} clamped_weights={}",
             epoch,
             valid.loss,
             valid.pair_count,
             valid.selected_regret_sum,
             percentile(valid.regrets.clone(), 0.90),
             percentile(valid.regrets.clone(), 0.95),
+            teacher_match_rate(&valid) * 100.0,
             valid.bad_regret_count as f32 / valid.samples.max(1) as f32,
             bad_regret_thresholds_summary(&valid, &bad_regret_thresholds_cp),
             max_abs_delta,
@@ -2695,8 +2776,13 @@ fn main() -> Result<()> {
             );
         }
         println!(
-            "epoch {} best_metric_score={:.6} best_guard_max_regret={:.6} best_guard_bad100={:.6} best_guard_passed={}",
-            epoch, current_metric, current_guard_max_regret, current_guard_bad100, guard_passed
+            "epoch {} best_metric_score={:.6} best_guard_max_regret={:.6} best_guard_bad100={:.6} best_guard_teacher_match={:.6} best_guard_passed={}",
+            epoch,
+            current_metric,
+            current_guard_max_regret,
+            current_guard_bad100,
+            current_guard_teacher_match,
+            guard_passed
         );
         for (batch, metrics) in extra_valid.iter().zip(current_epoch_extra_metrics.iter()) {
             println!(
@@ -2724,13 +2810,14 @@ fn main() -> Result<()> {
             let valid_threshold_cols = write_row(&valid);
             writeln!(
                 file,
-                "{},{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{},{:.2},{:.2},{:.2},{:.4},{},{:.6},{:.6},{},{}{}{}",
+                "{},{:.6},{},{:.2},{:.2},{:.2},{:.6},{:.4},{},{:.6},{},{:.2},{:.2},{:.2},{:.6},{:.4},{},{:.6},{:.6},{},{}{}{}",
                 epoch,
                 train.loss,
                 train.pair_count,
                 train.selected_regret_sum,
                 percentile(train.regrets.clone(), 0.90),
                 percentile(train.regrets.clone(), 0.95),
+                teacher_match_rate(&train),
                 train.bad_regret_count as f32 / train.samples.max(1) as f32,
                 train.samples,
                 valid.loss,
@@ -2738,6 +2825,7 @@ fn main() -> Result<()> {
                 valid.selected_regret_sum,
                 percentile(valid.regrets.clone(), 0.90),
                 percentile(valid.regrets.clone(), 0.95),
+                teacher_match_rate(&valid),
                 valid.bad_regret_count as f32 / valid.samples.max(1) as f32,
                 valid.samples,
                 max_abs_delta,

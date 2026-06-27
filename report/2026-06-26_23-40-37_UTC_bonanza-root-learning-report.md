@@ -1197,3 +1197,147 @@ Probe:
 解釈:
 
 小規模ではあるが、低LR・小更新幅・tail guard付きrefreshで、offline gatesを通る候補を作り、loopが次candidateとして受け入れる経路を確認できた。これは「長時間学習の価値がある条件」に近づく重要な兆候。ただし検証局面が少ないため、この重みは採用せず削除する。次は同じ安全設定で `RERANK_MAX_POSITIONS` と `REFRESH_MAX_POSITIONS` を段階的に増やす。
+
+### guarded100 refresh / hard-feedback trial
+
+Probe:
+
+`data/mmto/runs/mmto_refresh_loop_guarded100_20260627_045300`
+
+目的:
+
+smokeより一段大きい `REFRESH_MAX_POSITIONS=100` / `RERANK_MAX_POSITIONS=200` で、厳しめのtail guardを維持したまま候補が残るか確認した。
+
+設定:
+
+- `ITERATIONS=1`
+- `REFRESH_MAX_POSITIONS=100`
+- `EPOCHS=2`
+- `LEARNING_RATE=0.0002`
+- `MAX_WEIGHT_DELTA=0.001`
+- `BEST_GUARD_MAX_REGRET_INCREASE_CP=0`
+- `BEST_GUARD_BAD100_INCREASE=0`
+- `RERANK_MAX_POSITIONS=200`
+- hard feedback:
+  - `DAGGER_MAX_POSITIONS=20`
+  - `EXPLICIT_WEIGHT_SCALE_CP=50`
+  - `EXPLICIT_MAX_SAMPLE_WEIGHT=5`
+
+refresh stage:
+
+- trainer:
+  - baseline best metric score `39.474091`
+  - epoch 1 best metric score `38.353870`
+  - max-regret / bad100 guardはbaseline同値で通過
+  - `best_epoch=1`
+- score gate:
+  - mean abs delta `0.25cp`
+  - p95 `0.47cp`
+  - max `0.55cp`
+  - passed
+- rerank gate:
+  - baseline mean `6.26`
+  - candidate mean `6.26`
+  - baseline/candidate match `42.50%`
+  - p95同値 `23.67`
+  - failed because mean was marginally worse under exact comparison
+- loop:
+  - weighted hard feedbackへ自動遷移
+
+hard feedback stage:
+
+- hard pairs:
+  - `written=7 skipped=0`
+  - selected regret mean `94.60`
+  - p95 `179.84`
+  - bad50 `71.43%`
+  - bad100 `42.86%`
+- trainer:
+  - baseline best metric score `45.060760`
+  - epoch 1 best metric score `44.468342`
+  - `best_epoch=1`
+- score gate:
+  - mean abs delta `0.13cp`
+  - p95 `0.22cp`
+  - max `0.26cp`
+  - passed
+- hard-feedback内rerank:
+  - baseline/candidate mean `3.97`
+  - baseline/candidate match `35.00%`
+  - p95同値 `14.30`
+  - passed
+- loop:
+  - `hard_feedback accepted candidate=.../best.raw.binary`
+
+追加検証:
+
+hard feedback候補を、より広い `base.valid.tree.jsonl` 200局面で再rerankした。
+
+- baseline mean `6.01`
+- candidate mean `6.02`
+- p95 `29.12 -> 29.04`
+- match `16.00% -> 16.00%`
+- failed: meanが `0.01cp` 程度悪化
+
+また、hard feedbackをfull valid 240件で再実行した。
+
+- trainer上はp95改善とtail guard通過
+- 200局面rerankでは:
+  - baseline mean `6.39`
+  - candidate mean `6.39`
+  - p95同値 `27.09`
+  - match `43.50% -> 43.00%`
+  - failed: match低下
+
+解釈:
+
+100/200規模でもweighted hard feedbackは候補を作れるが、より広いrerankでは「regretはほぼ悪化しないがmatchが少し下がる」候補が残る。次のボトルネックは、trainerのbest選択がrerank match低下を事前に検出できないこと。
+
+### teacher-match best guard
+
+背景:
+
+guarded100の追加検証では、regret指標がほぼ同等でもrerank matchが下がる候補が出た。これを長時間学習で増幅しないため、root候補上のteacher top一致率をtrainer側で計測し、best checkpoint選択のguardに加える。
+
+実装:
+
+- `mmto_tree_train` のmetricsに `teacher_match_count` を追加。
+- ログ/CSVに `teacher_match` を出す。
+- best metricとして `teacher-mismatch` を追加。
+- best guardとして以下を追加:
+  - `--best-guard-teacher-match-drop-pct`
+- 主要スクリプトから以下の環境変数で渡せるようにした:
+  - `BEST_GUARD_TEACHER_MATCH_DROP_PCT`
+- `tools/run_mmto_refresh_loop.sh` では既定値を `0` とし、teacher-match低下を禁止する。
+
+Probe:
+
+`data/mmto/runs/mmto_teacher_match_guard_probe_20260627_050447`
+
+入力:
+
+- guarded100失敗runのtrain/valid
+- full valid hard feedbackで使ったdagger trainをextra-valid/replayに指定
+- `--best-guard-teacher-match-drop-pct 0`
+
+結果:
+
+- baseline:
+  - valid teacher_match `17.92%`
+  - extra-valid dagger teacher_match `28.57%`
+  - guard teacher_match score `0.250595`
+- epoch 1:
+  - valid teacher_match `19.17%`
+  - extra-valid dagger teacher_match `14.29%`
+  - guard teacher_match score `0.227381`
+  - `best_guard_passed=false`
+- epoch 2:
+  - valid teacher_match `20.00%`
+  - extra-valid dagger teacher_match `14.29%`
+  - guard teacher_match score `0.235714`
+  - `best_guard_passed=false`
+- `best_epoch=0`
+
+解釈:
+
+teacher-match guardは、今回の「広いrerankではmatchが落ちる候補」をtrainer段階で落とせた。これは長時間学習の安全装置として有効。ただしroot候補上のteacher matchは実探索rerank matchのproxyであり、完全な代替ではない。次はこのguardを有効にしたまま、100/200規模を再実行し、候補が残るか確認する。
