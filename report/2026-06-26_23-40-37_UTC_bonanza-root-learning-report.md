@@ -1341,3 +1341,104 @@ Probe:
 解釈:
 
 teacher-match guardは、今回の「広いrerankではmatchが落ちる候補」をtrainer段階で落とせた。これは長時間学習の安全装置として有効。ただしroot候補上のteacher matchは実探索rerank matchのproxyであり、完全な代替ではない。次はこのguardを有効にしたまま、100/200規模を再実行し、候補が残るか確認する。
+
+### match-guarded100 rerun
+
+Probe:
+
+`data/mmto/runs/mmto_refresh_loop_matchguard100_20260627_050723`
+
+目的:
+
+teacher-match guardを有効にした状態で、guarded100と同じ規模を再実行し、以前のmatch低下候補をtrainer段階で落とせるか確認した。
+
+設定:
+
+- `REFRESH_MAX_POSITIONS=100`
+- `RERANK_MAX_POSITIONS=200`
+- `EPOCHS=2`
+- `LEARNING_RATE=0.0002`
+- `MAX_WEIGHT_DELTA=0.001`
+- `BEST_GUARD_MAX_REGRET_INCREASE_CP=0`
+- `BEST_GUARD_BAD100_INCREASE=0`
+- `BEST_GUARD_TEACHER_MATCH_DROP_PCT=0`
+- hard feedbackはfull train/validを使用。
+
+refresh stage:
+
+- baseline best metric score `39.474091`
+- epoch 1 best metric score `38.353870`
+- teacher-match guard score `0.229167 -> 0.241667`
+- `best_epoch=1`
+- score gate passed
+- 200局面rerank:
+  - baseline/candidate mean `6.26`
+  - baseline/candidate match `42.50%`
+  - failed by exact mean comparison
+- loopはhard feedbackへ遷移。
+
+hard feedback stage:
+
+- hard pairs:
+  - `written=7 skipped=0`
+  - selected regret mean `94.60`
+  - p95 `179.84`
+  - bad100 `42.86%`
+- baseline:
+  - valid teacher_match `17.92%`
+  - extra-valid dagger teacher_match `28.57%`
+  - teacher-match guard score `0.250595`
+- epoch 1:
+  - valid teacher_match `19.17%`
+  - extra-valid dagger teacher_match `14.29%`
+  - teacher-match guard score `0.227381`
+  - `best_guard_passed=false`
+- epoch 2:
+  - valid teacher_match `20.00%`
+  - extra-valid dagger teacher_match `14.29%`
+  - teacher-match guard score `0.235714`
+  - `best_guard_passed=false`
+- `best_epoch=0`
+- loop final candidate: `policy_weights_v2.1.0.binary`
+
+解釈:
+
+teacher-match guardは、広いrerankでmatch低下していた種類の候補を、期待通りtrainer段階で拒否した。これにより長時間学習ループはさらに保守的になった。現時点では100/200規模で安全に採用できる候補はまだ出ていないが、「危険な候補を落とす」機構は機能している。次は候補を通すために、matchを落とさない目的関数側、具体的にはteacher topを直接維持するmargin項またはmatch-aware replay重みを検討する。
+
+### match-top min-regret zero trial
+
+Probe:
+
+`data/mmto/runs/mmto_refresh_loop_matchtop100_20260627_051127`
+
+目的:
+
+teacher top一致率を落とす候補を避けるため、`CURRENT_TOP_MIN_BAD_REGRET_CP=0` にして、regretが小さいmodel top候補にもteacher top marginをかける設定を試した。
+
+設定:
+
+- match-guarded100と同じ
+- 追加:
+  - `CURRENT_TOP_MIN_BAD_REGRET_CP=0`
+
+結果:
+
+- baseline:
+  - valid teacher_match `17.92%`
+  - extra-valid refresh teacher_match `20.00%`
+  - teacher-match guard score `0.229167`
+- epoch 1:
+  - valid teacher_match `17.08%`
+  - extra-valid refresh teacher_match `10.00%`
+  - teacher-match guard score `0.195833`
+  - `best_guard_passed=false`
+- epoch 2:
+  - valid teacher_match `17.08%`
+  - extra-valid refresh teacher_match `10.00%`
+  - teacher-match guard score `0.195833`
+  - `best_guard_passed=false`
+- `best_epoch=0`
+
+解釈:
+
+`CURRENT_TOP_MIN_BAD_REGRET_CP=0` は、teacher top維持を強める意図とは逆に、extra-valid上のteacher matchを大きく落とした。現時点ではこの単純な設定変更は不採用。matchを守るには、current-top hard pairの閾値を下げるだけでは不十分で、teacher topを明示的に維持する別の目的関数またはhard局面の重み設計が必要。
