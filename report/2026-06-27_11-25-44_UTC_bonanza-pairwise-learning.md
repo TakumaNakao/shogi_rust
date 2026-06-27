@@ -1158,3 +1158,73 @@ record_analyze所見:
 - ただし100局単独ではCIが広く、有意な重み改善とは言えない。
 - 候補binaryは保持し、同条件の別seedで追加100局を行う。
 - 追加後も55%前後を維持するなら、200局級の標準bench候補として扱う。
+
+## Softguard candidate second standard validation
+
+同じ標準寄り条件で別seedを追加した。
+
+実験:
+
+- run: `data/mmto/runs/mmto_softguard_feedback_probe_20260627_141905/validate_std_d5_seed15001`
+- games: `100`
+- seed: `15001`
+- depth: `5`
+- time-limit-ms: `100`
+
+結果:
+
+```text
+new 47
+baseline 48
+draw 5
+decisive win rate 49.47%
+total score rate 49.50%
+95% CI decisive: 39.64%..59.35%
+95% CI total: 39.95%..59.05%
+```
+
+終局理由:
+
+```text
+Resign: 94
+MaxPliesAdjudication: 1
+RepetitionDraw: 5
+```
+
+paired starts:
+
+```text
+new sweeps: 8
+baseline sweeps: 8
+splits: 30
+draw/mixed pairs: 4
+```
+
+標準条件200局合算:
+
+```text
+seed 14001: 53-46-1
+seed 15001: 47-48-5
+
+total:
+  new 100
+  baseline 94
+  draw 6
+  decisive rate 51.54%
+  total score rate 51.50%
+  95% CI decisive 44.55%..58.48%
+  95% CI total 46.61%..56.36%
+```
+
+参考合算:
+
+- 条件違いのため参考扱い。
+- 既存110局: `63-45-2`, score rate `58.18%`
+- 標準200局: `100-94-6`, score rate `51.50%`
+
+判断:
+
+- 標準条件200局ではほぼ互角まで縮んだ。
+- この候補を重み更新として採用・リリースする根拠はない。
+- 一方で50%未満に明確崩壊したわけではないため、候補binaryは削除せず、direct bench feedback の素材として残す。
+- 次の主眼は、softguard候補そのものではなく、benchで見えた失敗手・大drop局面を直接pair lossへ入れること。
