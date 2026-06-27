@@ -54,6 +54,14 @@ GAME_TEACHER_MAX_REGRET_CP="${GAME_TEACHER_MAX_REGRET_CP:-150}"
 GAME_TEACHER_MIN_BAD_REGRET_CP="${GAME_TEACHER_MIN_BAD_REGRET_CP:-15}"
 CURRENT_TOP_MARGIN_WEIGHT="${CURRENT_TOP_MARGIN_WEIGHT:-0.0}"
 CURRENT_TOP_MIN_BAD_REGRET_CP="${CURRENT_TOP_MIN_BAD_REGRET_CP:-15}"
+FEEDBACK_JSON="${FEEDBACK_JSON:-}"
+FEEDBACK_WEIGHT="${FEEDBACK_WEIGHT:-0}"
+FEEDBACK_GOOD_MOVE="${FEEDBACK_GOOD_MOVE:-baseline}"
+FEEDBACK_MIN_REGRET_DELTA_CP="${FEEDBACK_MIN_REGRET_DELTA_CP:-0}"
+FEEDBACK_MIN_CANDIDATE_REGRET_CP="${FEEDBACK_MIN_CANDIDATE_REGRET_CP:-0}"
+FEEDBACK_WEIGHT_SCALE_CP="${FEEDBACK_WEIGHT_SCALE_CP:-100}"
+FEEDBACK_MAX_SAMPLE_WEIGHT="${FEEDBACK_MAX_SAMPLE_WEIGHT:-5}"
+FEEDBACK_LIMIT="${FEEDBACK_LIMIT:-0}"
 BEST_METRIC="${BEST_METRIC:-p95-regret}"
 BEST_GUARD_MAX_REGRET_INCREASE_CP="${BEST_GUARD_MAX_REGRET_INCREASE_CP:--1}"
 BEST_GUARD_BAD100_INCREASE="${BEST_GUARD_BAD100_INCREASE:--1}"
@@ -103,6 +111,7 @@ echo "PAIR_MINING=$PAIR_MINING PAIR_WEIGHT_MODE=$PAIR_WEIGHT_MODE PAIR_WEIGHT_SC
 echo "LOSS_MODE=$LOSS_MODE LISTWISE_FEATURE_SOURCE=$LISTWISE_FEATURE_SOURCE"
 echo "TEACHER_TOP_CE_WEIGHT=$TEACHER_TOP_CE_WEIGHT BEST_METRIC=$BEST_METRIC"
 echo "CURRENT_TOP_MARGIN_WEIGHT=$CURRENT_TOP_MARGIN_WEIGHT CURRENT_TOP_MIN_BAD_REGRET_CP=$CURRENT_TOP_MIN_BAD_REGRET_CP"
+echo "FEEDBACK_JSON=$FEEDBACK_JSON FEEDBACK_WEIGHT=$FEEDBACK_WEIGHT FEEDBACK_GOOD_MOVE=$FEEDBACK_GOOD_MOVE"
 echo "RERANK_DEDUPE_SFEN=$RERANK_DEDUPE_SFEN"
 
 head -n "$TRAIN_LINES" "$SOURCE_TRAIN" > "$RUN_DIR/train.tree.jsonl"
@@ -141,6 +150,15 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/rank_stats \
   --json-output "$RUN_DIR/rank_stats.json" \
   | tee "$RUN_DIR/rank_stats_stdout.log"
 
+feedback_args=()
+for path in $FEEDBACK_JSON; do
+  if [[ ! -f "$path" ]]; then
+    echo "missing feedback json: $path" >&2
+    exit 1
+  fi
+  feedback_args+=(--feedback-json "$path")
+done
+
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --weights "$WEIGHTS" \
   --train "$RUN_DIR/train.tree.jsonl" \
@@ -170,6 +188,14 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --game-teacher-min-bad-regret-cp "$GAME_TEACHER_MIN_BAD_REGRET_CP" \
   --current-top-margin-weight "$CURRENT_TOP_MARGIN_WEIGHT" \
   --current-top-min-bad-regret-cp "$CURRENT_TOP_MIN_BAD_REGRET_CP" \
+  "${feedback_args[@]}" \
+  --feedback-weight "$FEEDBACK_WEIGHT" \
+  --feedback-good-move "$FEEDBACK_GOOD_MOVE" \
+  --feedback-min-regret-delta-cp "$FEEDBACK_MIN_REGRET_DELTA_CP" \
+  --feedback-min-candidate-regret-cp "$FEEDBACK_MIN_CANDIDATE_REGRET_CP" \
+  --feedback-weight-scale-cp "$FEEDBACK_WEIGHT_SCALE_CP" \
+  --feedback-max-sample-weight "$FEEDBACK_MAX_SAMPLE_WEIGHT" \
+  --feedback-limit "$FEEDBACK_LIMIT" \
   --margin-cp 50 \
   --softplus-temp-cp 100 \
   --bad-regret-cp 300 \

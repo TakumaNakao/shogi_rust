@@ -101,6 +101,22 @@ struct Args {
     replay_weight: f32,
     #[arg(long, default_value_t = 0)]
     replay_max_samples: usize,
+    #[arg(long)]
+    feedback_json: Vec<PathBuf>,
+    #[arg(long, default_value_t = 0.0)]
+    feedback_weight: f32,
+    #[arg(long, value_enum, default_value_t = FeedbackGoodMove::Baseline)]
+    feedback_good_move: FeedbackGoodMove,
+    #[arg(long, default_value_t = 0.0)]
+    feedback_min_regret_delta_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    feedback_min_candidate_regret_cp: f32,
+    #[arg(long, default_value_t = 100.0)]
+    feedback_weight_scale_cp: f32,
+    #[arg(long, default_value_t = 5.0)]
+    feedback_max_sample_weight: f32,
+    #[arg(long, default_value_t = 0)]
+    feedback_limit: usize,
     #[arg(long, value_enum, default_value_t = LossMode::Pairwise)]
     loss_mode: LossMode,
     #[arg(long, value_enum, default_value_t = ListwiseFeatureSource::TeacherLeaf)]
@@ -206,6 +222,12 @@ enum PairWeightMode {
     ScoreGap,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum FeedbackGoodMove {
+    Baseline,
+    Teacher,
+}
+
 #[derive(Debug, Deserialize)]
 struct TreeRecord {
     #[serde(default)]
@@ -233,6 +255,30 @@ struct TreeRecord {
     student_best_move: Option<String>,
     #[serde(default)]
     candidates: Vec<TreeCandidateRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RerankFeedbackReport {
+    #[serde(default)]
+    hard_positions: Vec<RerankFeedbackRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RerankFeedbackRecord {
+    sfen: String,
+    #[serde(default)]
+    teacher_best_move: Option<String>,
+    #[serde(default)]
+    baseline_move: Option<String>,
+    #[serde(default)]
+    candidate_move: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    baseline_regret: Option<f32>,
+    #[serde(default)]
+    candidate_regret: Option<f32>,
+    #[serde(default)]
+    regret_delta: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,6 +334,17 @@ struct Sample {
     candidates: Vec<CandidateSample>,
 }
 
+#[derive(Debug, Clone)]
+struct FeedbackSample {
+    sample_weight: f32,
+    good_features: Vec<usize>,
+    good_material: f32,
+    bad_features: Vec<usize>,
+    bad_material: f32,
+    regret_delta: f32,
+    candidate_regret: f32,
+}
+
 #[derive(Clone)]
 struct NamedBatch {
     label: String,
@@ -305,6 +362,17 @@ struct Metrics {
     teacher_match_count: usize,
     bad_regret_count: usize,
     bad_regret_threshold_counts: Vec<usize>,
+}
+
+#[derive(Default)]
+struct FeedbackMetrics {
+    samples: usize,
+    loss: f32,
+    pair_weight_sum: f32,
+    violation_count: usize,
+    margin_sum: f32,
+    regret_delta_sum: f32,
+    candidate_regret_sum: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -1002,6 +1070,26 @@ fn root_move_pair_loss_and_grad(
     ))
 }
 
+fn feedback_loss_and_grad(
+    sample: &FeedbackSample,
+    model: &SparseModel,
+    margin_cp: f32,
+    softplus_temp_cp: f32,
+) -> Option<(f32, f32, f32)> {
+    let good_score = model.predict_with_material(&sample.good_features, sample.good_material);
+    let bad_score = model.predict_with_material(&sample.bad_features, sample.bad_material);
+    let diff = good_score - bad_score;
+    let x = (margin_cp - diff) / softplus_temp_cp;
+    if !x.is_finite() {
+        return None;
+    }
+    Some((
+        sample.sample_weight * softplus_temp_cp * softplus(x),
+        -sigmoid(x) * sample.sample_weight,
+        diff,
+    ))
+}
+
 fn accumulate_sample_metrics(
     sample: &Sample,
     model: &SparseModel,
@@ -1204,6 +1292,30 @@ fn accumulate_sample_metrics(
     }
 }
 
+fn accumulate_feedback_metrics(
+    sample: &FeedbackSample,
+    model: &SparseModel,
+    loss_options: &LossOptions,
+    metrics: &mut FeedbackMetrics,
+) {
+    if let Some((loss, _, diff)) = feedback_loss_and_grad(
+        sample,
+        model,
+        loss_options.margin_cp,
+        loss_options.softplus_temp_cp,
+    ) {
+        metrics.samples += 1;
+        metrics.loss += loss;
+        metrics.pair_weight_sum += sample.sample_weight;
+        metrics.margin_sum += diff;
+        metrics.regret_delta_sum += sample.regret_delta;
+        metrics.candidate_regret_sum += sample.candidate_regret;
+        if diff <= 0.0 {
+            metrics.violation_count += 1;
+        }
+    }
+}
+
 fn evaluate_batch(
     model: &SparseModel,
     batch: &[Sample],
@@ -1233,6 +1345,27 @@ fn evaluate_batch(
     }
     if metrics.pair_weight_sum > 0.0 {
         metrics.loss /= metrics.pair_weight_sum;
+    }
+    metrics
+}
+
+fn evaluate_feedback_batch(
+    model: &SparseModel,
+    batch: &[FeedbackSample],
+    loss_options: &LossOptions,
+) -> FeedbackMetrics {
+    let mut metrics = FeedbackMetrics::default();
+    for sample in batch {
+        accumulate_feedback_metrics(sample, model, loss_options, &mut metrics);
+    }
+    if metrics.pair_weight_sum > 0.0 {
+        metrics.loss /= metrics.pair_weight_sum;
+    }
+    if metrics.samples > 0 {
+        let denom = metrics.samples as f32;
+        metrics.margin_sum /= denom;
+        metrics.regret_delta_sum /= denom;
+        metrics.candidate_regret_sum /= denom;
     }
     metrics
 }
@@ -1588,6 +1721,88 @@ fn update_sample_refs_with_softplus(
     (loss / pair_weight_sum.max(f32::EPSILON), pair_count)
 }
 
+fn update_feedback_refs_with_softplus(
+    model: &mut SparseModel,
+    samples: &[&FeedbackSample],
+    loss_options: &LossOptions,
+    l2_lambda: f32,
+    optimizer: OptimizerKind,
+    adagrad: &mut AdagradState,
+    adagrad_epsilon: f32,
+    freeze_material: bool,
+) -> (f32, usize) {
+    let mut w_grads: HashMap<usize, f32> = HashMap::new();
+    let mut material_grad_total = 0.0f32;
+    let mut loss = 0.0f32;
+    let mut pair_weight_sum = 0.0f32;
+    let mut pair_count = 0usize;
+
+    for sample in samples {
+        let Some((pair_loss, grad_diff, _)) = feedback_loss_and_grad(
+            sample,
+            model,
+            loss_options.margin_cp,
+            loss_options.softplus_temp_cp,
+        ) else {
+            continue;
+        };
+        loss += pair_loss;
+        pair_weight_sum += sample.sample_weight;
+        pair_count += 1;
+
+        for &feature_idx in &sample.good_features {
+            *w_grads.entry(feature_idx).or_insert(0.0) += grad_diff;
+        }
+        for &feature_idx in &sample.bad_features {
+            *w_grads.entry(feature_idx).or_insert(0.0) -= grad_diff;
+        }
+        if !freeze_material {
+            material_grad_total += grad_diff * (sample.good_material - sample.bad_material);
+        }
+    }
+
+    if pair_count == 0 {
+        return (0.0, 0);
+    }
+    let avg = 1.0 / pair_weight_sum.max(f32::EPSILON);
+    for (idx, grad_sum) in w_grads {
+        let grad = grad_sum * avg;
+        match optimizer {
+            OptimizerKind::Sgd => {
+                model.w[idx] -= model.kpp_eta * (grad + l2_lambda * model.w[idx]);
+            }
+            OptimizerKind::Adagrad => {
+                let acc = adagrad.w_acc.entry(idx).or_insert(adagrad_epsilon);
+                *acc += grad * grad;
+                let denom = acc.sqrt().max(adagrad_epsilon.sqrt());
+                let lr = model.kpp_eta / denom;
+                model.w[idx] -= lr * (grad + l2_lambda * model.w[idx]);
+            }
+        }
+    }
+
+    if !freeze_material {
+        let material_grad = material_grad_total * avg;
+        match optimizer {
+            OptimizerKind::Sgd => {
+                model.material_coeff -=
+                    model.kpp_eta * (material_grad + l2_lambda * model.material_coeff);
+            }
+            OptimizerKind::Adagrad => {
+                if adagrad.material_acc < adagrad_epsilon {
+                    adagrad.material_acc = adagrad_epsilon;
+                }
+                adagrad.material_acc += material_grad * material_grad;
+                let denom = adagrad.material_acc.sqrt().max(adagrad_epsilon.sqrt());
+                let lr = model.kpp_eta / denom;
+                model.material_coeff -= lr * (material_grad + l2_lambda * model.material_coeff);
+            }
+        }
+    }
+
+    (loss / pair_weight_sum.max(f32::EPSILON), pair_count)
+}
+
 fn parse_candidate(
     line_number: usize,
     raw_candidate: &TreeCandidateRecord,
@@ -1818,6 +2033,147 @@ fn load_samples(path: &PathBuf) -> Result<Vec<Sample>> {
     Ok(samples)
 }
 
+fn finite_or(value: Option<f32>, fallback: f32) -> f32 {
+    value.filter(|value| value.is_finite()).unwrap_or(fallback)
+}
+
+fn feedback_sample_from_record(
+    path: &PathBuf,
+    record_index: usize,
+    record: &RerankFeedbackRecord,
+    good_move: FeedbackGoodMove,
+    min_regret_delta_cp: f32,
+    min_candidate_regret_cp: f32,
+    weight_scale_cp: f32,
+    max_sample_weight: f32,
+) -> Result<Option<FeedbackSample>> {
+    let regret_delta = finite_or(record.regret_delta, f32::NEG_INFINITY);
+    let candidate_regret = finite_or(record.candidate_regret, f32::NEG_INFINITY);
+    if regret_delta < min_regret_delta_cp || candidate_regret < min_candidate_regret_cp {
+        return Ok(None);
+    }
+
+    let candidate_move_text = record
+        .candidate_move
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(candidate_move_text) = candidate_move_text else {
+        return Ok(None);
+    };
+
+    let good_move_text = match good_move {
+        FeedbackGoodMove::Baseline => record
+            .baseline_move
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                record
+                    .teacher_best_move
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            }),
+        FeedbackGoodMove::Teacher => record
+            .teacher_best_move
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                record
+                    .baseline_move
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            }),
+    };
+    let Some(good_move_text) = good_move_text else {
+        return Ok(None);
+    };
+    if good_move_text == candidate_move_text {
+        return Ok(None);
+    }
+
+    let position = position_from_sfen_or_usi(&record.sfen).ok_or_else(|| {
+        anyhow!(
+            "{} hard_positions[{}] invalid sfen: {}",
+            path.display(),
+            record_index,
+            record.sfen
+        )
+    })?;
+    let good_move = parse_move_for_position(&position, good_move_text).ok_or_else(|| {
+        anyhow!(
+            "{} hard_positions[{}] invalid good move {}",
+            path.display(),
+            record_index,
+            good_move_text
+        )
+    })?;
+    let bad_move = parse_move_for_position(&position, candidate_move_text).ok_or_else(|| {
+        anyhow!(
+            "{} hard_positions[{}] invalid candidate move {}",
+            path.display(),
+            record_index,
+            candidate_move_text
+        )
+    })?;
+    let legal_moves = position.legal_moves();
+    if !legal_moves.contains(&good_move) || !legal_moves.contains(&bad_move) {
+        return Ok(None);
+    }
+
+    let signal = regret_delta.max(candidate_regret).max(0.0);
+    let sample_weight = (1.0 + signal / weight_scale_cp).clamp(1.0, max_sample_weight);
+    let (good_features, good_material) = features_from_position(&position, good_move);
+    let (bad_features, bad_material) = features_from_position(&position, bad_move);
+    Ok(Some(FeedbackSample {
+        sample_weight,
+        good_features,
+        good_material,
+        bad_features,
+        bad_material,
+        regret_delta,
+        candidate_regret,
+    }))
+}
+
+fn load_feedback_samples(
+    paths: &[PathBuf],
+    good_move: FeedbackGoodMove,
+    min_regret_delta_cp: f32,
+    min_candidate_regret_cp: f32,
+    weight_scale_cp: f32,
+    max_sample_weight: f32,
+    limit: usize,
+) -> Result<Vec<FeedbackSample>> {
+    let mut samples = Vec::new();
+    for path in paths {
+        let reader = BufReader::new(File::open(path)?);
+        let report: RerankFeedbackReport = serde_json::from_reader(reader)
+            .map_err(|e| anyhow!("{} invalid feedback json: {}", path.display(), e))?;
+        for (idx, record) in report.hard_positions.iter().enumerate() {
+            if limit > 0 && samples.len() >= limit {
+                return Ok(samples);
+            }
+            if let Some(sample) = feedback_sample_from_record(
+                path,
+                idx,
+                record,
+                good_move,
+                min_regret_delta_cp,
+                min_candidate_regret_cp,
+                weight_scale_cp,
+                max_sample_weight,
+            )? {
+                samples.push(sample);
+            }
+        }
+    }
+    Ok(samples)
+}
+
 fn evaluate_streaming_train(
     model: &SparseModel,
     path: &PathBuf,
@@ -2029,6 +2385,20 @@ fn log_summary(
         teacher_match * 100.0,
         bad_ratio,
         bad_regret_thresholds_summary(metrics, bad_regret_thresholds)
+    )
+}
+
+fn log_feedback_summary(metrics: &FeedbackMetrics, sample_name: &str) -> String {
+    let violation_ratio = metrics.violation_count as f32 / metrics.samples.max(1) as f32;
+    format!(
+        "{}: samples={} loss={:.6} margin_mean={:.2} violation_ratio={:.4} regret_delta_mean={:.2} candidate_regret_mean={:.2}",
+        sample_name,
+        metrics.samples,
+        metrics.loss,
+        metrics.margin_sum,
+        violation_ratio,
+        metrics.regret_delta_sum,
+        metrics.candidate_regret_sum,
     )
 }
 
@@ -2423,6 +2793,34 @@ fn main() -> Result<()> {
     if !args.replay_weight.is_finite() || args.replay_weight < 0.0 {
         return Err(anyhow!("--replay-weight must be finite and non-negative"));
     }
+    if !args.feedback_weight.is_finite() || args.feedback_weight < 0.0 {
+        return Err(anyhow!("--feedback-weight must be finite and non-negative"));
+    }
+    if args.feedback_weight > 0.0 && args.feedback_json.is_empty() {
+        return Err(anyhow!(
+            "--feedback-json is required when --feedback-weight is positive"
+        ));
+    }
+    if !args.feedback_min_regret_delta_cp.is_finite() || args.feedback_min_regret_delta_cp < 0.0 {
+        return Err(anyhow!(
+            "--feedback-min-regret-delta-cp must be finite and non-negative"
+        ));
+    }
+    if !args.feedback_min_candidate_regret_cp.is_finite()
+        || args.feedback_min_candidate_regret_cp < 0.0
+    {
+        return Err(anyhow!(
+            "--feedback-min-candidate-regret-cp must be finite and non-negative"
+        ));
+    }
+    if !args.feedback_weight_scale_cp.is_finite() || args.feedback_weight_scale_cp <= 0.0 {
+        return Err(anyhow!("--feedback-weight-scale-cp must be positive"));
+    }
+    if !args.feedback_max_sample_weight.is_finite() || args.feedback_max_sample_weight < 1.0 {
+        return Err(anyhow!(
+            "--feedback-max-sample-weight must be finite and >= 1"
+        ));
+    }
     if args.max_pairs_per_sample == 0 {
         return Err(anyhow!("--max-pairs-per-sample must be greater than 0"));
     }
@@ -2525,6 +2923,24 @@ fn main() -> Result<()> {
             Ok(NamedBatch { label, samples })
         })
         .collect::<Result<Vec<_>>>()?;
+    let feedback_samples = if args.feedback_json.is_empty() {
+        Vec::new()
+    } else {
+        load_feedback_samples(
+            &args.feedback_json,
+            args.feedback_good_move,
+            args.feedback_min_regret_delta_cp,
+            args.feedback_min_candidate_regret_cp,
+            args.feedback_weight_scale_cp,
+            args.feedback_max_sample_weight,
+            args.feedback_limit,
+        )?
+    };
+    if args.feedback_weight > 0.0 && feedback_samples.is_empty() {
+        return Err(anyhow!(
+            "--feedback-json produced no usable samples; lower feedback filters or check the input"
+        ));
+    }
 
     let baseline_train = if args.stream_train {
         evaluate_streaming_train(
@@ -2630,6 +3046,14 @@ fn main() -> Result<()> {
         "baseline best_guard max_regret_score={:.6} bad100_score={:.6} teacher_match_score={:.6}",
         baseline_guard_max_regret, baseline_guard_bad100, baseline_guard_teacher_match
     );
+    if !feedback_samples.is_empty() {
+        let baseline_feedback = evaluate_feedback_batch(&model, &feedback_samples, &loss_options);
+        println!(
+            "baseline feedback: {} weight={:.4}",
+            log_feedback_summary(&baseline_feedback, "feedback"),
+            args.feedback_weight
+        );
+    }
 
     if args.dry_run {
         ensure_finite_model(&model)?;
@@ -2712,6 +3136,8 @@ fn main() -> Result<()> {
         Some((0..train_samples.as_ref().unwrap().len()).collect())
     };
     let replay_enabled = args.replay_weight > 0.0 && !args.replay_train.is_empty();
+    let feedback_enabled = args.feedback_weight > 0.0 && !feedback_samples.is_empty();
+    let mut feedback_indices: Vec<usize> = (0..feedback_samples.len()).collect();
 
     for epoch in 1..=args.epochs {
         let mut clamped_weights = 0usize;
@@ -2827,6 +3253,48 @@ fn main() -> Result<()> {
                 replay_loss = loss;
                 replay_selected_regret = selected_regret;
             }
+        }
+
+        let mut feedback_metrics = None;
+        if feedback_enabled {
+            let original_learning_rate = model.kpp_eta;
+            model.kpp_eta = original_learning_rate * args.feedback_weight;
+            feedback_indices.shuffle(&mut rng);
+            let mut feedback_batch_refs: Vec<&FeedbackSample> = Vec::with_capacity(args.batch_size);
+            for chunk in feedback_indices.chunks(args.batch_size) {
+                feedback_batch_refs.clear();
+                feedback_batch_refs.extend(chunk.iter().map(|idx| &feedback_samples[*idx]));
+                let _ = update_feedback_refs_with_softplus(
+                    &mut model,
+                    &feedback_batch_refs,
+                    &loss_options,
+                    args.l2_lambda,
+                    args.optimizer,
+                    &mut optimizer_state,
+                    args.adagrad_epsilon,
+                    args.freeze_material,
+                );
+                if args.freeze_material {
+                    model.material_coeff = initial_material;
+                }
+                if let Some(initial_weights) = initial_weights.as_ref() {
+                    if args.anchor_l2 > 0.0 || args.max_weight_delta.is_some() {
+                        clamped_weights += apply_weight_constraints(
+                            &mut model,
+                            initial_weights,
+                            args.anchor_l2,
+                            args.max_weight_delta,
+                        );
+                    }
+                }
+                ensure_finite_model(&model)?;
+            }
+            model.kpp_eta = original_learning_rate;
+            feedback_metrics = Some(evaluate_feedback_batch(
+                &model,
+                &feedback_samples,
+                &loss_options,
+            ));
         }
 
         let train = if args.stream_train {
@@ -2965,6 +3433,13 @@ fn main() -> Result<()> {
                 epoch, replay_samples, replay_pairs, replay_loss, replay_selected_regret
             );
         }
+        if let Some(metrics) = feedback_metrics.as_ref() {
+            println!(
+                "epoch {} feedback: {}",
+                epoch,
+                log_feedback_summary(metrics, "feedback")
+            );
+        }
         println!(
             "epoch {} best_metric_score={:.6} best_guard_max_regret={:.6} best_guard_bad100={:.6} best_guard_teacher_match={:.6} best_guard_passed={}",
             epoch,
@@ -3086,6 +3561,13 @@ fn main() -> Result<()> {
                 &bad_regret_thresholds_cp,
                 "extra_valid"
             )
+        );
+    }
+    if !feedback_samples.is_empty() {
+        let metrics = evaluate_feedback_batch(&final_model, &feedback_samples, &loss_options);
+        println!(
+            "final feedback: {}",
+            log_feedback_summary(&metrics, "feedback")
         );
     }
 
