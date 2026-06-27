@@ -1685,3 +1685,124 @@ failure:
 - `RERANK_REQUIRE_MEAN_REGRET_IMPROVEMENT_CP=0` にして、「改善必須」ではなく「非悪化」を見るプローブを1回だけ行う。
 - それでもmean/p90が悪化するなら、このfeedback集合はそのままでは採用候補作成に使わない。
 - さらに進める場合は、`regret_delta > 0` の候補、つまりcandidate固有の悪化局面を増やす必要がある。
+
+## Direct feedback 113件の保守条件
+
+`BEST_METRIC=feedback-violation` は候補を残せることが分かったため、同じ113件をより弱く押す保守条件を2本試した。実験はサブエージェントに委任した。
+
+### 条件A: feedback weight 0.5 / 1 epoch
+
+実行:
+
+```text
+RUN_DIR=data/mmto/runs/mmto_direct_feedback_113_fw05_e1_20260627_163244
+FEEDBACK_WEIGHT=0.5
+EPOCHS=1
+LEARNING_RATE=0.00008
+BEST_METRIC=feedback-violation
+```
+
+結果:
+
+```text
+best_epoch: 1
+feedback violation_ratio: 0.592920 -> 0.575221
+score gate: passed
+rerank gate: failed
+bench: not run
+```
+
+rerank:
+
+```text
+baseline mean: 524.58496
+candidate mean: 524.73370
+baseline p90: 26.615944
+candidate p90: 26.830187
+baseline p95: 42.910797
+candidate p95: 42.910797
+match: 43.30% -> 42.78%
+```
+
+判断:
+
+- feedback violationは改善したが、mean/p90/matchが悪化して不採用。
+- 候補 `.binary` は削除済み。
+
+### 条件B: feedback weight 0.5 / lr half / 2 epochs
+
+実行:
+
+```text
+RUN_DIR=data/mmto/runs/mmto_direct_feedback_113_fw05_lr4e5_e2_20260627_163417
+FEEDBACK_WEIGHT=0.5
+EPOCHS=2
+LEARNING_RATE=0.00004
+BEST_METRIC=feedback-violation
+```
+
+結果:
+
+```text
+best_epoch: 2
+feedback violation_ratio: 0.592920 -> 0.575221
+score gate: passed
+rerank gate: passed
+bench: 9-11-0
+```
+
+score gate:
+
+```text
+mean_abs_delta_cp: 0.02
+p95_abs_delta_cp: 0.05
+max_abs_delta_cp: 0.08
+```
+
+rerank:
+
+```text
+baseline mean: 524.58496
+candidate mean: 524.58496
+baseline p90: 26.615944
+candidate p90: 26.615944
+baseline p95: 42.910797
+candidate p95: 42.910797
+match: 43.30% -> 43.30%
+```
+
+20局bench:
+
+```text
+seed: 19201
+games: 20
+depth: 5
+time-limit-ms: 100
+
+new: 9
+baseline: 11
+draw: 0
+total score rate: 45.00%
+```
+
+paired starts:
+
+```text
+new sweeps: 1
+baseline sweeps: 2
+splits: 7
+draw/mixed: 0
+```
+
+判断:
+
+- 条件Bはoffline gateを通過したが、20局で45%のため不採用。
+- 候補 `.binary` は削除済み。
+- 113件direct feedbackを単純に押すだけでは、feedback指標の改善が対局強化へ移らない。
+
+総合判断:
+
+- このfeedback集合は `regret_delta_mean=0.00` で、candidate固有の悪化ではなく、baselineとcandidateが同程度に間違う局面を多く含んでいる。
+- そのため、教師手へ寄せる信号自体は作れるが、v2.1.0基準の実戦勝率改善にはつながっていない。
+- この113件セットをさらに強く・長く学習する方針は打ち切る。
+- 次は `regret_delta > 0`、つまり「candidateがbaselineより悪くなった局面」だけを集めるdirect counterexampleに切り替える。
