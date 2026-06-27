@@ -1536,3 +1536,81 @@ teacher-top CEは、少なくとも小規模dumpではteacher matchとrerank reg
 2. `best-metric=teacher-mismatch` だけでなく、`p95-regret` とteacher-match guardを組み合わせた選択も比較する。
 3. 200から500局面rerank gateでmean/p90/p95/matchが同時に悪化しないことを確認する。
 4. ここまで通った場合のみ、10000局面級dumpで数時間学習へ進む。
+
+### teacher-top CE 1k/200 validation
+
+Probe:
+
+`data/mmto/runs/mmto_teacher_top_ce_1k_20260627_052549`
+
+目的:
+
+train 300 / valid 80で見えたteacher-top CEの改善が、小規模ノイズではないかを確認するため、既存dumpからtrain 1000 / valid 200を切り出して再検証した。
+
+設定:
+
+- `SOURCE_RUN_DIR=data/mmto/runs/mmto_refresh_candidate_20260627_040733`
+- `TRAIN_LINES=1000`
+- `VALID_LINES=200`
+- `LOSS_MODE=listwise-leaf`
+- `TEACHER_TOP_CE_WEIGHT=0.5`
+- `BEST_METRIC=teacher-mismatch`
+- `BEST_GUARD_MAX_REGRET_INCREASE_CP=0`
+- `BEST_GUARD_BAD100_INCREASE=0`
+- `BEST_GUARD_TEACHER_MATCH_DROP_PCT=0`
+- `EPOCHS=3`
+- `LEARNING_RATE=0.0005`
+- `MAX_WEIGHT_DELTA=0.003`
+- `RERANK_MAX_POSITIONS=200`
+
+trainer結果:
+
+- baseline valid:
+  - selected regret mean `11.56`
+  - p90 `27.20`
+  - p95 `49.63`
+  - teacher_match `17.00%`
+  - bad50 `5.00%`
+- epoch 3:
+  - selected regret mean `10.99`
+  - p90 `26.69`
+  - p95 `32.06`
+  - teacher_match `20.50%`
+  - bad50 `3.50%`
+  - `best_epoch=3`
+
+score gate:
+
+- samples `1023`
+- mean abs delta `1.06cp`
+- p95 `1.64cp`
+- max `1.83cp`
+- passed
+
+rerank gate 200 positions:
+
+- baseline:
+  - mean `6.01`
+  - p90 `19.25`
+  - p95 `29.12`
+  - match `16.00%`
+- candidate:
+  - mean `5.70`
+  - p90 `18.68`
+  - p95 `28.34`
+  - match `16.00%`
+- passed
+
+解釈:
+
+teacher-top CEは、train 1000 / valid 200でもtrainer上のteacher match、tail regret、rerank regretを同時に改善した。match自体はrerankで横ばいだが、過去の候補で問題だったmatch低下は発生していない。これは長時間学習候補として明確に前進である。
+
+注意:
+
+`BLEND_RATIOS=""` を指定したが、`tools/run_mmto_from_dump.sh` は未指定扱いにして既定のblend重みを生成した。重み3本は削除済み。容量事故を避けるため、`BLEND_RATIOS` は未指定時のみ既定値を使い、空文字指定時はblend生成を止められるようスクリプトを修正した。
+
+次の検証:
+
+1. 同設定でtrain 2000 / valid 400から500、rerank 400から500を実施する。
+2. その結果も通る場合、`TEACHER_TOP_CE_WEIGHT=0.2/0.5/1.0` の比較を2000規模で行う。
+3. 2k/500で安定したら10k級の数時間学習に進む。

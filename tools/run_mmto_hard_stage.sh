@@ -55,7 +55,7 @@ export MAX_PAIRS_PER_SAMPLE="${MAX_PAIRS_PER_SAMPLE:-64}"
 export MAX_WEIGHT_DELTA="${MAX_WEIGHT_DELTA:-0.02}"
 export ANCHOR_L2="${ANCHOR_L2:-0.0003}"
 
-export BLEND_RATIOS="${BLEND_RATIOS:-0.01 0.02 0.05}"
+export BLEND_RATIOS="${BLEND_RATIOS-0.01 0.02 0.05}"
 export KEEP_CANDIDATE_RAW="${KEEP_CANDIDATE_RAW:-0}"
 export MIN_FREE_GB="${MIN_FREE_GB:-10}"
 export RUN_DIR="${RUN_DIR:-data/mmto/runs/mmto_hard_stage_$(date -u +%Y%m%d_%H%M%S)}"
