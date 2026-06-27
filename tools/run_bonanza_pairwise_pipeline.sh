@@ -17,6 +17,7 @@ MAX_RECORDS="${MAX_RECORDS:-2000}"
 VALID_PERCENT="${VALID_PERCENT:-10}"
 MIN_PLY="${MIN_PLY:-16}"
 MAX_PLY="${MAX_PLY:-}"
+MIN_PLAYER_RATE="${MIN_PLAYER_RATE:-}"
 WINNER_ONLY="${WINNER_ONLY:-0}"
 DECISIVE_ONLY="${DECISIVE_ONLY:-0}"
 FREEZE_MATERIAL="${FREEZE_MATERIAL:-1}"
@@ -48,7 +49,7 @@ echo "Starting Bonanza pairwise pipeline."
 echo "RUN_DIR=$RUN_DIR"
 echo "WEIGHTS=$WEIGHTS"
 echo "INPUTS=$INPUTS"
-echo "MAX_RECORDS=$MAX_RECORDS VALID_PERCENT=$VALID_PERCENT MIN_PLY=$MIN_PLY MAX_PLY=${MAX_PLY:-none}"
+echo "MAX_RECORDS=$MAX_RECORDS VALID_PERCENT=$VALID_PERCENT MIN_PLY=$MIN_PLY MAX_PLY=${MAX_PLY:-none} MIN_PLAYER_RATE=${MIN_PLAYER_RATE:-none}"
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin csa_policy_dump --bin bonanza_pairwise_train
 
@@ -68,6 +69,9 @@ dump_args=(
 )
 if [[ -n "$MAX_PLY" && "$MAX_PLY" != "0" ]]; then
   dump_args+=(--max-ply "$MAX_PLY")
+fi
+if [[ -n "$MIN_PLAYER_RATE" ]]; then
+  dump_args+=(--min-player-rate "$MIN_PLAYER_RATE")
 fi
 if [[ "$WINNER_ONLY" == "1" ]]; then
   dump_args+=(--winner-only)
