@@ -790,3 +790,48 @@ candidate refresh dumpはhard 16件replayより分布が広く、狙った悪化
 2. refreshを1回で終わらせず、rerank gateで出た新しい大悪化を次のrefreshへ戻す反復ループにする。
 
 現時点では、単純な長時間学習はまだ回さない。長時間化の前に「大悪化を発生させない制約」を学習器に追加する。
+
+### max-regret系best metricの追加
+
+candidate refreshでp95やmatchが改善しても、少数の大悪化が残る問題が続いた。そのため、`mmto_tree_train` のbest checkpoint選択に大悪化を直接見るmetricを追加した。
+
+追加metric:
+
+- `p99-regret`
+- `bad100-regret`
+- `bad200-regret`
+- `max-regret`
+
+また、学習ログのsummaryに `max` を追加した。
+
+目的:
+
+- p95改善だけで `best_epoch` を選ばない。
+- `B*1d` のような少数大悪化を含む候補を、対局前に落とす。
+- 長時間学習時に、破壊的な重み更新を早期に検知する。
+
+Probe:
+
+`data/mmto/runs/mmto_max_metric_probe_20260627_041615`
+
+入力:
+
+- train/valid: `data/mmto/runs/mmto_refresh_candidate_20260627_040733`
+- `--best-metric max-regret`
+- 他条件はrefresh追試と同等
+
+結果:
+
+- baseline:
+  - valid max `317.51`
+  - refresh extra-valid max `32.06`
+  - best metric score `325.53`
+- epoch 1:
+  - valid p95は改善 `42.74 -> 33.37`
+  - しかしbest metric scoreは `325.86` に悪化
+- epoch 5までbaselineを上回れず
+- `best_epoch=0`
+
+解釈:
+
+`max-regret` は、今回のようにp95が改善しても最大悪化を改善できない候補を採用しない方向に働いた。これは長時間学習用の安全装置として有効。次の長めのrefresh実験では、まず `BEST_METRIC=max-regret` または `BEST_METRIC=bad100-regret` を使い、採用候補が出るかを確認する。

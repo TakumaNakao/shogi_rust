@@ -135,9 +135,19 @@ enum BestMetric {
     P90Regret,
     #[value(name = "p95-regret")]
     P95Regret,
+    #[value(name = "p99-regret")]
+    P99Regret,
     #[value(name = "bad50-regret")]
     #[value(alias = "bad-regret-50")]
     Bad50Regret,
+    #[value(name = "bad100-regret")]
+    #[value(alias = "bad-regret-100")]
+    Bad100Regret,
+    #[value(name = "bad200-regret")]
+    #[value(alias = "bad-regret-200")]
+    Bad200Regret,
+    #[value(name = "max-regret")]
+    MaxRegret,
     #[value(name = "capped-selected-regret")]
     CappedSelectedRegret,
 }
@@ -1811,7 +1821,7 @@ fn log_summary(
 ) -> String {
     let bad_ratio = metrics.bad_regret_count as f32 / metrics.samples.max(1) as f32;
     format!(
-        "{}: samples={} pairs={} loss={:.6} selected_regret_mean={:.2} p90={:.2} p95={:.2} bad_regret_ratio={:.4} {}",
+        "{}: samples={} pairs={} loss={:.6} selected_regret_mean={:.2} p90={:.2} p95={:.2} max={:.2} bad_regret_ratio={:.4} {}",
         sample_name,
         metrics.samples,
         metrics.pair_count,
@@ -1819,6 +1829,7 @@ fn log_summary(
         metrics.selected_regret_sum,
         percentile(metrics.regrets.clone(), 0.90),
         percentile(metrics.regrets.clone(), 0.95),
+        max_regret(metrics),
         bad_ratio,
         bad_regret_thresholds_summary(metrics, bad_regret_thresholds)
     )
@@ -1848,6 +1859,14 @@ fn capped_selected_regret_mean(metrics: &Metrics, cap_cp: f32) -> f32 {
         total += regret.min(cap);
     }
     total / metrics.regrets.len() as f32
+}
+
+fn max_regret(metrics: &Metrics) -> f32 {
+    metrics
+        .regrets
+        .iter()
+        .copied()
+        .fold(0.0f32, |best, regret| best.max(regret))
 }
 
 fn compute_best_metric_value(
@@ -1902,11 +1921,47 @@ fn compute_best_metric_value(
                 f32::INFINITY
             }
         }
+        BestMetric::P99Regret => {
+            if valid.samples > 0 {
+                percentile(valid.regrets.clone(), 0.99)
+            } else if train.samples > 0 {
+                percentile(train.regrets.clone(), 0.99)
+            } else {
+                f32::INFINITY
+            }
+        }
         BestMetric::Bad50Regret => {
             if valid.samples > 0 {
                 regret_ratio_above(valid, 50.0)
             } else if train.samples > 0 {
                 regret_ratio_above(train, 50.0)
+            } else {
+                f32::INFINITY
+            }
+        }
+        BestMetric::Bad100Regret => {
+            if valid.samples > 0 {
+                regret_ratio_above(valid, 100.0)
+            } else if train.samples > 0 {
+                regret_ratio_above(train, 100.0)
+            } else {
+                f32::INFINITY
+            }
+        }
+        BestMetric::Bad200Regret => {
+            if valid.samples > 0 {
+                regret_ratio_above(valid, 200.0)
+            } else if train.samples > 0 {
+                regret_ratio_above(train, 200.0)
+            } else {
+                f32::INFINITY
+            }
+        }
+        BestMetric::MaxRegret => {
+            if valid.samples > 0 {
+                max_regret(valid)
+            } else if train.samples > 0 {
+                max_regret(train)
             } else {
                 f32::INFINITY
             }
