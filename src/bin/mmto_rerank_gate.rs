@@ -559,8 +559,9 @@ fn main() -> Result<()> {
             args.allow_mean_regret_increase_cp
         ));
     }
-    if candidate_summary.mean_regret_cp
-        > baseline_summary.mean_regret_cp - args.require_mean_regret_improvement_cp
+    if args.require_mean_regret_improvement_cp > 0.0
+        && candidate_summary.mean_regret_cp
+            > baseline_summary.mean_regret_cp - args.require_mean_regret_improvement_cp
     {
         fail_reasons.push(format!(
             "mean regret failed improvement requirement: {:.2} > {:.2} - {:.2}",
@@ -579,8 +580,9 @@ fn main() -> Result<()> {
             args.allow_p90_regret_increase_cp
         ));
     }
-    if candidate_summary.p90_regret_cp
-        > baseline_summary.p90_regret_cp - args.require_p90_regret_improvement_cp
+    if args.require_p90_regret_improvement_cp > 0.0
+        && candidate_summary.p90_regret_cp
+            > baseline_summary.p90_regret_cp - args.require_p90_regret_improvement_cp
     {
         fail_reasons.push(format!(
             "p90 regret failed improvement requirement: {:.2} > {:.2} - {:.2}",
@@ -599,8 +601,9 @@ fn main() -> Result<()> {
             args.allow_p95_regret_increase_cp
         ));
     }
-    if candidate_summary.p95_regret_cp
-        > baseline_summary.p95_regret_cp - args.require_p95_regret_improvement_cp
+    if args.require_p95_regret_improvement_cp > 0.0
+        && candidate_summary.p95_regret_cp
+            > baseline_summary.p95_regret_cp - args.require_p95_regret_improvement_cp
     {
         fail_reasons.push(format!(
             "p95 regret failed improvement requirement: {:.2} > {:.2} - {:.2}",
