@@ -245,3 +245,29 @@ pairwise専用Adagradを実装し、SGD C/D と同系統の条件で確認した
 - `clamped_weights` が急増しており、局所的な過更新が起きている。
 - 「optimizerを強くするだけ」では解決しない。
 - 次は、更新式の強化ではなく、教師信号の質とpair選別を見直すべきである。
+
+## 次の方針
+
+GPT-5.5 xhigh に再分析を依頼した結果、次の本命は **既存MMTO tree dumpを使い、teacher score差が大きいpairだけを使うBonanza風目的** と判断した。
+
+理由:
+
+- 生棋譜手を常に正解扱いすると、悪手、序盤依存、人間的妥協、探索深度差がノイズになる。
+- 既存MMTO tree dumpには同一root内の候補手とteacher scoreがある。
+- `teacher_score(best) - teacher_score(other)` が大きいpairだけを使えば、「明確に良い手を明確に悪い手より上げる」信号になる。
+- KPPで続ける場合にも、将来NNUEへ進む場合にも、このteacher pair生成は再利用できる。
+
+当面やらないこと:
+
+- 生棋譜手pairwiseのSGD/Adagrad係数調整。
+- Adagrad E/F系の延長。
+- opening book / opening prior を本命にすること。
+- 小型NNUEへの即移行。
+
+次の実装対象:
+
+- MMTO tree JSONLをstreamingで読むlarge-margin teacher pair trainer。
+- `teacher_best_score - teacher_other_score >= margin` のpairだけ採用。
+- pair重みはscore差で軽くスケールし、上限を置く。
+- valid指標はteacher-best rank、large-margin pair accuracy、lossを主にする。
+- clamp数、更新norm、局面重複率をログに出す。
