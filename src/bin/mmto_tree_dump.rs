@@ -116,6 +116,8 @@ struct TreeRecord {
 struct PositionLine {
     sfen: String,
     #[serde(default)]
+    sample_weight: Option<f32>,
+    #[serde(default)]
     teacher_move: Option<String>,
     #[serde(default)]
     teacher_best_move: Option<String>,
@@ -132,6 +134,7 @@ struct PositionLine {
 #[derive(Clone)]
 struct InputPosition {
     position: Position,
+    sample_weight: f32,
     teacher_move: Option<Move>,
     forced_student_move: Option<Move>,
     invalid_teacher_move: bool,
@@ -259,6 +262,10 @@ fn parse_position_line(line: &str) -> Option<InputPosition> {
     if line.starts_with('{') {
         let record = serde_json::from_str::<PositionLine>(line).ok()?;
         let position = position_from_sfen_or_usi(&record.sfen)?;
+        let sample_weight = record.sample_weight.unwrap_or(1.0);
+        if !sample_weight.is_finite() || sample_weight <= 0.0 {
+            return None;
+        }
         let teacher_move_text = record.teacher_move.or(record.teacher_best_move);
         let (teacher_move, invalid_teacher_move) =
             parse_game_teacher_move(&position, teacher_move_text);
@@ -272,6 +279,7 @@ fn parse_position_line(line: &str) -> Option<InputPosition> {
         );
         Some(InputPosition {
             position,
+            sample_weight,
             teacher_move,
             forced_student_move,
             invalid_teacher_move,
@@ -279,6 +287,7 @@ fn parse_position_line(line: &str) -> Option<InputPosition> {
     } else {
         position_from_sfen_or_usi(line).map(|position| InputPosition {
             position,
+            sample_weight: 1.0,
             teacher_move: None,
             forced_student_move: None,
             invalid_teacher_move: false,
@@ -851,7 +860,7 @@ fn process_position_chunk(
                     teacher_model,
                     student_model,
                     args,
-                    1.0,
+                    input.sample_weight,
                     is_valid,
                 );
                 if root_result.reason.is_none() {
@@ -876,7 +885,7 @@ fn process_position_chunk(
                     teacher_model,
                     student_model,
                     args,
-                    1.0,
+                    input.sample_weight,
                     is_valid,
                 )
             }

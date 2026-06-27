@@ -972,3 +972,99 @@ Probe:
 解釈:
 
 長時間用の入口スクリプトでも、主指標だけで危険な候補へ進まず、baselineを維持して停止できた。これで「小さく試し、危険な候補を通さず、通った候補だけ次refreshへ進める」反復学習の安全性が上がった。
+
+### low LR guarded candidate probe
+
+Probe:
+
+`data/mmto/runs/mmto_guard_lr_probe_20260627_043315`
+
+目的:
+
+高めの学習率ではp95が改善してもmax-regret guardに落ちたため、学習率と更新幅を絞れば、尾部を悪化させずに候補が出るか確認した。
+
+設定:
+
+- train/valid: `data/mmto/runs/mmto_refresh_candidate_20260627_040733`
+- `--learning-rate 0.0002`
+- `--max-weight-delta 0.001`
+- `--anchor-l2 0.0005`
+- `--best-metric p95-regret`
+- `--best-guard-max-regret-increase-cp 0`
+- `--best-guard-bad100-increase 0`
+- `--extra-valid-best-weight 0.25`
+
+trainer結果:
+
+- baseline best metric score `49.562458`
+- epoch 1 best metric score `38.875984`
+- epoch 2 best metric score `38.503777`
+- max-regret guard scoreはbaseline同値 `325.526733`
+- bad100 guard scoreはbaseline同値 `0.013043`
+- `best_epoch=2`
+
+offline gates:
+
+- score gate:
+  - mean abs delta `0.27cp`
+  - p95 `0.49cp`
+  - max `0.58cp`
+  - passed
+- rerank gate:
+  - baseline mean `6.01`, candidate mean `6.03`
+  - baseline p95 `29.12`, candidate p95 `29.04`
+  - match rate `16.00%` -> `16.00%`
+  - failed: mean regret worsened by `0.02cp`
+
+解釈:
+
+小さい更新幅なら、trainer上ではp95を大きく改善しつつtail guardを通る候補を作れた。ただし実探索rerankでは平均regretがわずかに悪化し、採用には届かなかった。これは「長時間化すればよい」というより、rerankで出た悪化手を次の学習信号に戻す仕組みが必要であることを示している。候補の `.binary` は不採用として削除済み。
+
+### weighted rerank-hard feedback
+
+背景:
+
+GPT-5.5 xhighの分析では、現在の主ボトルネックは「root候補集合上のproxy指標は改善できるが、実探索rerankで出る少数の悪化を安定して抑えられないこと」と判断した。単純にepoch数やデータ量を増やすのではなく、rerankで実際に悪化した `candidate_move` を次の学習で強く下げる必要がある。
+
+既存問題:
+
+- `tools/extract_rerank_hard_pairs.py` は `teacher_move` / `student_move` をJSONL化できる。
+- しかし `regret_delta` や `candidate_regret` の大きさを `sample_weight` に反映していなかった。
+- さらに `mmto_tree_dump` がJSONL入力の `sample_weight` を読んでいなかったため、仮に抽出側で重みを付けてもdump時に失われる状態だった。
+
+実装:
+
+- `mmto_tree_dump` のJSONL入力で `sample_weight` を受け取り、出力tree JSONLへ保持するようにした。
+- `tools/extract_rerank_hard_pairs.py` に重み付けを追加:
+  - `--weight-mode none|regret-delta|candidate-regret|combined`
+  - `--weight-scale-cp`
+  - `--max-sample-weight`
+- `tools/run_mmto_dagger_from_run.sh` から以下の環境変数で制御可能にした:
+  - `EXPLICIT_WEIGHT_MODE`
+  - `EXPLICIT_WEIGHT_SCALE_CP`
+  - `EXPLICIT_MAX_SAMPLE_WEIGHT`
+
+Smoke:
+
+`data/mmto/runs/mmto_hard_weight_smoke_20260627_043950`
+
+入力:
+
+- `data/mmto/runs/mmto_guard_lr_probe_20260627_043315/rerank_gate.json`
+- `--weight-mode combined`
+- `--weight-scale-cp 10`
+- `--max-sample-weight 5`
+
+結果:
+
+- hard pair抽出: `written=9 skipped=0`
+- 例:
+  - `candidate_regret=5.711242`
+  - `regret_delta=3.5024726`
+  - `sample_weight=1.5711242`
+- `mmto_tree_dump` 後のtree JSONLでもsample weightsが保持された:
+  - `[1.5711242, 1.2766001, 1.2031225, 1.3831849, 1.2997372]`
+
+解釈:
+
+rerankで実際に悪化した手を、悪化度に応じて強く学習へ戻す経路ができた。次の実験では、低LR・小更新幅・tail guardに加えて、このweighted rerank-hardを通常refreshデータへ混ぜる。これにより、単純な長時間学習ではなく「実探索で失敗した手を反復的に回収する」方向へ進める。
