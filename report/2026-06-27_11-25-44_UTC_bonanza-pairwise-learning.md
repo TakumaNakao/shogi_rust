@@ -578,3 +578,35 @@ decisive win rate 95% CI: 18.12%..56.71%
 - rerank対象が実戦ベンチと乖離していないか確認する。
 - 20局smokeを学習候補選抜の必須段階にする。
 - 採用候補は最低でも複数seedの20局または40局で非悪化を確認してから長時間学習へ進める。
+
+## Offline gate / bench乖離の分析
+
+fixed-gate guarded refresh は、offline gate と独立rerankを通ったにもかかわらず20局benchで 7-13 と負けた。
+
+GPT-5.5 xhigh に再分析を依頼した結論:
+
+- 現目的関数を単純に長時間化する見込みは低い。
+- `score gate` と `independent rerank` は「壊していない」確認には使えるが、「強くなった」確認としては弱い。
+- 今回の重み差は `mean_abs_delta_cp=0.2687`, `p95=0.4756`, `max=0.5552` と小さすぎる。
+- rerank改善も `mean 216.45844 -> 216.40077`, `match 48.80% -> 49.00%` で、実戦勝率を押し上げる効果量としては弱い。
+
+benchで負けた原因候補:
+
+- rerank局面セットが `valid.tree.jsonl` 由来で、benchの `taya36.sfen` 開始から自己生成される実戦系列と分布が違う。
+- rerankは固定深さ中心だが、benchはUSI経由の探索・時間制限・move orderingの影響を受ける。
+- 評価差が1cp未満でも探索順や枝刈りが変わり、実戦勝率に出る可能性がある。
+- 現目的関数は「差分が小さいと効かず、大きくすると壊れる」狭い帯に入っている可能性がある。
+
+次に必要な検証:
+
+- 候補生成後、複数seedの20局benchを必ず行う。
+- bench棋譜から `baseline_sweep_starts` と `drop_windows` を抽出する。
+- `taya36 + bench由来SFEN` で深めの bench-aligned rerank を実行する。
+- 採用候補は、offline non-regression ではなく、bench複数seedで50%以上、baseline sweepが増えない、bench-aligned rerank非悪化を満たすものに限定する。
+
+長期判断:
+
+- KPP warm-start は捨てない。
+- ただし、同じKPP目的関数の長時間化を主路線にはしない。
+- `current-top mistake`、bench/self-play hard positions、深めteacher、hard replay を明示的に使う root/search-aligned objective へ寄せる。
+- それでも複数seed benchで改善しない場合、KPP-only長時間学習は打ち切り、KPPを土台にした residual NNUE へ進む。
