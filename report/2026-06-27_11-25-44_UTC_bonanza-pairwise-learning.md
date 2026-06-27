@@ -784,3 +784,78 @@ RERANK GATE PASSED
 - したがって、現行の guarded refresh 条件を単純に長く回すべきではない。
 - まずは benchgate runner を選抜ゲートとして固定し、学習条件やデータ生成を変えた候補だけを通す。
 - 長時間学習へ進める条件は、最低でも benchgate runner で50%以上、できれば55%以上またはbaseline sweep増加なしを満たすこと。
+
+## Bench-feedback runner
+
+benchgate runner は「候補を作り、複数seedの短時間benchで落とす」ところまでは標準化できた。一方で、落ちた候補の実戦敗因を次の学習に戻していなかった。
+
+そこで `tools/run_mmto_bench_feedback_probe.sh` を追加した。
+
+狙い:
+
+- guarded refresh で候補を作る。
+- 複数seed bench と `record_analyze` を実行する。
+- `baseline_sweep_starts.sfen` と `drop_windows.sfen` を集約する。
+- benchで落ちた候補をすぐ削除せず、bench由来hard SFENを DAgger/replay 入力にして repair stage を回す。
+- repair候補を再度benchとbench-aligned rerankに通し、通らなければbinaryを削除する。
+
+設計判断:
+
+- feedbackの起点はデフォルトで候補重み自身にする。これは「候補の実戦悪化を局所修正する」ためである。
+- teacherは現時点では `policy_weights_v2.1.0.binary` の探索結果を使う。
+- feedback stage は小さく保ち、長時間学習に進む前の候補選別として使う。
+- smokeや不採用候補の大きな `.binary` は削除する。
+
+合わせて `tools/run_mmto_benchgate_probe.sh` の初回refresh条件を環境変数で上書き可能にした。
+
+追加した主な環境変数:
+
+- `REFRESH_MAX_POSITIONS`
+- `REFRESH_EPOCHS`
+- `BASE_TRAIN_LINES`
+- `BASE_VALID_LINES`
+- `REFRESH_RERANK_MAX_POSITIONS`
+
+これにより、スクリプト自体のsmoke testでは初回refreshと内部rerankを小さくできる。
+
+## Bench-feedback smoke
+
+GPT-5.3-codex-spark サブエージェントに軽量smokeを委任した。
+
+最初のsmoke:
+
+- run: `data/mmto/runs/mmto_bench_feedback_smoke_20260627_133924`
+- 問題: 内部rerankが固定 `300` 局面で走り、軽量smokeとして重すぎた。
+- 対応: 実行を中断し、未採用の `best.raw.binary` を削除した。
+
+修正後smoke:
+
+- run: `data/mmto/runs/mmto_bench_feedback_smoke2_20260627_134810`
+- `BENCH_SEEDS=13001`
+- `BENCH_GAMES=2`
+- `BENCH_DEPTH=4`
+- `INITIAL_REFRESH_MAX_POSITIONS=30`
+- `INITIAL_REFRESH_RERANK_MAX_POSITIONS=20`
+- `RERANK_MAX_POSITIONS=12`
+- `FEEDBACK_MAX_POSITIONS=12`
+- 終了ステータス: `0`
+
+結果:
+
+```text
+total_new=1
+total_baseline=1
+total_draw=0
+score_rate_num=2
+score_rate_den=4
+bench_aligned_rerank_status=0
+candidate kept for further evaluation
+```
+
+これは強さ評価ではない。2局だけのsmokeであり、目的はrunnerの接続確認である。残った `best.raw.binary` は採用候補ではないため削除した。
+
+判断:
+
+- 候補生成 -> bench -> hard SFEN抽出 -> gate判定までのフローは動作した。
+- 今回は初回候補が軽量benchgateを通ったため、feedback repair stage は未実行である。
+- 次の検証では、benchgateを落ちる候補または閾値を高めた条件で、bench hard positions が実際に repair stage に入ることを確認する。
