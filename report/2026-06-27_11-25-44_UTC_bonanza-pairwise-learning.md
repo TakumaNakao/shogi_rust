@@ -1092,3 +1092,69 @@ record_analyze所見:
 - 初回30局の66.67%から優位幅が縮小しており、偶然要素は残る。
 - 候補binaryは削除せず、追加検証を続ける。
 - 次は標準条件寄り、または別seedで100局以上を追加し、少なくとも合計200局級で55%以上を維持できるか確認する。
+
+## Softguard candidate standard-condition validation
+
+同候補を標準寄りの `depth=5`, `time-limit-ms=100` でも確認した。
+
+実験:
+
+- run: `data/mmto/runs/mmto_softguard_feedback_probe_20260627_141905/validate_std_d5_seed14001`
+- candidate: `data/mmto/runs/mmto_softguard_feedback_probe_20260627_141905/initial_benchgate/iter_1/best.raw.binary`
+- baseline: `policy_weights_v2.1.0.binary`
+- games: `100`
+- seed: `14001`
+- depth: `5`
+- time-limit-ms: `100`
+
+結果:
+
+```text
+new 53
+baseline 46
+draw 1
+decisive win rate 53.54%
+total score rate 53.50%
+95% CI decisive: 43.76%..63.04%
+95% CI total: 43.77%..63.23%
+```
+
+終局理由:
+
+```text
+Resign: 96
+MaxPliesAdjudication: 2
+PerpetualCheckLoss: 1
+RepetitionDraw: 1
+```
+
+paired starts:
+
+```text
+new sweeps: 6
+baseline sweeps: 3
+splits: 40
+draw/mixed pairs: 1
+```
+
+record_analyze所見:
+
+- 300cp超のtail dropが複数ある。
+- 最大dropは `game_044_new_white_BaselineWin.usi`, `ply95`, `drop=336`。
+- その他、`game_058`, `game_038`, `game_052`, `game_094`, `game_045`, `game_023`, `game_059` などで320cp級drop。
+- terminal result mismatchesは0。
+- non-terminal score/result sign mismatchesは1。
+
+参考合算:
+
+- 条件違いのため厳密な合算ではない。
+- 既存110局: `63-45-2`, score rate `58.18%`
+- 標準寄り100局: `53-46-1`, score rate `53.50%`
+- 参考合算210局: `116-91-3`, total score rate `55.95%`
+
+判断:
+
+- 標準寄り条件でも50%未満には崩れなかった。
+- ただし100局単独ではCIが広く、有意な重み改善とは言えない。
+- 候補binaryは保持し、同条件の別seedで追加100局を行う。
+- 追加後も55%前後を維持するなら、200局級の標準bench候補として扱う。
