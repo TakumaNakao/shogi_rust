@@ -1313,4 +1313,73 @@ total score rate 55.00%
 - ただし今回の信号は5サンプルだけで、feedback lossの改善も極小。
 - 20局benchは破綻検知としては通ったが、強さ判断には使えない。
 - 次に続けるなら、rerank対象を `20 -> 40/80` に広げる。ただし depth `4/4/6` は重すぎるため、まず `3/3/5` または `3/3/4` でサンプル数を増やす。
-- `train_teacher_feedback/best.raw.binary` は追加検証候補として一旦残す。中間の `candidate.raw.binary` は削除した。
+- `train_teacher_feedback/best.raw.binary` は追加検証候補として一旦残した。中間の `candidate.raw.binary` は削除した。
+
+## Direct feedback候補の40局追加検証
+
+短ベンチで破綻しなかった direct feedback 候補を、同条件で40局追加検証した。
+
+候補:
+
+- `data/mmto/runs/mmto_direct_feedback_probe_20260627_151908/train_teacher_feedback/best.raw.binary`
+
+追加検証:
+
+```text
+record-dir: data/mmto/runs/mmto_direct_feedback_probe_20260627_151908/validate_d5_seed17001_40
+seed: 17001
+games: 40
+depth: 5
+time-limit-ms: 100
+
+new: 19
+baseline: 18
+draw: 3
+decisive win rate: 51.35%
+total score rate: 51.25%
+95% CI decisive: 35.89%..66.55%
+95% CI total: 36.35%..66.15%
+```
+
+終局理由:
+
+```text
+Resign: 37
+RepetitionDraw: 3
+```
+
+paired starts:
+
+```text
+new sweeps: 2
+baseline sweeps: 2
+splits: 14
+draw/mixed: 2
+```
+
+record_analyze:
+
+```text
+terminal final positions: 37
+terminal result mismatches: 0
+non-terminal score/result sign mismatches: 0
+```
+
+20局smokeとの合算:
+
+```text
+games: 60
+new: 29
+baseline: 26
+draw: 5
+total score rate: 52.50%
+Wilson approx: 40.1%..64.6%
+```
+
+判断:
+
+- direct feedback候補は明確な悪化ではないが、採用できる強さではない。
+- 60局合算でも信頼区間が広く、v2.1.0重みを置き換える根拠にはならない。
+- 今回の学習信号は5サンプルだけで、feedback lossの改善も極小だったため、重みを長く残す価値は低い。
+- 次は候補重みを増やす前に、bench失敗局面からより多くのdirect feedbackサンプルを低コストに作る仕組みを整える。
+- 容量節約のため、この候補重みは結果記録後に削除した。
