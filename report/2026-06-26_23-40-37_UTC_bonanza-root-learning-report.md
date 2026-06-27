@@ -573,3 +573,82 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_dump \
 次の検証:
 
 明示ペア入力を使ったDAgger stageを2K条件で再実行する。これで `2b3a` 系の悪化手が消え、rerank p90/meanが非悪化になるかを確認する。通らなければ、hardだけの小replayではなく、候補重みによるrefresh dumpを数百から数千局面単位で作る。
+
+### explicit hard pair DAgger追試
+
+上記の明示ペア入力を使い、2K条件のbase train/validへhard 16件をreplayした。
+
+Run:
+
+`data/mmto/runs/mmto_explicit_hard_2k_20260627_035700`
+
+設定:
+
+- source: `data/mmto/runs/mmto_current_top_2k_20260627_033620`
+- `CANDIDATE_WEIGHTS=policy_weights_v2.1.0.binary`
+  - bad手は `student_move` で明示するため、dumpのstudent重みはbaselineで代用。
+- hard pairs: 16
+- `LISTWISE_HARD_NEGATIVE_WEIGHT=0.10`
+- `CURRENT_TOP_MARGIN_WEIGHT=0.05`
+- `GAME_TEACHER_MARGIN_WEIGHT=0.05`
+- `REPLAY_WEIGHT=0.20`
+- `EXTRA_VALID_BEST_WEIGHT=0.50`
+- `MAX_WEIGHT_DELTA=0.005`
+
+DAgger dump:
+
+- selected regret mean `40.08`
+- p90 `156.57`
+- p95 `156.57`
+- bad50 `0.2500`
+- bad100 `0.1250`
+
+再学習:
+
+- best epoch 1
+- main valid:
+  - baseline p95 `49.63`
+  - epoch 1 p95 `34.43`
+- hard extra-valid:
+  - baseline selected regret mean `14.90`, p90/p95 `31.65`
+  - epoch 1 selected regret mean `18.40`, p90/p95 `46.52`
+- score gate:
+  - mean abs delta `1.16cp`
+  - p95 `2.17cp`
+  - max `2.55cp`
+  - passed
+
+Rerank gate:
+
+- baseline:
+  - mean `5.73`
+  - p90 `11.05`
+  - p95 `27.09`
+  - match `43.00%`
+  - bad50 `0.0250`
+  - bad100 `0.0150`
+- candidate:
+  - mean `6.43`
+  - p90 `11.05`
+  - p95 `27.09`
+  - match `42.50%`
+  - bad50 `0.0300`
+  - bad100 `0.0200`
+- failed
+
+観察:
+
+- `2b3a` 系の最大悪化は弱まった。
+  - 例: `2b3c` 局面は `candidate_move=2a1c`, delta `0.91`
+- しかし別の大悪化が発生した。
+  - `B*8d -> B*1d`
+  - delta `162.77`
+
+結論:
+
+明示ペア入力は、狙った悪手を学習対象に入れる仕組みとしては正しく動く。ただし、hard 16件を小replayとして足すだけでは、重み更新の副作用を抑えられない。次は以下を優先する。
+
+1. candidate refresh dumpをhard局面だけでなく、valid/trainから数百から数千局面規模で生成する。
+2. refresh dumpをreplayではなく通常trainの一部として扱い、validもrefresh側から十分な数を取る。
+3. 明示bad pairだけでなく、新しく出る大悪化を反復的にrefreshへ戻す。
+4. 小replay重みを強くする方向は一旦避ける。今回の結果では局所対策が別局面の大悪化を生んだ。
