@@ -1680,3 +1680,93 @@ rerank 230結果:
 1. より大きい `teacher_wdoor50k_d3s2_top16_20260626_164759` dumpでtrain 5000 / valid 500を実施する。
 2. まず `TEACHER_TOP_CE_WEIGHT=1.0` を試し、通れば `0.5` を比較する。
 3. rerank 500でmatch低下なし、mean/p90/p95改善を確認できた場合のみ、10k以上へ進む。
+
+### teacher-top CE Wdoor 5k/500 validation
+
+Probe:
+
+- `data/mmto/runs/mmto_teacher_top_ce_wdoor5k_w10_20260627_053635` (`w=1.0`)
+- `data/mmto/runs/mmto_teacher_top_ce_wdoor5k_w05_20260627_054227` (`w=0.5`)
+- `data/mmto/runs/mmto_teacher_top_ce_wdoor5k_w02_20260627_054826` (`w=0.2`)
+- `data/mmto/runs/mmto_teacher_top_ce_wdoor5k_w05_dedup_20260627_055717` (`w=0.5`, dedupe rerank)
+
+目的:
+
+2k/230で通ったteacher-top CEが、Wdoor由来の大きめdumpで長時間学習に進める水準か確認した。
+
+共通設定:
+
+- `SOURCE_RUN_DIR=data/mmto/runs/teacher_wdoor50k_d3s2_top16_20260626_164759`
+- `TRAIN_LINES=5000`
+- `VALID_LINES=500`
+- `LOSS_MODE=listwise-leaf`
+- `BEST_METRIC=teacher-mismatch`
+- `EPOCHS=3`
+- `LEARNING_RATE=0.0005`
+- `MAX_WEIGHT_DELTA=0.003`
+- `RERANK_MAX_POSITIONS=500`
+
+trainer上の傾向:
+
+- baseline valid teacher_match `20.60%`
+- `w=1.0`:
+  - best epoch 1
+  - valid teacher_match `25.40%`
+  - selected regret mean `36.63 -> 36.12`
+- `w=0.5`:
+  - best epoch 3
+  - valid teacher_match `24.60%`
+  - selected regret mean `36.63 -> 35.95`
+- `w=0.2`:
+  - best epoch 1
+  - valid teacher_match `23.40%`
+  - selected regret mean `36.63 -> 36.19`
+
+通常rerank 500:
+
+| weight | mean | p90 | p95 | match | result |
+|---:|---:|---:|---:|---:|---|
+| baseline | `208.00` | `26.62` | `42.42` | `42.80%` | - |
+| `0.2` | `208.08` | `26.83` | `42.42` | `42.60%` | failed |
+| `0.5` | `207.98` | `26.74` | `41.19` | `42.60%` | failed |
+| `1.0` | `208.13` | `26.91` | `42.42` | `42.60%` | failed |
+
+dedupe rerank:
+
+同一SFENの重複がworst deltaに出ていたため、`mmto_rerank_gate` に `--dedupe-sfen` を追加し、`RERANK_DEDUPE_SFEN=1` でスクリプトから使えるようにした。Wdoor 5k/500では500件中21件が重複除外され、479ユニーク局面で評価された。
+
+`w=0.5` dedupe rerank:
+
+- baseline:
+  - mean `216.78`
+  - p90 `27.27`
+  - p95 `42.50`
+  - match `44.68%`
+  - bad50 `3.55%`
+- candidate:
+  - mean `216.70`
+  - p90 `27.27`
+  - p95 `41.89`
+  - match `44.47%`
+  - bad50 `3.34%`
+- failed:
+  - matchが1局面分低下。
+
+解釈:
+
+teacher-top CEは、trainer上ではteacher matchを明確に改善し、rerank上でもmean/p95/bad50を改善する場合がある。しかし、Wdoor 5k/500では全weightでmatchがわずかに低下した。dedupeしてもmatch低下は残ったため、単純なteacher-top CEだけでは「長時間回す価値のある採用候補」にはまだ足りない。
+
+重要な観察:
+
+- 2k/230では通るが、5k/500では落ちる。
+- rerank match低下は小さいが、長時間学習で増幅するリスクがある。
+- worst deltaには序盤2手目付近の局面や、終盤の大きな外れ値が含まれる。
+- `max_weight_delta=0.003` でclampが多く、epoch増加による改善は頭打ちになっている。
+
+次の方針:
+
+1. teacher-top CE単独で10k級へ進むのは停止。
+2. rerankでmatchを落とした局面をhard feedbackとして再投入する。
+3. 目的関数に「teacher top CE」だけでなく、「現在candidateがteacher一致を壊した局面への保持ペナルティ」を追加する。
+4. Wdoor dumpではvalid/rerankをdedupeして使う。
+5. 10k以上へ進む条件は、5k/500 dedupe rerankでmean/p90/p95/bad50改善かつmatch低下なし。

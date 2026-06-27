@@ -81,6 +81,7 @@ RERANK_REQUIRE_MEAN_REGRET_IMPROVEMENT_CP="${RERANK_REQUIRE_MEAN_REGRET_IMPROVEM
 RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP="${RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP:-0.0}"
 RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP="${RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP:-0.0}"
 RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT="${RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT:-0.0}"
+RERANK_DEDUPE_SFEN="${RERANK_DEDUPE_SFEN:-0}"
 KEEP_CANDIDATE_RAW="${KEEP_CANDIDATE_RAW:-0}"
 BLEND_RATIOS="${BLEND_RATIOS:-}"
 
@@ -307,6 +308,10 @@ if [[ "$score_status" != "0" ]]; then
 fi
 
 set +e
+rerank_dedupe_arg=()
+if [[ "$RERANK_DEDUPE_SFEN" == "1" ]]; then
+  rerank_dedupe_arg=(--dedupe-sfen)
+fi
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
   --baseline-weights "$WEIGHTS" \
   --candidate-weights "$RUN_DIR/best.raw.binary" \
@@ -322,6 +327,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
   --require-p90-regret-improvement-cp "$RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP" \
   --require-p95-regret-improvement-cp "$RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP" \
   --require-match-rate-improvement-pct "$RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT" \
+  "${rerank_dedupe_arg[@]}" \
   --hard-position-limit 1000 \
   --json-output "$RUN_DIR/rerank_gate.json" \
   | tee "$RUN_DIR/rerank_gate_stdout.log"

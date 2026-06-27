@@ -10,7 +10,7 @@ use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
 use shogi_core::Move;
 use shogi_lib::Position;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -38,6 +38,8 @@ struct Args {
     baseline_depth: Option<u8>,
     #[arg(long)]
     max_positions: Option<usize>,
+    #[arg(long, default_value_t = false)]
+    dedupe_sfen: bool,
     #[arg(long, default_value_t = 0)]
     seed: u64,
     #[arg(long, default_value_t = 0)]
@@ -143,6 +145,7 @@ struct GateReport {
     candidate_depth: u8,
     seed: u64,
     max_positions: Option<usize>,
+    dedupe_sfen: bool,
     thresholds_cp: Vec<f32>,
     require_mean_regret_improvement_cp: f32,
     require_p90_regret_improvement_cp: f32,
@@ -262,10 +265,13 @@ fn load_model(path: &Path) -> Result<SparseModel> {
 fn load_positions(
     paths: &[PathBuf],
     max_positions: Option<usize>,
+    dedupe_sfen: bool,
     seed: u64,
 ) -> Result<Vec<PositionRecord>> {
     let mut records = Vec::new();
     let mut invalid = 0usize;
+    let mut duplicate = 0usize;
+    let mut seen = HashSet::new();
     for path in paths {
         let content = fs::read_to_string(path)
             .map_err(|e| anyhow!("failed to read {}: {}", path.display(), e))?;
@@ -283,8 +289,13 @@ fn load_positions(
                 line.to_string()
             };
             if let Some(position) = position_from_sfen_or_usi(&sfen) {
+                let canonical_sfen = position.to_sfen_owned();
+                if dedupe_sfen && !seen.insert(canonical_sfen.clone()) {
+                    duplicate += 1;
+                    continue;
+                }
                 records.push(PositionRecord {
-                    sfen: position.to_sfen_owned(),
+                    sfen: canonical_sfen,
                     position,
                 });
             } else {
@@ -303,7 +314,10 @@ fn load_positions(
         }
         records.truncate(max_positions);
     }
-    println!("positions: {} (invalid={invalid})", records.len());
+    println!(
+        "positions: {} (invalid={invalid} duplicate={duplicate})",
+        records.len()
+    );
     Ok(records)
 }
 
@@ -489,7 +503,7 @@ fn main() -> Result<()> {
     let baseline = load_model(&args.baseline_weights)?;
     let candidate = load_model(&args.candidate_weights)?;
     let teacher = load_model(&args.teacher_weights)?;
-    let positions = load_positions(&args.input, args.max_positions, args.seed)?;
+    let positions = load_positions(&args.input, args.max_positions, args.dedupe_sfen, args.seed)?;
 
     let mut paired = positions
         .par_iter()
@@ -716,6 +730,7 @@ fn main() -> Result<()> {
             candidate_depth: args.candidate_depth,
             seed: args.seed,
             max_positions: args.max_positions,
+            dedupe_sfen: args.dedupe_sfen,
             require_mean_regret_improvement_cp: args.require_mean_regret_improvement_cp,
             require_p90_regret_improvement_cp: args.require_p90_regret_improvement_cp,
             require_p95_regret_improvement_cp: args.require_p95_regret_improvement_cp,
