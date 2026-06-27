@@ -125,6 +125,12 @@ struct Args {
     policy_anchor_temperature_cp: f32,
     #[arg(long, value_enum, default_value_t = ListwiseFeatureSource::Move)]
     policy_anchor_feature_source: ListwiseFeatureSource,
+    #[arg(long, default_value_t = 0.0)]
+    policy_anchor_margin_weight: f32,
+    #[arg(long, default_value_t = 50.0)]
+    policy_anchor_margin_cp: f32,
+    #[arg(long, default_value_t = 100.0)]
+    policy_anchor_margin_softplus_temp_cp: f32,
     #[arg(long, default_value_t = false)]
     separate_aux_adagrad: bool,
     #[arg(long, value_enum, default_value_t = LossMode::Pairwise)]
@@ -391,6 +397,16 @@ struct PolicyAnchorMetrics {
     loss: f32,
     pair_weight_sum: f32,
     top_match_count: usize,
+}
+
+#[derive(Default)]
+struct PolicyAnchorMarginMetrics {
+    samples: usize,
+    loss: f32,
+    pair_weight_sum: f32,
+    top_match_count: usize,
+    violation_count: usize,
+    margin_sum: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -1501,6 +1517,126 @@ fn evaluate_policy_anchor_batch(
     metrics
 }
 
+fn policy_anchor_margin_pair(
+    sample: &Sample,
+    model: &SparseModel,
+    anchor_model: &SparseModel,
+    feature_source: ListwiseFeatureSource,
+) -> Option<(usize, usize, f32, bool)> {
+    if sample.candidates.len() < 2 {
+        return None;
+    }
+
+    let mut anchor_top_idx = 0usize;
+    let mut anchor_top_score = f32::NEG_INFINITY;
+    let mut model_top_idx = 0usize;
+    let mut model_top_score = f32::NEG_INFINITY;
+    let mut model_scores = Vec::with_capacity(sample.candidates.len());
+
+    for (idx, candidate) in sample.candidates.iter().enumerate() {
+        let (features, material) = candidate_listwise_features(candidate, feature_source);
+        let anchor_score = anchor_model.predict_with_material(features, material);
+        let model_score = model.predict_with_material(features, material);
+        if !anchor_score.is_finite() || !model_score.is_finite() {
+            return None;
+        }
+        if anchor_score > anchor_top_score {
+            anchor_top_score = anchor_score;
+            anchor_top_idx = idx;
+        }
+        if model_score > model_top_score {
+            model_top_score = model_score;
+            model_top_idx = idx;
+        }
+        model_scores.push(model_score);
+    }
+
+    if !anchor_top_score.is_finite() || !model_top_score.is_finite() {
+        return None;
+    }
+
+    let top_match = anchor_top_idx == model_top_idx;
+    let bad_idx = if top_match {
+        let mut runner_up_idx = None;
+        let mut runner_up_score = f32::NEG_INFINITY;
+        for (idx, score) in model_scores.iter().copied().enumerate() {
+            if idx != anchor_top_idx && score > runner_up_score {
+                runner_up_score = score;
+                runner_up_idx = Some(idx);
+            }
+        }
+        runner_up_idx?
+    } else {
+        model_top_idx
+    };
+
+    let margin = model_scores[anchor_top_idx] - model_scores[bad_idx];
+    if !margin.is_finite() {
+        return None;
+    }
+    Some((anchor_top_idx, bad_idx, margin, top_match))
+}
+
+fn accumulate_policy_anchor_margin_metrics(
+    sample: &Sample,
+    model: &SparseModel,
+    anchor_model: &SparseModel,
+    margin_cp: f32,
+    softplus_temp_cp: f32,
+    feature_source: ListwiseFeatureSource,
+    metrics: &mut PolicyAnchorMarginMetrics,
+) {
+    let Some((_, _, margin, top_match)) =
+        policy_anchor_margin_pair(sample, model, anchor_model, feature_source)
+    else {
+        return;
+    };
+    let x = (margin_cp - margin) / softplus_temp_cp;
+    if !x.is_finite() {
+        return;
+    }
+
+    metrics.samples += 1;
+    metrics.loss += sample.sample_weight * softplus_temp_cp * softplus(x);
+    metrics.pair_weight_sum += sample.sample_weight;
+    metrics.margin_sum += margin;
+    if top_match {
+        metrics.top_match_count += 1;
+    }
+    if margin < margin_cp {
+        metrics.violation_count += 1;
+    }
+}
+
+fn evaluate_policy_anchor_margin_batch(
+    model: &SparseModel,
+    anchor_model: &SparseModel,
+    batch: &[Sample],
+    margin_cp: f32,
+    softplus_temp_cp: f32,
+    feature_source: ListwiseFeatureSource,
+) -> PolicyAnchorMarginMetrics {
+    let mut metrics = PolicyAnchorMarginMetrics::default();
+    for sample in batch {
+        accumulate_policy_anchor_margin_metrics(
+            sample,
+            model,
+            anchor_model,
+            margin_cp,
+            softplus_temp_cp,
+            feature_source,
+            &mut metrics,
+        );
+    }
+    if metrics.pair_weight_sum > 0.0 {
+        metrics.loss /= metrics.pair_weight_sum;
+    }
+    if metrics.samples > 0 {
+        metrics.margin_sum /= metrics.samples as f32;
+    }
+    metrics
+}
+
 fn update_sample_refs_with_softplus(
     model: &mut SparseModel,
     samples: &[&Sample],
@@ -1984,6 +2120,99 @@ fn update_policy_anchor_refs(
         }
         loss += sample.sample_weight * sample_loss;
         pair_weight_sum += sample.sample_weight;
+    }
+
+    if pair_count == 0 {
+        return (0.0, 0);
+    }
+    let avg = 1.0 / pair_weight_sum.max(f32::EPSILON);
+    for (idx, grad_sum) in w_grads {
+        let grad = grad_sum * avg;
+        match optimizer {
+            OptimizerKind::Sgd => {
+                model.w[idx] -= model.kpp_eta * (grad + l2_lambda * model.w[idx]);
+            }
+            OptimizerKind::Adagrad => {
+                let acc = adagrad.w_acc.entry(idx).or_insert(adagrad_epsilon);
+                *acc += grad * grad;
+                let denom = acc.sqrt().max(adagrad_epsilon.sqrt());
+                let lr = model.kpp_eta / denom;
+                model.w[idx] -= lr * (grad + l2_lambda * model.w[idx]);
+            }
+        }
+    }
+
+    if !freeze_material {
+        let material_grad = material_grad_total * avg;
+        match optimizer {
+            OptimizerKind::Sgd => {
+                model.material_coeff -=
+                    model.kpp_eta * (material_grad + l2_lambda * model.material_coeff);
+            }
+            OptimizerKind::Adagrad => {
+                if adagrad.material_acc < adagrad_epsilon {
+                    adagrad.material_acc = adagrad_epsilon;
+                }
+                adagrad.material_acc += material_grad * material_grad;
+                let denom = adagrad.material_acc.sqrt().max(adagrad_epsilon.sqrt());
+                let lr = model.kpp_eta / denom;
+                model.material_coeff -= lr * (material_grad + l2_lambda * model.material_coeff);
+            }
+        }
+    }
+
+    (loss / pair_weight_sum.max(f32::EPSILON), pair_count)
+}
+
+fn update_policy_anchor_margin_refs(
+    model: &mut SparseModel,
+    anchor_model: &SparseModel,
+    samples: &[&Sample],
+    margin_cp: f32,
+    softplus_temp_cp: f32,
+    feature_source: ListwiseFeatureSource,
+    l2_lambda: f32,
+    optimizer: OptimizerKind,
+    adagrad: &mut AdagradState,
+    adagrad_epsilon: f32,
+    freeze_material: bool,
+) -> (f32, usize) {
+    let mut w_grads: HashMap<usize, f32> = HashMap::new();
+    let mut material_grad_total = 0.0f32;
+    let mut loss = 0.0f32;
+    let mut pair_weight_sum = 0.0f32;
+    let mut pair_count = 0usize;
+
+    for sample in samples {
+        let Some((good_idx, bad_idx, margin, _)) =
+            policy_anchor_margin_pair(sample, model, anchor_model, feature_source)
+        else {
+            continue;
+        };
+        let x = (margin_cp - margin) / softplus_temp_cp;
+        if !x.is_finite() {
+            continue;
+        }
+
+        let scaled_weight = sample.sample_weight;
+        loss += scaled_weight * softplus_temp_cp * softplus(x);
+        let grad_diff = -sigmoid(x) * scaled_weight;
+        pair_count += 1;
+        pair_weight_sum += scaled_weight;
+
+        let good = &sample.candidates[good_idx];
+        let bad = &sample.candidates[bad_idx];
+        let (good_features, good_material) = candidate_listwise_features(good, feature_source);
+        let (bad_features, bad_material) = candidate_listwise_features(bad, feature_source);
+        for &feature_idx in good_features {
+            *w_grads.entry(feature_idx).or_insert(0.0) += grad_diff;
+        }
+        for &feature_idx in bad_features {
+            *w_grads.entry(feature_idx).or_insert(0.0) -= grad_diff;
+        }
+        if !freeze_material {
+            material_grad_total += grad_diff * (good_material - bad_material);
+        }
     }
 
     if pair_count == 0 {
@@ -2687,6 +2916,74 @@ fn update_streaming_policy_anchor_epoch(
     Ok((processed_samples, clamped_weights))
 }
 
+fn update_streaming_policy_anchor_margin_epoch(
+    model: &mut SparseModel,
+    anchor_model: &SparseModel,
+    train_path: &PathBuf,
+    batch_size: usize,
+    max_samples: usize,
+    margin_cp: f32,
+    softplus_temp_cp: f32,
+    feature_source: ListwiseFeatureSource,
+    l2_lambda: f32,
+    optimizer: OptimizerKind,
+    adagrad: &mut AdagradState,
+    adagrad_epsilon: f32,
+    freeze_material: bool,
+    initial_material: f32,
+    initial_weights: Option<&Vec<f32>>,
+    anchor_l2: f32,
+    max_weight_delta: Option<f32>,
+) -> Result<(usize, usize)> {
+    let mut clamped_weights = 0usize;
+    let mut batch_samples: Vec<Sample> = Vec::with_capacity(batch_size);
+    let mut processed_samples = 0usize;
+    let mut process_batch = |batch: &mut Vec<Sample>| -> Result<()> {
+        let batch_refs: Vec<&Sample> = batch.iter().collect();
+        let _ = update_policy_anchor_margin_refs(
+            model,
+            anchor_model,
+            &batch_refs,
+            margin_cp,
+            softplus_temp_cp,
+            feature_source,
+            l2_lambda,
+            optimizer,
+            adagrad,
+            adagrad_epsilon,
+            freeze_material,
+        );
+        if freeze_material {
+            model.material_coeff = initial_material;
+        }
+        if let Some(initial_weights) = initial_weights {
+            if anchor_l2 > 0.0 || max_weight_delta.is_some() {
+                clamped_weights +=
+                    apply_weight_constraints(model, initial_weights, anchor_l2, max_weight_delta);
+            }
+        }
+        ensure_finite_model(model)?;
+        batch.clear();
+        Ok(())
+    };
+
+    for_each_sample_in_file(train_path, |sample_index, sample| {
+        if max_samples > 0 && sample_index >= max_samples {
+            return Ok(false);
+        }
+        processed_samples += 1;
+        batch_samples.push(sample);
+        if batch_samples.len() >= batch_size {
+            process_batch(&mut batch_samples)?;
+        }
+        Ok(true)
+    })?;
+    if !batch_samples.is_empty() {
+        process_batch(&mut batch_samples)?;
+    }
+    Ok((processed_samples, clamped_weights))
+}
+
 fn log_summary(
     metrics: &Metrics,
     _bad_regret_cp: f32,
@@ -2732,6 +3029,23 @@ fn log_policy_anchor_summary(metrics: &PolicyAnchorMetrics, sample_name: &str) -
         sample_name,
         metrics.samples,
         metrics.loss,
+        top_match * 100.0,
+    )
+}
+
+fn log_policy_anchor_margin_summary(
+    metrics: &PolicyAnchorMarginMetrics,
+    sample_name: &str,
+) -> String {
+    let top_match = metrics.top_match_count as f32 / metrics.samples.max(1) as f32;
+    let violation_ratio = metrics.violation_count as f32 / metrics.samples.max(1) as f32;
+    format!(
+        "{}: samples={} loss={:.6} margin_mean={:.2} violation_ratio={:.4} top_match={:.2}%",
+        sample_name,
+        metrics.samples,
+        metrics.loss,
+        metrics.margin_sum,
+        violation_ratio,
         top_match * 100.0,
     )
 }
@@ -3168,6 +3482,28 @@ fn main() -> Result<()> {
     if !args.policy_anchor_temperature_cp.is_finite() || args.policy_anchor_temperature_cp <= 0.0 {
         return Err(anyhow!("--policy-anchor-temperature-cp must be positive"));
     }
+    if !args.policy_anchor_margin_weight.is_finite() || args.policy_anchor_margin_weight < 0.0 {
+        return Err(anyhow!(
+            "--policy-anchor-margin-weight must be finite and non-negative"
+        ));
+    }
+    if args.policy_anchor_margin_weight > 0.0 && args.policy_anchor_weights.is_none() {
+        return Err(anyhow!(
+            "--policy-anchor-weights is required when --policy-anchor-margin-weight is positive"
+        ));
+    }
+    if !args.policy_anchor_margin_cp.is_finite() || args.policy_anchor_margin_cp < 0.0 {
+        return Err(anyhow!(
+            "--policy-anchor-margin-cp must be finite and non-negative"
+        ));
+    }
+    if !args.policy_anchor_margin_softplus_temp_cp.is_finite()
+        || args.policy_anchor_margin_softplus_temp_cp <= 0.0
+    {
+        return Err(anyhow!(
+            "--policy-anchor-margin-softplus-temp-cp must be positive"
+        ));
+    }
     if args.max_pairs_per_sample == 0 {
         return Err(anyhow!("--max-pairs-per-sample must be greater than 0"));
     }
@@ -3423,6 +3759,21 @@ fn main() -> Result<()> {
             log_policy_anchor_summary(&baseline_anchor, "policy_anchor"),
             args.policy_anchor_weight
         );
+        if args.policy_anchor_margin_weight > 0.0 {
+            let baseline_anchor_margin = evaluate_policy_anchor_margin_batch(
+                &model,
+                anchor_model,
+                &valid_samples,
+                args.policy_anchor_margin_cp,
+                args.policy_anchor_margin_softplus_temp_cp,
+                args.policy_anchor_feature_source,
+            );
+            println!(
+                "baseline policy_anchor_margin: {} weight={:.4}",
+                log_policy_anchor_margin_summary(&baseline_anchor_margin, "policy_anchor_margin"),
+                args.policy_anchor_margin_weight
+            );
+        }
     }
 
     if args.dry_run {
@@ -3500,6 +3851,7 @@ fn main() -> Result<()> {
     let mut replay_optimizer_state = AdagradState::default();
     let mut feedback_optimizer_state = AdagradState::default();
     let mut policy_anchor_optimizer_state = AdagradState::default();
+    let mut policy_anchor_margin_optimizer_state = AdagradState::default();
     let mut best_metric_score = Some(baseline_best_metric_score);
     let mut best_epoch = 0usize;
     let mut rng = ChaCha8Rng::seed_from_u64(0x1234);
@@ -3512,6 +3864,8 @@ fn main() -> Result<()> {
     let feedback_enabled = args.feedback_weight > 0.0 && !feedback_samples.is_empty();
     let mut feedback_indices: Vec<usize> = (0..feedback_samples.len()).collect();
     let policy_anchor_enabled = args.policy_anchor_weight > 0.0 && policy_anchor_model.is_some();
+    let policy_anchor_margin_enabled =
+        args.policy_anchor_margin_weight > 0.0 && policy_anchor_model.is_some();
     println!(
         "separate_aux_adagrad={}",
         if args.separate_aux_adagrad { 1 } else { 0 }
@@ -3763,6 +4117,88 @@ fn main() -> Result<()> {
             ));
         }
 
+        let mut policy_anchor_margin_metrics = None;
+        if policy_anchor_margin_enabled {
+            let anchor_model = policy_anchor_model
+                .as_ref()
+                .expect("policy anchor margin enabled requires anchor model");
+            let original_learning_rate = model.kpp_eta;
+            model.kpp_eta = original_learning_rate * args.policy_anchor_margin_weight;
+            let active_optimizer_state: &mut AdagradState = if args.separate_aux_adagrad {
+                &mut policy_anchor_margin_optimizer_state
+            } else {
+                &mut optimizer_state
+            };
+            if args.stream_train {
+                let (_, anchor_margin_clamped) = update_streaming_policy_anchor_margin_epoch(
+                    &mut model,
+                    anchor_model,
+                    &args.train,
+                    args.batch_size,
+                    0,
+                    args.policy_anchor_margin_cp,
+                    args.policy_anchor_margin_softplus_temp_cp,
+                    args.policy_anchor_feature_source,
+                    args.l2_lambda,
+                    args.optimizer,
+                    &mut *active_optimizer_state,
+                    args.adagrad_epsilon,
+                    args.freeze_material,
+                    initial_material,
+                    initial_weights.as_ref(),
+                    args.anchor_l2,
+                    args.max_weight_delta,
+                )?;
+                clamped_weights += anchor_margin_clamped;
+            } else {
+                let train_samples = train_samples.as_ref().unwrap();
+                let indices = train_indices.as_mut().unwrap();
+                indices.shuffle(&mut rng);
+                let mut anchor_margin_batch_refs: Vec<&Sample> =
+                    Vec::with_capacity(args.batch_size);
+                for chunk in indices.chunks(args.batch_size) {
+                    anchor_margin_batch_refs.clear();
+                    anchor_margin_batch_refs.extend(chunk.iter().map(|idx| &train_samples[*idx]));
+                    let _ = update_policy_anchor_margin_refs(
+                        &mut model,
+                        anchor_model,
+                        &anchor_margin_batch_refs,
+                        args.policy_anchor_margin_cp,
+                        args.policy_anchor_margin_softplus_temp_cp,
+                        args.policy_anchor_feature_source,
+                        args.l2_lambda,
+                        args.optimizer,
+                        &mut *active_optimizer_state,
+                        args.adagrad_epsilon,
+                        args.freeze_material,
+                    );
+                    if args.freeze_material {
+                        model.material_coeff = initial_material;
+                    }
+                    if let Some(initial_weights) = initial_weights.as_ref() {
+                        if args.anchor_l2 > 0.0 || args.max_weight_delta.is_some() {
+                            clamped_weights += apply_weight_constraints(
+                                &mut model,
+                                initial_weights,
+                                args.anchor_l2,
+                                args.max_weight_delta,
+                            );
+                        }
+                    }
+                    ensure_finite_model(&model)?;
+                }
+            }
+            model.kpp_eta = original_learning_rate;
+            policy_anchor_margin_metrics = Some(evaluate_policy_anchor_margin_batch(
+                &model,
+                anchor_model,
+                &valid_samples,
+                args.policy_anchor_margin_cp,
+                args.policy_anchor_margin_softplus_temp_cp,
+                args.policy_anchor_feature_source,
+            ));
+        }
+
         let train = if args.stream_train {
             evaluate_streaming_train(
                 &model,
@@ -3913,6 +4349,13 @@ fn main() -> Result<()> {
                 log_policy_anchor_summary(metrics, "policy_anchor")
             );
         }
+        if let Some(metrics) = policy_anchor_margin_metrics.as_ref() {
+            println!(
+                "epoch {} policy_anchor_margin: {}",
+                epoch,
+                log_policy_anchor_margin_summary(metrics, "policy_anchor_margin")
+            );
+        }
         println!(
             "epoch {} best_metric_score={:.6} best_guard_max_regret={:.6} best_guard_bad100={:.6} best_guard_teacher_match={:.6} best_guard_passed={}",
             epoch,
@@ -4055,6 +4498,20 @@ fn main() -> Result<()> {
             "final policy_anchor: {}",
             log_policy_anchor_summary(&metrics, "policy_anchor")
         );
+        if args.policy_anchor_margin_weight > 0.0 {
+            let margin_metrics = evaluate_policy_anchor_margin_batch(
+                &final_model,
+                anchor_model,
+                &valid_samples,
+                args.policy_anchor_margin_cp,
+                args.policy_anchor_margin_softplus_temp_cp,
+                args.policy_anchor_feature_source,
+            );
+            println!(
+                "final policy_anchor_margin: {}",
+                log_policy_anchor_margin_summary(&margin_metrics, "policy_anchor_margin")
+            );
+        }
     }
 
     println!(
