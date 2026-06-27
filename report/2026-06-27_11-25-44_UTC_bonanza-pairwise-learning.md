@@ -1011,3 +1011,84 @@ total:
 - ただしbenchは50%ちょうどで、seed間の揺れが大きい。
 - 採用候補ではないため、残った `best.raw.binary` は削除した。
 - 次は `MIN_SCORE_RATE_PCT=55` で同系候補を落とし、bench hard positions を feedback repair へ送る。
+
+## Softguard candidate extended validation
+
+`MIN_SCORE_RATE_PCT=55` で同系のsoftguard候補を作ったところ、feedback repair には進まず、初期候補がbenchgateを通過した。
+
+実験:
+
+- run: `data/mmto/runs/mmto_softguard_feedback_probe_20260627_141905`
+- candidate: `initial_benchgate/iter_1/best.raw.binary`
+- `INITIAL_BEST_GUARD_MAX_REGRET_INCREASE_CP=1.0`
+- `INITIAL_BEST_GUARD_BAD100_INCREASE=0.01`
+- `INITIAL_BEST_GUARD_TEACHER_MATCH_DROP_PCT=1.0`
+- 初回bench: seeds `12001 12101 12201`, 各10局
+
+初回30局:
+
+```text
+new 20
+baseline 10
+draw 0
+score rate 66.67%
+bench-aligned rerank: pass
+```
+
+候補が通ったため、追加検証をGPT-5.3-codex-spark サブエージェントに委任した。
+
+追加80局:
+
+```text
+seed 12601: 10-10-0, score 50.00%
+seed 12701: 9-10-1, score 47.50%
+seed 12801: 13-6-1, score 67.50%
+seed 12901: 11-9-0, score 55.00%
+
+total:
+  new 43
+  baseline 35
+  draw 2
+  score rate 55.00%
+```
+
+110局合算:
+
+```text
+new 63
+baseline 45
+draw 2
+score rate 58.18%
+```
+
+追加80局の終局理由:
+
+```text
+Resign: 77
+MaxPliesAdjudication: 1
+RepetitionDraw: 2
+```
+
+追加80局のpaired starts:
+
+```text
+new sweeps: 9
+baseline sweeps: 5
+splits: 24
+draw/mixed: 2
+```
+
+record_analyze所見:
+
+- 追加80局でnewの敗局はすべて `BaselineWin` / `Resign`。
+- 300cp超のdropが複数ある。
+- 最大dropは `seed12901 game_001`, `ply64`, `drop=331`。
+- 300cp超は `seed12801 game_006`, `seed12801 game_008`, `seed12901 game_001`, `seed12901 game_002`。
+
+判断:
+
+- これまでの重み学習候補の中では珍しく、追加80局でも50%未満に崩れなかった。
+- ただし110局で58.18%は、重み更新を採用・リリースするにはまだ弱い。
+- 初回30局の66.67%から優位幅が縮小しており、偶然要素は残る。
+- 候補binaryは削除せず、追加検証を続ける。
+- 次は標準条件寄り、または別seedで100局以上を追加し、少なくとも合計200局級で55%以上を維持できるか確認する。
