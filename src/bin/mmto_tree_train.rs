@@ -283,6 +283,12 @@ struct TreeRecord {
     #[allow(dead_code)]
     student_best_move: Option<String>,
     #[serde(default)]
+    ply: Option<u16>,
+    #[serde(default)]
+    in_check: Option<bool>,
+    #[serde(default)]
+    legal_moves: Option<usize>,
+    #[serde(default)]
     candidates: Vec<TreeCandidateRecord>,
 }
 
@@ -356,6 +362,9 @@ struct CandidateSample {
 struct Sample {
     #[allow(dead_code)]
     position: Position,
+    ply: u16,
+    in_check: bool,
+    legal_moves: usize,
     sample_weight: f32,
     teacher_root_score: f32,
     #[allow(dead_code)]
@@ -391,6 +400,7 @@ struct Metrics {
     teacher_match_count: usize,
     bad_regret_count: usize,
     bad_regret_threshold_counts: Vec<usize>,
+    buckets: BucketMetrics,
 }
 
 #[derive(Default)]
@@ -420,6 +430,48 @@ struct PolicyAnchorMarginMetrics {
     top_match_count: usize,
     violation_count: usize,
     margin_sum: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PhaseBucket {
+    Opening,
+    Middle,
+    Late,
+}
+
+impl PhaseBucket {
+    fn label(self) -> &'static str {
+        match self {
+            PhaseBucket::Opening => "opening",
+            PhaseBucket::Middle => "middle",
+            PhaseBucket::Late => "late",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            PhaseBucket::Opening => 0,
+            PhaseBucket::Middle => 1,
+            PhaseBucket::Late => 2,
+        }
+    }
+}
+
+#[derive(Default)]
+struct BucketMetric {
+    samples: usize,
+    regret_sum: f32,
+    regrets: Vec<f32>,
+    teacher_match_count: usize,
+    bad50_count: usize,
+    bad100_count: usize,
+}
+
+#[derive(Default)]
+struct BucketMetrics {
+    phases: [BucketMetric; 3],
+    in_check: BucketMetric,
+    low_legal: BucketMetric,
 }
 
 #[derive(Clone, Copy)]
@@ -1179,6 +1231,54 @@ fn feedback_loss_and_grad(
     ))
 }
 
+fn phase_bucket(sample: &Sample) -> PhaseBucket {
+    if sample.ply <= 40 {
+        PhaseBucket::Opening
+    } else if sample.ply <= 90 {
+        PhaseBucket::Middle
+    } else {
+        PhaseBucket::Late
+    }
+}
+
+fn accumulate_bucket_metric(
+    bucket: &mut BucketMetric,
+    selected_regret: f32,
+    teacher_matched: bool,
+) {
+    bucket.samples += 1;
+    bucket.regret_sum += selected_regret;
+    bucket.regrets.push(selected_regret);
+    if teacher_matched {
+        bucket.teacher_match_count += 1;
+    }
+    if selected_regret > 50.0 {
+        bucket.bad50_count += 1;
+    }
+    if selected_regret > 100.0 {
+        bucket.bad100_count += 1;
+    }
+}
+
+fn accumulate_bucket_metrics(
+    sample: &Sample,
+    selected_regret: f32,
+    teacher_matched: bool,
+    buckets: &mut BucketMetrics,
+) {
+    accumulate_bucket_metric(
+        &mut buckets.phases[phase_bucket(sample).index()],
+        selected_regret,
+        teacher_matched,
+    );
+    if sample.in_check {
+        accumulate_bucket_metric(&mut buckets.in_check, selected_regret, teacher_matched);
+    }
+    if sample.legal_moves <= 3 {
+        accumulate_bucket_metric(&mut buckets.low_legal, selected_regret, teacher_matched);
+    }
+}
+
 fn accumulate_sample_metrics(
     sample: &Sample,
     model: &SparseModel,
@@ -1226,6 +1326,12 @@ fn accumulate_sample_metrics(
             metrics.bad_regret_threshold_counts[idx] += 1;
         }
     }
+    accumulate_bucket_metrics(
+        sample,
+        selected_regret,
+        selected_idx == teacher_best_idx,
+        &mut metrics.buckets,
+    );
 
     match loss_options.mode {
         LossMode::Pairwise => {
@@ -2394,6 +2500,11 @@ fn sample_from_record(path: &PathBuf, line_number: usize, record: TreeRecord) ->
     let position = position_from_sfen_or_usi(&sfen)
         .ok_or_else(|| anyhow!("{}:{} invalid sfen: {}", path.display(), line_number, sfen))?;
     let root_turn = position.side_to_move();
+    let ply = record.ply.unwrap_or_else(|| position.ply());
+    let in_check = record.in_check.unwrap_or_else(|| position.in_check());
+    let legal_moves = record
+        .legal_moves
+        .unwrap_or_else(|| position.legal_moves().len());
 
     let mut candidates = Vec::with_capacity(record.candidates.len());
     for raw_candidate in &record.candidates {
@@ -2422,6 +2533,9 @@ fn sample_from_record(path: &PathBuf, line_number: usize, record: TreeRecord) ->
 
     let mut sample = Sample {
         position,
+        ply,
+        in_check,
+        legal_moves,
         sample_weight,
         teacher_root_score: record.teacher_root_score.unwrap_or(f32::NAN),
         student_root_score: record.student_root_score.unwrap_or(f32::NAN),
@@ -3027,6 +3141,42 @@ fn log_summary(
         teacher_match * 100.0,
         bad_ratio,
         bad_regret_thresholds_summary(metrics, bad_regret_thresholds)
+    )
+}
+
+fn bucket_metric_summary(bucket: &BucketMetric) -> String {
+    if bucket.samples == 0 {
+        return "samples=0".to_string();
+    }
+    let samples = bucket.samples.max(1) as f32;
+    format!(
+        "samples={} mean={:.2} p95={:.2} match={:.2}% bad50={:.4} bad100={:.4}",
+        bucket.samples,
+        bucket.regret_sum / samples,
+        percentile(bucket.regrets.clone(), 0.95),
+        bucket.teacher_match_count as f32 / samples * 100.0,
+        bucket.bad50_count as f32 / samples,
+        bucket.bad100_count as f32 / samples,
+    )
+}
+
+fn log_bucket_summary(metrics: &Metrics) -> String {
+    let phases = [PhaseBucket::Opening, PhaseBucket::Middle, PhaseBucket::Late]
+        .into_iter()
+        .map(|phase| {
+            format!(
+                "{}: {}",
+                phase.label(),
+                bucket_metric_summary(&metrics.buckets.phases[phase.index()])
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(
+        "buckets phase=[{}] in_check=[{}] low_legal=[{}]",
+        phases,
+        bucket_metric_summary(&metrics.buckets.in_check),
+        bucket_metric_summary(&metrics.buckets.low_legal)
     )
 }
 
@@ -3723,6 +3873,7 @@ fn main() -> Result<()> {
             "train",
         )
     );
+    println!("baseline train {}", log_bucket_summary(&baseline_train));
     println!(
         "baseline valid: {}",
         log_summary(
@@ -3732,6 +3883,7 @@ fn main() -> Result<()> {
             "valid"
         )
     );
+    println!("baseline valid {}", log_bucket_summary(&baseline_valid));
     for batch in &extra_valid {
         let metrics = evaluate_batch(
             &model,
@@ -4371,6 +4523,7 @@ fn main() -> Result<()> {
             train.bad_regret_count as f32 / train.samples.max(1) as f32,
             bad_regret_thresholds_summary(&train, &bad_regret_thresholds_cp)
         );
+        println!("epoch {} train {}", epoch, log_bucket_summary(&train));
         println!(
             "epoch {} valid: loss={:.6} pairs={} selected_regret={:.2} p90={:.2} p95={:.2} teacher_match={:.2}% bad_ratio={:.4} {} max_abs_delta={:.6} p95_abs_delta={:.6} clamped_weights={}",
             epoch,
@@ -4386,6 +4539,7 @@ fn main() -> Result<()> {
             p95_abs_delta,
             clamped_weights
         );
+        println!("epoch {} valid {}", epoch, log_bucket_summary(&valid));
         if replay_enabled {
             println!(
                 "epoch {} replay: samples={} pairs={} loss={:.6} selected_regret={:.2}",

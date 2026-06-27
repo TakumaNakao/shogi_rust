@@ -99,6 +99,9 @@ struct TreeRecord {
     version: u8,
     root_index: usize,
     sfen: String,
+    ply: u16,
+    phase: &'static str,
+    in_check: bool,
     teacher_depth: u8,
     student_depth: u8,
     legal_moves: usize,
@@ -180,6 +183,16 @@ struct PerRootResult {
     record: Option<ProcessedRecord>,
     sibling_records: Vec<ProcessedRecord>,
     reason: Option<SkipReason>,
+}
+
+fn phase_label(ply: u16) -> &'static str {
+    if ply <= 40 {
+        "opening"
+    } else if ply <= 90 {
+        "middle"
+    } else {
+        "late"
+    }
 }
 
 fn sanitize_score(score: f32) -> f32 {
@@ -773,6 +786,9 @@ fn make_record(
         version: args.jsonl_version,
         root_index: index,
         sfen: position.to_sfen_owned(),
+        ply: position.ply(),
+        phase: phase_label(position.ply()),
+        in_check: position.in_check(),
         teacher_depth: args.teacher_depth,
         student_depth: args.student_depth,
         legal_moves: legal_moves.len(),
