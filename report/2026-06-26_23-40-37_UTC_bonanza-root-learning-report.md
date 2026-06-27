@@ -167,3 +167,101 @@ bash tools/run_bonanza_root_pipeline.sh
 この重みは100局面だけのスモークなので採用しない。`best.raw.binary` は削除済み。重要なのは、偏り対策後のBonanza-root pipelineがdataset生成、探索dump、game-teacher margin学習、score gate、rerank gateまで一通り完走した点である。
 
 次は `MAX_RECORDS=500` 以上でも `MAX_RECORDS_PER_GAME=8` を維持し、valid件数を増やしたうえでオフライン指標を見る。2K以上の実験へ進む前に、game-teacher marginがvalid/rerankで安定して非悪化になる条件を探す。
+
+## Addendum: 500局面実験
+
+偏り対策後の500局面、depth `4/3` 実験を実行した。
+
+実行条件:
+
+```bash
+MAX_RECORDS=500 MAX_RECORDS_PER_GAME=8 TREE_MAX_POSITIONS=500 \
+RERANK_MAX_POSITIONS=200 JOBS=2 POSITION_CHUNK_SIZE=8 EPOCHS=3 BATCH_SIZE=64 \
+TEACHER_DEPTH=4 STUDENT_DEPTH=3 TEACHER_SCORE_TOP=24 CANDIDATE_TOP=24 \
+SCORE_ALL_LEGAL_FOR_VALID=0 \
+RUN_DIR=data/mmto/runs/bonanza_root_pergame_500_d4d3_20260627_000542 \
+bash tools/run_bonanza_root_pipeline.sh
+```
+
+データ:
+
+- 500局面
+- 63局から生成
+- train 450 / valid 50
+- skipped: 0
+
+オフライン結果:
+
+- rank stats selected regret:
+  - mean `16.56`
+  - p90 `57.98`
+  - p95 `71.46`
+  - bad50 `0.1180`
+- baseline valid:
+  - selected regret mean `10.43`
+  - p90 `28.41`
+  - p95 `54.51`
+  - bad50 `0.0600`
+- epoch 1:
+  - selected regret mean `9.58`
+  - p90 `28.41`
+  - p95 `42.74`
+  - bad50 `0.0400`
+- score gate passed:
+  - mean abs delta `0.16cp`
+  - p95 `0.34cp`
+  - max `0.41cp`
+- rerank gate passed:
+  - baseline/candidateともに mean `5.74`, p90 `11.55`, p95 `23.67`
+
+20局ベンチ:
+
+- seed `11201`: `10-10-0`
+- paired starts: all 10 pairs split
+
+この候補は重み差が小さすぎ、実戦への影響がほぼ見えなかったため不採用。
+
+同じdumpから更新量を強めた追加実験も実施した。
+
+### leaf gt0.10, max delta 0.005
+
+Run:
+
+`data/mmto/runs/bonanza_root_500_stronger_leaf_gt010_20260627_001350`
+
+- score gate passed:
+  - mean abs delta `0.62cp`
+  - p95 `1.39cp`
+  - max `1.73cp`
+- rerank gate passed:
+  - baseline mean `5.74`, match `36.00%`
+  - candidate mean `5.72`, match `38.00%`
+- 20局ベンチ:
+  - seed `11301`: `10-9-1`
+  - seed `11401`: `9-10-1`
+  - combined 40 games: `19-19-2`
+
+### move gt0.10, max delta 0.005
+
+Run:
+
+`data/mmto/runs/bonanza_root_500_stronger_move_gt010_20260627_001350`
+
+- score gate passed:
+  - mean abs delta `0.94cp`
+  - p95 `1.73cp`
+  - max `1.91cp`
+- rerank gate passed:
+  - baseline/candidateともに mean `5.74`, p95 `23.67`, match `36.00%`
+- 対局ベンチには進めず。
+
+結論:
+
+Bonanza-root pipelineは正常に動作し、オフライン指標も改善する。しかし500局面規模では対局ベンチに移る強さはまだ出ていない。強め更新でも40局で50%に留まったため、500局面候補はすべて不採用とし、候補重みは削除した。
+
+次はデータ規模を増やすだけでなく、以下を検討する。
+
+- 2Kから5K局面に増やし、validを200局面以上にする。
+- `teacher_depth=4/student_depth=3` を維持しつつ、`MAX_RECORDS_PER_GAME=8` で棋譜多様性を確保する。
+- 対局に影響する更新量を出すため、`max_weight_delta=0.005` 前後を基本にする。
+- `teacher-leaf` の方がrerank matchでわずかに良いため、次の本命は `listwise-feature-source=teacher-leaf` を優先する。
