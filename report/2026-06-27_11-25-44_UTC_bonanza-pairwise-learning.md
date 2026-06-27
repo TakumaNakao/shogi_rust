@@ -1228,3 +1228,89 @@ total:
 - この候補を重み更新として採用・リリースする根拠はない。
 - 一方で50%未満に明確崩壊したわけではないため、候補binaryは削除せず、direct bench feedback の素材として残す。
 - 次の主眼は、softguard候補そのものではなく、benchで見えた失敗手・大drop局面を直接pair lossへ入れること。
+
+## Direct bench-feedback smoke
+
+標準benchで見えたdrop window局面を使い、`mmto_tree_train --feedback-json` の直接pair loss経路を小さく試した。
+
+目的:
+
+- softguard候補自体を採用するのではなく、bench上の失敗局面から「candidate moveよりteacher moveを上げる」信号を作れるか確認する。
+
+入力:
+
+- source run: `data/mmto/runs/mmto_direct_feedback_probe_20260627_151908`
+- `validate_std_d5_seed14001` からdrop windowsをexport: `408` 行
+- `validate_std_d5_seed15001` からdrop windowsをexport: `452` 行
+- dedupe後: `848` 局面
+
+最初に `max_positions=160`, depth `4/4/6` で `mmto_rerank_gate` を回したが、重すぎたため中断した。軽量条件へ切り替えた。
+
+軽量rerank:
+
+```text
+max_positions: 20
+depth: baseline/candidate/teacher = 3/3/5
+hard_positions: 5
+teacher != candidate: 5
+rerank gate: pass
+```
+
+direct feedback学習:
+
+```text
+RUN_DIR=data/mmto/runs/mmto_direct_feedback_probe_20260627_151908/train_teacher_feedback
+TRAIN_LINES=400
+VALID_LINES=80
+EPOCHS=1
+FEEDBACK_WEIGHT=0.5
+FEEDBACK_GOOD_MOVE=teacher
+FEEDBACK_MIN_CANDIDATE_REGRET_CP=15
+SEPARATE_AUX_ADAGRAD=1
+```
+
+学習結果:
+
+```text
+baseline feedback:
+  samples=5
+  loss=144.767395
+  margin_mean=-64.05
+  violation_ratio=0.6000
+  candidate_regret_mean=99091.77
+
+epoch 1 feedback:
+  samples=5
+  loss=144.763657
+  margin_mean=-64.05
+  violation_ratio=0.6000
+  candidate_regret_mean=99091.77
+
+best_epoch=1
+best_value=30.671322
+score gate: pass
+rerank gate: pass
+```
+
+短ベンチ:
+
+```text
+seed 16001
+games 20
+depth 5
+time-limit-ms 100
+
+new 10
+baseline 8
+draw 2
+total score rate 55.00%
+95% CI total 34.33%..75.67%
+```
+
+判断:
+
+- direct feedback の実装経路は既存コードで動作した。
+- ただし今回の信号は5サンプルだけで、feedback lossの改善も極小。
+- 20局benchは破綻検知としては通ったが、強さ判断には使えない。
+- 次に続けるなら、rerank対象を `20 -> 40/80` に広げる。ただし depth `4/4/6` は重すぎるため、まず `3/3/5` または `3/3/4` でサンプル数を増やす。
+- `train_teacher_feedback/best.raw.binary` は追加検証候補として一旦残す。中間の `candidate.raw.binary` は削除した。
