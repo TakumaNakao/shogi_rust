@@ -109,6 +109,10 @@ struct Args {
     game_teacher_max_regret_cp: f32,
     #[arg(long, default_value_t = 15.0)]
     game_teacher_min_bad_regret_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    current_top_margin_weight: f32,
+    #[arg(long, default_value_t = 15.0)]
+    current_top_min_bad_regret_cp: f32,
     #[arg(long, default_value_t = 0)]
     stream_train_eval_max_samples: usize,
 }
@@ -306,6 +310,8 @@ struct LossOptions {
     game_teacher_margin_weight: f32,
     game_teacher_max_regret_cp: f32,
     game_teacher_min_bad_regret_cp: f32,
+    current_top_margin_weight: f32,
+    current_top_min_bad_regret_cp: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -858,6 +864,53 @@ fn current_game_teacher_hard_pair(
     Some((good_idx, bad_idx))
 }
 
+fn current_model_top_hard_pair(
+    sample: &Sample,
+    model: &SparseModel,
+    feature_source: ListwiseFeatureSource,
+    min_bad_regret_cp: f32,
+) -> Option<(usize, usize)> {
+    if sample.candidates.len() < 2 {
+        return None;
+    }
+
+    let mut good_idx = 0usize;
+    let mut good_score = f32::NEG_INFINITY;
+    for (idx, candidate) in sample.candidates.iter().enumerate() {
+        if candidate.teacher_score > good_score {
+            good_score = candidate.teacher_score;
+            good_idx = idx;
+        }
+    }
+    if !good_score.is_finite() {
+        return None;
+    }
+
+    let mut bad_idx = None;
+    let mut bad_model_score = f32::NEG_INFINITY;
+    for (idx, candidate) in sample.candidates.iter().enumerate() {
+        let (features, material) = candidate_listwise_features(candidate, feature_source);
+        let score = model.predict_with_material(features, material);
+        if score > bad_model_score {
+            bad_model_score = score;
+            bad_idx = Some(idx);
+        }
+    }
+    let Some(bad_idx) = bad_idx else {
+        return None;
+    };
+    if !bad_model_score.is_finite() || bad_idx == good_idx {
+        return None;
+    }
+
+    let bad = &sample.candidates[bad_idx];
+    let regret = (sample.teacher_root_score - bad.teacher_score).max(0.0);
+    if regret < min_bad_regret_cp || good_score <= bad.teacher_score {
+        return None;
+    }
+    Some((good_idx, bad_idx))
+}
+
 fn root_move_pair_loss_and_grad(
     sample: &Sample,
     good_idx: usize,
@@ -1006,6 +1059,30 @@ fn accumulate_sample_metrics(
                         metrics.loss += sample_weight * hard_loss;
                         metrics.pair_weight_sum +=
                             sample_weight * loss_options.game_teacher_margin_weight;
+                        metrics.pair_count += 1;
+                    }
+                }
+            }
+            if loss_options.current_top_margin_weight > 0.0 {
+                if let Some((good_idx, bad_idx)) = current_model_top_hard_pair(
+                    sample,
+                    model,
+                    loss_options.listwise_feature_source,
+                    loss_options.current_top_min_bad_regret_cp,
+                ) {
+                    if let Some((hard_loss, _)) = root_move_pair_loss_and_grad(
+                        sample,
+                        good_idx,
+                        bad_idx,
+                        model,
+                        loss_options.margin_cp,
+                        loss_options.softplus_temp_cp,
+                        loss_options.listwise_feature_source,
+                        loss_options.current_top_margin_weight,
+                    ) {
+                        metrics.loss += sample_weight * hard_loss;
+                        metrics.pair_weight_sum +=
+                            sample_weight * loss_options.current_top_margin_weight;
                         metrics.pair_count += 1;
                     }
                 }
@@ -1199,6 +1276,52 @@ fn update_sample_refs_with_softplus(
                             pair_count += 1;
                             pair_weight_sum +=
                                 sample_weight * options.loss.game_teacher_margin_weight;
+                            for &feature_idx in good_features {
+                                *w_grads.entry(feature_idx).or_insert(0.0) +=
+                                    grad_diff * sample_weight;
+                            }
+                            for &feature_idx in bad_features {
+                                *w_grads.entry(feature_idx).or_insert(0.0) -=
+                                    grad_diff * sample_weight;
+                            }
+                            if !freeze_material {
+                                material_grad_total +=
+                                    grad_diff * sample_weight * (good_material - bad_material);
+                            }
+                        }
+                    }
+                }
+                if options.loss.current_top_margin_weight > 0.0 {
+                    if let Some((good_idx, bad_idx)) = current_model_top_hard_pair(
+                        sample,
+                        model,
+                        options.loss.listwise_feature_source,
+                        options.loss.current_top_min_bad_regret_cp,
+                    ) {
+                        if let Some((hard_loss, grad_diff)) = root_move_pair_loss_and_grad(
+                            sample,
+                            good_idx,
+                            bad_idx,
+                            model,
+                            options.loss.margin_cp,
+                            options.loss.softplus_temp_cp,
+                            options.loss.listwise_feature_source,
+                            options.loss.current_top_margin_weight,
+                        ) {
+                            let good = &sample.candidates[good_idx];
+                            let bad = &sample.candidates[bad_idx];
+                            let (good_features, good_material) = candidate_listwise_features(
+                                good,
+                                options.loss.listwise_feature_source,
+                            );
+                            let (bad_features, bad_material) = candidate_listwise_features(
+                                bad,
+                                options.loss.listwise_feature_source,
+                            );
+                            loss += sample_weight * hard_loss;
+                            pair_count += 1;
+                            pair_weight_sum +=
+                                sample_weight * options.loss.current_top_margin_weight;
                             for &feature_idx in good_features {
                                 *w_grads.entry(feature_idx).or_insert(0.0) +=
                                     grad_diff * sample_weight;
@@ -1923,6 +2046,16 @@ fn main() -> Result<()> {
             "--game-teacher-min-bad-regret-cp must be finite and non-negative"
         ));
     }
+    if !args.current_top_margin_weight.is_finite() || args.current_top_margin_weight < 0.0 {
+        return Err(anyhow!(
+            "--current-top-margin-weight must be finite and non-negative"
+        ));
+    }
+    if !args.current_top_min_bad_regret_cp.is_finite() || args.current_top_min_bad_regret_cp < 0.0 {
+        return Err(anyhow!(
+            "--current-top-min-bad-regret-cp must be finite and non-negative"
+        ));
+    }
     if !args.replay_weight.is_finite() || args.replay_weight < 0.0 {
         return Err(anyhow!("--replay-weight must be finite and non-negative"));
     }
@@ -1981,6 +2114,8 @@ fn main() -> Result<()> {
         game_teacher_margin_weight: args.game_teacher_margin_weight,
         game_teacher_max_regret_cp: args.game_teacher_max_regret_cp,
         game_teacher_min_bad_regret_cp: args.game_teacher_min_bad_regret_cp,
+        current_top_margin_weight: args.current_top_margin_weight,
+        current_top_min_bad_regret_cp: args.current_top_min_bad_regret_cp,
     };
     let train_options = TrainOptions {
         loss: loss_options,

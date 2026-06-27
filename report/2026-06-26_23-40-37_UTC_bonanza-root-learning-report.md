@@ -388,3 +388,129 @@ Run:
 結論:
 
 hard replayを追加しても、実探索rerank上の選択悪化は消えなかった。現在の追加lossは評価値分布とvalid p95を改善するが、探索が選ぶroot moveを十分に制御できていない。次は単純なhard replay増量ではなく、rerankで悪化した「candidate selected move」を明示的に下げる目的関数、またはgateで見ているdepthのsearched moveを直接学習対象にする必要がある。
+
+### current-top margin loss追試
+
+`selected_by_student` 固定のhard negativeでは、dump時のstudent手だけを罰してしまう。そこで、学習中モデルが候補集合内で現在topにしている手をbad側にする `current-top margin loss` を追加した。
+
+実装:
+
+- `mmto_tree_train`
+  - `--current-top-margin-weight`
+  - `--current-top-min-bad-regret-cp`
+- pipeline scripts
+  - `run_bonanza_root_pipeline.sh`
+  - `run_mmto_from_dump.sh`
+  - `run_mmto_rerank_pipeline.sh`
+
+検証条件:
+
+- base dump: `bonanza_root_pergame_2k_leaf_gt010_20260627_001929`
+- train 1800 / valid 200
+- `LOSS_MODE=listwise-leaf`
+- `LISTWISE_FEATURE_SOURCE=teacher-leaf`
+- `LISTWISE_HARD_NEGATIVE_WEIGHT=0`
+- `GAME_TEACHER_MARGIN_WEIGHT=0.05`
+- `CURRENT_TOP_MARGIN_WEIGHT=0.05`
+- `MAX_WEIGHT_DELTA=0.005`
+
+Run:
+
+`data/mmto/runs/mmto_current_top_2k_20260627_033620`
+
+結果:
+
+- baseline valid:
+  - selected regret mean `11.56`
+  - p90 `27.20`
+  - p95 `49.63`
+- best epoch 2:
+  - selected regret mean `10.60`
+  - p90 `26.05`
+  - p95 `34.43`
+- score gate:
+  - mean abs delta `0.70cp`
+  - p95 `1.98cp`
+  - max `2.89cp`
+  - passed
+- rerank gate:
+  - baseline mean `5.73`, p90 `11.05`, p95 `27.09`, match `43.00%`
+  - candidate mean `5.72`, p90 `11.20`, p95 `23.67`, match `44.00%`
+  - failed: p90が `11.05 -> 11.20` に微悪化
+
+`CURRENT_TOP_MARGIN_WEIGHT=0.10` も追試した。
+
+Run:
+
+`data/mmto/runs/mmto_current_top010_2k_20260627_033935`
+
+結果:
+
+- score gate passed
+- rerank:
+  - mean `5.73 -> 5.73`
+  - p90 `11.05 -> 11.20`
+  - p95 `27.09 -> 23.67`
+  - match `43.00% -> 43.00%`
+  - failed: p90微悪化
+
+解釈:
+
+current-top lossは、matchやp95を改善する兆候がある。一方で、最悪悪化手 `2b3a` は消えなかった。重みを0.10へ上げても改善せず、単純にこのlossを強くするだけでは実探索の選択悪化を十分に制御できない。
+
+### DAgger replay stage追試
+
+失敗候補重みをstudentにしてhard positionsを再dumpする `tools/run_mmto_dagger_from_run.sh` を追加した。目的は、baseline studentではなく、失敗候補が実際に選ぶ手を `selected_by_student` としてreplay学習へ戻すこと。
+
+手順:
+
+1. `KEEP_CANDIDATE_RAW=1` でcurrent-top候補を保持。
+2. 失敗runの `hard_positions.sfen` を、失敗候補 `best.raw.binary` をstudentとして再dump。
+3. 生成したDAgger dumpを `--replay-train` と `--extra-valid` に入れて再学習。
+4. score gate / rerank gateを再確認。
+
+保持run:
+
+`data/mmto/runs/mmto_current_top_2k_keep_20260627_034440`
+
+DAgger run:
+
+`data/mmto/runs/mmto_dagger_current_top_2k_20260627_034724`
+
+DAgger dump:
+
+- hard positions: 16
+- train records: 16
+- selected regret mean `40.08`
+- p90 `156.57`
+- p95 `156.57`
+
+再学習結果:
+
+- best epoch 1
+- score gate passed:
+  - mean abs delta `0.95cp`
+  - p95 `1.96cp`
+  - max `2.46cp`
+- rerank gate:
+  - baseline mean `5.73`, p90 `11.05`, p95 `27.09`, match `43.00%`
+  - candidate mean `6.51`, p90 `11.20`, p95 `27.09`, match `43.00%`
+  - bad50 `0.0250 -> 0.0300`
+  - bad100 `0.0150 -> 0.0200`
+  - failed
+
+新しい大悪化:
+
+- `B*8d -> B*1d`
+- delta `162.77`
+
+解釈:
+
+単純なDAgger replayは、候補由来の悪手を再収集する仕組みとしては動いた。しかし、hard 16局面だけをreplayに混ぜる現在の形では、対象hardを安定して改善できず、新しい大悪化を生んだ。したがって、長時間学習へ進む前に、以下のどちらかが必要。
+
+- rerank gateで実際に出た `candidate_move` を明示したペア教師データを作り、候補集合内の探索選択手を直接下げる。
+- replayを局面単位の小さな追加データではなく、候補重みで再探索した大きなrefresh dumpとして作り直し、通常train/validと同じ規模で評価する。
+
+現在の結論:
+
+「もっとエポックを回す」だけでは不十分。current-top lossでオフライン指標は改善するが、探索選択手の悪化を完全には防げない。次の実装対象は、rerank gateのhard outputから `(teacher_move, candidate_move)` を直接学習する明示ペア損失、またはcandidate refresh dumpを本体データとして扱う反復学習パイプラインである。
