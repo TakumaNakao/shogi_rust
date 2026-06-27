@@ -1880,3 +1880,80 @@ per-root PV sibling total:
 - capは期待通り動作した。
 - record数は変えず、PV siblingの総学習圧だけをroot比で抑えられる。
 - 次は3K PV sibling dumpをcapありで再生成し、過去ultra-safe条件に近い学習を行って、offline gateと短ベンチを見る。
+
+## PV sibling cap 3K再学習
+
+capあり3K dumpを作成し、過去のultra-safe条件に近い設定で学習した。dumpはサブエージェントが作成し、学習は既存dumpから再開した。
+
+実行:
+
+```text
+RUN_DIR=data/mmto/runs/mmto_pv_sibling_cap025_3k_20260627_171155
+max_positions: 3000
+teacher_depth: 4
+student_depth: 3
+pv_sibling_max_plies: 2
+pv_sibling_sample_weight: 0.25
+pv_sibling_total_weight_cap: 0.25
+```
+
+dump:
+
+```text
+root records: 2798
+pv sibling records: 9928
+sample weights:
+  root: 1.0 x2798
+  pv sibling: 0.0625/0.083333/0.125/0.25
+per-root pv sibling total:
+  min/mean/max: 0.25 / 0.25 / 0.25
+```
+
+学習:
+
+```text
+epochs: 1
+learning-rate: 0.00025
+max-weight-delta: 0.0005
+loss-mode: listwise-leaf
+listwise-feature-source: student-leaf
+teacher-top-ce-weight: 0.05
+extra-valid: hard=previous hard_valid_all.tree.jsonl
+extra-valid-best-weight: 0.5
+best-metric: p95-regret
+```
+
+baseline:
+
+```text
+train selected_regret_mean: 119.53
+train p95: 167.19
+valid selected_regret_mean: 436.02
+valid p95: 177.02
+valid teacher_match: 23.82%
+extra_valid[hard] selected_regret_mean: 86.09
+extra_valid[hard] p95: 276.21
+```
+
+epoch 1:
+
+```text
+train selected_regret_mean: 119.29
+train p95: 166.58
+valid selected_regret_mean: 435.80
+valid p95: 177.02
+valid teacher_match: 24.37%
+extra_valid[hard] selected_regret_mean: 86.07
+extra_valid[hard] p95: 276.21
+clamped_weights: 20237
+best_epoch: 0
+```
+
+判断:
+
+- capありdumpは正しく作れたが、`cap=0.25` ではPV sibling信号が弱く、best metricを更新できなかった。
+- train/validの平均値はわずかに改善したが、採用候補を作るほどではない。
+- 候補 `.binary` は削除済みで、score/rerank/benchは未実行。
+- 過去のcapなしultra-safe 3Kは100局55.50%まで出たため、PV sibling自体は完全なノイズではない。
+- ただし、capを0.25まで下げると弱すぎる。次に試すなら `cap=0.5` または既存dumpの後処理reweightで、再dumpコストを避ける。
+- ここまでで、重み学習は「少し動くが勝率へ安定して移らない」段階が続いている。短期の強化は探索改善へ戻す。
