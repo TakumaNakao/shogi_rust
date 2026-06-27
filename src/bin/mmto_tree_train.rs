@@ -112,6 +112,8 @@ struct Args {
     #[arg(long, default_value_t = 0.0)]
     teacher_top_ce_weight: f32,
     #[arg(long, default_value_t = 0.0)]
+    explicit_student_margin_weight: f32,
+    #[arg(long, default_value_t = 0.0)]
     game_teacher_margin_weight: f32,
     #[arg(long, default_value_t = 150.0)]
     game_teacher_max_regret_cp: f32,
@@ -329,6 +331,7 @@ struct LossOptions {
     listwise_hard_negative_weight: f32,
     listwise_hard_negative_min_regret_cp: f32,
     teacher_top_ce_weight: f32,
+    explicit_student_margin_weight: f32,
     game_teacher_margin_weight: f32,
     game_teacher_max_regret_cp: f32,
     game_teacher_min_bad_regret_cp: f32,
@@ -935,6 +938,41 @@ fn current_model_top_hard_pair(
     Some((good_idx, bad_idx))
 }
 
+fn explicit_student_hard_pair(sample: &Sample) -> Option<(usize, usize)> {
+    if sample.candidates.len() < 2 {
+        return None;
+    }
+
+    let mut good_idx = None;
+    let mut good_score = f32::NEG_INFINITY;
+    for (idx, candidate) in sample.candidates.iter().enumerate() {
+        if candidate.is_game_teacher_move && candidate.teacher_score > good_score {
+            good_score = candidate.teacher_score;
+            good_idx = Some(idx);
+        }
+    }
+    let Some(good_idx) = good_idx else {
+        return None;
+    };
+
+    let mut bad_idx = None;
+    let mut bad_student_rank = MISSING_RANK;
+    for (idx, candidate) in sample.candidates.iter().enumerate() {
+        if candidate.selected_by_student && candidate.student_rank < bad_student_rank {
+            bad_student_rank = candidate.student_rank;
+            bad_idx = Some(idx);
+        }
+    }
+    let Some(bad_idx) = bad_idx else {
+        return None;
+    };
+
+    if good_idx == bad_idx {
+        return None;
+    }
+    Some((good_idx, bad_idx))
+}
+
 fn root_move_pair_loss_and_grad(
     sample: &Sample,
     good_idx: usize,
@@ -1031,6 +1069,25 @@ fn accumulate_sample_metrics(
                     metrics.pair_count += 1;
                 }
             }
+            if loss_options.explicit_student_margin_weight > 0.0 {
+                if let Some((good_idx, bad_idx)) = explicit_student_hard_pair(sample) {
+                    if let Some((hard_loss, _)) = root_move_pair_loss_and_grad(
+                        sample,
+                        good_idx,
+                        bad_idx,
+                        model,
+                        loss_options.margin_cp,
+                        loss_options.softplus_temp_cp,
+                        loss_options.listwise_feature_source,
+                        loss_options.explicit_student_margin_weight,
+                    ) {
+                        metrics.loss += sample_weight * hard_loss;
+                        metrics.pair_weight_sum +=
+                            sample_weight * loss_options.explicit_student_margin_weight;
+                        metrics.pair_count += 1;
+                    }
+                }
+            }
         }
         LossMode::ListwiseLeaf => {
             if let Some((teacher_probs, model_probs, teacher_top_idx)) = listwise_distribution(
@@ -1054,6 +1111,25 @@ fn accumulate_sample_metrics(
                 }
                 metrics.loss += sample_weight * sample_loss;
                 metrics.pair_weight_sum += sample_weight;
+            }
+            if loss_options.explicit_student_margin_weight > 0.0 {
+                if let Some((good_idx, bad_idx)) = explicit_student_hard_pair(sample) {
+                    if let Some((hard_loss, _)) = root_move_pair_loss_and_grad(
+                        sample,
+                        good_idx,
+                        bad_idx,
+                        model,
+                        loss_options.margin_cp,
+                        loss_options.softplus_temp_cp,
+                        loss_options.listwise_feature_source,
+                        loss_options.explicit_student_margin_weight,
+                    ) {
+                        metrics.loss += sample_weight * hard_loss;
+                        metrics.pair_weight_sum +=
+                            sample_weight * loss_options.explicit_student_margin_weight;
+                        metrics.pair_count += 1;
+                    }
+                }
             }
             if let Some((good_idx, bad_idx)) = current_selected_hard_pair(
                 sample,
@@ -1212,6 +1288,47 @@ fn update_sample_refs_with_softplus(
                         material_grad_total += grad_diff * (good_material - bad_material);
                     }
                 }
+                if options.loss.explicit_student_margin_weight > 0.0 {
+                    if let Some((good_idx, bad_idx)) = explicit_student_hard_pair(sample) {
+                        if let Some((hard_loss, grad_diff)) = root_move_pair_loss_and_grad(
+                            sample,
+                            good_idx,
+                            bad_idx,
+                            model,
+                            options.loss.margin_cp,
+                            options.loss.softplus_temp_cp,
+                            options.loss.listwise_feature_source,
+                            options.loss.explicit_student_margin_weight,
+                        ) {
+                            let good = &sample.candidates[good_idx];
+                            let bad = &sample.candidates[bad_idx];
+                            let (good_features, good_material) = candidate_listwise_features(
+                                good,
+                                options.loss.listwise_feature_source,
+                            );
+                            let (bad_features, bad_material) = candidate_listwise_features(
+                                bad,
+                                options.loss.listwise_feature_source,
+                            );
+                            loss += sample_weight * hard_loss;
+                            pair_count += 1;
+                            pair_weight_sum +=
+                                sample_weight * options.loss.explicit_student_margin_weight;
+                            for &feature_idx in good_features {
+                                *w_grads.entry(feature_idx).or_insert(0.0) +=
+                                    grad_diff * sample_weight;
+                            }
+                            for &feature_idx in bad_features {
+                                *w_grads.entry(feature_idx).or_insert(0.0) -=
+                                    grad_diff * sample_weight;
+                            }
+                            if !freeze_material {
+                                material_grad_total +=
+                                    grad_diff * sample_weight * (good_material - bad_material);
+                            }
+                        }
+                    }
+                }
             }
             LossMode::ListwiseLeaf => {
                 if let Some((teacher_probs, model_probs, teacher_top_idx)) = listwise_distribution(
@@ -1254,6 +1371,47 @@ fn update_sample_refs_with_softplus(
                     }
                     loss += sample_weight * sample_loss;
                     pair_weight_sum += sample_weight;
+                }
+                if options.loss.explicit_student_margin_weight > 0.0 {
+                    if let Some((good_idx, bad_idx)) = explicit_student_hard_pair(sample) {
+                        if let Some((hard_loss, grad_diff)) = root_move_pair_loss_and_grad(
+                            sample,
+                            good_idx,
+                            bad_idx,
+                            model,
+                            options.loss.margin_cp,
+                            options.loss.softplus_temp_cp,
+                            options.loss.listwise_feature_source,
+                            options.loss.explicit_student_margin_weight,
+                        ) {
+                            let good = &sample.candidates[good_idx];
+                            let bad = &sample.candidates[bad_idx];
+                            let (good_features, good_material) = candidate_listwise_features(
+                                good,
+                                options.loss.listwise_feature_source,
+                            );
+                            let (bad_features, bad_material) = candidate_listwise_features(
+                                bad,
+                                options.loss.listwise_feature_source,
+                            );
+                            loss += sample_weight * hard_loss;
+                            pair_count += 1;
+                            pair_weight_sum +=
+                                sample_weight * options.loss.explicit_student_margin_weight;
+                            for &feature_idx in good_features {
+                                *w_grads.entry(feature_idx).or_insert(0.0) +=
+                                    grad_diff * sample_weight;
+                            }
+                            for &feature_idx in bad_features {
+                                *w_grads.entry(feature_idx).or_insert(0.0) -=
+                                    grad_diff * sample_weight;
+                            }
+                            if !freeze_material {
+                                material_grad_total +=
+                                    grad_diff * sample_weight * (good_material - bad_material);
+                            }
+                        }
+                    }
                 }
                 if let Some((good_idx, bad_idx)) = current_selected_hard_pair(
                     sample,
@@ -2230,6 +2388,12 @@ fn main() -> Result<()> {
             "--teacher-top-ce-weight must be finite and non-negative"
         ));
     }
+    if !args.explicit_student_margin_weight.is_finite() || args.explicit_student_margin_weight < 0.0
+    {
+        return Err(anyhow!(
+            "--explicit-student-margin-weight must be finite and non-negative"
+        ));
+    }
     if !args.game_teacher_margin_weight.is_finite() || args.game_teacher_margin_weight < 0.0 {
         return Err(anyhow!(
             "--game-teacher-margin-weight must be finite and non-negative"
@@ -2312,6 +2476,7 @@ fn main() -> Result<()> {
         listwise_hard_negative_weight: args.listwise_hard_negative_weight,
         listwise_hard_negative_min_regret_cp: args.listwise_hard_negative_min_regret_cp,
         teacher_top_ce_weight: args.teacher_top_ce_weight,
+        explicit_student_margin_weight: args.explicit_student_margin_weight,
         game_teacher_margin_weight: args.game_teacher_margin_weight,
         game_teacher_max_regret_cp: args.game_teacher_max_regret_cp,
         game_teacher_min_bad_regret_cp: args.game_teacher_min_bad_regret_cp,
