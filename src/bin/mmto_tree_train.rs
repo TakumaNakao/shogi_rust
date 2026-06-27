@@ -125,6 +125,8 @@ struct Args {
     policy_anchor_temperature_cp: f32,
     #[arg(long, value_enum, default_value_t = ListwiseFeatureSource::Move)]
     policy_anchor_feature_source: ListwiseFeatureSource,
+    #[arg(long, default_value_t = false)]
+    separate_aux_adagrad: bool,
     #[arg(long, value_enum, default_value_t = LossMode::Pairwise)]
     loss_mode: LossMode,
     #[arg(long, value_enum, default_value_t = ListwiseFeatureSource::TeacherLeaf)]
@@ -3495,6 +3497,9 @@ fn main() -> Result<()> {
         w_acc: HashMap::new(),
         material_acc: 0.0,
     };
+    let mut replay_optimizer_state = AdagradState::default();
+    let mut feedback_optimizer_state = AdagradState::default();
+    let mut policy_anchor_optimizer_state = AdagradState::default();
     let mut best_metric_score = Some(baseline_best_metric_score);
     let mut best_epoch = 0usize;
     let mut rng = ChaCha8Rng::seed_from_u64(0x1234);
@@ -3507,6 +3512,10 @@ fn main() -> Result<()> {
     let feedback_enabled = args.feedback_weight > 0.0 && !feedback_samples.is_empty();
     let mut feedback_indices: Vec<usize> = (0..feedback_samples.len()).collect();
     let policy_anchor_enabled = args.policy_anchor_weight > 0.0 && policy_anchor_model.is_some();
+    println!(
+        "separate_aux_adagrad={}",
+        if args.separate_aux_adagrad { 1 } else { 0 }
+    );
 
     for epoch in 1..=args.epochs {
         let mut clamped_weights = 0usize;
@@ -3571,6 +3580,11 @@ fn main() -> Result<()> {
         if replay_enabled {
             let original_learning_rate = model.kpp_eta;
             model.kpp_eta = original_learning_rate * args.replay_weight;
+            let active_optimizer_state: &mut AdagradState = if args.separate_aux_adagrad {
+                &mut replay_optimizer_state
+            } else {
+                &mut optimizer_state
+            };
             let mut remaining_replay_samples = args.replay_max_samples;
             for replay_path in args.replay_train.iter() {
                 if args.replay_max_samples > 0 && remaining_replay_samples == 0 {
@@ -3589,7 +3603,7 @@ fn main() -> Result<()> {
                     &train_options,
                     &pair_options,
                     args.optimizer,
-                    &mut optimizer_state,
+                    &mut *active_optimizer_state,
                     args.adagrad_epsilon,
                     args.freeze_material,
                     initial_material,
@@ -3628,6 +3642,11 @@ fn main() -> Result<()> {
         if feedback_enabled {
             let original_learning_rate = model.kpp_eta;
             model.kpp_eta = original_learning_rate * args.feedback_weight;
+            let active_optimizer_state: &mut AdagradState = if args.separate_aux_adagrad {
+                &mut feedback_optimizer_state
+            } else {
+                &mut optimizer_state
+            };
             feedback_indices.shuffle(&mut rng);
             let mut feedback_batch_refs: Vec<&FeedbackSample> = Vec::with_capacity(args.batch_size);
             for chunk in feedback_indices.chunks(args.batch_size) {
@@ -3639,7 +3658,7 @@ fn main() -> Result<()> {
                     &loss_options,
                     args.l2_lambda,
                     args.optimizer,
-                    &mut optimizer_state,
+                    &mut *active_optimizer_state,
                     args.adagrad_epsilon,
                     args.freeze_material,
                 );
@@ -3673,6 +3692,11 @@ fn main() -> Result<()> {
                 .expect("policy anchor enabled requires anchor model");
             let original_learning_rate = model.kpp_eta;
             model.kpp_eta = original_learning_rate * args.policy_anchor_weight;
+            let active_optimizer_state: &mut AdagradState = if args.separate_aux_adagrad {
+                &mut policy_anchor_optimizer_state
+            } else {
+                &mut optimizer_state
+            };
             if args.stream_train {
                 let (_, anchor_clamped) = update_streaming_policy_anchor_epoch(
                     &mut model,
@@ -3684,7 +3708,7 @@ fn main() -> Result<()> {
                     args.policy_anchor_feature_source,
                     args.l2_lambda,
                     args.optimizer,
-                    &mut optimizer_state,
+                    &mut *active_optimizer_state,
                     args.adagrad_epsilon,
                     args.freeze_material,
                     initial_material,
@@ -3709,7 +3733,7 @@ fn main() -> Result<()> {
                         args.policy_anchor_feature_source,
                         args.l2_lambda,
                         args.optimizer,
-                        &mut optimizer_state,
+                        &mut *active_optimizer_state,
                         args.adagrad_epsilon,
                         args.freeze_material,
                     );
