@@ -189,3 +189,59 @@ dataset:
 - 第三候補: `max_weight_delta` ではなく、触れた特徴に対するproximal L2を強め、clampに頼らない更新制御へ寄せる。
 
 この状態で長時間学習に進むのはまだ早い。
+
+## Adagrad E/F結果
+
+pairwise専用Adagradを実装し、SGD C/D と同系統の条件で確認した。
+
+### E: small data + Adagrad
+
+設定:
+
+- `MAX_RECORDS=2000`
+- `HARD_NEGATIVES=4`
+- `OPTIMIZER=adagrad`
+- `LEARNING_RATE=0.003`
+- `MAX_WEIGHT_DELTA=0.005`
+- `ANCHOR_L2=0.0001`
+- `EPOCHS=3`
+
+結果:
+
+- `RUN_DIR=data/bonanza_pairwise_runs/sweep_e_adagrad_h4_lr003_20260627_113707`
+- baseline valid: top1=20.00%, pair_acc=70.67%, mean_rank=22.89, loss=0.841781
+- epoch1 valid: top1=20.00%, pair_acc=70.04%, mean_rank=23.35, loss=0.840860, clamped=36111
+- epoch2 valid: top1=19.00%, pair_acc=70.34%, mean_rank=23.12, loss=0.840466, clamped=131791
+- epoch3 valid: top1=19.50%, pair_acc=70.14%, mean_rank=23.27, loss=0.840408, clamped=281179
+- best epoch: 1
+
+### F: high-rate data + Adagrad
+
+設定:
+
+- `MAX_RECORDS=10000`
+- `MIN_PLAYER_RATE=4000`
+- `DECISIVE_ONLY=1`
+- `HARD_NEGATIVES=8`
+- `OPTIMIZER=adagrad`
+- `LEARNING_RATE=0.003`
+- `MAX_WEIGHT_DELTA=0.005`
+- `ANCHOR_L2=0.0001`
+- `EPOCHS=3`
+
+結果:
+
+- `RUN_DIR=data/bonanza_pairwise_runs/sweep_f_adagrad_r4000_h8_lr003_20260627_113732`
+- dataset: train records=9000, valid records=1000
+- baseline valid: top1=20.90%, pair_acc=73.36%, mean_rank=24.76, loss=0.727909
+- epoch1 valid: top1=20.20%, pair_acc=72.71%, mean_rank=25.34, loss=0.727292, clamped=399475
+- epoch2 valid: top1=20.80%, pair_acc=72.61%, mean_rank=25.43, loss=0.727154, clamped=757089
+- epoch3 valid: top1=20.70%, pair_acc=72.93%, mean_rank=25.14, loss=0.727115, clamped=1395598
+- best epoch: 0
+
+判断:
+
+- Adagradはtrain指標を大きく動かしたが、valid top1/pair_acc/mean_rankは悪化した。
+- `clamped_weights` が急増しており、局所的な過更新が起きている。
+- 「optimizerを強くするだけ」では解決しない。
+- 次は、更新式の強化ではなく、教師信号の質とpair選別を見直すべきである。
