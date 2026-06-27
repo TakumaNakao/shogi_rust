@@ -7,7 +7,7 @@ use shogi_ai::evaluation::{extract_kpp_features_and_material, SparseModel};
 use shogi_ai::utils::{parse_usi_move, position_from_sfen_or_usi};
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
@@ -117,6 +117,8 @@ struct Args {
     feedback_max_sample_weight: f32,
     #[arg(long, default_value_t = 0)]
     feedback_limit: usize,
+    #[arg(long, default_value_t = false)]
+    feedback_dedupe_sfen: bool,
     #[arg(long)]
     policy_anchor_weights: Option<PathBuf>,
     #[arg(long, default_value_t = 0.0)]
@@ -2601,8 +2603,10 @@ fn load_feedback_samples(
     weight_scale_cp: f32,
     max_sample_weight: f32,
     limit: usize,
+    dedupe_sfen: bool,
 ) -> Result<Vec<FeedbackSample>> {
     let mut samples = Vec::new();
+    let mut seen_sfens = HashSet::new();
     for path in paths {
         let reader = BufReader::new(File::open(path)?);
         let report: RerankFeedbackReport = serde_json::from_reader(reader)
@@ -2610,6 +2614,10 @@ fn load_feedback_samples(
         for (idx, record) in report.hard_positions.iter().enumerate() {
             if limit > 0 && samples.len() >= limit {
                 return Ok(samples);
+            }
+            let sfen = record.sfen.trim();
+            if dedupe_sfen && !sfen.is_empty() && seen_sfens.contains(sfen) {
+                continue;
             }
             if let Some(sample) = feedback_sample_from_record(
                 path,
@@ -2621,6 +2629,9 @@ fn load_feedback_samples(
                 weight_scale_cp,
                 max_sample_weight,
             )? {
+                if dedupe_sfen && !sfen.is_empty() {
+                    seen_sfens.insert(sfen.to_owned());
+                }
                 samples.push(sample);
             }
         }
@@ -3626,6 +3637,7 @@ fn main() -> Result<()> {
             args.feedback_weight_scale_cp,
             args.feedback_max_sample_weight,
             args.feedback_limit,
+            args.feedback_dedupe_sfen,
         )?
     };
     if args.feedback_weight > 0.0 && feedback_samples.is_empty() {
