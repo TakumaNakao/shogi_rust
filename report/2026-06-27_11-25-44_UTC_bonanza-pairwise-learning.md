@@ -1521,3 +1521,167 @@ v2.1.0重みの扱い:
 - ゼロ初期化は診断・長期研究用に限定する。
 - 巨大疎KPPをscratchから短期で育てるには、データ量・教師探索・目的関数の整備がまだ不足している。
 - 今は `freeze_material`, anchor, max-delta, hard replay上限で、v2.1.0から制御されたdelta学習として扱う。
+
+## Direct feedback 113件学習の初回結果
+
+全848局面から得た113件のdirect feedback pairを使い、小規模学習を実行した。実験はサブエージェントに委任した。
+
+実行:
+
+```text
+RUN_DIR=data/mmto/runs/mmto_direct_feedback_113_train_20260627_162339
+SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_feedback_5k_gate_w1.0_20260627_074057
+TRAIN_LINES=1800
+VALID_LINES=200
+EPOCHS=2
+LOSS_MODE=listwise-leaf
+LISTWISE_FEATURE_SOURCE=teacher-leaf
+FEEDBACK_JSON=data/mmto/runs/direct_feedback_sample_probe_20260627_161423/max1000_d3_3_5.json
+FEEDBACK_WEIGHT=1.0
+FEEDBACK_GOOD_MOVE=teacher
+BEST_METRIC=p95-regret
+```
+
+baseline:
+
+```text
+train loss: 5.144132
+valid loss: 5.428699
+valid p95: 159.35
+valid teacher_match: 25.00%
+feedback samples: 113
+feedback loss: 129.967545
+feedback margin_mean: -27.85
+feedback violation_ratio: 0.5929
+```
+
+epoch推移:
+
+```text
+epoch 1:
+  train loss: 5.140793
+  valid loss: 5.428513
+  feedback violation_ratio: 0.5487
+
+epoch 2:
+  train loss: 5.134140
+  valid loss: 5.414764
+  feedback violation_ratio: 0.5221
+```
+
+結果:
+
+```text
+best_epoch: 0
+best_value: 159.350769
+score gate: not run
+rerank gate: not run
+bench: not run
+```
+
+判断:
+
+- 通常valid lossとfeedback violationは改善している。
+- しかし `BEST_METRIC=p95-regret` ではvalid p95が同値のため、checkpoint選択でbaselineが最良扱いになった。
+- これは学習そのものが完全に無効というより、counterexample feedbackを一級目的として採用候補へ残す選択条件が不足している。
+- 対策として、`mmto_tree_train` に `BEST_METRIC=feedback-loss` と `BEST_METRIC=feedback-violation` を追加した。
+- 通常validの安全性は既存のbest guardで担保しつつ、feedback改善をcheckpoint選択に使えるようにした。
+- 次は同じ条件で `BEST_METRIC=feedback-violation` を使い、候補がgateを通るか確認する。
+
+## Direct feedback 113件学習のfeedback-best結果
+
+`BEST_METRIC=feedback-violation` を追加した後、同じ113件feedbackで再実験した。実験はサブエージェントに委任した。
+
+実行:
+
+```text
+RUN_DIR=data/mmto/runs/mmto_direct_feedback_113_bestfb_20260627_162755
+SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_feedback_5k_gate_w1.0_20260627_074057
+TRAIN_LINES=1800
+VALID_LINES=200
+EPOCHS=2
+LOSS_MODE=listwise-leaf
+LISTWISE_FEATURE_SOURCE=teacher-leaf
+FEEDBACK_JSON=data/mmto/runs/direct_feedback_sample_probe_20260627_161423/max1000_d3_3_5.json
+FEEDBACK_WEIGHT=1.0
+FEEDBACK_GOOD_MOVE=teacher
+BEST_METRIC=feedback-violation
+```
+
+baseline:
+
+```text
+valid loss: 5.428699
+valid selected_regret_mean: 36.86
+valid p90: 119.64
+valid p95: 159.35
+valid teacher_match: 25.00%
+feedback violation_ratio: 0.5929
+feedback loss: 129.967545
+```
+
+epoch推移:
+
+```text
+epoch 1:
+  valid loss: 5.428513
+  valid p95: 159.35
+  valid teacher_match: 25.50%
+  feedback violation_ratio: 0.5487
+
+epoch 2:
+  valid loss: 5.414764
+  valid p95: 159.35
+  valid teacher_match: 26.00%
+  feedback violation_ratio: 0.5221
+```
+
+結果:
+
+```text
+best_epoch: 2
+best_value: 0.522124
+score gate: passed
+rerank gate: failed
+bench: not run
+```
+
+score gate:
+
+```text
+mean_abs_delta_cp: 0.0416
+p95_abs_delta_cp: 0.0980
+max_abs_delta_cp: 0.1493
+```
+
+rerank gate:
+
+```text
+baseline mean regret: 524.58
+candidate mean regret: 524.72
+baseline p90 regret: 26.62
+candidate p90 regret: 26.83
+baseline p95 regret: 42.91
+candidate p95 regret: 42.91
+match: 43.30% -> 43.30%
+
+failure:
+  mean regret worsened by 0.14cp
+  p90 regret worsened by 0.21cp
+  required mean improvement was not met
+```
+
+判断:
+
+- `feedback-violation` をbest metricにしたことで、feedback改善候補をcheckpointとして選べるようになった。
+- 通常valid loss、teacher_match、feedback violationはいずれも改善しており、score gateも十分小さいdeltaで通った。
+- ただしrerank gateで小幅に悪化したため採用しない。
+- `regret_delta_mean=0.00` であることが重要で、今回のfeedbackは「candidateがbaselineより悪いcounterexample」ではなく「baselineとcandidateが同程度に間違うteacher correction」を多く含む。
+- そのため、feedbackだけを押すと通常rerankへの副作用が小さく出るが、benchで強くなる根拠はまだ弱い。
+
+次の方針:
+
+- 同じ113件を強く押すのではなく、より保守的に `FEEDBACK_WEIGHT` とepoch数を下げる。
+- `RERANK_REQUIRE_MEAN_REGRET_IMPROVEMENT_CP=0` にして、「改善必須」ではなく「非悪化」を見るプローブを1回だけ行う。
+- それでもmean/p90が悪化するなら、このfeedback集合はそのままでは採用候補作成に使わない。
+- さらに進める場合は、`regret_delta > 0` の候補、つまりcandidate固有の悪化局面を増やす必要がある。
