@@ -22,8 +22,8 @@ data/mmto/positions/wdoor2023_2026_r4000_p16_120.sfen
 
 ```text
 max_positions: 1000
-teacher_depth: 5
-student_depth: 4
+teacher_depth: 3
+student_depth: 2
 teacher_score_top: 24
 candidate_top: 24
 score_all_legal_for_valid: true
@@ -35,6 +35,8 @@ exclude_in_check: true
 position_chunk_size: 128
 jobs: 4
 ```
+
+注: 当初の実験指示は teacher_depth=5 / student_depth=4 だったが、生成済みJSONLを確認すると、この有望runの実データは teacher_depth=3 / student_depth=2 だった。以後の比較実験では、まず同じ3/2条件でスケールアップし、5/4は別枠の高コスト実験として扱う。
 
 結果:
 
@@ -155,10 +157,11 @@ paired starts:
 
 ## 次の実験
 
-1. `max_positions=3000` または `5000` に増やす。
+1. teacher_depth=3 / student_depth=2 のまま `max_positions=3000` または `5000` に増やす。
 2. `position_chunk_size=128` のまま、長時間dumpを許容する。
 3. feedback_weight は `0.5` を基準にする。
 4. strict feedback を優先し、guard violation と rerank gate を必須にする。
 5. 20局で12-8以上なら40局、さらに有望なら100局へ進む。
+6. teacher_depth=5 / student_depth=4 は初回チャンクから非常に重くなるため、3/2スケールアップで採用候補が出てから検証する。
 
 容量対策として、採用候補でない `.binary` は必ず削除する。
