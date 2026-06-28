@@ -4560,6 +4560,12 @@ fn main() -> Result<()> {
                 &feedback_samples,
                 &loss_options,
             ));
+        } else if !feedback_samples.is_empty() {
+            feedback_metrics = Some(evaluate_feedback_batch(
+                &model,
+                &feedback_samples,
+                &loss_options,
+            ));
         }
 
         let mut policy_anchor_metrics = None;
