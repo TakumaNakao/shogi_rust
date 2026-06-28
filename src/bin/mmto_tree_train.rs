@@ -99,6 +99,8 @@ struct Args {
     dry_run: bool,
     #[arg(long, default_value_t = false)]
     stream_train: bool,
+    #[arg(long, default_value_t = false)]
+    allow_empty_train: bool,
     #[arg(long)]
     replay_train: Vec<PathBuf>,
     #[arg(long, default_value_t = 0.0)]
@@ -2891,6 +2893,14 @@ fn load_samples(path: &PathBuf) -> Result<Vec<Sample>> {
     Ok(samples)
 }
 
+fn load_samples_allow_empty(path: &PathBuf) -> Result<Vec<Sample>> {
+    match load_samples(path) {
+        Ok(samples) => Ok(samples),
+        Err(err) if err.to_string().contains("contains no usable samples") => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
+}
+
 fn finite_or(value: Option<f32>, fallback: f32) -> f32 {
     value.filter(|value| value.is_finite()).unwrap_or(fallback)
 }
@@ -4167,6 +4177,8 @@ fn main() -> Result<()> {
 
     let train_samples = if args.stream_train {
         None
+    } else if args.allow_empty_train {
+        Some(load_samples_allow_empty(&args.train)?)
     } else {
         Some(load_samples(&args.train)?)
     };

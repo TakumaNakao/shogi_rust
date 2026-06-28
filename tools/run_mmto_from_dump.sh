@@ -18,6 +18,7 @@ SOURCE_TRAIN="${SOURCE_TRAIN:-$SOURCE_RUN_DIR/train.tree.jsonl}"
 SOURCE_VALID="${SOURCE_VALID:-$SOURCE_RUN_DIR/valid.tree.jsonl}"
 TRAIN_LINES="${TRAIN_LINES:-9000}"
 VALID_LINES="${VALID_LINES:-1000}"
+ALLOW_EMPTY_TRAIN="${ALLOW_EMPTY_TRAIN:-0}"
 
 WEIGHTS="${WEIGHTS:-policy_weights_v2.1.0.binary}"
 TEACHER_WEIGHTS="${TEACHER_WEIGHTS:-$WEIGHTS}"
@@ -132,6 +133,7 @@ echo "SOURCE_RUN_DIR=$SOURCE_RUN_DIR"
 echo "SOURCE_TRAIN=$SOURCE_TRAIN"
 echo "SOURCE_VALID=$SOURCE_VALID"
 echo "TRAIN_LINES=$TRAIN_LINES VALID_LINES=$VALID_LINES"
+echo "ALLOW_EMPTY_TRAIN=$ALLOW_EMPTY_TRAIN"
 echo "RUN_DIR=$RUN_DIR"
 echo "WEIGHTS=$WEIGHTS"
 echo "TEACHER_WEIGHTS=$TEACHER_WEIGHTS"
@@ -216,6 +218,10 @@ separate_aux_adagrad_args=()
 if [[ "$SEPARATE_AUX_ADAGRAD" == "1" ]]; then
   separate_aux_adagrad_args+=(--separate-aux-adagrad)
 fi
+allow_empty_train_args=()
+if [[ "$ALLOW_EMPTY_TRAIN" == "1" ]]; then
+  allow_empty_train_args+=(--allow-empty-train)
+fi
 feedback_dedupe_args=()
 if [[ "$FEEDBACK_DEDUPE_SFEN" == "1" ]]; then
   feedback_dedupe_args+=(--feedback-dedupe-sfen)
@@ -275,6 +281,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --policy-anchor-margin-cp "$POLICY_ANCHOR_MARGIN_CP" \
   --policy-anchor-margin-softplus-temp-cp "$POLICY_ANCHOR_MARGIN_SOFTPLUS_TEMP_CP" \
   "${separate_aux_adagrad_args[@]}" \
+  "${allow_empty_train_args[@]}" \
   --margin-cp 50 \
   --softplus-temp-cp 100 \
   --bad-regret-cp 300 \
