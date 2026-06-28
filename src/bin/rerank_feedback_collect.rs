@@ -1,8 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Parser};
+use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -14,6 +16,12 @@ struct Args {
     input: Vec<PathBuf>,
     #[arg(long, required = true)]
     output: PathBuf,
+    #[arg(long)]
+    guard_output: Option<PathBuf>,
+    #[arg(long, default_value_t = 0)]
+    guard_percent: usize,
+    #[arg(long, default_value_t = 0x5eed)]
+    seed: u64,
     #[arg(long, default_value_t = 0.0)]
     min_regret_delta_cp: f32,
     #[arg(long, default_value_t = 0.0)]
@@ -80,6 +88,19 @@ fn create_writer(path: &Path) -> Result<BufWriter<File>> {
     let file =
         File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
     Ok(BufWriter::new(file))
+}
+
+fn write_feedback_report(path: &Path, mut records: Vec<FeedbackRecord>) -> Result<()> {
+    for (index, record) in records.iter_mut().enumerate() {
+        record.index = index;
+    }
+    let report = FeedbackReport {
+        hard_positions: records,
+    };
+    let mut writer = create_writer(path)?;
+    serde_json::to_writer_pretty(&mut writer, &report)?;
+    writeln!(writer)?;
+    Ok(())
 }
 
 fn clean_move(value: &mut Option<String>) {
@@ -155,6 +176,14 @@ fn main() -> Result<()> {
             "--min-candidate-regret-cp must be finite and non-negative"
         ));
     }
+    if args.guard_output.is_some() && args.guard_percent == 0 {
+        return Err(anyhow!(
+            "--guard-percent must be greater than 0 when --guard-output is set"
+        ));
+    }
+    if args.guard_percent >= 100 {
+        return Err(anyhow!("--guard-percent must be less than 100"));
+    }
 
     let mut records = Vec::new();
     let mut by_sfen: HashMap<String, FeedbackRecord> = HashMap::new();
@@ -214,24 +243,45 @@ fn main() -> Result<()> {
     if args.limit > 0 && records.len() > args.limit {
         records.truncate(args.limit);
     }
-    for (index, record) in records.iter_mut().enumerate() {
-        record.index = index;
-    }
-
-    let report = FeedbackReport {
-        hard_positions: records,
+    let total_samples = records.len();
+    let guard_records = if let Some(path) = args.guard_output.as_ref() {
+        let mut indices = (0..records.len()).collect::<Vec<_>>();
+        indices.shuffle(&mut ChaCha8Rng::seed_from_u64(args.seed));
+        let guard_count = ((records.len() * args.guard_percent) + 50) / 100;
+        let guard_indices = indices
+            .into_iter()
+            .take(guard_count)
+            .collect::<HashSet<usize>>();
+        let mut train = Vec::new();
+        let mut guard = Vec::new();
+        for (idx, record) in records.into_iter().enumerate() {
+            if guard_indices.contains(&idx) {
+                guard.push(record);
+            } else {
+                train.push(record);
+            }
+        }
+        write_feedback_report(&args.output, train.clone())?;
+        write_feedback_report(path, guard.clone())?;
+        records = train;
+        guard
+    } else {
+        write_feedback_report(&args.output, records.clone())?;
+        Vec::new()
     };
-    let mut writer = create_writer(&args.output)?;
-    serde_json::to_writer_pretty(&mut writer, &report)?;
-    writeln!(writer)?;
 
     println!("input files: {}", args.input.len());
     println!("read records: {}", read_records);
-    println!("feedback samples: {}", report.hard_positions.len());
+    println!("feedback samples: {}", total_samples);
+    println!("train samples: {}", records.len());
+    println!("guard samples: {}", guard_records.len());
     println!("filtered: {}", filtered);
     println!("deduped: {}", deduped);
     println!("output: {}", args.output.display());
-    if report.hard_positions.is_empty() {
+    if let Some(path) = args.guard_output.as_ref() {
+        println!("guard output: {}", path.display());
+    }
+    if total_samples == 0 {
         return Err(anyhow!("no feedback samples collected"));
     }
     Ok(())

@@ -107,6 +107,8 @@ struct Args {
     replay_max_samples: usize,
     #[arg(long)]
     feedback_json: Vec<PathBuf>,
+    #[arg(long)]
+    feedback_guard_json: Vec<PathBuf>,
     #[arg(long, default_value_t = 0.0)]
     feedback_weight: f32,
     #[arg(long, value_enum, default_value_t = FeedbackGoodMove::Baseline)]
@@ -3992,14 +3994,16 @@ fn main() -> Result<()> {
             "--feedback-json is required when --feedback-weight is positive"
         ));
     }
-    if best_metric_requires_feedback(args.best_metric) && args.feedback_json.is_empty() {
+    let has_feedback_eval_input =
+        !args.feedback_json.is_empty() || !args.feedback_guard_json.is_empty();
+    if best_metric_requires_feedback(args.best_metric) && !has_feedback_eval_input {
         return Err(anyhow!(
-            "--feedback-json is required when --best-metric is feedback-loss or feedback-violation"
+            "--feedback-json or --feedback-guard-json is required when --best-metric is feedback-loss or feedback-violation"
         ));
     }
-    if best_guard_requires_feedback(&args) && args.feedback_json.is_empty() {
+    if best_guard_requires_feedback(&args) && !has_feedback_eval_input {
         return Err(anyhow!(
-            "--feedback-json is required when a feedback best-guard is enabled"
+            "--feedback-json or --feedback-guard-json is required when a feedback best-guard is enabled"
         ));
     }
     if !args.feedback_min_regret_delta_cp.is_finite() || args.feedback_min_regret_delta_cp < 0.0 {
@@ -4190,15 +4194,41 @@ fn main() -> Result<()> {
             args.feedback_dedupe_sfen,
         )?
     };
+    let feedback_eval_samples = if args.feedback_guard_json.is_empty() {
+        feedback_samples.clone()
+    } else {
+        load_feedback_samples(
+            &args.feedback_guard_json,
+            args.feedback_good_move,
+            args.feedback_min_regret_delta_cp,
+            args.feedback_min_candidate_regret_cp,
+            args.feedback_weight_scale_cp,
+            args.feedback_max_sample_weight,
+            args.feedback_limit,
+            args.feedback_dedupe_sfen,
+        )?
+    };
     if args.feedback_weight > 0.0 && feedback_samples.is_empty() {
         return Err(anyhow!(
             "--feedback-json produced no usable samples; lower feedback filters or check the input"
         ));
     }
-    if best_guard_requires_feedback(&args) && feedback_samples.is_empty() {
+    if best_guard_requires_feedback(&args) && feedback_eval_samples.is_empty() {
         return Err(anyhow!(
-            "--feedback-json produced no usable samples for the feedback best-guard"
+            "--feedback-json or --feedback-guard-json produced no usable samples for the feedback best-guard"
         ));
+    }
+    if !feedback_samples.is_empty() || !feedback_eval_samples.is_empty() {
+        println!(
+            "feedback samples: train={} eval={} guard_json={}",
+            feedback_samples.len(),
+            feedback_eval_samples.len(),
+            if args.feedback_guard_json.is_empty() {
+                0
+            } else {
+                args.feedback_guard_json.len()
+            }
+        );
     }
 
     let baseline_train = if args.stream_train {
@@ -4278,10 +4308,10 @@ fn main() -> Result<()> {
             )
         );
     }
-    let baseline_feedback_metrics = if !feedback_samples.is_empty() {
+    let baseline_feedback_metrics = if !feedback_eval_samples.is_empty() {
         Some(evaluate_feedback_batch(
             &model,
-            &feedback_samples,
+            &feedback_eval_samples,
             &loss_options,
         ))
     } else {
@@ -4620,13 +4650,13 @@ fn main() -> Result<()> {
             model.kpp_eta = original_learning_rate;
             feedback_metrics = Some(evaluate_feedback_batch(
                 &model,
-                &feedback_samples,
+                &feedback_eval_samples,
                 &loss_options,
             ));
-        } else if !feedback_samples.is_empty() {
+        } else if !feedback_eval_samples.is_empty() {
             feedback_metrics = Some(evaluate_feedback_batch(
                 &model,
-                &feedback_samples,
+                &feedback_eval_samples,
                 &loss_options,
             ));
         }
@@ -5097,8 +5127,8 @@ fn main() -> Result<()> {
             )
         );
     }
-    if !feedback_samples.is_empty() {
-        let metrics = evaluate_feedback_batch(&final_model, &feedback_samples, &loss_options);
+    if !feedback_eval_samples.is_empty() {
+        let metrics = evaluate_feedback_batch(&final_model, &feedback_eval_samples, &loss_options);
         println!(
             "final feedback: {}",
             log_feedback_summary(&metrics, "feedback")

@@ -11,6 +11,9 @@ cd "$(dirname "$0")/.."
 RUN_DIR="${RUN_DIR:-data/mmto/feedback/rerank_feedback_$(date -u +%Y%m%d_%H%M%S)}"
 SEARCH_ROOT="${SEARCH_ROOT:-data/mmto/runs}"
 OUTPUT="${OUTPUT:-$RUN_DIR/feedback.json}"
+GUARD_OUTPUT="${GUARD_OUTPUT:-}"
+GUARD_PERCENT="${GUARD_PERCENT:-0}"
+SEED="${SEED:-24301}"
 MIN_REGRET_DELTA_CP="${MIN_REGRET_DELTA_CP:-5}"
 MIN_CANDIDATE_REGRET_CP="${MIN_CANDIDATE_REGRET_CP:-30}"
 LIMIT="${LIMIT:-500}"
@@ -29,6 +32,7 @@ fi
 echo "RUN_DIR=$RUN_DIR"
 echo "SEARCH_ROOT=$SEARCH_ROOT"
 echo "OUTPUT=$OUTPUT"
+echo "GUARD_OUTPUT=$GUARD_OUTPUT GUARD_PERCENT=$GUARD_PERCENT SEED=$SEED"
 echo "INPUT_JSONS=${#JSONS[@]}"
 echo "MIN_REGRET_DELTA_CP=$MIN_REGRET_DELTA_CP MIN_CANDIDATE_REGRET_CP=$MIN_CANDIDATE_REGRET_CP LIMIT=$LIMIT"
 
@@ -40,11 +44,15 @@ for path in "${JSONS[@]}"; do
 done
 collect_args+=(
   --output "$OUTPUT"
+  --seed "$SEED"
   --min-regret-delta-cp "$MIN_REGRET_DELTA_CP"
   --min-candidate-regret-cp "$MIN_CANDIDATE_REGRET_CP"
   --limit "$LIMIT"
   --dedupe-sfen "$DEDUPE_SFEN"
 )
+if [[ -n "$GUARD_OUTPUT" ]]; then
+  collect_args+=(--guard-output "$GUARD_OUTPUT" --guard-percent "$GUARD_PERCENT")
+fi
 if [[ "$INCLUDE_WORST_DELTA" == "1" ]]; then
   collect_args+=(--include-worst-delta)
 fi
