@@ -103,6 +103,24 @@ env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
   --bin bench_failure_miner \
   --bin bench_failure_feedback
 
+feedback_args=()
+for path in $FEEDBACK_JSON; do
+  if [[ ! -f "$path" ]]; then
+    echo "missing feedback json: $path" >&2
+    exit 1
+  fi
+  feedback_args+=(--feedback-json "$path")
+done
+
+feedback_guard_args=()
+for path in $FEEDBACK_GUARD_JSON; do
+  if [[ ! -f "$path" ]]; then
+    echo "missing feedback guard json: $path" >&2
+    exit 1
+  fi
+  feedback_guard_args+=(--feedback-guard-json "$path")
+done
+
 python3 - "$RUN_DIR/train.protection.tree.jsonl" "$PROTECTION_LINES" "$PROTECTION_SEED" $PROTECTION_SOURCES <<'PY'
 import json
 import random
@@ -217,8 +235,8 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --best-metric feedback-loss \
   --best-guard-feedback-violation-increase="$BEST_GUARD_FEEDBACK_VIOLATION_INCREASE" \
   --best-guard-feedback-loss-increase="$BEST_GUARD_FEEDBACK_LOSS_INCREASE" \
-  --feedback-json "$FEEDBACK_JSON" \
-  --feedback-guard-json "$FEEDBACK_GUARD_JSON" \
+  "${feedback_args[@]}" \
+  "${feedback_guard_args[@]}" \
   --feedback-weight "$FEEDBACK_WEIGHT" \
   --feedback-min-regret-delta-cp "$FEEDBACK_MIN_REGRET_DELTA_CP" \
   --feedback-min-candidate-regret-cp "$FEEDBACK_MIN_CANDIDATE_REGRET_CP" \

@@ -8,7 +8,7 @@ fi
 
 cd "$(dirname "$0")/.."
 
-RUN_DIR="${RUN_DIR:-/tmp/bench_failure_mining_suite_$(date -u +%Y%m%d_%H%M%S)}"
+RUN_DIR="${RUN_DIR:-data/mmto/bench_failure/bench_failure_mining_suite_$(date -u +%Y%m%d_%H%M%S)}"
 WEIGHTS="${WEIGHTS:-policy_weights_v2.1.0.binary}"
 TEACHER_WEIGHTS="${TEACHER_WEIGHTS:-$WEIGHTS}"
 TAIL_PLIES="${TAIL_PLIES:-10}"
@@ -20,6 +20,9 @@ ROOT_RESCUE_GOOD_REGRET_CP="${ROOT_RESCUE_GOOD_REGRET_CP:-80}"
 ROOT_RESCUE_MIN_IMPROVEMENT_CP="${ROOT_RESCUE_MIN_IMPROVEMENT_CP:-200}"
 TOP="${TOP:-20}"
 MAX_RECORDS="${MAX_RECORDS:-0}"
+CONVERT_FEEDBACK="${CONVERT_FEEDBACK:-1}"
+FEEDBACK_MIN_TIMED_REGRET_CP="${FEEDBACK_MIN_TIMED_REGRET_CP:-150}"
+FEEDBACK_LIMIT="${FEEDBACK_LIMIT:-0}"
 
 DEFAULT_RECORD_DIRS="
 /tmp/shogi_weight_bench_pv_sibling_3k_ultrasafe_11101
@@ -49,7 +52,9 @@ echo "TEACHER_WEIGHTS=$TEACHER_WEIGHTS"
 echo "TAIL_PLIES=$TAIL_PLIES TIMED_DEPTH=$TIMED_DEPTH TEACHER_DEPTH=$TEACHER_DEPTH TIME_LIMIT_MS=$TIME_LIMIT_MS"
 echo "BAD_REGRET_CP=$BAD_REGRET_CP ROOT_RESCUE=$ROOT_RESCUE_GOOD_REGRET_CP/$ROOT_RESCUE_MIN_IMPROVEMENT_CP"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin bench_failure_miner
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+  --bin bench_failure_miner \
+  --bin bench_failure_feedback
 
 : > "$RUN_DIR/all_failures.jsonl"
 : > "$RUN_DIR/all_timed_bad.sfen"
@@ -113,12 +118,40 @@ done <<< "$RECORD_DIRS"
 sort -u "$RUN_DIR/all_timed_bad.sfen" -o "$RUN_DIR/all_timed_bad.sfen"
 sort -u "$RUN_DIR/all_root_rescue.sfen" -o "$RUN_DIR/all_root_rescue.sfen"
 
+feedback_status="skipped"
+if [[ "$CONVERT_FEEDBACK" == "1" && -s "$RUN_DIR/all_failures.jsonl" ]]; then
+  set +e
+  env RUST_FONTCONFIG_DLOPEN=1 target/release/bench_failure_feedback \
+    --input "$RUN_DIR/all_failures.jsonl" \
+    --output "$RUN_DIR/all_feedback.json" \
+    --min-timed-regret-cp "$FEEDBACK_MIN_TIMED_REGRET_CP" \
+    --limit "$FEEDBACK_LIMIT" \
+    > "$RUN_DIR/all_feedback_summary.txt" 2>&1
+  feedback_status="$?"
+  set -e
+fi
+
 {
   echo "RUN_DIR=$RUN_DIR"
   echo "runs=$run_count"
   echo "all_failures_lines=$(wc -l < "$RUN_DIR/all_failures.jsonl")"
   echo "unique_timed_bad_sfens=$(grep -cve '^$' "$RUN_DIR/all_timed_bad.sfen" || true)"
   echo "unique_root_rescue_sfens=$(grep -cve '^$' "$RUN_DIR/all_root_rescue.sfen" || true)"
+  echo "feedback_status=$feedback_status"
+  if [[ -s "$RUN_DIR/all_feedback.json" ]]; then
+    python3 - "$RUN_DIR/all_feedback.json" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+records = payload.get("hard_positions") or payload.get("samples") or []
+print(f"feedback_records={len(records)}")
+if records:
+    regrets = [float(item.get("candidate_regret", 0.0)) for item in records]
+    print("feedback_candidate_regret_mean={:.2f}".format(sum(regrets) / len(regrets)))
+    print("feedback_candidate_regret_max={:.2f}".format(max(regrets)))
+PY
+  fi
   if command -v jq >/dev/null 2>&1 && [[ -s "$RUN_DIR/all_failures.jsonl" ]]; then
     jq -s '{
       samples: length,
