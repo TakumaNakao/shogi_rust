@@ -288,7 +288,7 @@ if limit > 0 and records:
     phase_buckets = defaultdict(list)
     for item, raw in records:
         phase_buckets[str(item.get("phase") or "unknown")].append((item, raw))
-    phases = ["opening", "middle", "endgame", "unknown"]
+    phases = ["opening", "middle", "late", "endgame", "unknown"]
     while len(selected) < limit:
         before = len(selected)
         remaining = limit - len(selected)
