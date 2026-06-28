@@ -24,8 +24,12 @@ struct Args {
     seed: u64,
     #[arg(long, default_value_t = 15.0)]
     min_candidate_regret_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    max_candidate_regret_cp: f32,
     #[arg(long, default_value_t = 5.0)]
     min_regret_delta_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    max_regret_delta_cp: f32,
     #[arg(long, default_value_t = 30.0)]
     max_good_regret_cp: f32,
     #[arg(long, default_value_t = 0)]
@@ -172,7 +176,9 @@ fn record_is_harder(a: &FeedbackRecord, b: &FeedbackRecord) -> bool {
 fn feedback_from_tree(
     record: TreeRecord,
     min_candidate_regret_cp: f32,
+    max_candidate_regret_cp: f32,
     min_regret_delta_cp: f32,
+    max_regret_delta_cp: f32,
     max_good_regret_cp: f32,
 ) -> Option<FeedbackRecord> {
     if record
@@ -199,6 +205,12 @@ fn feedback_from_tree(
     if bad_regret < min_candidate_regret_cp || regret_delta < min_regret_delta_cp {
         return None;
     }
+    if max_candidate_regret_cp > 0.0 && bad_regret > max_candidate_regret_cp {
+        return None;
+    }
+    if max_regret_delta_cp > 0.0 && regret_delta > max_regret_delta_cp {
+        return None;
+    }
 
     Some(FeedbackRecord {
         index: 0,
@@ -223,9 +235,19 @@ fn main() -> Result<()> {
             "--min-candidate-regret-cp must be finite and non-negative"
         ));
     }
+    if !args.max_candidate_regret_cp.is_finite() || args.max_candidate_regret_cp < 0.0 {
+        return Err(anyhow!(
+            "--max-candidate-regret-cp must be finite and non-negative; use 0 to disable"
+        ));
+    }
     if !args.min_regret_delta_cp.is_finite() || args.min_regret_delta_cp < 0.0 {
         return Err(anyhow!(
             "--min-regret-delta-cp must be finite and non-negative"
+        ));
+    }
+    if !args.max_regret_delta_cp.is_finite() || args.max_regret_delta_cp < 0.0 {
+        return Err(anyhow!(
+            "--max-regret-delta-cp must be finite and non-negative; use 0 to disable"
         ));
     }
     if !args.max_good_regret_cp.is_finite() || args.max_good_regret_cp < 0.0 {
@@ -269,7 +291,9 @@ fn main() -> Result<()> {
             let Some(record) = feedback_from_tree(
                 tree,
                 args.min_candidate_regret_cp,
+                args.max_candidate_regret_cp,
                 args.min_regret_delta_cp,
+                args.max_regret_delta_cp,
                 args.max_good_regret_cp,
             ) else {
                 filtered += 1;

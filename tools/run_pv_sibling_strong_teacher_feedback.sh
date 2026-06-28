@@ -29,7 +29,9 @@ PV_SIBLING_SAMPLE_WEIGHT="${PV_SIBLING_SAMPLE_WEIGHT:-0.20}"
 PV_SIBLING_TOTAL_WEIGHT_CAP="${PV_SIBLING_TOTAL_WEIGHT_CAP:-0.20}"
 
 FEEDBACK_MIN_CANDIDATE_REGRET_CP="${FEEDBACK_MIN_CANDIDATE_REGRET_CP:-30}"
+FEEDBACK_MAX_CANDIDATE_REGRET_CP="${FEEDBACK_MAX_CANDIDATE_REGRET_CP:-600}"
 FEEDBACK_MIN_REGRET_DELTA_CP="${FEEDBACK_MIN_REGRET_DELTA_CP:-10}"
+FEEDBACK_MAX_REGRET_DELTA_CP="${FEEDBACK_MAX_REGRET_DELTA_CP:-600}"
 FEEDBACK_MAX_GOOD_REGRET_CP="${FEEDBACK_MAX_GOOD_REGRET_CP:-30}"
 FEEDBACK_LIMIT="${FEEDBACK_LIMIT:-2500}"
 FEEDBACK_GUARD_PERCENT="${FEEDBACK_GUARD_PERCENT:-25}"
@@ -77,6 +79,7 @@ echo "RUN_DIR=$RUN_DIR"
 echo "SOURCE_RUN_DIR=$SOURCE_RUN_DIR"
 echo "HARD_LIMIT=$HARD_LIMIT"
 echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH"
+echo "FEEDBACK_REGRET_RANGE=$FEEDBACK_MIN_CANDIDATE_REGRET_CP..$FEEDBACK_MAX_CANDIDATE_REGRET_CP"
 echo "FEEDBACK_WEIGHT=$FEEDBACK_WEIGHT EPOCHS=$EPOCHS LEARNING_RATE=$LEARNING_RATE"
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
@@ -178,7 +181,9 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/tree_feedback_collect \
   --guard-output "$RUN_DIR/strong_feedback_guard.json" \
   --guard-percent "$FEEDBACK_GUARD_PERCENT" \
   --min-candidate-regret-cp "$FEEDBACK_MIN_CANDIDATE_REGRET_CP" \
+  --max-candidate-regret-cp "$FEEDBACK_MAX_CANDIDATE_REGRET_CP" \
   --min-regret-delta-cp "$FEEDBACK_MIN_REGRET_DELTA_CP" \
+  --max-regret-delta-cp "$FEEDBACK_MAX_REGRET_DELTA_CP" \
   --max-good-regret-cp "$FEEDBACK_MAX_GOOD_REGRET_CP" \
   --limit "$FEEDBACK_LIMIT" \
   | tee "$RUN_DIR/feedback_collect_stdout.log"
@@ -218,8 +223,8 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --max-weight-delta "$MAX_WEIGHT_DELTA" \
   --anchor-l2 "$ANCHOR_L2" \
   --best-metric feedback-loss \
-  --best-guard-feedback-violation-increase "$BEST_GUARD_FEEDBACK_VIOLATION_INCREASE" \
-  --best-guard-feedback-loss-increase "$BEST_GUARD_FEEDBACK_LOSS_INCREASE" \
+  --best-guard-feedback-violation-increase="$BEST_GUARD_FEEDBACK_VIOLATION_INCREASE" \
+  --best-guard-feedback-loss-increase="$BEST_GUARD_FEEDBACK_LOSS_INCREASE" \
   --feedback-json "$RUN_DIR/strong_feedback_train.json" \
   --feedback-guard-json "$RUN_DIR/strong_feedback_guard.json" \
   --feedback-weight "$FEEDBACK_WEIGHT" \
