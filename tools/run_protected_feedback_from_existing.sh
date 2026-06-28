@@ -55,6 +55,12 @@ BENCH_MAX_PLIES="${BENCH_MAX_PLIES:-200}"
 BENCH_JOBS="${BENCH_JOBS:-2}"
 BENCH_SEED="${BENCH_SEED:-37111}"
 KEEP_MIN_NEW_WINS="${KEEP_MIN_NEW_WINS:-12}"
+BENCH_FAILURE_MINE_ON_REJECT="${BENCH_FAILURE_MINE_ON_REJECT:-1}"
+BENCH_FAILURE_TAIL_PLIES="${BENCH_FAILURE_TAIL_PLIES:-16}"
+BENCH_FAILURE_TEACHER_DEPTH="${BENCH_FAILURE_TEACHER_DEPTH:-6}"
+BENCH_FAILURE_BAD_REGRET_CP="${BENCH_FAILURE_BAD_REGRET_CP:-300}"
+BENCH_FAILURE_FEEDBACK_MIN_TIMED_REGRET_CP="${BENCH_FAILURE_FEEDBACK_MIN_TIMED_REGRET_CP:-150}"
+BENCH_FAILURE_FEEDBACK_LIMIT="${BENCH_FAILURE_FEEDBACK_LIMIT:-200}"
 
 for path in "$WEIGHTS" "$TEACHER_WEIGHTS" "$SOURCE_VALID_TREE"; do
   if [[ ! -f "$path" ]]; then
@@ -93,7 +99,9 @@ env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
   --bin mmto_rerank_gate \
   --bin usi_engine \
   --bin usi_benchmark \
-  --bin record_analyze
+  --bin record_analyze \
+  --bin bench_failure_miner \
+  --bin bench_failure_feedback
 
 python3 - "$RUN_DIR/train.protection.tree.jsonl" "$PROTECTION_LINES" "$PROTECTION_SEED" $PROTECTION_SOURCES <<'PY'
 import json
@@ -344,6 +352,38 @@ if [[ "$RUN_BENCH" == "1" ]]; then
   if (( NEW_WINS >= KEEP_MIN_NEW_WINS )); then
     echo "kept_best_raw=1" > "$RUN_DIR/final_binary_status.txt"
   else
+    if [[ "$BENCH_FAILURE_MINE_ON_REJECT" == "1" ]]; then
+      set +e
+      env RUST_FONTCONFIG_DLOPEN=1 target/release/bench_failure_miner \
+        --weights "$RUN_DIR/best.raw.binary" \
+        --record-dir "$BENCH_DIR" \
+        --tail-plies "$BENCH_FAILURE_TAIL_PLIES" \
+        --timed-depth "$BENCH_DEPTH" \
+        --time-limit-ms "$BENCH_TIME_LIMIT_MS" \
+        --teacher-depth "$BENCH_FAILURE_TEACHER_DEPTH" \
+        --bad-regret-cp "$BENCH_FAILURE_BAD_REGRET_CP" \
+        --jsonl-output "$RUN_DIR/bench_failure.jsonl" \
+        --export-timed-bad-sfens "$RUN_DIR/bench_failure_timed_bad.sfen" \
+        --export-root-rescue-sfens "$RUN_DIR/bench_failure_root_rescue.sfen" \
+        > "$RUN_DIR/bench_failure_miner.log" 2>&1
+      failure_miner_status="$?"
+      if [[ "$failure_miner_status" == "0" ]]; then
+        env RUST_FONTCONFIG_DLOPEN=1 target/release/bench_failure_feedback \
+          --input "$RUN_DIR/bench_failure.jsonl" \
+          --output "$RUN_DIR/bench_failure_feedback.json" \
+          --min-timed-regret-cp "$BENCH_FAILURE_FEEDBACK_MIN_TIMED_REGRET_CP" \
+          --limit "$BENCH_FAILURE_FEEDBACK_LIMIT" \
+          > "$RUN_DIR/bench_failure_feedback.log" 2>&1
+        failure_feedback_status="$?"
+      else
+        failure_feedback_status="skipped"
+      fi
+      set -e
+      {
+        echo "bench_failure_miner_status=$failure_miner_status"
+        echo "bench_failure_feedback_status=$failure_feedback_status"
+      } > "$RUN_DIR/bench_failure_status.txt"
+    fi
     rm -f "$RUN_DIR/best.raw.binary"
     echo "kept_best_raw=0" > "$RUN_DIR/final_binary_status.txt"
   fi
