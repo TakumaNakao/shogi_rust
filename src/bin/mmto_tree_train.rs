@@ -147,10 +147,26 @@ struct Args {
     loss_mode: LossMode,
     #[arg(long, value_enum, default_value_t = ListwiseFeatureSource::TeacherLeaf)]
     listwise_feature_source: ListwiseFeatureSource,
+    #[arg(long, default_value_t = 0)]
+    listwise_teacher_top_k: usize,
+    #[arg(long, default_value_t = 0)]
+    listwise_candidate_top_k: usize,
     #[arg(long, default_value_t = 0.0)]
     listwise_hard_negative_weight: f32,
     #[arg(long, default_value_t = 50.0)]
     listwise_hard_negative_min_regret_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    listwise_min_selected_regret_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    listwise_max_teacher_score_abs_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    listwise_regret_cap_cp: f32,
+    #[arg(long, value_enum, default_value_t = ListwiseWeightMode::None)]
+    listwise_weight_mode: ListwiseWeightMode,
+    #[arg(long, default_value_t = 100.0)]
+    listwise_weight_scale_cp: f32,
+    #[arg(long, default_value_t = 4.0)]
+    listwise_max_sample_weight: f32,
     #[arg(long, default_value_t = 0.0)]
     teacher_top_ce_weight: f32,
     #[arg(long, default_value_t = 0.0)]
@@ -276,6 +292,15 @@ enum PairWeightMode {
     BadRegret,
     #[value(name = "score-gap")]
     ScoreGap,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ListwiseWeightMode {
+    None,
+    #[value(name = "selected-regret")]
+    SelectedRegret,
+    #[value(name = "model-regret")]
+    ModelRegret,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -524,6 +549,14 @@ struct LossOptions {
     listwise_feature_source: ListwiseFeatureSource,
     listwise_hard_negative_weight: f32,
     listwise_hard_negative_min_regret_cp: f32,
+    listwise_teacher_top_k: usize,
+    listwise_candidate_top_k: usize,
+    listwise_min_selected_regret_cp: f32,
+    listwise_max_teacher_score_abs_cp: f32,
+    listwise_regret_cap_cp: f32,
+    listwise_weight_mode: ListwiseWeightMode,
+    listwise_weight_scale_cp: f32,
+    listwise_max_sample_weight: f32,
     teacher_top_ce_weight: f32,
     explicit_student_margin_weight: f32,
     game_teacher_margin_weight: f32,
@@ -683,52 +716,184 @@ fn softplus(x: f32) -> f32 {
     }
 }
 
+#[derive(Debug)]
+struct ListwiseDistribution {
+    candidate_indices: Vec<usize>,
+    teacher_probs: Vec<f32>,
+    model_probs: Vec<f32>,
+    teacher_top_idx: usize,
+    sample_weight_scale: f32,
+}
+
+fn listwise_candidate_regret(
+    sample: &Sample,
+    teacher_score: f32,
+    teacher_score_abs_cap_cp: f32,
+    cap_cp: f32,
+) -> f32 {
+    let teacher_root_score =
+        clamp_teacher_score(sample.teacher_root_score, teacher_score_abs_cap_cp);
+    let teacher_score = clamp_teacher_score(teacher_score, teacher_score_abs_cap_cp);
+    let regret = (teacher_root_score - teacher_score).max(0.0);
+    if cap_cp > 0.0 {
+        regret.min(cap_cp)
+    } else {
+        regret
+    }
+}
+
+fn clamp_teacher_score(value: f32, abs_cap_cp: f32) -> f32 {
+    if abs_cap_cp > 0.0 {
+        value.clamp(-abs_cap_cp, abs_cap_cp)
+    } else {
+        value
+    }
+}
+
+fn model_selected_idx(sample: &Sample, model: &SparseModel) -> Option<usize> {
+    let mut best_idx = 0usize;
+    let mut best_score = f32::NEG_INFINITY;
+    for (idx, candidate) in sample.candidates.iter().enumerate() {
+        let score = model.predict_with_material(&candidate.move_features, candidate.move_material);
+        if !score.is_finite() {
+            return None;
+        }
+        if score > best_score {
+            best_score = score;
+            best_idx = idx;
+        }
+    }
+    best_score.is_finite().then_some(best_idx)
+}
+
 fn listwise_distribution(
     sample: &Sample,
     model: &SparseModel,
-    model_temperature_cp: f32,
-    teacher_temperature_cp: f32,
-    feature_source: ListwiseFeatureSource,
-) -> Option<(Vec<f32>, Vec<f32>, usize)> {
+    options: &LossOptions,
+) -> Option<ListwiseDistribution> {
     if sample.candidates.is_empty()
-        || !model_temperature_cp.is_finite()
-        || model_temperature_cp <= 0.0
+        || !options.model_temperature_cp.is_finite()
+        || options.model_temperature_cp <= 0.0
+        || !options.teacher_temperature_cp.is_finite()
+        || options.teacher_temperature_cp <= 0.0
     {
         return None;
     }
-    if !teacher_temperature_cp.is_finite() || teacher_temperature_cp <= 0.0 {
+
+    let mut entries: Vec<(usize, f32, f32)> = Vec::with_capacity(sample.candidates.len());
+    for (idx, candidate) in sample.candidates.iter().enumerate() {
+        if options.listwise_teacher_top_k > 0
+            && candidate.teacher_rank >= options.listwise_teacher_top_k
+        {
+            continue;
+        }
+        let teacher_score = clamp_teacher_score(
+            candidate.teacher_score,
+            options.listwise_max_teacher_score_abs_cp,
+        );
+        let (features, material) =
+            candidate_listwise_features(candidate, options.listwise_feature_source);
+        let model_score = model.predict_with_material(features, material);
+        if !teacher_score.is_finite() || !model_score.is_finite() {
+            return None;
+        }
+        entries.push((idx, teacher_score, model_score));
+    }
+    if entries.is_empty() {
         return None;
     }
 
-    let mut teacher_scores = Vec::with_capacity(sample.candidates.len());
-    let mut model_scores = Vec::with_capacity(sample.candidates.len());
-    let mut max_teacher_score = f32::NEG_INFINITY;
-    let mut teacher_top_idx = 0usize;
-    for (idx, candidate) in sample.candidates.iter().enumerate() {
-        let (features, material) = candidate_listwise_features(candidate, feature_source);
-        teacher_scores.push(candidate.teacher_score);
-        model_scores.push(model.predict_with_material(features, material));
-        if candidate.teacher_score > max_teacher_score {
-            max_teacher_score = candidate.teacher_score;
-            teacher_top_idx = idx;
+    if options.listwise_candidate_top_k > 0 && options.listwise_candidate_top_k < entries.len() {
+        let teacher_best_entry = entries.iter().copied().max_by(|lhs, rhs| {
+            lhs.1
+                .partial_cmp(&rhs.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let teacher_best_candidate_idx = teacher_best_entry.map(|entry| entry.0);
+        entries.sort_by(|lhs, rhs| {
+            rhs.2
+                .partial_cmp(&lhs.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        entries.truncate(options.listwise_candidate_top_k);
+        if let (Some(teacher_best_entry), Some(teacher_best_candidate_idx)) =
+            (teacher_best_entry, teacher_best_candidate_idx)
+        {
+            if !entries
+                .iter()
+                .any(|(candidate_idx, _, _)| *candidate_idx == teacher_best_candidate_idx)
+            {
+                if let Some(last) = entries.last_mut() {
+                    *last = teacher_best_entry;
+                }
+            }
         }
     }
 
-    if !max_teacher_score.is_finite() {
-        return None;
+    let mut teacher_scores = Vec::with_capacity(entries.len());
+    let mut model_scores = Vec::with_capacity(entries.len());
+    let mut candidate_indices = Vec::with_capacity(entries.len());
+    let mut teacher_top_idx = 0usize;
+    let mut model_top_idx = 0usize;
+    let mut max_teacher_score = f32::NEG_INFINITY;
+    let mut max_model_score = f32::NEG_INFINITY;
+    for (local_idx, (candidate_idx, teacher_score, model_score)) in
+        entries.iter().copied().enumerate()
+    {
+        teacher_scores.push(teacher_score);
+        model_scores.push(model_score);
+        candidate_indices.push(candidate_idx);
+        if teacher_score > max_teacher_score {
+            max_teacher_score = teacher_score;
+            teacher_top_idx = local_idx;
+        }
+        if model_score > max_model_score {
+            max_model_score = model_score;
+            model_top_idx = local_idx;
+        }
     }
-    let max_model = model_scores
-        .iter()
-        .copied()
-        .fold(f32::NEG_INFINITY, f32::max);
-    if !max_model.is_finite() {
+    if !max_teacher_score.is_finite() || !max_model_score.is_finite() {
         return None;
     }
 
-    let mut teacher_exp = Vec::with_capacity(sample.candidates.len());
+    let model_top_regret = listwise_candidate_regret(
+        sample,
+        sample.candidates[candidate_indices[model_top_idx]].teacher_score,
+        options.listwise_max_teacher_score_abs_cp,
+        options.listwise_regret_cap_cp,
+    );
+    if options.listwise_min_selected_regret_cp > 0.0
+        && model_top_regret < options.listwise_min_selected_regret_cp
+    {
+        return None;
+    }
+
+    let sample_weight_scale = match options.listwise_weight_mode {
+        ListwiseWeightMode::None => 1.0,
+        ListwiseWeightMode::SelectedRegret => {
+            let selected_idx =
+                student_selected_idx(sample).or_else(|| model_selected_idx(sample, model))?;
+            let regret = listwise_candidate_regret(
+                sample,
+                sample.candidates[selected_idx].teacher_score,
+                options.listwise_max_teacher_score_abs_cp,
+                options.listwise_regret_cap_cp,
+            );
+            (1.0 + regret / options.listwise_weight_scale_cp)
+                .min(options.listwise_max_sample_weight)
+        }
+        ListwiseWeightMode::ModelRegret => (1.0
+            + model_top_regret / options.listwise_weight_scale_cp)
+            .min(options.listwise_max_sample_weight),
+    };
+    if !sample_weight_scale.is_finite() || sample_weight_scale <= 0.0 {
+        return None;
+    }
+
+    let mut teacher_exp = Vec::with_capacity(teacher_scores.len());
     let mut teacher_total = 0.0f32;
     for score in teacher_scores {
-        let exp = ((score - max_teacher_score) / teacher_temperature_cp).exp();
+        let exp = ((score - max_teacher_score) / options.teacher_temperature_cp).exp();
         if !exp.is_finite() {
             return None;
         }
@@ -739,10 +904,10 @@ fn listwise_distribution(
         return None;
     }
 
-    let mut model_exp = Vec::with_capacity(sample.candidates.len());
+    let mut model_exp = Vec::with_capacity(model_scores.len());
     let mut model_total = 0.0f32;
     for score in model_scores {
-        let exp = ((score - max_model) / model_temperature_cp).exp();
+        let exp = ((score - max_model_score) / options.model_temperature_cp).exp();
         if !exp.is_finite() {
             return None;
         }
@@ -759,7 +924,14 @@ fn listwise_distribution(
     for p in &mut model_exp {
         *p /= model_total;
     }
-    Some((teacher_exp, model_exp, teacher_top_idx))
+
+    Some(ListwiseDistribution {
+        candidate_indices,
+        teacher_probs: teacher_exp,
+        model_probs: model_exp,
+        teacher_top_idx,
+        sample_weight_scale,
+    })
 }
 
 fn model_policy_distribution(
@@ -1501,16 +1673,11 @@ fn accumulate_sample_metrics(
             }
         }
         LossMode::ListwiseLeaf => {
-            if let Some((teacher_probs, model_probs, teacher_top_idx)) = listwise_distribution(
-                sample,
-                model,
-                loss_options.model_temperature_cp,
-                loss_options.teacher_temperature_cp,
-                loss_options.listwise_feature_source,
-            ) {
+            if let Some(dist) = listwise_distribution(sample, model, loss_options) {
+                let sample_weight = sample_weight * dist.sample_weight_scale;
                 let mut sample_loss = 0.0;
-                for (idx, target_prob) in teacher_probs.iter().copied().enumerate() {
-                    let student_prob = model_probs[idx];
+                for (idx, target_prob) in dist.teacher_probs.iter().copied().enumerate() {
+                    let student_prob = dist.model_probs[idx];
                     if target_prob > 0.0 {
                         sample_loss -= target_prob * student_prob.max(1e-7).ln();
                     }
@@ -1518,7 +1685,7 @@ fn accumulate_sample_metrics(
                 }
                 if loss_options.teacher_top_ce_weight > 0.0 {
                     sample_loss -= loss_options.teacher_top_ce_weight
-                        * model_probs[teacher_top_idx].max(1e-7).ln();
+                        * dist.model_probs[dist.teacher_top_idx].max(1e-7).ln();
                 }
                 metrics.loss += sample_weight * sample_loss;
                 metrics.pair_weight_sum += sample_weight;
@@ -2078,16 +2245,14 @@ fn update_sample_refs_with_softplus(
                 }
             }
             LossMode::ListwiseLeaf => {
-                if let Some((teacher_probs, model_probs, teacher_top_idx)) = listwise_distribution(
-                    sample,
-                    model,
-                    options.loss.model_temperature_cp,
-                    options.loss.teacher_temperature_cp,
-                    options.loss.listwise_feature_source,
-                ) {
+                if let Some(dist) = listwise_distribution(sample, model, &options.loss) {
+                    let sample_weight = sample_weight * dist.sample_weight_scale;
                     let mut sample_loss = 0.0f32;
-                    for (idx, (teacher_prob, model_prob)) in
-                        teacher_probs.iter().zip(model_probs.iter()).enumerate()
+                    for (idx, (teacher_prob, model_prob)) in dist
+                        .teacher_probs
+                        .iter()
+                        .zip(dist.model_probs.iter())
+                        .enumerate()
                     {
                         if *teacher_prob > 0.0 {
                             sample_loss -= *teacher_prob * model_prob.max(1e-7).ln();
@@ -2095,13 +2260,13 @@ fn update_sample_refs_with_softplus(
                         let mut delta =
                             (model_prob - teacher_prob) / options.loss.model_temperature_cp;
                         if options.loss.teacher_top_ce_weight > 0.0 {
-                            let top_target = (idx == teacher_top_idx) as u8 as f32;
+                            let top_target = (idx == dist.teacher_top_idx) as u8 as f32;
                             delta += options.loss.teacher_top_ce_weight * (model_prob - top_target)
                                 / options.loss.model_temperature_cp;
                         }
                         let delta = delta * sample_weight;
                         let (features, material) = candidate_listwise_features(
-                            &sample.candidates[idx],
+                            &sample.candidates[dist.candidate_indices[idx]],
                             options.loss.listwise_feature_source,
                         );
                         for &feature_idx in features {
@@ -2114,7 +2279,7 @@ fn update_sample_refs_with_softplus(
                     }
                     if options.loss.teacher_top_ce_weight > 0.0 {
                         sample_loss += options.loss.teacher_top_ce_weight
-                            * -model_probs[teacher_top_idx].max(1e-7).ln();
+                            * -dist.model_probs[dist.teacher_top_idx].max(1e-7).ln();
                     }
                     loss += sample_weight * sample_loss;
                     pair_weight_sum += sample_weight;
@@ -3915,6 +4080,35 @@ fn main() -> Result<()> {
             "--listwise-hard-negative-min-regret-cp must be finite and non-negative"
         ));
     }
+    if !args.listwise_min_selected_regret_cp.is_finite()
+        || args.listwise_min_selected_regret_cp < 0.0
+    {
+        return Err(anyhow!(
+            "--listwise-min-selected-regret-cp must be finite and non-negative"
+        ));
+    }
+    if !args.listwise_max_teacher_score_abs_cp.is_finite()
+        || args.listwise_max_teacher_score_abs_cp < 0.0
+    {
+        return Err(anyhow!(
+            "--listwise-max-teacher-score-abs-cp must be finite and non-negative"
+        ));
+    }
+    if !args.listwise_regret_cap_cp.is_finite() || args.listwise_regret_cap_cp < 0.0 {
+        return Err(anyhow!(
+            "--listwise-regret-cap-cp must be finite and non-negative"
+        ));
+    }
+    if !args.listwise_weight_scale_cp.is_finite() || args.listwise_weight_scale_cp <= 0.0 {
+        return Err(anyhow!(
+            "--listwise-weight-scale-cp must be finite and positive"
+        ));
+    }
+    if !args.listwise_max_sample_weight.is_finite() || args.listwise_max_sample_weight < 1.0 {
+        return Err(anyhow!(
+            "--listwise-max-sample-weight must be finite and >= 1"
+        ));
+    }
     if !args.teacher_top_ce_weight.is_finite() || args.teacher_top_ce_weight < 0.0 {
         return Err(anyhow!(
             "--teacher-top-ce-weight must be finite and non-negative"
@@ -4123,6 +4317,14 @@ fn main() -> Result<()> {
         listwise_feature_source: args.listwise_feature_source,
         listwise_hard_negative_weight: args.listwise_hard_negative_weight,
         listwise_hard_negative_min_regret_cp: args.listwise_hard_negative_min_regret_cp,
+        listwise_teacher_top_k: args.listwise_teacher_top_k,
+        listwise_candidate_top_k: args.listwise_candidate_top_k,
+        listwise_min_selected_regret_cp: args.listwise_min_selected_regret_cp,
+        listwise_max_teacher_score_abs_cp: args.listwise_max_teacher_score_abs_cp,
+        listwise_regret_cap_cp: args.listwise_regret_cap_cp,
+        listwise_weight_mode: args.listwise_weight_mode,
+        listwise_weight_scale_cp: args.listwise_weight_scale_cp,
+        listwise_max_sample_weight: args.listwise_max_sample_weight,
         teacher_top_ce_weight: args.teacher_top_ce_weight,
         explicit_student_margin_weight: args.explicit_student_margin_weight,
         game_teacher_margin_weight: args.game_teacher_margin_weight,
