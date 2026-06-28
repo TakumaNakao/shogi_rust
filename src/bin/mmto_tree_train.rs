@@ -83,6 +83,10 @@ struct Args {
     best_guard_bad100_increase: f32,
     #[arg(long, default_value_t = -1.0)]
     best_guard_teacher_match_drop_pct: f32,
+    #[arg(long, default_value_t = -1.0)]
+    best_guard_feedback_loss_increase: f32,
+    #[arg(long, default_value_t = -1.0)]
+    best_guard_feedback_violation_increase: f32,
     #[arg(long, default_value_t = 300.0)]
     selected_regret_cap_cp: f32,
     #[arg(long, default_value_t = 100.0)]
@@ -221,6 +225,11 @@ fn best_metric_requires_feedback(metric: BestMetric) -> bool {
         metric,
         BestMetric::FeedbackLoss | BestMetric::FeedbackViolation
     )
+}
+
+fn best_guard_requires_feedback(args: &Args) -> bool {
+    args.best_guard_feedback_loss_increase >= 0.0
+        || args.best_guard_feedback_violation_increase >= 0.0
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -3447,14 +3456,13 @@ fn log_bucket_summary(metrics: &Metrics) -> String {
 }
 
 fn log_feedback_summary(metrics: &FeedbackMetrics, sample_name: &str) -> String {
-    let violation_ratio = metrics.violation_count as f32 / metrics.samples.max(1) as f32;
     format!(
         "{}: samples={} loss={:.6} margin_mean={:.2} violation_ratio={:.4} regret_delta_mean={:.2} candidate_regret_mean={:.2}",
         sample_name,
         metrics.samples,
         metrics.loss,
         metrics.margin_sum,
-        violation_ratio,
+        feedback_violation_rate(metrics),
         metrics.regret_delta_sum,
         metrics.candidate_regret_sum,
     )
@@ -3500,6 +3508,10 @@ fn regret_ratio_above(metrics: &Metrics, threshold_cp: f32) -> f32 {
         .filter(|regret| *regret > threshold_cp)
         .count() as f32
         / metrics.samples.max(1) as f32
+}
+
+fn feedback_violation_rate(metrics: &FeedbackMetrics) -> f32 {
+    metrics.violation_count as f32 / metrics.samples.max(1) as f32
 }
 
 fn capped_selected_regret_mean(metrics: &Metrics, cap_cp: f32) -> f32 {
@@ -3759,6 +3771,29 @@ fn best_guard_passes(
     true
 }
 
+fn best_feedback_guard_passes(
+    current: Option<&FeedbackMetrics>,
+    baseline: Option<&FeedbackMetrics>,
+    loss_increase: f32,
+    violation_increase: f32,
+) -> bool {
+    if loss_increase < 0.0 && violation_increase < 0.0 {
+        return true;
+    }
+    let (Some(current), Some(baseline)) = (current, baseline) else {
+        return false;
+    };
+    if loss_increase >= 0.0 && current.loss > baseline.loss + loss_increase {
+        return false;
+    }
+    if violation_increase >= 0.0
+        && feedback_violation_rate(current) > feedback_violation_rate(baseline) + violation_increase
+    {
+        return false;
+    }
+    true
+}
+
 fn apply_weight_constraints(
     model: &mut SparseModel,
     initial_weights: &[f32],
@@ -3844,6 +3879,16 @@ fn main() -> Result<()> {
     if !args.best_guard_teacher_match_drop_pct.is_finite() {
         return Err(anyhow!(
             "--best-guard-teacher-match-drop-pct must be finite; use a negative value to disable"
+        ));
+    }
+    if !args.best_guard_feedback_loss_increase.is_finite() {
+        return Err(anyhow!(
+            "--best-guard-feedback-loss-increase must be finite; use a negative value to disable"
+        ));
+    }
+    if !args.best_guard_feedback_violation_increase.is_finite() {
+        return Err(anyhow!(
+            "--best-guard-feedback-violation-increase must be finite; use a negative value to disable"
         ));
     }
     if !args.listwise_hard_negative_weight.is_finite() || args.listwise_hard_negative_weight < 0.0 {
@@ -3950,6 +3995,11 @@ fn main() -> Result<()> {
     if best_metric_requires_feedback(args.best_metric) && args.feedback_json.is_empty() {
         return Err(anyhow!(
             "--feedback-json is required when --best-metric is feedback-loss or feedback-violation"
+        ));
+    }
+    if best_guard_requires_feedback(&args) && args.feedback_json.is_empty() {
+        return Err(anyhow!(
+            "--feedback-json is required when a feedback best-guard is enabled"
         ));
     }
     if !args.feedback_min_regret_delta_cp.is_finite() || args.feedback_min_regret_delta_cp < 0.0 {
@@ -4145,6 +4195,11 @@ fn main() -> Result<()> {
             "--feedback-json produced no usable samples; lower feedback filters or check the input"
         ));
     }
+    if best_guard_requires_feedback(&args) && feedback_samples.is_empty() {
+        return Err(anyhow!(
+            "--feedback-json produced no usable samples for the feedback best-guard"
+        ));
+    }
 
     let baseline_train = if args.stream_train {
         evaluate_streaming_train(
@@ -4262,6 +4317,14 @@ fn main() -> Result<()> {
         "baseline best_guard max_regret_score={:.6} bad100_score={:.6} teacher_match_score={:.6}",
         baseline_guard_max_regret, baseline_guard_bad100, baseline_guard_teacher_match
     );
+    let baseline_feedback_loss = baseline_feedback_metrics
+        .as_ref()
+        .map(|metrics| metrics.loss)
+        .unwrap_or(f32::INFINITY);
+    let baseline_feedback_violation = baseline_feedback_metrics
+        .as_ref()
+        .map(feedback_violation_rate)
+        .unwrap_or(f32::INFINITY);
     if let Some(baseline_feedback) = baseline_feedback_metrics.as_ref() {
         println!(
             "baseline feedback: {} weight={:.4}",
@@ -4807,7 +4870,7 @@ fn main() -> Result<()> {
             &current_epoch_extra_metrics,
             args.extra_valid_best_weight,
         );
-        let guard_passed = best_guard_passes(
+        let metric_guard_passed = best_guard_passes(
             current_guard_max_regret,
             current_guard_bad100,
             current_guard_teacher_match,
@@ -4818,6 +4881,13 @@ fn main() -> Result<()> {
             args.best_guard_bad100_increase,
             args.best_guard_teacher_match_drop_pct,
         );
+        let feedback_guard_passed = best_feedback_guard_passes(
+            feedback_metrics.as_ref(),
+            baseline_feedback_metrics.as_ref(),
+            args.best_guard_feedback_loss_increase,
+            args.best_guard_feedback_violation_increase,
+        );
+        let guard_passed = metric_guard_passed && feedback_guard_passed;
         if guard_passed
             && (best_metric_score.is_none()
                 || current_metric < best_metric_score.unwrap_or(f32::INFINITY))
@@ -4889,14 +4959,30 @@ fn main() -> Result<()> {
             );
         }
         println!(
-            "epoch {} best_metric_score={:.6} best_guard_max_regret={:.6} best_guard_bad100={:.6} best_guard_teacher_match={:.6} best_guard_passed={}",
+            "epoch {} best_metric_score={:.6} best_guard_max_regret={:.6} best_guard_bad100={:.6} best_guard_teacher_match={:.6} best_guard_metric_passed={} best_guard_feedback_loss={:.6} best_guard_feedback_violation={:.6} best_guard_feedback_passed={} best_guard_passed={}",
             epoch,
             current_metric,
             current_guard_max_regret,
             current_guard_bad100,
             current_guard_teacher_match,
+            metric_guard_passed,
+            feedback_metrics
+                .as_ref()
+                .map(|metrics| metrics.loss)
+                .unwrap_or(f32::INFINITY),
+            feedback_metrics
+                .as_ref()
+                .map(feedback_violation_rate)
+                .unwrap_or(f32::INFINITY),
+            feedback_guard_passed,
             guard_passed
         );
+        if baseline_feedback_metrics.is_some() {
+            println!(
+                "epoch {} baseline_feedback_guard loss={:.6} violation={:.6}",
+                epoch, baseline_feedback_loss, baseline_feedback_violation
+            );
+        }
         for (batch, metrics) in extra_valid.iter().zip(current_epoch_extra_metrics.iter()) {
             println!(
                 "epoch {} extra_valid[{}]: {}",
