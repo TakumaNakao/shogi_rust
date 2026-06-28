@@ -147,3 +147,47 @@ bash tools/run_bonanza_root_pipeline.sh
 - score gate を通る。
 - rerank gate で mean/p90/p95/bad50/bad100/match が非悪化。
 - 最終的に対局ベンチ100局以上で確認する。
+
+## 追試と修正
+
+`PHASE_BALANCE=1` の小規模probeを行ったところ、`MAX_RECORDS=1200` では入力が序盤に偏った。
+
+```text
+opening: seen=1055 selected=250
+middle:  seen=4 selected=4
+late:    seen=0 selected=0
+best_epoch=0
+```
+
+原因は、`dataset_build` が `MAX_RECORDS` に到達した時点で停止するため、棋譜の前半手数ばかりが集まったことだった。これは学習アルゴリズムの問題ではなく、入力抽出の停止条件の問題である。
+
+対策として、`dataset_build` に以下を追加した。
+
+```text
+--target-opening-records
+--target-middle-records
+--target-late-records
+```
+
+これらを指定すると、各phaseの目標数に到達するまでCSAを読み続ける。すでに目標に達したphaseは追加せず、未達phaseを埋める。
+
+単体smokeでは以下を確認した。
+
+```text
+target_opening_records=50
+target_middle_records=30
+target_late_records=10
+
+phase records: opening=50 middle=30 late=10
+records_written=90
+```
+
+また、pipeline側では以下を追加した。
+
+```text
+DATASET_TARGET_OPENING_RECORDS
+DATASET_TARGET_MIDDLE_RECORDS
+DATASET_TARGET_LATE_RECORDS
+```
+
+`MAX_RECORDS=0` は「dataset_buildへ `--max-records` を渡さない」として扱う。これにより、phase targetを満たすまで広くCSAを読む設定にできる。

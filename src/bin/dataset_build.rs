@@ -33,6 +33,12 @@ struct Args {
     max_games: Option<usize>,
     #[arg(long)]
     max_records: Option<usize>,
+    #[arg(long, default_value_t = 0)]
+    target_opening_records: usize,
+    #[arg(long, default_value_t = 0)]
+    target_middle_records: usize,
+    #[arg(long, default_value_t = 0)]
+    target_late_records: usize,
     #[arg(long)]
     max_records_per_game: Option<usize>,
     #[arg(long, default_value_t = 0)]
@@ -58,6 +64,13 @@ enum Split {
     Train,
     Valid,
     Test,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Phase {
+    Opening,
+    Middle,
+    Late,
 }
 
 #[derive(Serialize)]
@@ -87,6 +100,13 @@ struct SplitCounts {
 }
 
 #[derive(Default, Serialize)]
+struct PhaseCounts {
+    opening: usize,
+    middle: usize,
+    late: usize,
+}
+
+#[derive(Default, Serialize)]
 struct DatasetStats {
     games_seen: usize,
     games_used: usize,
@@ -94,6 +114,7 @@ struct DatasetStats {
     games_filtered: usize,
     records_written: usize,
     records_filtered: usize,
+    phase: PhaseCounts,
     train: SplitCounts,
     valid: SplitCounts,
     test: SplitCounts,
@@ -113,6 +134,9 @@ struct DatasetManifest {
     test_percent: u8,
     max_games: Option<usize>,
     max_records: Option<usize>,
+    target_opening_records: usize,
+    target_middle_records: usize,
+    target_late_records: usize,
     max_records_per_game: Option<usize>,
     min_ply: usize,
     max_ply: Option<usize>,
@@ -181,6 +205,63 @@ fn phase_text(ply: usize) -> &'static str {
     } else {
         "endgame"
     }
+}
+
+fn phase_for_ply(ply: usize) -> Phase {
+    if ply <= 40 {
+        Phase::Opening
+    } else if ply <= 100 {
+        Phase::Middle
+    } else {
+        Phase::Late
+    }
+}
+
+fn phase_target(args: &Args, phase: Phase) -> usize {
+    match phase {
+        Phase::Opening => args.target_opening_records,
+        Phase::Middle => args.target_middle_records,
+        Phase::Late => args.target_late_records,
+    }
+}
+
+fn phase_count(stats: &DatasetStats, phase: Phase) -> usize {
+    match phase {
+        Phase::Opening => stats.phase.opening,
+        Phase::Middle => stats.phase.middle,
+        Phase::Late => stats.phase.late,
+    }
+}
+
+fn increment_phase_count(stats: &mut DatasetStats, phase: Phase) {
+    match phase {
+        Phase::Opening => stats.phase.opening += 1,
+        Phase::Middle => stats.phase.middle += 1,
+        Phase::Late => stats.phase.late += 1,
+    }
+}
+
+fn has_phase_targets(args: &Args) -> bool {
+    args.target_opening_records > 0
+        || args.target_middle_records > 0
+        || args.target_late_records > 0
+}
+
+fn phase_target_reached(args: &Args, stats: &DatasetStats, phase: Phase) -> bool {
+    let target = phase_target(args, phase);
+    target > 0 && phase_count(stats, phase) >= target
+}
+
+fn all_phase_targets_reached(args: &Args, stats: &DatasetStats) -> bool {
+    if !has_phase_targets(args) {
+        return false;
+    }
+    [Phase::Opening, Phase::Middle, Phase::Late]
+        .into_iter()
+        .all(|phase| {
+            let target = phase_target(args, phase);
+            target == 0 || phase_count(stats, phase) >= target
+        })
 }
 
 fn parse_rate_line(line: &str, prefix: &str) -> Option<i32> {
@@ -414,6 +495,9 @@ fn process_game(
     let game_key = format!("{:016x}", stable_hash(args.seed, &path.to_string_lossy()));
 
     for (ply_index, csa_move) in record.moves.iter().enumerate() {
+        if all_phase_targets_reached(args, stats) {
+            break;
+        }
         if args
             .max_records
             .is_some_and(|limit| stats.records_written >= limit)
@@ -450,6 +534,12 @@ fn process_game(
             legal_moves.len(),
             in_check,
         ) {
+            let phase = phase_for_ply(ply);
+            if phase_target_reached(args, stats, phase) {
+                stats.records_filtered += 1;
+                position.do_move(mv);
+                continue;
+            }
             let opponent = move_color.flip();
             let is_winner_move = metadata.winner.map(|winner| winner == move_color);
             let out = DatasetRecord {
@@ -473,6 +563,7 @@ fn process_game(
             let line = serde_json::to_string(&out)?;
             write_record(writers, split, &line)?;
             increment_split_records(stats, split);
+            increment_phase_count(stats, phase);
             stats.records_written += 1;
             written += 1;
         } else if ply >= args.min_ply {
@@ -517,6 +608,9 @@ fn main() -> Result<()> {
     let mut stats = DatasetStats::default();
 
     for (game_index, path) in files.iter().enumerate() {
+        if all_phase_targets_reached(&args, &stats) {
+            break;
+        }
         if args
             .max_games
             .is_some_and(|limit| stats.games_seen >= limit)
@@ -559,6 +653,9 @@ fn main() -> Result<()> {
         test_percent: args.test_percent,
         max_games: args.max_games,
         max_records: args.max_records,
+        target_opening_records: args.target_opening_records,
+        target_middle_records: args.target_middle_records,
+        target_late_records: args.target_late_records,
         max_records_per_game: args.max_records_per_game,
         min_ply: args.min_ply,
         max_ply: args.max_ply,
@@ -585,6 +682,10 @@ fn main() -> Result<()> {
     println!("games filtered: {}", manifest.stats.games_filtered);
     println!("records written: {}", manifest.stats.records_written);
     println!("records filtered: {}", manifest.stats.records_filtered);
+    println!(
+        "phase records: opening={} middle={} late={}",
+        manifest.stats.phase.opening, manifest.stats.phase.middle, manifest.stats.phase.late
+    );
     println!(
         "train: games={} records={}",
         manifest.stats.train.games, manifest.stats.train.records

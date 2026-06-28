@@ -28,6 +28,9 @@ WINNER_ONLY="${WINNER_ONLY:-0}"
 EXCLUDE_LOSER_AFTER_PLY="${EXCLUDE_LOSER_AFTER_PLY:-100}"
 DATASET_MIN_LEGAL_MOVES="${DATASET_MIN_LEGAL_MOVES:-2}"
 DATASET_EXCLUDE_IN_CHECK="${DATASET_EXCLUDE_IN_CHECK:-1}"
+DATASET_TARGET_OPENING_RECORDS="${DATASET_TARGET_OPENING_RECORDS:-0}"
+DATASET_TARGET_MIDDLE_RECORDS="${DATASET_TARGET_MIDDLE_RECORDS:-0}"
+DATASET_TARGET_LATE_RECORDS="${DATASET_TARGET_LATE_RECORDS:-0}"
 PHASE_BALANCE="${PHASE_BALANCE:-0}"
 PHASE_OPENING_LIMIT="${PHASE_OPENING_LIMIT:-0}"
 PHASE_MIDDLE_LIMIT="${PHASE_MIDDLE_LIMIT:-0}"
@@ -111,6 +114,7 @@ echo "INPUTS=$INPUTS"
 echo "WEIGHTS=$WEIGHTS"
 echo "TEACHER_WEIGHTS=$TEACHER_WEIGHTS"
 echo "MAX_RECORDS=$MAX_RECORDS MAX_RECORDS_PER_GAME=$MAX_RECORDS_PER_GAME SHUFFLE_GAMES=$SHUFFLE_GAMES MIN_PLAYER_RATE=$MIN_PLAYER_RATE MIN_PLY=$MIN_PLY MAX_PLY=$MAX_PLY"
+echo "DATASET_TARGET_OPENING/MIDDLE/LATE=$DATASET_TARGET_OPENING_RECORDS/$DATASET_TARGET_MIDDLE_RECORDS/$DATASET_TARGET_LATE_RECORDS"
 echo "PHASE_BALANCE=$PHASE_BALANCE OPENING/MIDDLE/LATE_LIMIT=$PHASE_OPENING_LIMIT/$PHASE_MIDDLE_LIMIT/$PHASE_LATE_LIMIT"
 echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH TOP=$TEACHER_SCORE_TOP/$CANDIDATE_TOP"
 echo "GAME_TEACHER_MARGIN_WEIGHT=$GAME_TEACHER_MARGIN_WEIGHT GAME_TEACHER_MAX_REGRET_CP=$GAME_TEACHER_MAX_REGRET_CP"
@@ -131,11 +135,22 @@ dataset_args=(
   --seed "$SEED"
   --valid-percent "$VALID_PERCENT"
   --test-percent "$TEST_PERCENT"
-  --max-records "$MAX_RECORDS"
   --max-records-per-game "$MAX_RECORDS_PER_GAME"
   --min-ply "$MIN_PLY"
   --min-legal-moves "$DATASET_MIN_LEGAL_MOVES"
 )
+if [[ "$MAX_RECORDS" != "0" ]]; then
+  dataset_args+=(--max-records "$MAX_RECORDS")
+fi
+if [[ "$DATASET_TARGET_OPENING_RECORDS" != "0" ]]; then
+  dataset_args+=(--target-opening-records "$DATASET_TARGET_OPENING_RECORDS")
+fi
+if [[ "$DATASET_TARGET_MIDDLE_RECORDS" != "0" ]]; then
+  dataset_args+=(--target-middle-records "$DATASET_TARGET_MIDDLE_RECORDS")
+fi
+if [[ "$DATASET_TARGET_LATE_RECORDS" != "0" ]]; then
+  dataset_args+=(--target-late-records "$DATASET_TARGET_LATE_RECORDS")
+fi
 
 for input in $INPUTS; do
   dataset_args+=(--input "$input")
@@ -238,7 +253,7 @@ dump_args=(
   --exclude-in-check
   --max-abs-root-score "$MAX_ABS_ROOT_SCORE"
 )
-if [[ -n "$TREE_MAX_POSITIONS" ]]; then
+if [[ -n "$TREE_MAX_POSITIONS" && "$TREE_MAX_POSITIONS" != "0" ]]; then
   dump_args+=(--max-positions "$TREE_MAX_POSITIONS")
 fi
 if [[ "$SCORE_ALL_LEGAL_FOR_VALID" == "1" ]]; then
@@ -312,17 +327,21 @@ if [[ -z "$BEST_EPOCH" || "$BEST_EPOCH" == "0" ]]; then
 fi
 
 set +e
-env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_score_gate \
-  --baseline-weights "$WEIGHTS" \
-  --candidate-weights "$RUN_DIR/best.raw.binary" \
-  --input "$RUN_DIR/score_positions.sfen" \
-  --max-positions "$TREE_MAX_POSITIONS" \
-  --seed 7201 \
-  --p95-limit-cp 50 \
-  --max-limit-cp 200 \
-  --mean-limit-cp 10 \
-  --fail-on-material-drift-cp 5 \
-  --json-output "$RUN_DIR/score_gate.json" \
+score_gate_args=(
+  --baseline-weights "$WEIGHTS"
+  --candidate-weights "$RUN_DIR/best.raw.binary"
+  --input "$RUN_DIR/score_positions.sfen"
+  --seed 7201
+  --p95-limit-cp 50
+  --max-limit-cp 200
+  --mean-limit-cp 10
+  --fail-on-material-drift-cp 5
+  --json-output "$RUN_DIR/score_gate.json"
+)
+if [[ -n "$TREE_MAX_POSITIONS" && "$TREE_MAX_POSITIONS" != "0" ]]; then
+  score_gate_args+=(--max-positions "$TREE_MAX_POSITIONS")
+fi
+env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_score_gate "${score_gate_args[@]}" \
   | tee "$RUN_DIR/score_gate_stdout.log"
 score_status="${PIPESTATUS[0]}"
 set -e
