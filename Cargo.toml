@@ -117,3 +117,7 @@ path = "src/bin/bench_failure_feedback.rs"
 [[bin]]
 name = "rerank_feedback_collect"
 path = "src/bin/rerank_feedback_collect.rs"
+
+[[bin]]
+name = "tree_feedback_collect"
+path = "src/bin/tree_feedback_collect.rs"
