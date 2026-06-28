@@ -780,13 +780,8 @@ fn listwise_distribution(
         return None;
     }
 
-    let mut entries: Vec<(usize, f32, f32)> = Vec::with_capacity(sample.candidates.len());
+    let mut all_entries: Vec<(usize, f32, f32)> = Vec::with_capacity(sample.candidates.len());
     for (idx, candidate) in sample.candidates.iter().enumerate() {
-        if options.listwise_teacher_top_k > 0
-            && candidate.teacher_rank >= options.listwise_teacher_top_k
-        {
-            continue;
-        }
         let teacher_score = clamp_teacher_score(
             candidate.teacher_score,
             options.listwise_max_teacher_score_abs_cp,
@@ -797,36 +792,61 @@ fn listwise_distribution(
         if !teacher_score.is_finite() || !model_score.is_finite() {
             return None;
         }
-        entries.push((idx, teacher_score, model_score));
+        all_entries.push((idx, teacher_score, model_score));
     }
-    if entries.is_empty() {
+    if all_entries.is_empty() {
         return None;
     }
 
-    if options.listwise_candidate_top_k > 0 && options.listwise_candidate_top_k < entries.len() {
-        let teacher_best_entry = entries.iter().copied().max_by(|lhs, rhs| {
+    let mut entries =
+        if options.listwise_teacher_top_k == 0 && options.listwise_candidate_top_k == 0 {
+            all_entries.clone()
+        } else {
+            let mut model_top = HashSet::new();
+            if options.listwise_candidate_top_k > 0 {
+                let mut by_model = all_entries.clone();
+                by_model.sort_by(|lhs, rhs| {
+                    rhs.2
+                        .partial_cmp(&lhs.2)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                by_model.truncate(options.listwise_candidate_top_k);
+                for (candidate_idx, _, _) in by_model {
+                    model_top.insert(candidate_idx);
+                }
+            }
+
+            all_entries
+                .iter()
+                .copied()
+                .filter(|(candidate_idx, _, _)| {
+                    let candidate = &sample.candidates[*candidate_idx];
+                    let teacher_kept = options.listwise_teacher_top_k > 0
+                        && candidate.teacher_rank < options.listwise_teacher_top_k;
+                    let model_kept =
+                        options.listwise_candidate_top_k > 0 && model_top.contains(candidate_idx);
+                    teacher_kept || model_kept
+                })
+                .collect::<Vec<_>>()
+        };
+    if entries.is_empty() {
+        let teacher_best_entry = all_entries.iter().copied().max_by(|lhs, rhs| {
             lhs.1
                 .partial_cmp(&rhs.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let teacher_best_candidate_idx = teacher_best_entry.map(|entry| entry.0);
-        entries.sort_by(|lhs, rhs| {
-            rhs.2
-                .partial_cmp(&lhs.2)
+        })?;
+        entries.push(teacher_best_entry);
+    } else if options.listwise_candidate_top_k > 0 {
+        let teacher_best_entry = all_entries.iter().copied().max_by(|lhs, rhs| {
+            lhs.1
+                .partial_cmp(&rhs.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        entries.truncate(options.listwise_candidate_top_k);
-        if let (Some(teacher_best_entry), Some(teacher_best_candidate_idx)) =
-            (teacher_best_entry, teacher_best_candidate_idx)
+        })?;
+        if !entries
+            .iter()
+            .any(|(candidate_idx, _, _)| *candidate_idx == teacher_best_entry.0)
         {
-            if !entries
-                .iter()
-                .any(|(candidate_idx, _, _)| *candidate_idx == teacher_best_candidate_idx)
-            {
-                if let Some(last) = entries.last_mut() {
-                    *last = teacher_best_entry;
-                }
-            }
+            entries.push(teacher_best_entry);
         }
     }
 
