@@ -320,10 +320,10 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
   --allow-p90-regret-increase-cp "$RERANK_ALLOW_P90_REGRET_INCREASE_CP" \
   --allow-p95-regret-increase-cp "$RERANK_ALLOW_P95_REGRET_INCREASE_CP" \
   --allow-bad-ratio-increase "$RERANK_ALLOW_BAD_RATIO_INCREASE" \
-  --allow-phase-mean-regret-increase-cp "$RERANK_ALLOW_PHASE_MEAN_REGRET_INCREASE_CP" \
-  --allow-phase-p90-regret-increase-cp "$RERANK_ALLOW_PHASE_P90_REGRET_INCREASE_CP" \
-  --allow-phase-p95-regret-increase-cp "$RERANK_ALLOW_PHASE_P95_REGRET_INCREASE_CP" \
-  --allow-phase-bad-ratio-increase "$RERANK_ALLOW_PHASE_BAD_RATIO_INCREASE" \
+  --allow-phase-mean-regret-increase-cp="$RERANK_ALLOW_PHASE_MEAN_REGRET_INCREASE_CP" \
+  --allow-phase-p90-regret-increase-cp="$RERANK_ALLOW_PHASE_P90_REGRET_INCREASE_CP" \
+  --allow-phase-p95-regret-increase-cp="$RERANK_ALLOW_PHASE_P95_REGRET_INCREASE_CP" \
+  --allow-phase-bad-ratio-increase="$RERANK_ALLOW_PHASE_BAD_RATIO_INCREASE" \
   --require-mean-regret-improvement-cp "$RERANK_REQUIRE_MEAN_REGRET_IMPROVEMENT_CP" \
   --require-p90-regret-improvement-cp "$RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP" \
   --require-p95-regret-improvement-cp "$RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP" \

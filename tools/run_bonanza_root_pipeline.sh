@@ -380,10 +380,10 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
   --require-p90-regret-improvement-cp "$RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP" \
   --require-p95-regret-improvement-cp "$RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP" \
   --require-match-rate-improvement-pct "$RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT" \
-  --allow-phase-mean-regret-increase-cp "$RERANK_ALLOW_PHASE_MEAN_REGRET_INCREASE_CP" \
-  --allow-phase-p90-regret-increase-cp "$RERANK_ALLOW_PHASE_P90_REGRET_INCREASE_CP" \
-  --allow-phase-p95-regret-increase-cp "$RERANK_ALLOW_PHASE_P95_REGRET_INCREASE_CP" \
-  --allow-phase-bad-ratio-increase "$RERANK_ALLOW_PHASE_BAD_RATIO_INCREASE" \
+  --allow-phase-mean-regret-increase-cp="$RERANK_ALLOW_PHASE_MEAN_REGRET_INCREASE_CP" \
+  --allow-phase-p90-regret-increase-cp="$RERANK_ALLOW_PHASE_P90_REGRET_INCREASE_CP" \
+  --allow-phase-p95-regret-increase-cp="$RERANK_ALLOW_PHASE_P95_REGRET_INCREASE_CP" \
+  --allow-phase-bad-ratio-increase="$RERANK_ALLOW_PHASE_BAD_RATIO_INCREASE" \
   "${rerank_dedupe_arg[@]}" \
   --hard-position-limit 1000 \
   --json-output "$RUN_DIR/rerank_gate.json" \
