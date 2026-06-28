@@ -37,6 +37,21 @@ FEEDBACK_LIMIT="${FEEDBACK_LIMIT:-2500}"
 FEEDBACK_GUARD_PERCENT="${FEEDBACK_GUARD_PERCENT:-25}"
 FEEDBACK_WEIGHT="${FEEDBACK_WEIGHT:-0.5}"
 
+PROTECTION_SOURCES="${PROTECTION_SOURCES:-$SOURCE_RUN_DIR/train.pv.tree.jsonl $SOURCE_RUN_DIR/valid.pv.tree.jsonl}"
+PROTECTION_LINES="${PROTECTION_LINES:-1200}"
+PROTECTION_SEED="${PROTECTION_SEED:-7402}"
+LOSS_MODE="${LOSS_MODE:-aux-only}"
+INCUMBENT_PROTECTION_WEIGHT="${INCUMBENT_PROTECTION_WEIGHT:-0}"
+INCUMBENT_PROTECTION_MAX_REGRET_CP="${INCUMBENT_PROTECTION_MAX_REGRET_CP:-80}"
+INCUMBENT_PROTECTION_ALLOW_TEACHER_BETTER_CP="${INCUMBENT_PROTECTION_ALLOW_TEACHER_BETTER_CP:-50}"
+POLICY_ANCHOR_WEIGHTS="${POLICY_ANCHOR_WEIGHTS:-}"
+POLICY_ANCHOR_WEIGHT="${POLICY_ANCHOR_WEIGHT:-0}"
+POLICY_ANCHOR_TEMPERATURE_CP="${POLICY_ANCHOR_TEMPERATURE_CP:-100}"
+POLICY_ANCHOR_FEATURE_SOURCE="${POLICY_ANCHOR_FEATURE_SOURCE:-move}"
+POLICY_ANCHOR_MARGIN_WEIGHT="${POLICY_ANCHOR_MARGIN_WEIGHT:-0}"
+POLICY_ANCHOR_MARGIN_CP="${POLICY_ANCHOR_MARGIN_CP:-50}"
+POLICY_ANCHOR_MARGIN_SOFTPLUS_TEMP_CP="${POLICY_ANCHOR_MARGIN_SOFTPLUS_TEMP_CP:-100}"
+
 EPOCHS="${EPOCHS:-12}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 LEARNING_RATE="${LEARNING_RATE:-0.00005}"
@@ -81,6 +96,9 @@ echo "HARD_LIMIT=$HARD_LIMIT"
 echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH"
 echo "FEEDBACK_REGRET_RANGE=$FEEDBACK_MIN_CANDIDATE_REGRET_CP..$FEEDBACK_MAX_CANDIDATE_REGRET_CP"
 echo "FEEDBACK_WEIGHT=$FEEDBACK_WEIGHT EPOCHS=$EPOCHS LEARNING_RATE=$LEARNING_RATE"
+echo "PROTECTION_LINES=$PROTECTION_LINES LOSS_MODE=$LOSS_MODE"
+echo "INCUMBENT_PROTECTION_WEIGHT=$INCUMBENT_PROTECTION_WEIGHT MAX_REGRET=$INCUMBENT_PROTECTION_MAX_REGRET_CP ALLOW_TEACHER_BETTER=$INCUMBENT_PROTECTION_ALLOW_TEACHER_BETTER_CP"
+echo "POLICY_ANCHOR_WEIGHTS=$POLICY_ANCHOR_WEIGHTS POLICY_ANCHOR_WEIGHT=$POLICY_ANCHOR_WEIGHT POLICY_ANCHOR_MARGIN_WEIGHT=$POLICY_ANCHOR_MARGIN_WEIGHT"
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
   --bin mmto_tree_dump \
@@ -206,20 +224,128 @@ for path in sys.argv[1:]:
         )
 PY
 
-: > "$RUN_DIR/train.empty.tree.jsonl"
+python3 - "$RUN_DIR/train.protection.tree.jsonl" "$PROTECTION_LINES" "$PROTECTION_SEED" $PROTECTION_SOURCES <<'PY'
+import json
+import random
+import sys
+from collections import defaultdict
+
+out_path = sys.argv[1]
+limit = int(sys.argv[2])
+seed = int(sys.argv[3])
+sources = sys.argv[4:]
+rng = random.Random(seed)
+
+records = []
+seen = set()
+for path in sources:
+    try:
+        handle = open(path, encoding="utf-8")
+    except FileNotFoundError:
+        continue
+    with handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            sfen = str(item.get("sfen", "")).strip()
+            if not sfen or sfen in seen:
+                continue
+            seen.add(sfen)
+            records.append((item, line.rstrip("\n")))
+
+selected = []
+selected_sfens = set()
+
+def add_from_bucket(bucket, quota):
+    rng.shuffle(bucket)
+    added = 0
+    for item, raw in bucket:
+        if added >= quota:
+            break
+        sfen = str(item.get("sfen", "")).strip()
+        if sfen in selected_sfens:
+            continue
+        selected.append(raw)
+        selected_sfens.add(sfen)
+        added += 1
+    return added
+
+if limit > 0 and records:
+    in_check = [(item, raw) for item, raw in records if item.get("in_check")]
+    low_legal = [
+        (item, raw)
+        for item, raw in records
+        if int(item.get("legal_moves") or 999) <= 20
+    ]
+    special_quota = max(0, limit // 5)
+    add_from_bucket(in_check, special_quota // 2)
+    add_from_bucket(low_legal, special_quota - len(selected))
+
+    phase_buckets = defaultdict(list)
+    for item, raw in records:
+        phase_buckets[str(item.get("phase") or "unknown")].append((item, raw))
+    phases = ["opening", "middle", "endgame", "unknown"]
+    while len(selected) < limit:
+        before = len(selected)
+        remaining = limit - len(selected)
+        per_phase = max(1, (remaining + len(phases) - 1) // len(phases))
+        for phase in phases:
+            if len(selected) >= limit:
+                break
+            add_from_bucket(phase_buckets.get(phase, []), min(per_phase, limit - len(selected)))
+        if len(selected) == before:
+            break
+
+    if len(selected) < limit:
+        add_from_bucket(records, limit - len(selected))
+
+with open(out_path, "w", encoding="utf-8") as out:
+    for raw in selected:
+        out.write(raw + "\n")
+
+phase_counts = defaultdict(int)
+special_counts = {"in_check": 0, "low_legal": 0}
+for raw in selected:
+    item = json.loads(raw)
+    phase_counts[str(item.get("phase") or "unknown")] += 1
+    if item.get("in_check"):
+        special_counts["in_check"] += 1
+    if int(item.get("legal_moves") or 999) <= 20:
+        special_counts["low_legal"] += 1
+print(f"protection_records={len(selected)}")
+for key in sorted(phase_counts):
+    print(f"protection_phase[{key}]={phase_counts[key]}")
+for key, value in special_counts.items():
+    print(f"protection_{key}={value}")
+PY
+
 head -n "$VALID_LINES" "$RUN_DIR/valid.strong.tree.jsonl" > "$RUN_DIR/valid.top.tree.jsonl"
-wc -l "$RUN_DIR/train.empty.tree.jsonl" "$RUN_DIR/valid.top.tree.jsonl" \
+wc -l "$RUN_DIR/train.protection.tree.jsonl" "$RUN_DIR/valid.top.tree.jsonl" \
   | tee "$RUN_DIR/subset_counts.txt"
+
+policy_anchor_args=()
+if [[ -n "$POLICY_ANCHOR_WEIGHTS" ]]; then
+  if [[ ! -f "$POLICY_ANCHOR_WEIGHTS" ]]; then
+    echo "missing policy anchor weights: $POLICY_ANCHOR_WEIGHTS" >&2
+    exit 1
+  fi
+  policy_anchor_args+=(--policy-anchor-weights "$POLICY_ANCHOR_WEIGHTS")
+fi
 
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --weights "$WEIGHTS" \
-  --train "$RUN_DIR/train.empty.tree.jsonl" \
+  --train "$RUN_DIR/train.protection.tree.jsonl" \
   --valid "$RUN_DIR/valid.top.tree.jsonl" \
   --output "$RUN_DIR/candidate.raw.binary" \
   --best-checkpoint-path "$RUN_DIR/best.raw.binary" \
   --epochs "$EPOCHS" \
   --batch-size "$BATCH_SIZE" \
   --learning-rate "$LEARNING_RATE" \
+  --loss-mode "$LOSS_MODE" \
   --max-weight-delta "$MAX_WEIGHT_DELTA" \
   --anchor-l2 "$ANCHOR_L2" \
   --best-metric feedback-loss \
@@ -231,8 +357,17 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --feedback-min-regret-delta-cp 0 \
   --feedback-min-candidate-regret-cp 0 \
   --feedback-good-move baseline \
+  --incumbent-protection-weight "$INCUMBENT_PROTECTION_WEIGHT" \
+  --incumbent-protection-max-regret-cp "$INCUMBENT_PROTECTION_MAX_REGRET_CP" \
+  --incumbent-protection-allow-teacher-better-cp "$INCUMBENT_PROTECTION_ALLOW_TEACHER_BETTER_CP" \
+  "${policy_anchor_args[@]}" \
+  --policy-anchor-weight "$POLICY_ANCHOR_WEIGHT" \
+  --policy-anchor-temperature-cp "$POLICY_ANCHOR_TEMPERATURE_CP" \
+  --policy-anchor-feature-source "$POLICY_ANCHOR_FEATURE_SOURCE" \
+  --policy-anchor-margin-weight "$POLICY_ANCHOR_MARGIN_WEIGHT" \
+  --policy-anchor-margin-cp "$POLICY_ANCHOR_MARGIN_CP" \
+  --policy-anchor-margin-softplus-temp-cp "$POLICY_ANCHOR_MARGIN_SOFTPLUS_TEMP_CP" \
   --separate-aux-adagrad \
-  --allow-empty-train \
   --freeze-material \
   --selected-regret-cap-cp 300 \
   --bad-regret-cp 300 \

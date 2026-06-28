@@ -255,6 +255,8 @@ fn best_guard_requires_feedback(args: &Args) -> bool {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum LossMode {
     Pairwise,
+    #[value(name = "aux-only")]
+    AuxOnly,
     #[value(name = "listwise-leaf")]
     ListwiseLeaf,
 }
@@ -1654,6 +1656,7 @@ fn accumulate_sample_metrics(
     );
 
     match loss_options.mode {
+        LossMode::AuxOnly => {}
         LossMode::Pairwise => {
             for (good_idx, bad_idx) in pair_indices(sample, pair_options, Some(model), loss_options)
             {
@@ -2190,6 +2193,7 @@ fn update_sample_refs_with_softplus(
     for sample in samples {
         let sample_weight = sample.sample_weight;
         match options.loss.mode {
+            LossMode::AuxOnly => {}
             LossMode::Pairwise => {
                 for (good_idx, bad_idx) in
                     pair_indices(sample, pair_options, Some(model), &options.loss)
