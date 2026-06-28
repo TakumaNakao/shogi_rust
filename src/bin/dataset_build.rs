@@ -197,10 +197,13 @@ fn color_text(color: Color) -> &'static str {
     }
 }
 
+const OPENING_MAX_PLY: usize = 40;
+const MIDDLE_MAX_PLY: usize = 90;
+
 fn phase_text(ply: usize) -> &'static str {
-    if ply <= 40 {
+    if ply <= OPENING_MAX_PLY {
         "opening"
-    } else if ply <= 100 {
+    } else if ply <= MIDDLE_MAX_PLY {
         "middlegame"
     } else {
         "endgame"
@@ -208,9 +211,9 @@ fn phase_text(ply: usize) -> &'static str {
 }
 
 fn phase_for_ply(ply: usize) -> Phase {
-    if ply <= 40 {
+    if ply <= OPENING_MAX_PLY {
         Phase::Opening
-    } else if ply <= 100 {
+    } else if ply <= MIDDLE_MAX_PLY {
         Phase::Middle
     } else {
         Phase::Late
