@@ -28,6 +28,14 @@ WINNER_ONLY="${WINNER_ONLY:-0}"
 EXCLUDE_LOSER_AFTER_PLY="${EXCLUDE_LOSER_AFTER_PLY:-100}"
 DATASET_MIN_LEGAL_MOVES="${DATASET_MIN_LEGAL_MOVES:-2}"
 DATASET_EXCLUDE_IN_CHECK="${DATASET_EXCLUDE_IN_CHECK:-1}"
+PHASE_BALANCE="${PHASE_BALANCE:-0}"
+PHASE_OPENING_LIMIT="${PHASE_OPENING_LIMIT:-0}"
+PHASE_MIDDLE_LIMIT="${PHASE_MIDDLE_LIMIT:-0}"
+PHASE_LATE_LIMIT="${PHASE_LATE_LIMIT:-0}"
+PHASE_OPENING_WEIGHT="${PHASE_OPENING_WEIGHT:-1.0}"
+PHASE_MIDDLE_WEIGHT="${PHASE_MIDDLE_WEIGHT:-1.0}"
+PHASE_LATE_WEIGHT="${PHASE_LATE_WEIGHT:-1.0}"
+PHASE_DEDUPE_SFEN="${PHASE_DEDUPE_SFEN:-1}"
 
 TREE_MAX_POSITIONS="${TREE_MAX_POSITIONS:-$MAX_RECORDS}"
 TREE_VALID_PERCENT="${TREE_VALID_PERCENT:-10}"
@@ -103,12 +111,14 @@ echo "INPUTS=$INPUTS"
 echo "WEIGHTS=$WEIGHTS"
 echo "TEACHER_WEIGHTS=$TEACHER_WEIGHTS"
 echo "MAX_RECORDS=$MAX_RECORDS MAX_RECORDS_PER_GAME=$MAX_RECORDS_PER_GAME SHUFFLE_GAMES=$SHUFFLE_GAMES MIN_PLAYER_RATE=$MIN_PLAYER_RATE MIN_PLY=$MIN_PLY MAX_PLY=$MAX_PLY"
+echo "PHASE_BALANCE=$PHASE_BALANCE OPENING/MIDDLE/LATE_LIMIT=$PHASE_OPENING_LIMIT/$PHASE_MIDDLE_LIMIT/$PHASE_LATE_LIMIT"
 echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH TOP=$TEACHER_SCORE_TOP/$CANDIDATE_TOP"
 echo "GAME_TEACHER_MARGIN_WEIGHT=$GAME_TEACHER_MARGIN_WEIGHT GAME_TEACHER_MAX_REGRET_CP=$GAME_TEACHER_MAX_REGRET_CP"
 echo "CURRENT_TOP_MARGIN_WEIGHT=$CURRENT_TOP_MARGIN_WEIGHT CURRENT_TOP_MIN_BAD_REGRET_CP=$CURRENT_TOP_MIN_BAD_REGRET_CP"
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
   --bin dataset_build \
+  --bin mmto_balance_dataset \
   --bin mmto_tree_dump \
   --bin rank_stats \
   --bin mmto_tree_train \
@@ -159,7 +169,36 @@ cat "$RUN_DIR/dataset/train.jsonl" "$RUN_DIR/dataset/valid.jsonl" "$RUN_DIR/data
   > "$RUN_DIR/dataset/all.jsonl"
 wc -l "$RUN_DIR/dataset/"*.jsonl | tee "$RUN_DIR/dataset_counts.txt"
 
-python3 - "$RUN_DIR/dataset/all.jsonl" "$RUN_DIR/score_positions.sfen" <<'PY'
+DUMP_INPUT="$RUN_DIR/dataset/all.jsonl"
+if [[ "$PHASE_BALANCE" == "1" ]]; then
+  balance_args=(
+    --input "$RUN_DIR/dataset/all.jsonl"
+    --output "$RUN_DIR/dataset/balanced.jsonl"
+    --seed "$SEED"
+    --opening-limit "$PHASE_OPENING_LIMIT"
+    --middle-limit "$PHASE_MIDDLE_LIMIT"
+    --late-limit "$PHASE_LATE_LIMIT"
+    --opening-weight "$PHASE_OPENING_WEIGHT"
+    --middle-weight "$PHASE_MIDDLE_WEIGHT"
+    --late-weight "$PHASE_LATE_WEIGHT"
+  )
+  if [[ "$PHASE_DEDUPE_SFEN" == "1" ]]; then
+    balance_args+=(--dedupe-sfen true)
+  else
+    balance_args+=(--dedupe-sfen false)
+  fi
+  if [[ "$DATASET_EXCLUDE_IN_CHECK" == "1" ]]; then
+    balance_args+=(--exclude-in-check)
+  fi
+  if [[ "$DATASET_MIN_LEGAL_MOVES" != "0" ]]; then
+    balance_args+=(--min-legal-moves "$DATASET_MIN_LEGAL_MOVES")
+  fi
+  env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_balance_dataset "${balance_args[@]}" \
+    | tee "$RUN_DIR/mmto_balance_dataset_stdout.log"
+  DUMP_INPUT="$RUN_DIR/dataset/balanced.jsonl"
+fi
+
+python3 - "$DUMP_INPUT" "$RUN_DIR/score_positions.sfen" <<'PY'
 import json
 import sys
 
@@ -184,7 +223,7 @@ PY
 dump_args=(
   --student-weights "$WEIGHTS"
   --teacher-weights "$TEACHER_WEIGHTS"
-  --input "$RUN_DIR/dataset/all.jsonl"
+  --input "$DUMP_INPUT"
   --train-output "$RUN_DIR/train.tree.jsonl"
   --valid-output "$RUN_DIR/valid.tree.jsonl"
   --teacher-depth "$TEACHER_DEPTH"
