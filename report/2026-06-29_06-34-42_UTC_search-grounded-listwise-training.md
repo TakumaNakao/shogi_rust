@@ -339,3 +339,42 @@ SCREEN_DIR=data/mmto/runs/strong_teacher_smoke_20260629_072723
 このsmokeでは `best_epoch=0` のため強さ改善の信号はない。ただし、強teacher再dump、feedback収集、phase-balanced protection抽出、manifest生成、baseline最良時の早期reject、`.binary` 削除は正常に動いた。
 
 あわせて、screen runnerのログを各 `seed_*` ディレクトリ内の `pipeline_stdout.log` に保存するように修正し、`tools/summarize_mmto_runs.py` が `DUMP_SEED` もseedとして表示できるようにした。
+
+### Strong-teacher 2seed screen結果
+
+標準小規模screenを `GPT-5.3-codex-spark` サブエージェントに依頼した。
+
+条件:
+
+- `SCREEN_NAME=strong_teacher_feedback`
+- `SEEDS="7501 7601"`
+- `HARD_LIMIT=300`
+- `FEEDBACK_LIMIT=900`
+- `PROTECTION_LINES=1200`
+- `VALID_LINES=400`
+- `EPOCHS=8`
+- `RERANK_MAX_POSITIONS=400`
+- `KEEP_SCREEN_BINARY=0`
+
+結果:
+
+```text
+SCREEN_DIR=data/mmto/runs/strong_teacher_feedback_20260629_073139
+
+| run | seed | best | score | rerank | d_selected | d_p90 | d_p95 | d_match | d_bad50 | d_bad100 |
+|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|
+| seed_7501 | 7501 | 7 | pass | pass | -1.46 | 0.00 | 0.00 | 0.00% | -0.65% | -0.65% |
+| seed_7601 | 7601 | 7 | pass | pass | -1.10 | 0.00 | 0.00 | 0.00% | -0.65% | -0.65% |
+```
+
+feedback guard:
+
+- seed 7501: violation `0.588235 -> 0.529412`、loss `101.310532 -> 101.298782`
+- seed 7601: violation `0.500000 -> 0.480392`、loss `95.161285 -> 95.155151`
+
+判断:
+
+- 2seedとも `best_epoch=7`、score gate通過、rerank gate通過。
+- `d_selected` と bad50/bad100 が改善し、p90/p95は非悪化。
+- screenとしては合格。次は3seed confirmに進む。
+- `KEEP_SCREEN_BINARY=0` のため、このscreenの `.binary` は残していない。
