@@ -36,6 +36,7 @@ run_dirs=()
 for seed in $SEEDS; do
   run_dir="$SCREEN_DIR/seed_${seed}"
   run_dirs+=("$run_dir")
+  mkdir -p "$run_dir"
   echo "screen seed=$seed run_dir=$run_dir"
 
   set +e
@@ -62,10 +63,10 @@ for seed in $SEEDS; do
     BEST_GUARD_FEEDBACK_LOSS_INCREASE="${BEST_GUARD_FEEDBACK_LOSS_INCREASE:--1}" \
     FEEDBACK_GOOD_MOVE="${FEEDBACK_GOOD_MOVE:-teacher}" \
     bash tools/run_pv_sibling_strong_teacher_feedback.sh \
-    > "$run_dir.pipeline_stdout.log" 2>&1
+    > "$run_dir/pipeline_stdout.log" 2>&1
   status=$?
   set -e
-  echo "seed=$seed exit_code=$status" | tee "$run_dir.exit"
+  echo "seed=$seed exit_code=$status" | tee "$run_dir/exit"
 
   if [[ "$KEEP_SCREEN_BINARY" != "1" ]]; then
     rm -f "$run_dir/best.raw.binary" "$run_dir/candidate.raw.binary"

@@ -228,6 +228,40 @@ screenの合格条件:
 
 screenを通った条件だけ、3seed `TRAIN_LINES=3000 VALID_LINES=600 EPOCHS=4` のconfirmへ進める。
 
+現行PV sibling dumpに対するlistwise微調整が通らない場合は、強teacherでhard局面を再dumpし、teacher best vs 現行探索bad moveのfeedbackを主信号にするscreenへ進む。
+
+```bash
+SCREEN_NAME=strong_teacher_feedback \
+SEEDS="7501 7601" \
+HARD_LIMIT=300 \
+FEEDBACK_LIMIT=900 \
+PROTECTION_LINES=1200 \
+VALID_LINES=400 \
+EPOCHS=8 \
+RERANK_MAX_POSITIONS=400 \
+bash tools/run_strong_teacher_feedback_screen.sh
+```
+
+このscreenは `tools/run_pv_sibling_strong_teacher_feedback.sh` をseed違いで呼び出す。既定では以下を使う。
+
+- `TEACHER_DEPTH=4`
+- `STUDENT_DEPTH=2`
+- `LOSS_MODE=listwise-leaf`
+- `STREAM_TRAIN=1`
+- `BEST_METRIC=feedback-violation`
+- `FEEDBACK_GOOD_MOVE=teacher`
+- `RUN_BENCH=0`
+- `KEEP_SCREEN_BINARY=0`
+
+合格条件:
+
+- 2seedで `best_epoch>0` が複数出る。
+- `score gate` と `rerank gate` を通る。
+- feedback guard violationが改善し、通常guardのrerank mean/p90/p95/bad50/bad100が悪化しない。
+- `summary.md` と各runの `manifest.json` が残る。
+
+`KEEP_SCREEN_BINARY=0` が既定なので、screen通過候補でも大きな `.binary` は削除される。実重みを保持してベンチへ進める場合だけ `KEEP_SCREEN_BINARY=1` を指定する。
+
 古いMMTO run生成物を消す場合:
 
 ```bash

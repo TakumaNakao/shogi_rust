@@ -119,6 +119,24 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
     best_valid = last_epoch_valid(train_text, best_epoch)
     parameters = manifest.get("parameters", {})
     inputs = manifest.get("inputs", {})
+    run_seed = (
+        parameters.get("SUBSET_SEED")
+        or parameters.get("DUMP_SEED")
+        or parameters.get("PROTECTION_SEED")
+        or ""
+    )
+    train_input = (
+        inputs.get("train")
+        or inputs.get("train_protection")
+        or inputs.get("train_strong")
+        or {}
+    )
+    valid_input = (
+        inputs.get("valid")
+        or inputs.get("valid_top")
+        or inputs.get("valid_strong")
+        or {}
+    )
 
     return {
         "run_dir": str(run_dir),
@@ -127,9 +145,9 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
         "rerank_gate": gate_status(rerank_text, "rerank"),
         "rerank_reason": gate_reason(rerank_text),
         "subset_mode": parameters.get("SUBSET_MODE", ""),
-        "subset_seed": parameters.get("SUBSET_SEED", ""),
-        "train_lines": inputs.get("train", {}).get("lines"),
-        "valid_lines": inputs.get("valid", {}).get("lines"),
+        "subset_seed": run_seed,
+        "train_lines": train_input.get("lines"),
+        "valid_lines": valid_input.get("lines"),
         "valid_selected_delta": delta(best_valid, baseline_valid, "selected_regret_mean"),
         "valid_p90_delta": delta(best_valid, baseline_valid, "p90"),
         "valid_p95_delta": delta(best_valid, baseline_valid, "p95"),
