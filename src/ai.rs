@@ -18,6 +18,7 @@ const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
 const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 3;
+const TIME_CHECK_NODE_INTERVAL: u64 = 1024;
 const USI_SCORE_CP_LIMIT: i32 = 2_000;
 const USI_SCORE_CP_SOFT_START: i32 = 1_000;
 type LegalMoves = ArrayVec<Move, 593>;
@@ -72,6 +73,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     killer_moves: [[Option<Move>; 2]; MAX_DEPTH],
     start_time: Option<Instant>,
     time_limit: Option<Duration>,
+    next_time_check_nodes: u64,
     nodes_searched: u64,
     quiescence_nodes_searched: u64,
     quiescence_moves_considered: u64,
@@ -99,6 +101,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             killer_moves: [[None; 2]; MAX_DEPTH],
             start_time: None,
             time_limit: None,
+            next_time_check_nodes: 0,
             nodes_searched: 0,
             quiescence_nodes_searched: 0,
             quiescence_moves_considered: 0,
@@ -210,7 +213,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         0
     }
 
-    fn is_time_up(&self) -> bool {
+    fn is_time_up(&mut self) -> bool {
         if self
             .stop_signal
             .as_ref()
@@ -218,6 +221,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         {
             return true;
         }
+
+        if self.time_limit.is_none() {
+            return false;
+        }
+        if self.nodes_searched < self.next_time_check_nodes {
+            return false;
+        }
+        self.next_time_check_nodes = self.nodes_searched + TIME_CHECK_NODE_INTERVAL;
+
         if let (Some(start), Some(limit)) = (self.start_time, self.time_limit) {
             start.elapsed() >= limit
         } else {
@@ -489,6 +501,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.clear_killer_moves();
         self.start_time = Some(Instant::now());
         self.time_limit = time_limit_ms.map(Duration::from_millis);
+        self.next_time_check_nodes = 0;
         self.nodes_searched = 0;
         self.quiescence_nodes_searched = 0;
         self.quiescence_moves_considered = 0;
