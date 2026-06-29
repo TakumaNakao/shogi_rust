@@ -15,6 +15,8 @@ struct Args {
     output: PathBuf,
     #[arg(long, default_value_t = 150.0)]
     min_timed_regret_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    max_timed_regret_cp: f32,
     #[arg(long, default_value_t = 0)]
     limit: usize,
     #[arg(long, default_value_t = true)]
@@ -84,11 +86,22 @@ fn main() -> Result<()> {
             "--min-timed-regret-cp must be finite and non-negative"
         ));
     }
+    if !args.max_timed_regret_cp.is_finite() || args.max_timed_regret_cp < 0.0 {
+        return Err(anyhow!(
+            "--max-timed-regret-cp must be finite and non-negative"
+        ));
+    }
+    if args.max_timed_regret_cp > 0.0 && args.max_timed_regret_cp < args.min_timed_regret_cp {
+        return Err(anyhow!(
+            "--max-timed-regret-cp must be >= --min-timed-regret-cp, or 0 to disable"
+        ));
+    }
 
     let mut records = Vec::new();
     let mut seen_sfens = HashSet::new();
     let mut read_lines = 0usize;
     let mut filtered_regret = 0usize;
+    let mut filtered_max_regret = 0usize;
     let mut filtered_moves = 0usize;
     let mut filtered_dedupe = 0usize;
 
@@ -107,6 +120,10 @@ fn main() -> Result<()> {
             })?;
             if sample.timed_regret_cp < args.min_timed_regret_cp {
                 filtered_regret += 1;
+                continue;
+            }
+            if args.max_timed_regret_cp > 0.0 && sample.timed_regret_cp > args.max_timed_regret_cp {
+                filtered_max_regret += 1;
                 continue;
             }
             let teacher_move = clean_move(sample.teacher_move);
@@ -154,6 +171,7 @@ fn main() -> Result<()> {
     println!("input lines: {}", read_lines);
     println!("feedback samples: {}", report.hard_positions.len());
     println!("filtered by regret: {}", filtered_regret);
+    println!("filtered by max regret: {}", filtered_max_regret);
     println!("filtered by moves: {}", filtered_moves);
     println!("filtered by dedupe: {}", filtered_dedupe);
     println!("output: {}", args.output.display());
