@@ -131,7 +131,7 @@ hard stage は `BASE_RUN_DIR/best.raw.binary` をstudent初期値にし、`polic
 SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> bash tools/run_mmto_from_dump.sh
 ```
 
-デフォルトでは `SOURCE_RUN_DIR/train.tree.jsonl` から9000行、`valid.tree.jsonl` から1000行を切り出して使う。20k dumpが完了したが `mmto_tree_train` がメモリ不足で落ちた場合は、このスクリプトで10k相当のsubset学習に切り替える。
+デフォルトでは `SOURCE_RUN_DIR/train.tree.jsonl` から9000行、`valid.tree.jsonl` から1000行をseed付きで抽出して使う。20k dumpが完了したが `mmto_tree_train` がメモリ不足で落ちた場合は、このスクリプトで10k相当のsubset学習に切り替える。
 
 `run_mmto_from_dump.sh` は長時間学習前の本線検証用に、以下を既定値にしている。
 
@@ -144,8 +144,16 @@ SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> bash tools/run_mmto_f
 - `CURRENT_TOP_MARGIN_WEIGHT=0.05`
 - `BEST_METRIC=capped-selected-regret`
 - `STREAM_TRAIN=1`
+- `SUBSET_MODE=shuffle`
+- `SUBSET_SEED=7201`
+- `SUBSET_EXCLUDE_IN_CHECK=1`
+- `SUBSET_MIN_LEGAL_MOVES=2`
+- `SUBSET_MAX_ABS_ROOT_SCORE_CP=3000`
+- `SUBSET_MAX_SELECTED_REGRET_CP=3000`
+- `SUBSET_MAX_CANDIDATE_REGRET_CP=3000`
 
 これにより、単にpairwise lossを下げるのではなく、teacher上位手と現在モデルが高く見ている手を同じ候補集合に入れ、実探索で選びやすい高regret手を押し下げる。`STREAM_TRAIN=1` ではtrain dumpを全件メモリに載せず、各epochで読み直す。
+subset抽出時には、王手中・合法手が少なすぎる局面・root scoreやstudent選択手regretが極端な局面を既定で除外する。mate級の外れ値にbest checkpoint選択を支配させないためである。
 
 各runには `manifest.json` が作られる。ここにはgit commit、dirty状態、入力dump、subset、score positions、初期重み、teacher重みのsha256と行数が保存される。24時間以上の学習候補は、このmanifestを残して条件を復元できる状態にしてから実行する。
 
@@ -155,8 +163,12 @@ SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> bash tools/run_mmto_f
 SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> \
 TRAIN_LINES=7000 \
 VALID_LINES=800 \
+SUBSET_SEED=7301 \
 bash tools/run_mmto_from_dump.sh
 ```
+
+以前のように先頭N行を使う場合は `SUBSET_MODE=head` を指定する。ただし、長時間学習へ進める判断では `SUBSET_MODE=shuffle` のseed違いを最低2つ見る。
+フィルタを無効化する場合は `SUBSET_MAX_SELECTED_REGRET_CP=0` のように0を指定する。
 
 短時間probeで見るべき合格条件:
 
@@ -167,6 +179,16 @@ bash tools/run_mmto_from_dump.sh
 - `hard_positions.sfen` が出た場合は、次のDAgger/replay入力として使う
 
 この条件を満たさないrunは、epochだけ増やさない。目的関数や候補集合を見直す。
+
+複数runの比較には要約ツールを使う。
+
+```bash
+python3 tools/summarize_mmto_runs.py \
+  data/mmto/runs/listwise_split_probe_seed7301_<timestamp> \
+  data/mmto/runs/listwise_split_probe_seed7401_<timestamp>
+```
+
+`d_selected`、`d_p90`、`d_p95`、`d_bad50`、`d_bad100` は小さいほど良く、`d_match` は大きいほど良い。複数splitで同時に非悪化になるまで、長時間学習には進めない。
 
 古いMMTO run生成物を消す場合:
 

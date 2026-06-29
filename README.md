@@ -373,13 +373,21 @@ POSITION_CHUNK_SIZE=1024 JOBS="$(nproc)" bash tools/run_mmto_rerank_pipeline.sh
 SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> \
 TRAIN_LINES=9000 \
 VALID_LINES=1000 \
+SUBSET_SEED=7201 \
 EPOCHS=10 \
 bash tools/run_mmto_from_dump.sh
 ```
 
-このスクリプトは既定で `LOSS_MODE=listwise-leaf`、`LISTWISE_TEACHER_TOP_K=16`、`LISTWISE_CANDIDATE_TOP_K=16`、`LISTWISE_WEIGHT_MODE=model-regret`、`STREAM_TRAIN=1` を使います。teacher上位手と現在モデルが選びやすい手を同じ候補集合に入れ、高regretのmodel topを押し下げる設定です。
+このスクリプトは既定で `LOSS_MODE=listwise-leaf`、`LISTWISE_TEACHER_TOP_K=16`、`LISTWISE_CANDIDATE_TOP_K=16`、`LISTWISE_WEIGHT_MODE=model-regret`、`STREAM_TRAIN=1`、`SUBSET_MODE=shuffle` を使います。teacher上位手と現在モデルが選びやすい手を同じ候補集合に入れ、高regretのmodel topを押し下げる設定です。
+また、subset抽出時に王手中、合法手が少なすぎる局面、root score、student選択手regret、候補全体regretが極端な局面を既定で除外します。
 
-各runには `manifest.json` が保存され、入力dump、subset、score positions、初期重み、teacher重みのsha256と行数、git commit、dirty状態を記録します。長時間学習へ進むのは、短時間probeで `best_epoch > 0`、`score gate` 通過、`rerank gate` の mean / p90 / p95 / bad50 / bad100 非悪化を確認してからにしてください。
+各runには `manifest.json` が保存され、入力dump、subset、score positions、初期重み、teacher重みのsha256と行数、git commit、dirty状態を記録します。長時間学習へ進むのは、seed違いの短時間probeで `best_epoch > 0`、`score gate` 通過、`rerank gate` の mean / p90 / p95 / bad50 / bad100 非悪化を確認してからにしてください。
+
+複数runの比較:
+
+```bash
+python3 tools/summarize_mmto_runs.py data/mmto/runs/listwise_split_probe_seed*
+```
 
 既存dumpや新規dumpの品質確認には `rank_stats` を使います。
 
