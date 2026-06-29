@@ -532,11 +532,33 @@ mod tests {
 
         for sfen in sfens {
             let sfen = sfen.strip_prefix("sfen ").unwrap_or(sfen);
-            let pos = Position::new(PartialPosition::from_usi(sfen).expect("valid sfen"));
+            let pos = Position::new(
+                PartialPosition::from_usi(&format!("sfen {sfen}")).expect("valid sfen"),
+            );
             assert_eq!(
                 sorted_move_debug(quiescence_reference_moves(&pos)),
                 sorted_move_debug(pos.legal_quiescence_moves()),
                 "sfen: {}",
+                sfen
+            );
+        }
+    }
+
+    #[test]
+    fn legal_quiescence_moves_match_reference_on_record_sample() {
+        for (i, sfen) in include_str!("../../converted_records2016_10818.sfen")
+            .lines()
+            .take(256)
+            .enumerate()
+        {
+            let pos = Position::new(
+                PartialPosition::from_usi(&format!("sfen {sfen}")).expect("valid sfen"),
+            );
+            assert_eq!(
+                sorted_move_debug(quiescence_reference_moves(&pos)),
+                sorted_move_debug(pos.legal_quiescence_moves()),
+                "line {}: {}",
+                i + 1,
                 sfen
             );
         }
