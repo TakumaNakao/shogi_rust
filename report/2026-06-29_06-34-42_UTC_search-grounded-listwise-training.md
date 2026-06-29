@@ -213,3 +213,71 @@ SCREEN_DIR=data/mmto/runs/listwise_screen_current_top_20260629_070536
 ```
 
 seed7301はscore gateを通ったがrerank gateでfail。seed7401は `best_epoch=0`。confirmへ進めない。
+
+### Sharpen A screen結果
+
+条件:
+
+- `LISTWISE_TEACHER_TOP_K=8`
+- `LISTWISE_CANDIDATE_TOP_K=8`
+- `TEACHER_TEMPERATURE_CP=60`
+- `TEACHER_TOP_CE_WEIGHT=0.15`
+- `TRAIN_LINES=1200`
+- `VALID_LINES=240`
+- `EPOCHS=3`
+
+結果:
+
+```text
+SCREEN_DIR=data/mmto/runs/listwise_screen_sharp_top8_20260629_071121
+
+| run | seed | best | score | rerank | d_selected | d_p90 | d_p95 | d_match | d_bad50 | d_bad100 |
+|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|
+| seed_7301 | 7301 | 1 | pass | fail | -0.70 | 0.00 | -0.01 | 0.42% | 0.00% | 0.00% |
+| seed_7401 | 7401 | 0 | missing | missing | 0.00 | 0.00 | 0.00 | 0.00% | 0.00% | 0.00% |
+```
+
+current-top screenと同様に、seed7301だけbestが進むがrerank gateでfail。seed7401は `best_epoch=0`。confirmへ進めない。
+
+### Sharpen B screen結果
+
+条件:
+
+- `LISTWISE_TEACHER_TOP_K=4`
+- `LISTWISE_CANDIDATE_TOP_K=8`
+- `TEACHER_TEMPERATURE_CP=40`
+- `TEACHER_TOP_CE_WEIGHT=0.20`
+- `TRAIN_LINES=1200`
+- `VALID_LINES=240`
+- `EPOCHS=3`
+
+結果:
+
+```text
+SCREEN_DIR=data/mmto/runs/listwise_screen_sharp_top4_20260629_071634
+
+| run | seed | best | score | rerank | d_selected | d_p90 | d_p95 | d_match | d_bad50 | d_bad100 |
+|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|
+| seed_7301 | 7301 | 1 | pass | fail | -0.70 | 0.00 | -0.01 | 0.42% | 0.00% | 0.00% |
+| seed_7401 | 7401 | 0 | missing | missing | 0.00 | 0.00 | 0.00 | 0.00% | 0.00% | 0.00% |
+```
+
+Sharpen Bもconfirmへ進めない。
+
+## 判断
+
+current-top、sharpen A、sharpen Bの3screenはいずれも不合格だった。共通してseed7301だけ微小改善し、seed7401は `best_epoch=0` のまま止まる。
+
+このため、現行PV sibling dumpに対するlistwise目的関数の微調整を長時間化する価値は低い。次は以下へ移る。
+
+1. hard-node / bench-failure / PV siblingの失敗局面を、より強いteacher depthで再dumpする。
+2. 全候補listwise CEではなく、teacher-best vs 実探索bad moveのpair feedbackを主信号にする。
+3. 通常局面のphase-balanced protectionを別validとして残し、hard局面だけへの過適合を防ぐ。
+
+次の最小条件:
+
+- teacher depth 4を基本にする。
+- feedback train 600以上、guard 200以上、phase-balanced protection 1200以上。
+- candidate/regret deltaはまず600cp以内に制限する。
+- `EPOCHS=8..12`。
+- gateは held-out violation 3pp以上改善、通常guardのrerank mean/p90/p95/bad50/bad100非悪化。
