@@ -60,6 +60,28 @@ impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
         }
     }
 
+    /// 探索中の交互着手履歴を前提に、同じ手番の局面だけを走査して千日手をチェックします。
+    pub fn check_sennichite_assuming_alternating_history(
+        &self,
+        position: &Position,
+    ) -> SennichiteStatus {
+        let target_hash = PositionHasher::calculate_hash(position);
+        let mut count = 0;
+        for &hash in self.history.iter().rev().step_by(2) {
+            if hash == target_hash {
+                count += 1;
+                if count >= 4 {
+                    return if position.in_check() {
+                        SennichiteStatus::PerpetualCheckLoss
+                    } else {
+                        SennichiteStatus::Draw
+                    };
+                }
+            }
+        }
+        SennichiteStatus::None
+    }
+
     /// 履歴をクリアします。
     pub fn clear(&mut self) {
         self.history.clear();
@@ -118,6 +140,10 @@ mod tests {
             detector.check_sennichite(&initial_pos),
             SennichiteStatus::Draw
         );
+        assert_eq!(
+            detector.check_sennichite_assuming_alternating_history(&initial_pos),
+            SennichiteStatus::Draw
+        );
     }
 
     #[test]
@@ -136,6 +162,59 @@ mod tests {
         assert_eq!(
             detector.check_sennichite(&pos),
             SennichiteStatus::PerpetualCheckLoss
+        );
+    }
+
+    #[test]
+    fn alternating_history_scan_counts_same_side_positions() {
+        const TEST_CAPACITY: usize = 20;
+        let mut detector = SennichiteDetector::<TEST_CAPACITY>::new();
+
+        let mut pos = Position::default();
+        detector.record_position(&pos);
+
+        for _ in 0..3 {
+            let mv1 = Move::Normal {
+                from: Square::new(2, 7).unwrap(),
+                to: Square::new(2, 6).unwrap(),
+                promote: false,
+            };
+            pos.do_move(mv1);
+            detector.record_position(&pos);
+
+            let mv2 = Move::Normal {
+                from: Square::new(8, 3).unwrap(),
+                to: Square::new(8, 4).unwrap(),
+                promote: false,
+            };
+            pos.do_move(mv2);
+            detector.record_position(&pos);
+
+            let mv3 = Move::Normal {
+                from: Square::new(2, 6).unwrap(),
+                to: Square::new(2, 7).unwrap(),
+                promote: false,
+            };
+            pos.do_move(mv3);
+            detector.record_position(&pos);
+
+            let mv4 = Move::Normal {
+                from: Square::new(8, 4).unwrap(),
+                to: Square::new(8, 3).unwrap(),
+                promote: false,
+            };
+            pos.do_move(mv4);
+            detector.record_position(&pos);
+        }
+
+        let initial_pos = Position::default();
+        assert_eq!(
+            detector.check_sennichite(&initial_pos),
+            detector.check_sennichite_assuming_alternating_history(&initial_pos)
+        );
+        assert_eq!(
+            detector.check_sennichite_assuming_alternating_history(&initial_pos),
+            SennichiteStatus::Draw
         );
     }
 }

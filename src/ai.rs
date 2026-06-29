@@ -516,7 +516,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     pub fn is_sennichite_internal(&self, position: &Position) -> SennichiteStatus {
-        self.sennichite_detector.check_sennichite(position)
+        self.sennichite_detector
+            .check_sennichite_assuming_alternating_history(position)
     }
 
     pub fn find_best_move(
