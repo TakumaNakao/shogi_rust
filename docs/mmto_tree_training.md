@@ -190,6 +190,44 @@ python3 tools/summarize_mmto_runs.py \
 
 `d_selected`、`d_p90`、`d_p95`、`d_bad50`、`d_bad100` は小さいほど良く、`d_match` は大きいほど良い。複数splitで同時に非悪化になるまで、長時間学習には進めない。
 
+2seed screenをまとめて回す場合:
+
+```bash
+SCREEN_NAME=current_top \
+CURRENT_TOP_MARGIN_WEIGHT=0.15 \
+LISTWISE_HARD_NEGATIVE_WEIGHT=0.05 \
+LISTWISE_HARD_NEGATIVE_MIN_REGRET_CP=50 \
+TEACHER_TOP_CE_WEIGHT=0.05 \
+bash tools/run_mmto_listwise_screen.sh
+```
+
+候補集合とteacher分布を鋭くするscreen:
+
+```bash
+SCREEN_NAME=sharp_top8 \
+LISTWISE_TEACHER_TOP_K=8 \
+LISTWISE_CANDIDATE_TOP_K=8 \
+TEACHER_TEMPERATURE_CP=60 \
+TEACHER_TOP_CE_WEIGHT=0.15 \
+bash tools/run_mmto_listwise_screen.sh
+
+SCREEN_NAME=sharp_top4 \
+LISTWISE_TEACHER_TOP_K=4 \
+LISTWISE_CANDIDATE_TOP_K=8 \
+TEACHER_TEMPERATURE_CP=40 \
+TEACHER_TOP_CE_WEIGHT=0.20 \
+bash tools/run_mmto_listwise_screen.sh
+```
+
+screenの合格条件:
+
+- 2seedで `best_epoch>0` が最低1本、悪化がない。
+- score gateを通る。
+- rerank meanが非悪化、できれば改善。
+- p90/p95/bad50/bad100が悪化しない。
+
+screenを通った条件だけ、3seed `TRAIN_LINES=3000 VALID_LINES=600 EPOCHS=4` のconfirmへ進める。
+
 古いMMTO run生成物を消す場合:
 
 ```bash

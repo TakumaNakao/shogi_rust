@@ -153,3 +153,63 @@ subset抽出では、既定で `SUBSET_EXCLUDE_IN_CHECK=1`、`SUBSET_MIN_LEGAL_M
 - 現時点では長時間学習へ進める信号はない。
 
 次は、学習時間延長ではなく、候補集合・teacher分布温度・current-top margin/teacher-top CEの重みを小さくsweepし、2splitで `best_epoch>0` とrerank非悪化が同時に出る条件を探す。
+
+## 次のscreen計画
+
+GPT-5.5 xhighサブエージェントの判断では、現行listwise設定のまま長時間化する価値はまだ低い。
+
+優先するscreen:
+
+1. Current-top hard negative主導
+   - `CURRENT_TOP_MARGIN_WEIGHT=0.15`
+   - `LISTWISE_HARD_NEGATIVE_WEIGHT=0.05`
+   - `LISTWISE_HARD_NEGATIVE_MIN_REGRET_CP=50`
+   - `TEACHER_TOP_CE_WEIGHT=0.05`
+2. Sharpen A
+   - `LISTWISE_TEACHER_TOP_K=8`
+   - `LISTWISE_CANDIDATE_TOP_K=8`
+   - `TEACHER_TEMPERATURE_CP=60`
+   - `TEACHER_TOP_CE_WEIGHT=0.15`
+3. Sharpen B
+   - `LISTWISE_TEACHER_TOP_K=4`
+   - `LISTWISE_CANDIDATE_TOP_K=8`
+   - `TEACHER_TEMPERATURE_CP=40`
+   - `TEACHER_TOP_CE_WEIGHT=0.20`
+
+`tools/run_mmto_listwise_screen.sh` を追加し、2seed screenとsummary生成をまとめて実行できるようにした。
+
+長時間学習へ進める合格条件は、まず3seed confirmで以下を満たすこと。
+
+- `best_epoch>0` が2/3以上
+- score gate全通過
+- pooled rerank meanが0.2cp以上改善
+- p90/p95/bad50/bad100は非悪化
+- p90/p95またはbad50/bad100のどれかが実改善
+- teacher match平均は非低下
+
+### Current-top screen結果
+
+実験担当サブエージェントに current-top hard negative screen を依頼した。
+
+条件:
+
+- `CURRENT_TOP_MARGIN_WEIGHT=0.15`
+- `LISTWISE_HARD_NEGATIVE_WEIGHT=0.05`
+- `LISTWISE_HARD_NEGATIVE_MIN_REGRET_CP=50`
+- `TEACHER_TOP_CE_WEIGHT=0.05`
+- `TRAIN_LINES=1200`
+- `VALID_LINES=240`
+- `EPOCHS=3`
+
+結果:
+
+```text
+SCREEN_DIR=data/mmto/runs/listwise_screen_current_top_20260629_070536
+
+| run | seed | best | score | rerank | d_selected | d_p90 | d_p95 | d_match | d_bad50 | d_bad100 |
+|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|
+| seed_7301 | 7301 | 1 | pass | fail | -0.16 | 0.00 | 0.00 | 0.42% | 0.00% | 0.00% |
+| seed_7401 | 7401 | 0 | missing | missing | 0.00 | 0.00 | 0.00 | 0.00% | 0.00% | 0.00% |
+```
+
+seed7301はscore gateを通ったがrerank gateでfail。seed7401は `best_epoch=0`。confirmへ進めない。
