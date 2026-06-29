@@ -31,6 +31,10 @@ name = "kpp_learn"
 path = "src/kpp_learn.rs"
 
 [[bin]]
+name = "bonanza_pairwise_train"
+path = "src/bin/bonanza_pairwise_train.rs"
+
+[[bin]]
 name = "shogi_game"
 path = "src/bin/shogi_game.rs"
 
@@ -89,3 +93,31 @@ path = "src/bin/mmto_rerank_gate.rs"
 [[bin]]
 name = "csa_policy_dump"
 path = "src/bin/csa_policy_dump.rs"
+
+[[bin]]
+name = "dataset_build"
+path = "src/bin/dataset_build.rs"
+
+[[bin]]
+name = "mmto_balance_dataset"
+path = "src/bin/mmto_balance_dataset.rs"
+
+[[bin]]
+name = "rank_stats"
+path = "src/bin/rank_stats.rs"
+
+[[bin]]
+name = "bench_failure_miner"
+path = "src/bin/bench_failure_miner.rs"
+
+[[bin]]
+name = "bench_failure_feedback"
+path = "src/bin/bench_failure_feedback.rs"
+
+[[bin]]
+name = "rerank_feedback_collect"
+path = "src/bin/rerank_feedback_collect.rs"
+
+[[bin]]
+name = "tree_feedback_collect"
+path = "src/bin/tree_feedback_collect.rs"

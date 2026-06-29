@@ -55,6 +55,65 @@ cargo build --release --bin kpp_learn
 
 新しく重みを試す場合は、まず `ce` 方式と `--freeze-material` の組み合わせを推奨します。駒得係数を固定し、KPP重みだけを安全に更新します。
 
+#### scratch と warm-start
+
+`kpp_learn` では初期化方法を `--init-mode` で明示できます。
+
+- `auto`（既定）: `--weights` があれば読み込み、なければ新規作成して保存。
+- `load`: `--weights` が必須。存在しなければ終了。
+- `scratch`: `--weights` を読まず `SparseModel::new` から開始。baseline誤上書きを避けるため、`--output` は `--weights` と別パスにする必要があります。
+
+`scratch` 時は `--scratch-material-coeff` で `material_coeff` を指定します（既定値 `1.0`）。`auto/load` では既存重みの値を引き継ぎます。
+
+同条件比較するときは、warm-start は既知重み（例: `policy_weights_v2.1.0.binary`）を読み込み、scratch は `scratch` を使って比較します。
+
+```bash
+# warm-start（v2.1.0ベース）
+env RUST_FONTCONFIG_DLOPEN=1 target/release/kpp_learn \
+  --init-mode load \
+  --input-dir data/wdoor/extract/2026 \
+  --weights ./policy_weights_v2.1.0.binary \
+  --output /tmp/policy_weights_wdoor2026_v210_warm.binary \
+  --loss ce \
+  --softmax-temperature 150 \
+  --learning-rate 0.005 \
+  --seed 20260620
+
+# scratch（同条件）
+env RUST_FONTCONFIG_DLOPEN=1 target/release/kpp_learn \
+  --init-mode scratch \
+  --input-dir data/wdoor/extract/2026 \
+  --weights ./policy_weights_v2.1.0.binary \
+  --scratch-material-coeff 1.0 \
+  --output /tmp/policy_weights_wdoor2026_scratch.binary \
+  --loss ce \
+  --softmax-temperature 150 \
+  --learning-rate 0.005 \
+  --seed 20260620
+```
+
+scratch と warm-start を同条件で順番に回すスクリプトもあります。
+
+```bash
+RUN_ROOT="data/wdoor/runs/kpp_supervised_compare_$(date -u +%Y%m%d_%H%M%S)"
+mkdir -p "$RUN_ROOT"
+
+nohup env RUST_FONTCONFIG_DLOPEN=1 \
+  RUN_ROOT="$RUN_ROOT" \
+  YEARS="2023 2024 2025 2026" \
+  RUN_KIND=both \
+  EPOCHS=4 \
+  MIN_PLAYER_RATE=4000 \
+  bash tools/run_kpp_supervised_compare.sh \
+  > "$RUN_ROOT/compare_stdout.log" 2>&1 &
+
+echo "RUN_ROOT=$RUN_ROOT"
+echo "tail -f $RUN_ROOT/compare_stdout.log"
+```
+
+`RUN_KIND=scratch` または `RUN_KIND=warm` にすると片方だけ実行できます。
+既定ではscratchの `material_coeff` は `policy_weights_v2.1.0.binary` に近い `0.14564776` を使います。変更する場合は `SCRATCH_MATERIAL_COEFF=1.0` のように指定します。
+
 #### wdoor/floodgate棋譜の取得
 
 東京大学のwdoor/floodgateアーカイブからCSA棋譜を取得できます。棋譜本体は大きいため `data/wdoor/` に保存し、Git管理対象にはしません。
@@ -210,6 +269,47 @@ kill "$(cat "$RUN_DIR/pid")"
 --decisive-only --loser-sample-rate 0.5
 ```
 
+#### Bonanza式 pairwise KPP 学習
+
+`bonanza_pairwise_train` は、棋譜手と兄弟合法手を直接比較してKPP重みを更新する実験用学習器です。局面値の回帰ではなく、同一局面で「棋譜手を指した後の子局面」が「現モデルで上位に来る兄弟手の子局面」より高くなるように学習します。
+
+小実験は以下で実行できます。候補重みは大きいため、採用しないものは削除してください。
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+  --bin csa_policy_dump --bin bonanza_pairwise_train
+
+RUN_DIR="data/bonanza_pairwise_runs/pairwise_$(date -u +%Y%m%d_%H%M%S)"
+
+INPUTS="data/wdoor/extract/2026" \
+RUN_DIR="$RUN_DIR" \
+MAX_RECORDS=2000 \
+VALID_PERCENT=10 \
+MIN_PLY=16 \
+MAX_PLY=120 \
+MIN_PLAYER_RATE=4000 \
+DECISIVE_ONLY=1 \
+EPOCHS=1 \
+BATCH_SIZE=128 \
+VALID_MAX_SAMPLES=500 \
+HARD_NEGATIVES=4 \
+OPTIMIZER=adagrad \
+LEARNING_RATE=0.003 \
+MAX_WEIGHT_DELTA=0.001 \
+ANCHOR_L2=0.0002 \
+FREEZE_MATERIAL=1 \
+bash tools/run_bonanza_pairwise_pipeline.sh
+```
+
+主な確認指標:
+
+- `valid top1`: held-out局面で棋譜手がモデル最善になった割合。
+- `valid pair_acc`: 棋譜手が兄弟合法手より高く評価された割合。
+- `valid mean_rank`: 棋譜手のモデル順位。小さいほど良い。
+- `valid loss`: pairwise margin loss。
+
+この学習器は、現行MMTO-liteの代替候補です。`valid loss` だけで採用せず、rerank gate と対局ベンチで確認してください。
+
 #### 採用前の検証
 
 学習後の重みは短い対局だけで採用しないでください。最低限、以下を確認します。
@@ -230,3 +330,50 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/search_profile \
 ```
 
 候補重みは、まず現行重みとの40局以上の比較で悪化しないことを確認し、良い候補だけ100局以上で検証します。採用する重みはGit管理せず、GitHub Releaseのassetとして手動アップロードします。
+
+### 長期学習向けデータ基盤
+
+短期的な棋譜手一致率だけではなく、探索と整合する強い評価関数を作るため、CSAから再現可能なdataset manifest付きJSONLを作成できます。出力はストリーミングされるため、大量棋譜でも局面を全件メモリに保持しません。
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin dataset_build
+
+env RUST_FONTCONFIG_DLOPEN=1 target/release/dataset_build \
+  --input data/wdoor/extract/2023 \
+  --input data/wdoor/extract/2024 \
+  --input data/wdoor/extract/2025 \
+  --input data/wdoor/extract/2026 \
+  --output-dir data/training/rank_value_v2_wdoor2023_2026_r4000 \
+  --min-player-rate 4000 \
+  --decisive-only \
+  --exclude-loser-after-ply 100 \
+  --min-ply 1 \
+  --max-ply 140 \
+  --valid-percent 5 \
+  --test-percent 5 \
+  --seed 9601
+```
+
+出力:
+
+- `train.jsonl`
+- `valid.jsonl`
+- `test.jsonl`
+- `manifest.json`
+
+MMTO/tree dumpはチャンク処理に対応しています。`POSITION_CHUNK_SIZE` を小さくするとメモリ使用量を抑えられ、大きくすると並列処理の効率が上がります。
+
+```bash
+POSITION_CHUNK_SIZE=1024 JOBS="$(nproc)" bash tools/run_mmto_rerank_pipeline.sh
+```
+
+既存dumpや新規dumpの品質確認には `rank_stats` を使います。
+
+```bash
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin rank_stats
+
+env RUST_FONTCONFIG_DLOPEN=1 target/release/rank_stats \
+  --input data/mmto/runs/<run>/train.tree.jsonl \
+  --input data/mmto/runs/<run>/valid.tree.jsonl \
+  --json-output data/mmto/runs/<run>/rank_stats.json
+```

@@ -3,6 +3,7 @@ use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
 use crate::utils::{format_move_usi, get_piece_value};
+use arrayvec::ArrayVec;
 use shogi_core::Move;
 use shogi_lib::Position;
 use std::collections::HashMap;
@@ -17,8 +18,10 @@ const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
 const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 3;
+const TIME_CHECK_NODE_INTERVAL: u64 = 1024;
 const USI_SCORE_CP_LIMIT: i32 = 2_000;
 const USI_SCORE_CP_SOFT_START: i32 = 1_000;
+type LegalMoves = ArrayVec<Move, 593>;
 
 fn usi_display_score_cp(score: f32) -> i32 {
     if !score.is_finite() {
@@ -70,6 +73,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     killer_moves: [[Option<Move>; 2]; MAX_DEPTH],
     start_time: Option<Instant>,
     time_limit: Option<Duration>,
+    next_time_check_nodes: u64,
     nodes_searched: u64,
     quiescence_nodes_searched: u64,
     quiescence_moves_considered: u64,
@@ -97,6 +101,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             killer_moves: [[None; 2]; MAX_DEPTH],
             start_time: None,
             time_limit: None,
+            next_time_check_nodes: 0,
             nodes_searched: 0,
             quiescence_nodes_searched: 0,
             quiescence_moves_considered: 0,
@@ -208,14 +213,20 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         0
     }
 
-    fn is_time_up(&self) -> bool {
+    fn is_time_up(&mut self) -> bool {
+        if self.nodes_searched < self.next_time_check_nodes {
+            return false;
+        }
+        self.next_time_check_nodes = self.nodes_searched + TIME_CHECK_NODE_INTERVAL;
+
         if self
             .stop_signal
             .as_ref()
-            .is_some_and(|stop_signal| stop_signal.load(Ordering::SeqCst))
+            .is_some_and(|stop_signal| stop_signal.load(Ordering::Relaxed))
         {
             return true;
         }
+
         if let (Some(start), Some(limit)) = (self.start_time, self.time_limit) {
             start.elapsed() >= limit
         } else {
@@ -240,8 +251,33 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     pub fn quiescence_search(
         &mut self,
         position: &mut Position,
+        alpha: f32,
+        beta: f32,
+    ) -> Option<(f32, Vec<Move>)> {
+        self.quiescence_search_internal(position, alpha, beta, None)
+    }
+
+    fn filter_quiescence_moves_from_legal(
+        position: &Position,
+        mut moves: LegalMoves,
+    ) -> (LegalMoves, usize) {
+        let generated = moves.len();
+        moves.retain(|m| {
+            if let Move::Normal { to, .. } = *m {
+                position.piece_at(to).is_some() || position.is_check_move(*m)
+            } else {
+                position.is_check_move(*m)
+            }
+        });
+        (moves, generated)
+    }
+
+    fn quiescence_search_internal(
+        &mut self,
+        position: &mut Position,
         mut alpha: f32,
         beta: f32,
+        precomputed_moves: Option<LegalMoves>,
     ) -> Option<(f32, Vec<Move>)> {
         if self.is_time_up() {
             return None;
@@ -249,9 +285,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.nodes_searched += 1;
         self.quiescence_nodes_searched += 1;
 
-        if position.in_check() && !position.has_legal_evasion() {
-            self.quiescence_terminal_mates += 1;
-            return Some((-f32::INFINITY, Vec::new()));
+        if position.in_check() {
+            let has_evasion = precomputed_moves
+                .as_ref()
+                .map(|moves| !moves.is_empty())
+                .unwrap_or_else(|| position.has_legal_evasion());
+            if !has_evasion {
+                self.quiescence_terminal_mates += 1;
+                return Some((-f32::INFINITY, Vec::new()));
+            }
         }
 
         let stand_pat_score = self.evaluator.evaluate(position);
@@ -260,7 +302,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
         alpha = alpha.max(stand_pat_score);
 
-        let (moves, generated_moves) = position.legal_quiescence_moves_with_generated_count();
+        let (moves, generated_moves) = precomputed_moves
+            .map(|moves| Self::filter_quiescence_moves_from_legal(position, moves))
+            .unwrap_or_else(|| position.legal_quiescence_moves_with_generated_count());
 
         self.quiescence_moves_generated += generated_moves as u64;
         self.quiescence_moves_discarded += (generated_moves - moves.len()) as u64;
@@ -294,7 +338,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let score_result = match sennichite_status {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
                 SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
-                SennichiteStatus::None => self.quiescence_search(position, -beta, -alpha),
+                SennichiteStatus::None => {
+                    self.quiescence_search_internal(position, -beta, -alpha, None)
+                }
             };
             self.sennichite_detector.unrecord_last_position();
             position.undo_move(mv);
@@ -322,7 +368,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         alpha: f32,
         beta: f32,
     ) -> Option<(f32, Vec<Move>)> {
-        self.alpha_beta_search_internal(position, depth, alpha, beta, 1)
+        self.alpha_beta_search_internal(position, depth, alpha, beta, 1, None)
     }
 
     fn alpha_beta_search_internal(
@@ -332,12 +378,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         mut alpha: f32,
         mut beta: f32,
         check_evasion_extension_budget: u8,
+        precomputed_moves: Option<LegalMoves>,
     ) -> Option<(f32, Vec<Move>)> {
         if self.is_time_up() {
             return None;
         }
         if depth == 0 {
-            return self.quiescence_search(position, alpha, beta);
+            return self.quiescence_search_internal(position, alpha, beta, precomputed_moves);
         }
         self.nodes_searched += 1;
 
@@ -359,7 +406,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
 
-        let moves = position.legal_moves();
+        let moves = precomputed_moves.unwrap_or_else(|| position.legal_moves());
         if moves.is_empty() {
             return Some((-f32::INFINITY, Vec::new()));
         }
@@ -402,14 +449,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 SennichiteStatus::None => {
                     let mut child_depth = depth - 1;
                     let mut child_extension_budget = check_evasion_extension_budget;
-                    if depth == 1
-                        && check_evasion_extension_budget > 0
-                        && position.in_check()
-                        && position.legal_moves().len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES
-                    {
-                        child_depth = 1;
-                        child_extension_budget -= 1;
-                        self.check_evasion_extensions += 1;
+                    let mut child_precomputed_moves = None;
+                    if depth == 1 && check_evasion_extension_budget > 0 && position.in_check() {
+                        let child_moves = position.legal_moves();
+                        if child_moves.len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES {
+                            child_depth = 1;
+                            child_extension_budget -= 1;
+                            self.check_evasion_extensions += 1;
+                        }
+                        child_precomputed_moves = Some(child_moves);
                     }
                     self.alpha_beta_search_internal(
                         position,
@@ -417,6 +465,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         -beta,
                         -alpha,
                         child_extension_budget,
+                        child_precomputed_moves,
                     )
                 }
             };
@@ -464,7 +513,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     pub fn is_sennichite_internal(&self, position: &Position) -> SennichiteStatus {
-        self.sennichite_detector.check_sennichite(position)
+        self.sennichite_detector
+            .check_sennichite_assuming_alternating_history(position)
     }
 
     pub fn find_best_move(
@@ -484,6 +534,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.clear_killer_moves();
         self.start_time = Some(Instant::now());
         self.time_limit = time_limit_ms.map(Duration::from_millis);
+        self.next_time_check_nodes = 0;
         self.nodes_searched = 0;
         self.quiescence_nodes_searched = 0;
         self.quiescence_moves_considered = 0;

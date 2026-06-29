@@ -21,11 +21,29 @@ const DEFAULT_LEARNING_RATE: f32 = 0.1;
 const DEFAULT_L2_LAMBDA: f32 = 1e-5;
 const DEFAULT_BATCH_SIZE: usize = 1024;
 const DEFAULT_LOAD_FILE_BATCH_SIZE: usize = 256;
+const DEFAULT_SCRATCH_MATERIAL_COEFF: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum LossMode {
     Margin,
     Ce,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum InitMode {
+    Auto,
+    Load,
+    Scratch,
+}
+
+impl InitMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            InitMode::Auto => "auto",
+            InitMode::Load => "load",
+            InitMode::Scratch => "scratch",
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -47,6 +65,10 @@ struct Args {
     l2_lambda: f32,
     #[arg(long, value_enum, default_value_t = LossMode::Margin)]
     loss: LossMode,
+    #[arg(long, value_enum, default_value_t = InitMode::Auto)]
+    init_mode: InitMode,
+    #[arg(long, default_value_t = DEFAULT_SCRATCH_MATERIAL_COEFF)]
+    scratch_material_coeff: f32,
     #[arg(long, default_value_t = 600.0)]
     softmax_temperature: f32,
     #[arg(long, default_value_t = 1024)]
@@ -605,6 +627,14 @@ fn main() -> Result<()> {
             ));
         }
     }
+    if !args.scratch_material_coeff.is_finite() {
+        return Err(anyhow!("--scratch-material-coeff must be finite"));
+    }
+    if matches!(args.init_mode, InitMode::Scratch) && args.output == args.weights {
+        return Err(anyhow!(
+            "--init-mode scratch requires --output to differ from --weights to avoid overwriting an existing baseline"
+        ));
+    }
 
     let max_weight_delta = args.max_weight_delta.filter(|delta| *delta > 0.0);
     let early_stop_min_accuracy_drop = args.early_stop_min_accuracy_drop.filter(|drop| *drop > 0.0);
@@ -618,17 +648,41 @@ fn main() -> Result<()> {
     };
 
     let mut model = SparseModel::new(args.learning_rate, args.l2_lambda);
+    println!("init mode: {}", args.init_mode.as_str());
+    println!("weights: {}", args.weights.display());
 
-    if args.weights.exists() {
-        println!("重みファイルを読み込んでいます...");
-        model.load(&args.weights)?;
-        println!("重みファイルを読み込みました。");
-    } else {
-        println!("新しい重みファイルを作成します。");
-        model.save(&args.weights)?;
+    match args.init_mode {
+        InitMode::Auto => {
+            if args.weights.exists() {
+                println!("既存の重みファイルを読み込みます...");
+                model.load(&args.weights)?;
+                println!("重みファイルを読み込みました。");
+            } else {
+                println!("重みファイルがありません。新規作成して保存します。");
+                model.save(&args.weights)?;
+            }
+        }
+        InitMode::Load => {
+            if !args.weights.exists() {
+                return Err(anyhow!(
+                    "--init-mode load requires --weights to exist: {}",
+                    args.weights.display()
+                ));
+            }
+            println!("load mode: 重みファイルを読み込みます...");
+            model.load(&args.weights)?;
+            println!("重みファイルを読み込みました。");
+        }
+        InitMode::Scratch => {
+            println!(
+                "scratch mode: 重みファイルを読み込まず、初期値から学習します（既存のweightsは参照しません）。"
+            );
+            model.material_coeff = args.scratch_material_coeff;
+        }
     }
     model.kpp_eta = args.learning_rate;
     model.l2_lambda = args.l2_lambda;
+    println!("material coeff: {:.6}", model.material_coeff);
     let initial_material_coeff = model.material_coeff;
     let initial_model_for_anchor = SparseModel {
         w: model.w.clone(),

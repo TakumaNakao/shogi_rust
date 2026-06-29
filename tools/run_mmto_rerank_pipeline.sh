@@ -9,25 +9,54 @@ fi
 cd "$(dirname "$0")/.."
 
 WEIGHTS="${WEIGHTS:-policy_weights_v2.1.0.binary}"
+TEACHER_WEIGHTS="${TEACHER_WEIGHTS:-$WEIGHTS}"
 POSITIONS="${POSITIONS:-taya36.sfen}"
 MAX_POSITIONS="${MAX_POSITIONS:-3000}"
+POSITION_CHUNK_SIZE="${POSITION_CHUNK_SIZE:-1024}"
 VALID_PERCENT="${VALID_PERCENT:-10}"
 JOBS="${JOBS:-$(nproc)}"
 TEACHER_SCORE_TOP="${TEACHER_SCORE_TOP:-16}"
 CANDIDATE_TOP="${CANDIDATE_TOP:-16}"
+SCORE_ALL_LEGAL_FOR_VALID="${SCORE_ALL_LEGAL_FOR_VALID:-0}"
 
 TEACHER_DEPTH="${TEACHER_DEPTH:-4}"
 STUDENT_DEPTH="${STUDENT_DEPTH:-3}"
 RERANK_TEACHER_DEPTH="${RERANK_TEACHER_DEPTH:-5}"
 RERANK_MAX_POSITIONS="${RERANK_MAX_POSITIONS:-300}"
+RERANK_REQUIRE_MEAN_REGRET_IMPROVEMENT_CP="${RERANK_REQUIRE_MEAN_REGRET_IMPROVEMENT_CP:-0.5}"
+RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP="${RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP:-0.0}"
+RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP="${RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP:-0.0}"
+RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT="${RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT:-0.0}"
+RERANK_DEDUPE_SFEN="${RERANK_DEDUPE_SFEN:-0}"
 
 EPOCHS="${EPOCHS:-5}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 LEARNING_RATE="${LEARNING_RATE:-0.0002}"
+TEACHER_TOP_K="${TEACHER_TOP_K:-2}"
+STUDENT_BAD_TOP_K="${STUDENT_BAD_TOP_K:-6}"
+BAD_CANDIDATE_SCOPE="${BAD_CANDIDATE_SCOPE:-student-top}"
 MIN_REGRET_CP="${MIN_REGRET_CP:-50}"
+MAX_PAIRS_PER_SAMPLE="${MAX_PAIRS_PER_SAMPLE:-16}"
+PAIR_MINING="${PAIR_MINING:-loss-top}"
+PAIR_WEIGHT_MODE="${PAIR_WEIGHT_MODE:-bad-regret}"
+PAIR_WEIGHT_SCALE_CP="${PAIR_WEIGHT_SCALE_CP:-100}"
+MAX_PAIR_WEIGHT="${MAX_PAIR_WEIGHT:-3}"
+LOSS_MODE="${LOSS_MODE:-pairwise}"
+LISTWISE_FEATURE_SOURCE="${LISTWISE_FEATURE_SOURCE:-teacher-leaf}"
+LISTWISE_HARD_NEGATIVE_WEIGHT="${LISTWISE_HARD_NEGATIVE_WEIGHT:-0.0}"
+LISTWISE_HARD_NEGATIVE_MIN_REGRET_CP="${LISTWISE_HARD_NEGATIVE_MIN_REGRET_CP:-50}"
+TEACHER_TOP_CE_WEIGHT="${TEACHER_TOP_CE_WEIGHT:-0}"
+GAME_TEACHER_MARGIN_WEIGHT="${GAME_TEACHER_MARGIN_WEIGHT:-0.0}"
+GAME_TEACHER_MAX_REGRET_CP="${GAME_TEACHER_MAX_REGRET_CP:-150}"
+GAME_TEACHER_MIN_BAD_REGRET_CP="${GAME_TEACHER_MIN_BAD_REGRET_CP:-15}"
+CURRENT_TOP_MARGIN_WEIGHT="${CURRENT_TOP_MARGIN_WEIGHT:-0.0}"
+CURRENT_TOP_MIN_BAD_REGRET_CP="${CURRENT_TOP_MIN_BAD_REGRET_CP:-15}"
 MAX_WEIGHT_DELTA="${MAX_WEIGHT_DELTA:-0.05}"
 ANCHOR_L2="${ANCHOR_L2:-0.0002}"
-BLEND_RATIOS="${BLEND_RATIOS:-0.01 0.02 0.05 0.10}"
+BEST_GUARD_MAX_REGRET_INCREASE_CP="${BEST_GUARD_MAX_REGRET_INCREASE_CP:--1}"
+BEST_GUARD_BAD100_INCREASE="${BEST_GUARD_BAD100_INCREASE:--1}"
+BEST_GUARD_TEACHER_MATCH_DROP_PCT="${BEST_GUARD_TEACHER_MATCH_DROP_PCT:--1}"
+BLEND_RATIOS="${BLEND_RATIOS-0.01 0.02 0.05 0.10}"
 KEEP_CANDIDATE_RAW="${KEEP_CANDIDATE_RAW:-0}"
 MIN_FREE_GB="${MIN_FREE_GB:-6}"
 
@@ -39,6 +68,11 @@ if [[ ! -f "$WEIGHTS" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$TEACHER_WEIGHTS" ]]; then
+  echo "missing teacher weights: $TEACHER_WEIGHTS" >&2
+  exit 1
+fi
+
 if [[ ! -f "$POSITIONS" ]]; then
   echo "missing positions: $POSITIONS" >&2
   exit 1
@@ -46,9 +80,16 @@ fi
 
 echo "RUN_DIR=$RUN_DIR"
 echo "WEIGHTS=$WEIGHTS"
+echo "TEACHER_WEIGHTS=$TEACHER_WEIGHTS"
 echo "POSITIONS=$POSITIONS"
 echo "MAX_POSITIONS=$MAX_POSITIONS"
+echo "POSITION_CHUNK_SIZE=$POSITION_CHUNK_SIZE"
 echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH"
+echo "TEACHER_SCORE_TOP=$TEACHER_SCORE_TOP CANDIDATE_TOP=$CANDIDATE_TOP SCORE_ALL_LEGAL_FOR_VALID=$SCORE_ALL_LEGAL_FOR_VALID"
+echo "BAD_CANDIDATE_SCOPE=$BAD_CANDIDATE_SCOPE MIN_REGRET_CP=$MIN_REGRET_CP MAX_PAIRS_PER_SAMPLE=$MAX_PAIRS_PER_SAMPLE"
+echo "PAIR_MINING=$PAIR_MINING PAIR_WEIGHT_MODE=$PAIR_WEIGHT_MODE PAIR_WEIGHT_SCALE_CP=$PAIR_WEIGHT_SCALE_CP MAX_PAIR_WEIGHT=$MAX_PAIR_WEIGHT"
+echo "LOSS_MODE=$LOSS_MODE LISTWISE_FEATURE_SOURCE=$LISTWISE_FEATURE_SOURCE"
+echo "CURRENT_TOP_MARGIN_WEIGHT=$CURRENT_TOP_MARGIN_WEIGHT CURRENT_TOP_MIN_BAD_REGRET_CP=$CURRENT_TOP_MIN_BAD_REGRET_CP"
 
 FREE_KB="$(df -Pk . | awk 'NR==2 {print $4}')"
 MIN_FREE_KB=$((MIN_FREE_GB * 1024 * 1024))
@@ -60,29 +101,45 @@ fi
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
   --bin mmto_tree_dump \
+  --bin rank_stats \
   --bin mmto_tree_train \
   --bin mmto_score_gate \
   --bin mmto_rerank_gate \
   --bin adjust_weights
 
+dump_args=(
+  --student-weights "$WEIGHTS"
+  --teacher-weights "$TEACHER_WEIGHTS"
+  --input "$POSITIONS"
+  --train-output "$RUN_DIR/train.tree.jsonl"
+  --valid-output "$RUN_DIR/valid.tree.jsonl"
+  --teacher-depth "$TEACHER_DEPTH"
+  --student-depth "$STUDENT_DEPTH"
+  --teacher-score-top "$TEACHER_SCORE_TOP"
+  --candidate-top "$CANDIDATE_TOP"
+  --max-positions "$MAX_POSITIONS"
+  --position-chunk-size "$POSITION_CHUNK_SIZE"
+  --valid-percent "$VALID_PERCENT"
+  --seed 7101
+  --jobs "$JOBS"
+  --min-legal-moves 2
+  --exclude-in-check
+  --max-abs-root-score 3000
+)
+
+if [[ "$SCORE_ALL_LEGAL_FOR_VALID" == "1" ]]; then
+  dump_args+=(--score-all-legal-for-valid)
+fi
+
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_dump \
-  --student-weights "$WEIGHTS" \
-  --teacher-weights "$WEIGHTS" \
-  --input "$POSITIONS" \
-  --train-output "$RUN_DIR/train.tree.jsonl" \
-  --valid-output "$RUN_DIR/valid.tree.jsonl" \
-  --teacher-depth "$TEACHER_DEPTH" \
-  --student-depth "$STUDENT_DEPTH" \
-  --teacher-score-top "$TEACHER_SCORE_TOP" \
-  --candidate-top "$CANDIDATE_TOP" \
-  --max-positions "$MAX_POSITIONS" \
-  --valid-percent "$VALID_PERCENT" \
-  --seed 7101 \
-  --jobs "$JOBS" \
-  --min-legal-moves 2 \
-  --exclude-in-check \
-  --max-abs-root-score 3000 \
+  "${dump_args[@]}" \
   | tee "$RUN_DIR/dump_stdout.log"
+
+env RUST_FONTCONFIG_DLOPEN=1 target/release/rank_stats \
+  --input "$RUN_DIR/train.tree.jsonl" \
+  --input "$RUN_DIR/valid.tree.jsonl" \
+  --json-output "$RUN_DIR/rank_stats.json" \
+  | tee "$RUN_DIR/rank_stats_stdout.log"
 
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --weights "$WEIGHTS" \
@@ -93,16 +150,35 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --epochs "$EPOCHS" \
   --batch-size "$BATCH_SIZE" \
   --learning-rate "$LEARNING_RATE" \
-  --teacher-top-k 2 \
-  --student-bad-top-k 6 \
+  --teacher-top-k "$TEACHER_TOP_K" \
+  --student-bad-top-k "$STUDENT_BAD_TOP_K" \
+  --bad-candidate-scope "$BAD_CANDIDATE_SCOPE" \
   --min-regret-cp "$MIN_REGRET_CP" \
-  --max-pairs-per-sample 16 \
+  --max-pairs-per-sample "$MAX_PAIRS_PER_SAMPLE" \
+  --pair-mining "$PAIR_MINING" \
+  --pair-weight-mode "$PAIR_WEIGHT_MODE" \
+  --pair-weight-scale-cp "$PAIR_WEIGHT_SCALE_CP" \
+  --max-pair-weight "$MAX_PAIR_WEIGHT" \
   --optimizer adagrad \
+  --loss-mode "$LOSS_MODE" \
+  --listwise-feature-source "$LISTWISE_FEATURE_SOURCE" \
+  --listwise-hard-negative-weight "$LISTWISE_HARD_NEGATIVE_WEIGHT" \
+  --listwise-hard-negative-min-regret-cp "$LISTWISE_HARD_NEGATIVE_MIN_REGRET_CP" \
+  --teacher-top-ce-weight "$TEACHER_TOP_CE_WEIGHT" \
+  --game-teacher-margin-weight "$GAME_TEACHER_MARGIN_WEIGHT" \
+  --game-teacher-max-regret-cp "$GAME_TEACHER_MAX_REGRET_CP" \
+  --game-teacher-min-bad-regret-cp "$GAME_TEACHER_MIN_BAD_REGRET_CP" \
+  --current-top-margin-weight "$CURRENT_TOP_MARGIN_WEIGHT" \
+  --current-top-min-bad-regret-cp "$CURRENT_TOP_MIN_BAD_REGRET_CP" \
   --margin-cp 50 \
   --softplus-temp-cp 100 \
   --bad-regret-cp 300 \
   --bad-regret-thresholds-cp 50,100,200,300 \
-  --best-metric selected-regret \
+  --best-metric p95-regret \
+  --best-guard-max-regret-increase-cp="$BEST_GUARD_MAX_REGRET_INCREASE_CP" \
+  --best-guard-bad100-increase="$BEST_GUARD_BAD100_INCREASE" \
+  --best-guard-teacher-match-drop-pct="$BEST_GUARD_TEACHER_MATCH_DROP_PCT" \
+  --selected-regret-cap-cp 300 \
   --freeze-material \
   --anchor-l2 "$ANCHOR_L2" \
   --max-weight-delta "$MAX_WEIGHT_DELTA" \
@@ -124,6 +200,7 @@ if [[ -z "$BEST_EPOCH" || "$BEST_EPOCH" == "0" ]]; then
   exit 0
 fi
 
+set +e
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_score_gate \
   --baseline-weights "$WEIGHTS" \
   --candidate-weights "$RUN_DIR/best.raw.binary" \
@@ -136,11 +213,27 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_score_gate \
   --fail-on-material-drift-cp 5 \
   --json-output "$RUN_DIR/score_gate.json" \
   | tee "$RUN_DIR/score_gate_stdout.log"
+score_status="${PIPESTATUS[0]}"
+set -e
 
+if [[ "$score_status" != "0" ]]; then
+  echo "score gate failed. Rejecting this run."
+  if [[ "$KEEP_CANDIDATE_RAW" != "1" ]]; then
+    rm -f "$RUN_DIR/candidate.raw.binary" "$RUN_DIR/best.raw.binary"
+  fi
+  echo "RUN_DIR=$RUN_DIR"
+  exit "$score_status"
+fi
+
+set +e
+rerank_dedupe_arg=()
+if [[ "$RERANK_DEDUPE_SFEN" == "1" ]]; then
+  rerank_dedupe_arg=(--dedupe-sfen)
+fi
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
   --baseline-weights "$WEIGHTS" \
   --candidate-weights "$RUN_DIR/best.raw.binary" \
-  --teacher-weights "$WEIGHTS" \
+  --teacher-weights "$TEACHER_WEIGHTS" \
   --input "$RUN_DIR/valid.tree.jsonl" \
   --max-positions "$RERANK_MAX_POSITIONS" \
   --seed 7202 \
@@ -148,15 +241,19 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_rerank_gate \
   --candidate-depth "$STUDENT_DEPTH" \
   --teacher-depth "$RERANK_TEACHER_DEPTH" \
   --bad-regret-thresholds-cp 50,100,200,300 \
-  --allow-mean-regret-increase-cp 0 \
-  --allow-p90-regret-increase-cp 0 \
-  --allow-p95-regret-increase-cp 0 \
-  --allow-bad-ratio-increase 0 \
+  --require-mean-regret-improvement-cp "$RERANK_REQUIRE_MEAN_REGRET_IMPROVEMENT_CP" \
+  --require-p90-regret-improvement-cp "$RERANK_REQUIRE_P90_REGRET_IMPROVEMENT_CP" \
+  --require-p95-regret-improvement-cp "$RERANK_REQUIRE_P95_REGRET_IMPROVEMENT_CP" \
+  --require-match-rate-improvement-pct "$RERANK_REQUIRE_MATCH_RATE_IMPROVEMENT_PCT" \
+  "${rerank_dedupe_arg[@]}" \
   --hard-position-limit 1000 \
   --json-output "$RUN_DIR/rerank_gate.json" \
   | tee "$RUN_DIR/rerank_gate_stdout.log"
+rerank_status="${PIPESTATUS[0]}"
+set -e
 
-python3 - "$RUN_DIR/rerank_gate.json" > "$RUN_DIR/hard_positions.sfen" <<'PY'
+if [[ -f "$RUN_DIR/rerank_gate.json" ]]; then
+  python3 - "$RUN_DIR/rerank_gate.json" > "$RUN_DIR/hard_positions.sfen" <<'PY'
 import json
 import sys
 
@@ -164,6 +261,16 @@ payload = json.load(open(sys.argv[1]))
 for pos in payload.get("hard_positions", []):
     print(pos["sfen"])
 PY
+fi
+
+if [[ "$rerank_status" != "0" ]]; then
+  echo "rerank gate failed. Hard positions were saved to $RUN_DIR/hard_positions.sfen when available."
+  if [[ "$KEEP_CANDIDATE_RAW" != "1" ]]; then
+    rm -f "$RUN_DIR/candidate.raw.binary" "$RUN_DIR/best.raw.binary"
+  fi
+  echo "RUN_DIR=$RUN_DIR"
+  exit "$rerank_status"
+fi
 
 for R in $BLEND_RATIOS; do
   env RUST_FONTCONFIG_DLOPEN=1 target/release/adjust_weights \

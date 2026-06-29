@@ -45,6 +45,40 @@ impl Position {
         (av, generated)
     }
 
+    pub fn legal_capture_moves_with_generated_count(
+        &self,
+    ) -> (ArrayVec<Move, MAX_LEGAL_MOVES>, usize) {
+        if self.in_check() {
+            let mut av = self.legal_moves();
+            let generated = av.len();
+            av.retain(|m| {
+                if let Move::Normal { to, .. } = *m {
+                    self.piece_at(to).is_some()
+                } else {
+                    false
+                }
+            });
+            return (av, generated);
+        }
+
+        let target = self.player_bitboard(self.side_to_move().flip());
+        let mut av = ArrayVec::new();
+        self.generate_for_fu(&mut av, &target);
+        self.generate_for_ky(&mut av, &target);
+        self.generate_for_ke(&mut av, &target);
+        self.generate_for_gi(&mut av, &target);
+        self.generate_for_ka(&mut av, &target);
+        self.generate_for_hi(&mut av, &target);
+        self.generate_for_ki(&mut av, &target);
+        self.generate_for_ou(&mut av, &target);
+        self.generate_for_um(&mut av, &target);
+        self.generate_for_ry(&mut av, &target);
+
+        let generated = av.len();
+        av.retain(|m| self.is_legal(*m));
+        (av, generated)
+    }
+
     pub fn has_legal_evasion(&self) -> bool {
         if !self.in_check() {
             return true;
@@ -506,6 +540,18 @@ mod tests {
         moves
     }
 
+    fn capture_reference_moves(pos: &Position) -> ArrayVec<Move, MAX_LEGAL_MOVES> {
+        let mut moves = pos.legal_moves();
+        moves.retain(|m| {
+            if let Move::Normal { to, .. } = *m {
+                pos.piece_at(to).is_some()
+            } else {
+                false
+            }
+        });
+        moves
+    }
+
     fn sorted_move_debug(moves: ArrayVec<Move, MAX_LEGAL_MOVES>) -> Vec<String> {
         let mut moves = moves
             .into_iter()
@@ -532,10 +578,71 @@ mod tests {
 
         for sfen in sfens {
             let sfen = sfen.strip_prefix("sfen ").unwrap_or(sfen);
-            let pos = Position::new(PartialPosition::from_usi(sfen).expect("valid sfen"));
+            let pos = Position::new(
+                PartialPosition::from_usi(&format!("sfen {sfen}")).expect("valid sfen"),
+            );
             assert_eq!(
                 sorted_move_debug(quiescence_reference_moves(&pos)),
                 sorted_move_debug(pos.legal_quiescence_moves()),
+                "sfen: {}",
+                sfen
+            );
+        }
+    }
+
+    #[test]
+    fn legal_quiescence_moves_match_reference_on_record_sample() {
+        for (i, sfen) in include_str!("../../converted_records2016_10818.sfen")
+            .lines()
+            .take(256)
+            .enumerate()
+        {
+            let pos = Position::new(
+                PartialPosition::from_usi(&format!("sfen {sfen}")).expect("valid sfen"),
+            );
+            assert_eq!(
+                sorted_move_debug(quiescence_reference_moves(&pos)),
+                sorted_move_debug(pos.legal_quiescence_moves()),
+                "line {}: {}",
+                i + 1,
+                sfen
+            );
+        }
+    }
+
+    #[test]
+    fn legal_capture_moves_match_reference_on_record_sample() {
+        for (i, sfen) in include_str!("../../converted_records2016_10818.sfen")
+            .lines()
+            .take(256)
+            .enumerate()
+        {
+            let pos = Position::new(
+                PartialPosition::from_usi(&format!("sfen {sfen}")).expect("valid sfen"),
+            );
+            assert_eq!(
+                sorted_move_debug(capture_reference_moves(&pos)),
+                sorted_move_debug(pos.legal_capture_moves_with_generated_count().0),
+                "line {}: {}",
+                i + 1,
+                sfen
+            );
+        }
+    }
+
+    #[test]
+    fn legal_capture_moves_match_reference_in_check() {
+        let sfens = [
+            "sfen l6nl/7+R1/4k4/p1P+bp1n1p/3K1p3/P3P1S1P/ls2BP3/s3G4/9 b R2GS2NL9Pg 131",
+            "sfen +B4R2+P/2k6/3pps2+L/p1p3p2/1p1PPp1+r1/P1P6/1PS1KP1G1/2s1g2G1/LN1sN4 b GN2L2Pbn2p 131",
+        ];
+
+        for sfen in sfens {
+            let pos = Position::new(PartialPosition::from_usi(sfen).expect("valid sfen"));
+            assert!(pos.in_check());
+            assert_eq!(
+                sorted_move_debug(capture_reference_moves(&pos)),
+                sorted_move_debug(pos.legal_capture_moves_with_generated_count().0),
                 "sfen: {}",
                 sfen
             );

@@ -10,7 +10,7 @@ use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
 use shogi_core::Move;
 use shogi_lib::Position;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -38,6 +38,8 @@ struct Args {
     baseline_depth: Option<u8>,
     #[arg(long)]
     max_positions: Option<usize>,
+    #[arg(long, default_value_t = false)]
+    dedupe_sfen: bool,
     #[arg(long, default_value_t = 0)]
     seed: u64,
     #[arg(long, default_value_t = 0)]
@@ -52,6 +54,40 @@ struct Args {
     allow_p95_regret_increase_cp: f32,
     #[arg(long, default_value_t = 0.0)]
     allow_bad_ratio_increase: f32,
+    #[arg(
+        long,
+        default_value_t = -1.0,
+        help = "Allow phase-specific mean regret increase (cp). Negative disables."
+    )]
+    allow_phase_mean_regret_increase_cp: f32,
+    #[arg(
+        long,
+        default_value_t = -1.0,
+        help = "Allow phase-specific p90 regret increase (cp). Negative disables."
+    )]
+    allow_phase_p90_regret_increase_cp: f32,
+    #[arg(
+        long,
+        default_value_t = -1.0,
+        help = "Allow phase-specific p95 regret increase (cp). Negative disables."
+    )]
+    allow_phase_p95_regret_increase_cp: f32,
+    #[arg(
+        long,
+        default_value_t = -1.0,
+        help = "Allow phase-specific bad50 ratio increase. Negative disables."
+    )]
+    allow_phase_bad_ratio_increase: f32,
+    #[arg(long, default_value_t = 0.0)]
+    require_mean_regret_improvement_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    require_p90_regret_improvement_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    require_p95_regret_improvement_cp: f32,
+    #[arg(long, default_value_t = 0.0)]
+    require_match_rate_improvement_pct: f32,
+    #[arg(long)]
+    require_bad_regret_improvement: Vec<String>,
     #[arg(long)]
     json_output: Option<PathBuf>,
     #[arg(long, default_value_t = 20)]
@@ -63,6 +99,45 @@ struct Args {
 #[derive(Deserialize)]
 struct SfenRecord {
     sfen: String,
+    phase: Option<String>,
+    ply: Option<u16>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum GamePhase {
+    Opening,
+    Middle,
+    Late,
+}
+
+impl GamePhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            GamePhase::Opening => "opening",
+            GamePhase::Middle => "middle",
+            GamePhase::Late => "late",
+        }
+    }
+
+    fn all() -> [GamePhase; 3] {
+        [GamePhase::Opening, GamePhase::Middle, GamePhase::Late]
+    }
+}
+
+fn classify_phase(phase: Option<&str>, ply: Option<u16>) -> GamePhase {
+    if let Some(phase_name) = phase {
+        match phase_name.trim().to_ascii_lowercase().as_str() {
+            "opening" => return GamePhase::Opening,
+            "middle" | "middlegame" => return GamePhase::Middle,
+            "late" | "endgame" => return GamePhase::Late,
+            _ => {}
+        }
+    }
+    match ply {
+        Some(ply) if ply <= 40 => GamePhase::Opening,
+        Some(ply) if ply <= 90 => GamePhase::Middle,
+        Some(_) | None => GamePhase::Late,
+    }
 }
 
 #[derive(Clone)]
@@ -80,6 +155,7 @@ impl Evaluator for SharedModelEvaluator<'_> {
 struct PositionRecord {
     sfen: String,
     position: Position,
+    phase: GamePhase,
 }
 
 #[derive(Clone, Serialize)]
@@ -124,6 +200,12 @@ struct RegretSummary {
 }
 
 #[derive(Serialize)]
+struct PhaseSummaryRecord {
+    baseline: RegretSummary,
+    candidate: RegretSummary,
+}
+
+#[derive(Serialize)]
 struct GateReport {
     baseline_weights: String,
     candidate_weights: String,
@@ -133,9 +215,16 @@ struct GateReport {
     candidate_depth: u8,
     seed: u64,
     max_positions: Option<usize>,
+    dedupe_sfen: bool,
     thresholds_cp: Vec<f32>,
+    require_mean_regret_improvement_cp: f32,
+    require_p90_regret_improvement_cp: f32,
+    require_p95_regret_improvement_cp: f32,
+    require_match_rate_improvement_pct: f32,
+    require_bad_regret_improvement: Vec<String>,
     baseline: RegretSummary,
     candidate: RegretSummary,
+    phase_summaries: BTreeMap<String, PhaseSummaryRecord>,
     passed: bool,
     fail_reasons: Vec<String>,
     hard_positions: Vec<ComparisonRecord>,
@@ -178,6 +267,47 @@ fn parse_thresholds(spec: &str) -> Result<Vec<f32>> {
     Ok(thresholds)
 }
 
+fn bad_ratio_key(threshold: f32) -> String {
+    format!("{threshold:.0}")
+}
+
+fn parse_bad_regret_improvements(specs: &[String], thresholds: &[f32]) -> Result<Vec<(f32, f32)>> {
+    let mut requirements = Vec::new();
+    for spec in specs {
+        let (threshold_text, improvement_text) = spec.split_once(':').ok_or_else(|| {
+            anyhow!("--require-bad-regret-improvement must be threshold:improvement, got `{spec}`")
+        })?;
+        let threshold = threshold_text.parse::<f32>().map_err(|error| {
+            anyhow!("invalid threshold in --require-bad-regret-improvement `{spec}`: {error}")
+        })?;
+        let improvement = improvement_text.parse::<f32>().map_err(|error| {
+            anyhow!("invalid improvement in --require-bad-regret-improvement `{spec}`: {error}")
+        })?;
+        if !threshold.is_finite() || threshold < 0.0 {
+            return Err(anyhow!(
+                "bad-regret threshold in --require-bad-regret-improvement must be finite and non-negative: {spec}"
+            ));
+        }
+        if !improvement.is_finite() || improvement < 0.0 {
+            return Err(anyhow!(
+                "bad-regret improvement in --require-bad-regret-improvement must be finite and non-negative: {spec}"
+            ));
+        }
+        if !thresholds
+            .iter()
+            .any(|value| (value - threshold).abs() < f32::EPSILON)
+        {
+            return Err(anyhow!(
+                "--require-bad-regret-improvement references unknown threshold {threshold} (not in --bad-regret-thresholds-cp)"
+            ));
+        }
+        requirements.push((threshold, improvement));
+    }
+    requirements.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+    requirements.dedup_by(|a, b| (a.0 - b.0).abs() < f32::EPSILON);
+    Ok(requirements)
+}
+
 fn mean(values: &[f32]) -> f32 {
     if values.is_empty() {
         0.0
@@ -206,10 +336,13 @@ fn load_model(path: &Path) -> Result<SparseModel> {
 fn load_positions(
     paths: &[PathBuf],
     max_positions: Option<usize>,
+    dedupe_sfen: bool,
     seed: u64,
 ) -> Result<Vec<PositionRecord>> {
     let mut records = Vec::new();
     let mut invalid = 0usize;
+    let mut duplicate = 0usize;
+    let mut seen = HashSet::new();
     for path in paths {
         let content = fs::read_to_string(path)
             .map_err(|e| anyhow!("failed to read {}: {}", path.display(), e))?;
@@ -222,14 +355,39 @@ fn load_positions(
                 let record: SfenRecord = serde_json::from_str(line).map_err(|e| {
                     anyhow!("{}:{} invalid json: {}", path.display(), line_index + 1, e)
                 })?;
-                record.sfen
+                if let Some(position) = position_from_sfen_or_usi(&record.sfen) {
+                    let phase = classify_phase(
+                        record.phase.as_deref(),
+                        record.ply.or(Some(position.ply())),
+                    );
+                    let canonical_sfen = position.to_sfen_owned();
+                    if dedupe_sfen && !seen.insert(canonical_sfen.clone()) {
+                        duplicate += 1;
+                        continue;
+                    }
+                    records.push(PositionRecord {
+                        sfen: canonical_sfen,
+                        position,
+                        phase,
+                    });
+                } else {
+                    invalid += 1;
+                }
+                continue;
             } else {
                 line.to_string()
             };
             if let Some(position) = position_from_sfen_or_usi(&sfen) {
+                let phase = classify_phase(None, Some(position.ply()));
+                let canonical_sfen = position.to_sfen_owned();
+                if dedupe_sfen && !seen.insert(canonical_sfen.clone()) {
+                    duplicate += 1;
+                    continue;
+                }
                 records.push(PositionRecord {
-                    sfen: position.to_sfen_owned(),
+                    sfen: canonical_sfen,
                     position,
+                    phase,
                 });
             } else {
                 invalid += 1;
@@ -247,7 +405,10 @@ fn load_positions(
         }
         records.truncate(max_positions);
     }
-    println!("positions: {} (invalid={invalid})", records.len());
+    println!(
+        "positions: {} (invalid={invalid} duplicate={duplicate})",
+        records.len()
+    );
     Ok(records)
 }
 
@@ -326,7 +487,7 @@ fn summarize(results: &[ProbeResult], thresholds: &[f32]) -> RegretSummary {
             .filter(|&&regret| regret > *threshold)
             .count();
         bad_ratios.insert(
-            format!("{threshold:.0}"),
+            bad_ratio_key(*threshold),
             count as f32 / results.len().max(1) as f32,
         );
     }
@@ -343,6 +504,33 @@ fn summarize(results: &[ProbeResult], thresholds: &[f32]) -> RegretSummary {
         exact_match_ratio: exact_matches as f32 / results.len().max(1) as f32,
         bad_ratios,
     }
+}
+
+fn summarize_by_phase(
+    results: &[ProbeResult],
+    phases: &[GamePhase],
+    thresholds: &[f32],
+) -> BTreeMap<GamePhase, RegretSummary> {
+    let mut grouped: BTreeMap<GamePhase, Vec<ProbeResult>> = GamePhase::all()
+        .into_iter()
+        .map(|phase| (phase, Vec::new()))
+        .collect();
+    for (result, phase) in results.iter().zip(phases.iter()) {
+        if let Some(bucket) = grouped.get_mut(phase) {
+            bucket.push(result.clone());
+        }
+    }
+    GamePhase::all()
+        .into_iter()
+        .map(|phase| (phase, summarize(&grouped[&phase], thresholds)))
+        .collect()
+}
+
+fn bad_ratio_key_for_threshold(thresholds: &[f32], target_threshold: f32) -> Option<String> {
+    thresholds
+        .iter()
+        .find(|value| (*value - target_threshold).abs() < f32::EPSILON)
+        .map(|value| bad_ratio_key(*value))
 }
 
 fn create_writer(path: &Path) -> Result<BufWriter<File>> {
@@ -398,12 +586,63 @@ fn main() -> Result<()> {
             args.allow_p95_regret_increase_cp,
         ),
         ("--allow-bad-ratio-increase", args.allow_bad_ratio_increase),
+        (
+            "--require-mean-regret-improvement-cp",
+            args.require_mean_regret_improvement_cp,
+        ),
+        (
+            "--require-p90-regret-improvement-cp",
+            args.require_p90_regret_improvement_cp,
+        ),
+        (
+            "--require-p95-regret-improvement-cp",
+            args.require_p95_regret_improvement_cp,
+        ),
+        (
+            "--require-match-rate-improvement-pct",
+            args.require_match_rate_improvement_pct,
+        ),
     ] {
         if !value.is_finite() || value < 0.0 {
             return Err(anyhow!("{name} must be finite and non-negative"));
         }
     }
+    for (name, value) in [
+        (
+            "--allow-phase-mean-regret-increase-cp",
+            args.allow_phase_mean_regret_increase_cp,
+        ),
+        (
+            "--allow-phase-p90-regret-increase-cp",
+            args.allow_phase_p90_regret_increase_cp,
+        ),
+        (
+            "--allow-phase-p95-regret-increase-cp",
+            args.allow_phase_p95_regret_increase_cp,
+        ),
+        (
+            "--allow-phase-bad-ratio-increase",
+            args.allow_phase_bad_ratio_increase,
+        ),
+    ] {
+        if !value.is_finite() {
+            return Err(anyhow!("{name} must be finite"));
+        }
+    }
     let thresholds = parse_thresholds(&args.bad_regret_thresholds_cp)?;
+    let bad_regret_improvements =
+        parse_bad_regret_improvements(&args.require_bad_regret_improvement, &thresholds)?;
+    let phase_bad_ratio_key = if args.allow_phase_bad_ratio_increase >= 0.0 {
+        Some(
+            bad_ratio_key_for_threshold(&thresholds, 50.0).ok_or_else(|| {
+                anyhow!(
+                    "--allow-phase-bad-ratio-increase requires bad50 in --bad-regret-thresholds-cp"
+                )
+            })?,
+        )
+    } else {
+        None
+    };
     let hard_threshold = thresholds.first().copied().unwrap_or(0.0);
     if args.jobs > 0 {
         rayon::ThreadPoolBuilder::new()
@@ -415,7 +654,7 @@ fn main() -> Result<()> {
     let baseline = load_model(&args.baseline_weights)?;
     let candidate = load_model(&args.candidate_weights)?;
     let teacher = load_model(&args.teacher_weights)?;
-    let positions = load_positions(&args.input, args.max_positions, args.seed)?;
+    let positions = load_positions(&args.input, args.max_positions, args.dedupe_sfen, args.seed)?;
 
     let mut paired = positions
         .par_iter()
@@ -437,10 +676,10 @@ fn main() -> Result<()> {
                 args.teacher_depth,
                 args.candidate_depth,
             )?;
-            Some((baseline_result, candidate_result))
+            Some((record.phase, baseline_result, candidate_result))
         })
         .collect::<Vec<_>>();
-    paired.sort_by_key(|(baseline, _)| baseline.index);
+    paired.sort_by_key(|(_, baseline, _)| baseline.index);
 
     if paired.is_empty() {
         return Err(anyhow!("no positions could be probed"));
@@ -448,17 +687,31 @@ fn main() -> Result<()> {
 
     let baseline_results = paired
         .iter()
-        .map(|(baseline, _)| baseline.clone())
+        .map(|(_, baseline, _)| baseline.clone())
         .collect::<Vec<_>>();
+    let phases = paired.iter().map(|(phase, ..)| *phase).collect::<Vec<_>>();
     let candidate_results = paired
         .iter()
-        .map(|(_, candidate)| candidate.clone())
+        .map(|(_, _, candidate)| candidate.clone())
         .collect::<Vec<_>>();
     let baseline_summary = summarize(&baseline_results, &thresholds);
     let candidate_summary = summarize(&candidate_results, &thresholds);
+    let baseline_phase_summaries = summarize_by_phase(&baseline_results, &phases, &thresholds);
+    let candidate_phase_summaries = summarize_by_phase(&candidate_results, &phases, &thresholds);
 
     print_summary("baseline", &baseline_summary);
     print_summary("candidate", &candidate_summary);
+    for phase in GamePhase::all() {
+        let phase_name = phase.as_str();
+        print_summary(
+            &format!("baseline[{phase_name}]"),
+            &baseline_phase_summaries[&phase],
+        );
+        print_summary(
+            &format!("candidate[{phase_name}]"),
+            &candidate_phase_summaries[&phase],
+        );
+    }
 
     let mut fail_reasons = Vec::new();
     if candidate_summary.mean_regret_cp
@@ -471,6 +724,17 @@ fn main() -> Result<()> {
             args.allow_mean_regret_increase_cp
         ));
     }
+    if args.require_mean_regret_improvement_cp > 0.0
+        && candidate_summary.mean_regret_cp
+            > baseline_summary.mean_regret_cp - args.require_mean_regret_improvement_cp
+    {
+        fail_reasons.push(format!(
+            "mean regret failed improvement requirement: {:.2} > {:.2} - {:.2}",
+            candidate_summary.mean_regret_cp,
+            baseline_summary.mean_regret_cp,
+            args.require_mean_regret_improvement_cp
+        ));
+    }
     if candidate_summary.p90_regret_cp
         > baseline_summary.p90_regret_cp + args.allow_p90_regret_increase_cp
     {
@@ -479,6 +743,17 @@ fn main() -> Result<()> {
             candidate_summary.p90_regret_cp,
             baseline_summary.p90_regret_cp,
             args.allow_p90_regret_increase_cp
+        ));
+    }
+    if args.require_p90_regret_improvement_cp > 0.0
+        && candidate_summary.p90_regret_cp
+            > baseline_summary.p90_regret_cp - args.require_p90_regret_improvement_cp
+    {
+        fail_reasons.push(format!(
+            "p90 regret failed improvement requirement: {:.2} > {:.2} - {:.2}",
+            candidate_summary.p90_regret_cp,
+            baseline_summary.p90_regret_cp,
+            args.require_p90_regret_improvement_cp
         ));
     }
     if candidate_summary.p95_regret_cp
@@ -491,8 +766,19 @@ fn main() -> Result<()> {
             args.allow_p95_regret_increase_cp
         ));
     }
+    if args.require_p95_regret_improvement_cp > 0.0
+        && candidate_summary.p95_regret_cp
+            > baseline_summary.p95_regret_cp - args.require_p95_regret_improvement_cp
+    {
+        fail_reasons.push(format!(
+            "p95 regret failed improvement requirement: {:.2} > {:.2} - {:.2}",
+            candidate_summary.p95_regret_cp,
+            baseline_summary.p95_regret_cp,
+            args.require_p95_regret_improvement_cp
+        ));
+    }
     for threshold in &thresholds {
-        let key = format!("{threshold:.0}");
+        let key = bad_ratio_key(*threshold);
         let baseline_ratio = baseline_summary
             .bad_ratios
             .get(&key)
@@ -510,10 +796,130 @@ fn main() -> Result<()> {
             ));
         }
     }
+    if args.allow_phase_mean_regret_increase_cp >= 0.0 {
+        for phase in GamePhase::all() {
+            let phase_name = phase.as_str();
+            let baseline_phase_summary = &baseline_phase_summaries[&phase];
+            let candidate_phase_summary = &candidate_phase_summaries[&phase];
+            if baseline_phase_summary.samples == 0 || candidate_phase_summary.samples == 0 {
+                continue;
+            }
+            if candidate_phase_summary.mean_regret_cp
+                > baseline_phase_summary.mean_regret_cp + args.allow_phase_mean_regret_increase_cp
+            {
+                fail_reasons.push(format!(
+                    "phase[{phase_name}] mean regret worsened: {:.2} > {:.2} + {:.2}",
+                    candidate_phase_summary.mean_regret_cp,
+                    baseline_phase_summary.mean_regret_cp,
+                    args.allow_phase_mean_regret_increase_cp
+                ));
+            }
+        }
+    }
+    if args.allow_phase_p90_regret_increase_cp >= 0.0 {
+        for phase in GamePhase::all() {
+            let phase_name = phase.as_str();
+            let baseline_phase_summary = &baseline_phase_summaries[&phase];
+            let candidate_phase_summary = &candidate_phase_summaries[&phase];
+            if baseline_phase_summary.samples == 0 || candidate_phase_summary.samples == 0 {
+                continue;
+            }
+            if candidate_phase_summary.p90_regret_cp
+                > baseline_phase_summary.p90_regret_cp + args.allow_phase_p90_regret_increase_cp
+            {
+                fail_reasons.push(format!(
+                    "phase[{phase_name}] p90 regret worsened: {:.2} > {:.2} + {:.2}",
+                    candidate_phase_summary.p90_regret_cp,
+                    baseline_phase_summary.p90_regret_cp,
+                    args.allow_phase_p90_regret_increase_cp
+                ));
+            }
+        }
+    }
+    if args.allow_phase_p95_regret_increase_cp >= 0.0 {
+        for phase in GamePhase::all() {
+            let phase_name = phase.as_str();
+            let baseline_phase_summary = &baseline_phase_summaries[&phase];
+            let candidate_phase_summary = &candidate_phase_summaries[&phase];
+            if baseline_phase_summary.samples == 0 || candidate_phase_summary.samples == 0 {
+                continue;
+            }
+            if candidate_phase_summary.p95_regret_cp
+                > baseline_phase_summary.p95_regret_cp + args.allow_phase_p95_regret_increase_cp
+            {
+                fail_reasons.push(format!(
+                    "phase[{phase_name}] p95 regret worsened: {:.2} > {:.2} + {:.2}",
+                    candidate_phase_summary.p95_regret_cp,
+                    baseline_phase_summary.p95_regret_cp,
+                    args.allow_phase_p95_regret_increase_cp
+                ));
+            }
+        }
+    }
+    if args.allow_phase_bad_ratio_increase >= 0.0 {
+        let Some(phase_bad_ratio_key) = phase_bad_ratio_key.as_deref() else {
+            return Err(anyhow!(
+                "--allow-phase-bad-ratio-increase requires bad50 in --bad-regret-thresholds-cp"
+            ));
+        };
+        for phase in GamePhase::all() {
+            let phase_name = phase.as_str();
+            let baseline_phase_summary = &baseline_phase_summaries[&phase];
+            let candidate_phase_summary = &candidate_phase_summaries[&phase];
+            if baseline_phase_summary.samples == 0 || candidate_phase_summary.samples == 0 {
+                continue;
+            }
+            let baseline_ratio = baseline_phase_summary
+                .bad_ratios
+                .get(phase_bad_ratio_key)
+                .copied()
+                .unwrap_or(0.0);
+            let candidate_ratio = candidate_phase_summary
+                .bad_ratios
+                .get(phase_bad_ratio_key)
+                .copied()
+                .unwrap_or(0.0);
+            if candidate_ratio > baseline_ratio + args.allow_phase_bad_ratio_increase {
+                fail_reasons.push(format!(
+                    "phase[{phase_name}] bad{phase_bad_ratio_key} ratio worsened: {:.4} > {:.4} + {:.4}",
+                    candidate_ratio,
+                    baseline_ratio,
+                    args.allow_phase_bad_ratio_increase
+                ));
+            }
+        }
+    }
+    for (threshold, required_improvement) in &bad_regret_improvements {
+        let key = bad_ratio_key(*threshold);
+        let baseline_ratio = baseline_summary
+            .bad_ratios
+            .get(&key)
+            .copied()
+            .unwrap_or(0.0);
+        let candidate_ratio = candidate_summary
+            .bad_ratios
+            .get(&key)
+            .copied()
+            .unwrap_or(0.0);
+        if candidate_ratio > baseline_ratio - required_improvement {
+            fail_reasons.push(format!(
+                "bad{key} ratio failed improvement requirement: {:.4} > {:.4} - {:.4}",
+                candidate_ratio, baseline_ratio, required_improvement
+            ));
+        }
+    }
+    let baseline_match_rate = baseline_summary.exact_match_ratio * 100.0;
+    let candidate_match_rate = candidate_summary.exact_match_ratio * 100.0;
+    if candidate_match_rate < baseline_match_rate + args.require_match_rate_improvement_pct {
+        fail_reasons.push(format!(
+            "match rate failed improvement requirement: {:.2}% < {:.2}% + {:.2}%",
+            candidate_match_rate, baseline_match_rate, args.require_match_rate_improvement_pct
+        ));
+    }
 
     let comparisons = paired
         .iter()
-        .map(|(baseline, candidate)| ComparisonRecord {
+        .map(|(_, baseline, candidate)| ComparisonRecord {
             index: baseline.index,
             sfen: baseline.sfen.clone(),
             teacher_best_move: baseline.teacher_best_move.clone(),
@@ -585,9 +991,30 @@ fn main() -> Result<()> {
             candidate_depth: args.candidate_depth,
             seed: args.seed,
             max_positions: args.max_positions,
+            dedupe_sfen: args.dedupe_sfen,
+            require_mean_regret_improvement_cp: args.require_mean_regret_improvement_cp,
+            require_p90_regret_improvement_cp: args.require_p90_regret_improvement_cp,
+            require_p95_regret_improvement_cp: args.require_p95_regret_improvement_cp,
+            require_match_rate_improvement_pct: args.require_match_rate_improvement_pct,
+            require_bad_regret_improvement: args.require_bad_regret_improvement,
             thresholds_cp: thresholds,
             baseline: baseline_summary,
             candidate: candidate_summary,
+            phase_summaries: GamePhase::all()
+                .into_iter()
+                .map(|phase| {
+                    let phase_name = phase.as_str().to_string();
+                    let baseline_summary = baseline_phase_summaries[&phase].clone();
+                    let candidate_summary = candidate_phase_summaries[&phase].clone();
+                    (
+                        phase_name,
+                        PhaseSummaryRecord {
+                            baseline: baseline_summary,
+                            candidate: candidate_summary,
+                        },
+                    )
+                })
+                .collect(),
             passed,
             fail_reasons: fail_reasons.clone(),
             hard_positions,

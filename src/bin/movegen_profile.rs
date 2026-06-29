@@ -23,6 +23,8 @@ struct Args {
     do_undo: bool,
     #[arg(long, default_value_t = false)]
     quiescence: bool,
+    #[arg(long, default_value_t = false)]
+    captures: bool,
 }
 
 fn load_positions(path: &PathBuf) -> Result<Vec<Position>> {
@@ -45,6 +47,11 @@ fn main() -> Result<()> {
     if args.repeat == 0 {
         return Err(anyhow!("--repeat must be greater than zero"));
     }
+    if args.quiescence && args.captures {
+        return Err(anyhow!(
+            "--quiescence and --captures are mutually exclusive"
+        ));
+    }
 
     let mut positions = load_positions(&args.positions)?;
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
@@ -62,6 +69,8 @@ fn main() -> Result<()> {
             let mut position = positions[i % positions.len()].clone();
             let (moves, generated) = if args.quiescence {
                 position.legal_quiescence_moves_with_generated_count()
+            } else if args.captures {
+                position.legal_capture_moves_with_generated_count()
             } else {
                 let moves = position.legal_moves();
                 let generated = moves.len();
