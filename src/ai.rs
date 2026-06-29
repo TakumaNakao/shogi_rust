@@ -214,21 +214,18 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     fn is_time_up(&mut self) -> bool {
-        if self
-            .stop_signal
-            .as_ref()
-            .is_some_and(|stop_signal| stop_signal.load(Ordering::SeqCst))
-        {
-            return true;
-        }
-
-        if self.time_limit.is_none() {
-            return false;
-        }
         if self.nodes_searched < self.next_time_check_nodes {
             return false;
         }
         self.next_time_check_nodes = self.nodes_searched + TIME_CHECK_NODE_INTERVAL;
+
+        if self
+            .stop_signal
+            .as_ref()
+            .is_some_and(|stop_signal| stop_signal.load(Ordering::Relaxed))
+        {
+            return true;
+        }
 
         if let (Some(start), Some(limit)) = (self.start_time, self.time_limit) {
             start.elapsed() >= limit

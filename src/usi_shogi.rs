@@ -294,7 +294,7 @@ impl UsiEngine {
             ai_instance.decay_history();
         }
 
-        self.stop_signal.store(false, Ordering::SeqCst);
+        self.stop_signal.store(false, Ordering::Relaxed);
 
         let limits = self.parse_go_limits(tokens);
         let mut position = self.position.clone();
@@ -325,7 +325,7 @@ impl UsiEngine {
     }
 
     fn handle_stop(&self) {
-        self.stop_signal.store(true, Ordering::SeqCst);
+        self.stop_signal.store(true, Ordering::Relaxed);
     }
 }
 
