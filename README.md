@@ -367,6 +367,20 @@ MMTO/tree dumpはチャンク処理に対応しています。`POSITION_CHUNK_SI
 POSITION_CHUNK_SIZE=1024 JOBS="$(nproc)" bash tools/run_mmto_rerank_pipeline.sh
 ```
 
+既存のtree dumpを再利用して、search-grounded listwise学習だけを回す場合:
+
+```bash
+SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> \
+TRAIN_LINES=9000 \
+VALID_LINES=1000 \
+EPOCHS=10 \
+bash tools/run_mmto_from_dump.sh
+```
+
+このスクリプトは既定で `LOSS_MODE=listwise-leaf`、`LISTWISE_TEACHER_TOP_K=16`、`LISTWISE_CANDIDATE_TOP_K=16`、`LISTWISE_WEIGHT_MODE=model-regret`、`STREAM_TRAIN=1` を使います。teacher上位手と現在モデルが選びやすい手を同じ候補集合に入れ、高regretのmodel topを押し下げる設定です。
+
+各runには `manifest.json` が保存され、入力dump、subset、score positions、初期重み、teacher重みのsha256と行数、git commit、dirty状態を記録します。長時間学習へ進むのは、短時間probeで `best_epoch > 0`、`score gate` 通過、`rerank gate` の mean / p90 / p95 / bad50 / bad100 非悪化を確認してからにしてください。
+
 既存dumpや新規dumpの品質確認には `rank_stats` を使います。
 
 ```bash

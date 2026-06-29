@@ -124,6 +124,22 @@ SOURCE_RUN_DIR=data/mmto/runs/mmto_rerank_long_<timestamp> bash tools/run_mmto_f
 
 デフォルトでは `SOURCE_RUN_DIR/train.tree.jsonl` から9000行、`valid.tree.jsonl` から1000行を切り出して使う。20k dumpが完了したが `mmto_tree_train` がメモリ不足で落ちた場合は、このスクリプトで10k相当のsubset学習に切り替える。
 
+`run_mmto_from_dump.sh` は長時間学習前の本線検証用に、以下を既定値にしている。
+
+- `LOSS_MODE=listwise-leaf`
+- `LISTWISE_TEACHER_TOP_K=16`
+- `LISTWISE_CANDIDATE_TOP_K=16`
+- `LISTWISE_MIN_SELECTED_REGRET_CP=30`
+- `LISTWISE_WEIGHT_MODE=model-regret`
+- `TEACHER_TOP_CE_WEIGHT=0.1`
+- `CURRENT_TOP_MARGIN_WEIGHT=0.05`
+- `BEST_METRIC=capped-selected-regret`
+- `STREAM_TRAIN=1`
+
+これにより、単にpairwise lossを下げるのではなく、teacher上位手と現在モデルが高く見ている手を同じ候補集合に入れ、実探索で選びやすい高regret手を押し下げる。`STREAM_TRAIN=1` ではtrain dumpを全件メモリに載せず、各epochで読み直す。
+
+各runには `manifest.json` が作られる。ここにはgit commit、dirty状態、入力dump、subset、score positions、初期重み、teacher重みのsha256と行数が保存される。24時間以上の学習候補は、このmanifestを残して条件を復元できる状態にしてから実行する。
+
 行数を変える場合:
 
 ```bash
@@ -132,6 +148,16 @@ TRAIN_LINES=7000 \
 VALID_LINES=800 \
 bash tools/run_mmto_from_dump.sh
 ```
+
+短時間probeで見るべき合格条件:
+
+- `best_epoch > 0`
+- `mmto_score_gate` 通過
+- `mmto_rerank_gate` で mean / p90 / p95 / bad50 / bad100 が悪化しない
+- `teacher_match` が落ちない
+- `hard_positions.sfen` が出た場合は、次のDAgger/replay入力として使う
+
+この条件を満たさないrunは、epochだけ増やさない。目的関数や候補集合を見直す。
 
 古いMMTO run生成物を消す場合:
 
