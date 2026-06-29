@@ -22,6 +22,8 @@ TEACHER_SCORE_TOP="${TEACHER_SCORE_TOP:-24}"
 CANDIDATE_TOP="${CANDIDATE_TOP:-24}"
 POSITION_CHUNK_SIZE="${POSITION_CHUNK_SIZE:-64}"
 VALID_PERCENT="${VALID_PERCENT:-20}"
+DUMP_SEED="${DUMP_SEED:-9601}"
+FEEDBACK_SEED="${FEEDBACK_SEED:-32493}"
 JOBS="${JOBS:-4}"
 MAX_ABS_ROOT_SCORE="${MAX_ABS_ROOT_SCORE:-30000}"
 PV_SIBLING_MAX_PLIES="${PV_SIBLING_MAX_PLIES:-1}"
@@ -40,7 +42,21 @@ FEEDBACK_WEIGHT="${FEEDBACK_WEIGHT:-0.5}"
 PROTECTION_SOURCES="${PROTECTION_SOURCES:-$SOURCE_RUN_DIR/train.pv.tree.jsonl $SOURCE_RUN_DIR/valid.pv.tree.jsonl}"
 PROTECTION_LINES="${PROTECTION_LINES:-1200}"
 PROTECTION_SEED="${PROTECTION_SEED:-7402}"
-LOSS_MODE="${LOSS_MODE:-aux-only}"
+LOSS_MODE="${LOSS_MODE:-listwise-leaf}"
+STREAM_TRAIN="${STREAM_TRAIN:-1}"
+LISTWISE_FEATURE_SOURCE="${LISTWISE_FEATURE_SOURCE:-teacher-leaf}"
+LISTWISE_TEACHER_TOP_K="${LISTWISE_TEACHER_TOP_K:-16}"
+LISTWISE_CANDIDATE_TOP_K="${LISTWISE_CANDIDATE_TOP_K:-16}"
+LISTWISE_HARD_NEGATIVE_WEIGHT="${LISTWISE_HARD_NEGATIVE_WEIGHT:-0.02}"
+LISTWISE_HARD_NEGATIVE_MIN_REGRET_CP="${LISTWISE_HARD_NEGATIVE_MIN_REGRET_CP:-30}"
+LISTWISE_MIN_SELECTED_REGRET_CP="${LISTWISE_MIN_SELECTED_REGRET_CP:-30}"
+LISTWISE_WEIGHT_MODE="${LISTWISE_WEIGHT_MODE:-model-regret}"
+LISTWISE_WEIGHT_SCALE_CP="${LISTWISE_WEIGHT_SCALE_CP:-100}"
+LISTWISE_MAX_SAMPLE_WEIGHT="${LISTWISE_MAX_SAMPLE_WEIGHT:-4}"
+TEACHER_TEMPERATURE_CP="${TEACHER_TEMPERATURE_CP:-80}"
+TEACHER_TOP_CE_WEIGHT="${TEACHER_TOP_CE_WEIGHT:-0.05}"
+CURRENT_TOP_MARGIN_WEIGHT="${CURRENT_TOP_MARGIN_WEIGHT:-0}"
+CURRENT_TOP_MIN_BAD_REGRET_CP="${CURRENT_TOP_MIN_BAD_REGRET_CP:-15}"
 INCUMBENT_PROTECTION_WEIGHT="${INCUMBENT_PROTECTION_WEIGHT:-0}"
 INCUMBENT_PROTECTION_MAX_REGRET_CP="${INCUMBENT_PROTECTION_MAX_REGRET_CP:-80}"
 INCUMBENT_PROTECTION_ALLOW_TEACHER_BETTER_CP="${INCUMBENT_PROTECTION_ALLOW_TEACHER_BETTER_CP:-50}"
@@ -64,6 +80,10 @@ BEST_GUARD_TEACHER_MATCH_DROP_PCT="${BEST_GUARD_TEACHER_MATCH_DROP_PCT:--1}"
 BEST_GUARD_FEEDBACK_VIOLATION_INCREASE="${BEST_GUARD_FEEDBACK_VIOLATION_INCREASE:-0}"
 BEST_GUARD_FEEDBACK_LOSS_INCREASE="${BEST_GUARD_FEEDBACK_LOSS_INCREASE:--1}"
 VALID_LINES="${VALID_LINES:-1000}"
+FEEDBACK_GOOD_MOVE="${FEEDBACK_GOOD_MOVE:-teacher}"
+FEEDBACK_WEIGHT_SCALE_CP="${FEEDBACK_WEIGHT_SCALE_CP:-100}"
+FEEDBACK_MAX_SAMPLE_WEIGHT="${FEEDBACK_MAX_SAMPLE_WEIGHT:-5}"
+FEEDBACK_DEDUPE_SFEN="${FEEDBACK_DEDUPE_SFEN:-1}"
 
 RERANK_MAX_POSITIONS="${RERANK_MAX_POSITIONS:-800}"
 RUN_BENCH="${RUN_BENCH:-1}"
@@ -104,13 +124,15 @@ echo "Starting PV sibling strong-teacher feedback run."
 echo "RUN_DIR=$RUN_DIR"
 echo "SOURCE_RUN_DIR=$SOURCE_RUN_DIR"
 echo "HARD_LIMIT=$HARD_LIMIT"
-echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH"
+echo "TEACHER_DEPTH=$TEACHER_DEPTH STUDENT_DEPTH=$STUDENT_DEPTH DUMP_SEED=$DUMP_SEED FEEDBACK_SEED=$FEEDBACK_SEED"
 echo "FEEDBACK_REGRET_RANGE=$FEEDBACK_MIN_CANDIDATE_REGRET_CP..$FEEDBACK_MAX_CANDIDATE_REGRET_CP"
 echo "FEEDBACK_WEIGHT=$FEEDBACK_WEIGHT EPOCHS=$EPOCHS LEARNING_RATE=$LEARNING_RATE"
-echo "PROTECTION_LINES=$PROTECTION_LINES LOSS_MODE=$LOSS_MODE"
+echo "PROTECTION_LINES=$PROTECTION_LINES PROTECTION_SEED=$PROTECTION_SEED LOSS_MODE=$LOSS_MODE STREAM_TRAIN=$STREAM_TRAIN"
+echo "LISTWISE_TOPS teacher=$LISTWISE_TEACHER_TOP_K candidate=$LISTWISE_CANDIDATE_TOP_K hard_negative=$LISTWISE_HARD_NEGATIVE_WEIGHT teacher_top_ce=$TEACHER_TOP_CE_WEIGHT current_top_margin=$CURRENT_TOP_MARGIN_WEIGHT"
 echo "INCUMBENT_PROTECTION_WEIGHT=$INCUMBENT_PROTECTION_WEIGHT MAX_REGRET=$INCUMBENT_PROTECTION_MAX_REGRET_CP ALLOW_TEACHER_BETTER=$INCUMBENT_PROTECTION_ALLOW_TEACHER_BETTER_CP"
 echo "POLICY_ANCHOR_WEIGHTS=$POLICY_ANCHOR_WEIGHTS POLICY_ANCHOR_WEIGHT=$POLICY_ANCHOR_WEIGHT POLICY_ANCHOR_MARGIN_WEIGHT=$POLICY_ANCHOR_MARGIN_WEIGHT"
 echo "BEST_METRIC=$BEST_METRIC BEST_GUARD_MAX=$BEST_GUARD_MAX_REGRET_INCREASE_CP BEST_GUARD_BAD100=$BEST_GUARD_BAD100_INCREASE BEST_GUARD_MATCH_DROP=$BEST_GUARD_TEACHER_MATCH_DROP_PCT"
+echo "FEEDBACK_GOOD_MOVE=$FEEDBACK_GOOD_MOVE FEEDBACK_WEIGHT_SCALE_CP=$FEEDBACK_WEIGHT_SCALE_CP FEEDBACK_MAX_SAMPLE_WEIGHT=$FEEDBACK_MAX_SAMPLE_WEIGHT"
 echo "BENCH_FAILURE_FEEDBACK_REGRET_RANGE=$BENCH_FAILURE_FEEDBACK_MIN_TIMED_REGRET_CP..$BENCH_FAILURE_FEEDBACK_MAX_TIMED_REGRET_CP"
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
@@ -190,6 +212,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_dump \
   --candidate-top "$CANDIDATE_TOP" \
   --position-chunk-size "$POSITION_CHUNK_SIZE" \
   --valid-percent "$VALID_PERCENT" \
+  --seed "$DUMP_SEED" \
   --jobs "$JOBS" \
   --exclude-in-check \
   --min-legal-moves 2 \
@@ -218,6 +241,7 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/tree_feedback_collect \
   --min-regret-delta-cp "$FEEDBACK_MIN_REGRET_DELTA_CP" \
   --max-regret-delta-cp "$FEEDBACK_MAX_REGRET_DELTA_CP" \
   --max-good-regret-cp "$FEEDBACK_MAX_GOOD_REGRET_CP" \
+  --seed "$FEEDBACK_SEED" \
   --limit "$FEEDBACK_LIMIT" \
   | tee "$RUN_DIR/feedback_collect_stdout.log"
 
@@ -351,6 +375,53 @@ if [[ -n "$POLICY_ANCHOR_WEIGHTS" ]]; then
   policy_anchor_args+=(--policy-anchor-weights "$POLICY_ANCHOR_WEIGHTS")
 fi
 
+stream_train_args=()
+if [[ "$STREAM_TRAIN" == "1" ]]; then
+  stream_train_args+=(--stream-train)
+fi
+
+feedback_dedupe_args=()
+if [[ "$FEEDBACK_DEDUPE_SFEN" == "1" ]]; then
+  feedback_dedupe_args+=(--feedback-dedupe-sfen)
+fi
+
+python3 tools/write_training_manifest.py \
+  --output "$RUN_DIR/manifest.json" \
+  --run-dir "$RUN_DIR" \
+  --kind pv_sibling_strong_teacher_feedback \
+  --arg "SOURCE_RUN_DIR=$SOURCE_RUN_DIR" \
+  --arg "HARD_LIMIT=$HARD_LIMIT" \
+  --arg "TEACHER_DEPTH=$TEACHER_DEPTH" \
+  --arg "STUDENT_DEPTH=$STUDENT_DEPTH" \
+  --arg "DUMP_SEED=$DUMP_SEED" \
+  --arg "FEEDBACK_SEED=$FEEDBACK_SEED" \
+  --arg "LOSS_MODE=$LOSS_MODE" \
+  --arg "STREAM_TRAIN=$STREAM_TRAIN" \
+  --arg "LISTWISE_TEACHER_TOP_K=$LISTWISE_TEACHER_TOP_K" \
+  --arg "LISTWISE_CANDIDATE_TOP_K=$LISTWISE_CANDIDATE_TOP_K" \
+  --arg "LISTWISE_HARD_NEGATIVE_WEIGHT=$LISTWISE_HARD_NEGATIVE_WEIGHT" \
+  --arg "TEACHER_TOP_CE_WEIGHT=$TEACHER_TOP_CE_WEIGHT" \
+  --arg "CURRENT_TOP_MARGIN_WEIGHT=$CURRENT_TOP_MARGIN_WEIGHT" \
+  --arg "FEEDBACK_WEIGHT=$FEEDBACK_WEIGHT" \
+  --arg "FEEDBACK_GOOD_MOVE=$FEEDBACK_GOOD_MOVE" \
+  --arg "PROTECTION_LINES=$PROTECTION_LINES" \
+  --arg "PROTECTION_SEED=$PROTECTION_SEED" \
+  --arg "BEST_METRIC=$BEST_METRIC" \
+  --input "hard_relabel_input=$RUN_DIR/hard_relabel_input.jsonl" \
+  --input "train_strong=$RUN_DIR/train.strong.tree.jsonl" \
+  --input "valid_strong=$RUN_DIR/valid.strong.tree.jsonl" \
+  --input "feedback_train=$RUN_DIR/strong_feedback_train.json" \
+  --input "feedback_guard=$RUN_DIR/strong_feedback_guard.json" \
+  --input "train_protection=$RUN_DIR/train.protection.tree.jsonl" \
+  --input "valid_top=$RUN_DIR/valid.top.tree.jsonl" \
+  --weight "weights=$WEIGHTS" \
+  --weight "teacher_weights=$TEACHER_WEIGHTS" \
+  --line-count hard_relabel_input \
+  --line-count train_strong \
+  --line-count valid_strong \
+  --line-count train_protection \
+  --line-count valid_top
+
 env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --weights "$WEIGHTS" \
   --train "$RUN_DIR/train.protection.tree.jsonl" \
@@ -361,6 +432,20 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --batch-size "$BATCH_SIZE" \
   --learning-rate "$LEARNING_RATE" \
   --loss-mode "$LOSS_MODE" \
+  "${stream_train_args[@]}" \
+  --teacher-temperature-cp "$TEACHER_TEMPERATURE_CP" \
+  --listwise-feature-source "$LISTWISE_FEATURE_SOURCE" \
+  --listwise-teacher-top-k "$LISTWISE_TEACHER_TOP_K" \
+  --listwise-candidate-top-k "$LISTWISE_CANDIDATE_TOP_K" \
+  --listwise-hard-negative-weight "$LISTWISE_HARD_NEGATIVE_WEIGHT" \
+  --listwise-hard-negative-min-regret-cp "$LISTWISE_HARD_NEGATIVE_MIN_REGRET_CP" \
+  --listwise-min-selected-regret-cp "$LISTWISE_MIN_SELECTED_REGRET_CP" \
+  --listwise-weight-mode "$LISTWISE_WEIGHT_MODE" \
+  --listwise-weight-scale-cp "$LISTWISE_WEIGHT_SCALE_CP" \
+  --listwise-max-sample-weight "$LISTWISE_MAX_SAMPLE_WEIGHT" \
+  --teacher-top-ce-weight "$TEACHER_TOP_CE_WEIGHT" \
+  --current-top-margin-weight "$CURRENT_TOP_MARGIN_WEIGHT" \
+  --current-top-min-bad-regret-cp "$CURRENT_TOP_MIN_BAD_REGRET_CP" \
   --max-weight-delta "$MAX_WEIGHT_DELTA" \
   --anchor-l2 "$ANCHOR_L2" \
   --best-metric "$BEST_METRIC" \
@@ -374,7 +459,10 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --feedback-weight "$FEEDBACK_WEIGHT" \
   --feedback-min-regret-delta-cp 0 \
   --feedback-min-candidate-regret-cp 0 \
-  --feedback-good-move baseline \
+  --feedback-good-move "$FEEDBACK_GOOD_MOVE" \
+  --feedback-weight-scale-cp "$FEEDBACK_WEIGHT_SCALE_CP" \
+  --feedback-max-sample-weight "$FEEDBACK_MAX_SAMPLE_WEIGHT" \
+  "${feedback_dedupe_args[@]}" \
   --incumbent-protection-weight "$INCUMBENT_PROTECTION_WEIGHT" \
   --incumbent-protection-max-regret-cp "$INCUMBENT_PROTECTION_MAX_REGRET_CP" \
   --incumbent-protection-allow-teacher-better-cp "$INCUMBENT_PROTECTION_ALLOW_TEACHER_BETTER_CP" \
