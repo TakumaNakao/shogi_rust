@@ -84,10 +84,19 @@ bash tools/run_mmto_rerank_long.sh
 - `STUDENT_BAD_TOP_K=12`
 - `MIN_REGRET_CP=15`
 - `MAX_PAIRS_PER_SAMPLE=32`
+- `LOSS_MODE=listwise-leaf`
+- `LISTWISE_TEACHER_TOP_K=16`
+- `LISTWISE_CANDIDATE_TOP_K=16`
+- `LISTWISE_MIN_SELECTED_REGRET_CP=30`
+- `LISTWISE_WEIGHT_MODE=model-regret`
+- `TEACHER_TOP_CE_WEIGHT=0.1`
+- `CURRENT_TOP_MARGIN_WEIGHT=0.05`
+- `BEST_METRIC=capped-selected-regret`
+- `STREAM_TRAIN=1`
 - `EPOCHS=10`
 - `BLEND_RATIOS="0.02 0.05"`
 
-直近の長時間runでは `MIN_REGRET_CP=50` のままだと `train pairs` / `valid pairs` が少なすぎたため、長時間用プリセットは「teacher上位手 vs 現在の学習中モデルが高く見ている悪手」を使う hard-negative 設定にしている。`score gate` と `rerank gate` を通過しない重みは採用しない。
+直近の長時間runでは `MIN_REGRET_CP=50` のままだと `train pairs` / `valid pairs` が少なすぎたため、長時間用プリセットは「teacher上位手 vs 現在の学習中モデルが高く見ている悪手」を同じ候補集合に入れる listwise 設定にしている。`score gate` と `rerank gate` を通過しない重みは採用しない。
 
 主な環境変数:
 
