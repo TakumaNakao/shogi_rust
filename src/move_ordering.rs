@@ -4,6 +4,32 @@ use arrayvec::ArrayVec;
 use shogi_core::{Color, Move, PieceKind, Square};
 use shogi_lib::Position;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+
+#[derive(Default)]
+struct U64IdentityHasher {
+    value: u64,
+}
+
+impl Hasher for U64IdentityHasher {
+    fn finish(&self) -> u64 {
+        self.value
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut value = 0u64;
+        for (i, byte) in bytes.iter().take(8).enumerate() {
+            value |= (*byte as u64) << (i * 8);
+        }
+        self.value = value;
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.value = i;
+    }
+}
+
+type U64IdentityBuildHasher = BuildHasherDefault<U64IdentityHasher>;
 
 fn board_piece_kind_index(kind: PieceKind) -> usize {
     match kind {
@@ -148,7 +174,7 @@ impl ButterflyHistory {
 /// `CounterMoveHistory`テーブル
 #[derive(Debug, Default)]
 struct CounterMoveHistory {
-    history: HashMap<u64, i32>,
+    history: HashMap<u64, i32, U64IdentityBuildHasher>,
 }
 
 impl CounterMoveHistory {
