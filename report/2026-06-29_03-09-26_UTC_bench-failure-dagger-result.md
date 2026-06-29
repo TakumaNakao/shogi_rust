@@ -76,6 +76,35 @@ best epochは出ず、不採用。
 bench failure DAggerは、詰み級外れ値を外し、通常regret帯を使う方向がよい。
 ただしhard shardだけを強めると全体の手選択一致率が落ちる。
 
+## 追試: 弱め設定
+
+- run dir: `data/mmto/runs/bench_failure_dagger_normalband_soft_20260629_031023`
+- regret帯: 50..150cp
+- extract: 184件中28件
+- dump: 28 train records、skipなし
+- 変更点:
+  - `REPLAY_WEIGHT=0.08`
+  - `CURRENT_TOP_MARGIN_WEIGHT=0.02`
+  - `TEACHER_TOP_CE_WEIGHT=0.03`
+  - `BEST_METRIC=p95-regret`
+  - dump depth/top-kを軽量化
+
+結果:
+
+- best epoch: 1
+- score gate: passed
+  - mean_abs_delta_cp: 0.142
+  - p95_abs_delta_cp: 0.399
+  - max_abs_delta_cp: 0.580
+- rerank gate: failed
+  - match rate: 44.25% -> 43.88%
+- 20局ベンチ: 未実行
+
+判断:
+
+更新をかなり弱めても、match率低下でrerank gateを通過できなかった。
+次はmatch率改善要件を緩めてベンチへ進めるのではなく、teacher matchを落とさない目的関数またはpolicy anchorを学習側に足す。
+
 次は以下を試す。
 
 1. `REPLAY_WEIGHT`をさらに下げる。
