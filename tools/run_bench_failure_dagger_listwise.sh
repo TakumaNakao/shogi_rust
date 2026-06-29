@@ -67,6 +67,13 @@ CURRENT_TOP_MIN_BAD_REGRET_CP="${CURRENT_TOP_MIN_BAD_REGRET_CP:-30}"
 GAME_TEACHER_MARGIN_WEIGHT="${GAME_TEACHER_MARGIN_WEIGHT:-0.05}"
 GAME_TEACHER_MAX_REGRET_CP="${GAME_TEACHER_MAX_REGRET_CP:-300}"
 GAME_TEACHER_MIN_BAD_REGRET_CP="${GAME_TEACHER_MIN_BAD_REGRET_CP:-15}"
+POLICY_ANCHOR_WEIGHTS="${POLICY_ANCHOR_WEIGHTS:-}"
+POLICY_ANCHOR_WEIGHT="${POLICY_ANCHOR_WEIGHT:-0}"
+POLICY_ANCHOR_TEMPERATURE_CP="${POLICY_ANCHOR_TEMPERATURE_CP:-100}"
+POLICY_ANCHOR_FEATURE_SOURCE="${POLICY_ANCHOR_FEATURE_SOURCE:-student-leaf}"
+POLICY_ANCHOR_MARGIN_WEIGHT="${POLICY_ANCHOR_MARGIN_WEIGHT:-0}"
+POLICY_ANCHOR_MARGIN_CP="${POLICY_ANCHOR_MARGIN_CP:-50}"
+POLICY_ANCHOR_MARGIN_SOFTPLUS_TEMP_CP="${POLICY_ANCHOR_MARGIN_SOFTPLUS_TEMP_CP:-100}"
 
 BEST_METRIC="${BEST_METRIC:-bad100-regret}"
 BEST_GUARD_MAX_REGRET_INCREASE_CP="${BEST_GUARD_MAX_REGRET_INCREASE_CP:--1}"
@@ -118,6 +125,7 @@ echo "BENCH_FAILURE_JSONL=$BENCH_FAILURE_JSONL"
 echo "PAIR_REGRET_RANGE=$PAIR_MIN_REGRET_CP..$PAIR_MAX_REGRET_CP LIMIT=$PAIR_LIMIT BAD_MOVE_SOURCE=$PAIR_BAD_MOVE_SOURCE"
 echo "DUMP_DEPTHS teacher=$DUMP_TEACHER_DEPTH student=$DUMP_STUDENT_DEPTH max_positions=$DUMP_MAX_POSITIONS"
 echo "LOSS=listwise-leaf feature=$LISTWISE_FEATURE_SOURCE replay_weight=$REPLAY_WEIGHT best_metric=$BEST_METRIC"
+echo "POLICY_ANCHOR_WEIGHTS=$POLICY_ANCHOR_WEIGHTS POLICY_ANCHOR_WEIGHT=$POLICY_ANCHOR_WEIGHT POLICY_ANCHOR_MARGIN_WEIGHT=$POLICY_ANCHOR_MARGIN_WEIGHT"
 echo "STREAM_TRAIN=$STREAM_TRAIN eval_max=$STREAM_TRAIN_EVAL_MAX_SAMPLES"
 
 env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
@@ -190,6 +198,23 @@ head -n "$VALID_LINES" "$SOURCE_VALID" > "$RUN_DIR/valid.top.tree.jsonl"
 wc -l "$SOURCE_TRAIN" "$RUN_DIR/valid.top.tree.jsonl" "$RUN_DIR/bench_failure.train.tree.jsonl" \
   | tee "$RUN_DIR/subset_counts.txt"
 
+policy_anchor_args=()
+if [[ -n "$POLICY_ANCHOR_WEIGHTS" ]]; then
+  if [[ ! -f "$POLICY_ANCHOR_WEIGHTS" ]]; then
+    echo "missing policy anchor weights: $POLICY_ANCHOR_WEIGHTS" >&2
+    exit 1
+  fi
+  policy_anchor_args+=(
+    --policy-anchor-weights "$POLICY_ANCHOR_WEIGHTS"
+    --policy-anchor-weight "$POLICY_ANCHOR_WEIGHT"
+    --policy-anchor-temperature-cp "$POLICY_ANCHOR_TEMPERATURE_CP"
+    --policy-anchor-feature-source "$POLICY_ANCHOR_FEATURE_SOURCE"
+    --policy-anchor-margin-weight "$POLICY_ANCHOR_MARGIN_WEIGHT"
+    --policy-anchor-margin-cp "$POLICY_ANCHOR_MARGIN_CP"
+    --policy-anchor-margin-softplus-temp-cp "$POLICY_ANCHOR_MARGIN_SOFTPLUS_TEMP_CP"
+  )
+fi
+
 train_args=(
   --weights "$WEIGHTS"
   --train "$SOURCE_TRAIN"
@@ -232,6 +257,7 @@ train_args=(
   --max-weight-delta "$MAX_WEIGHT_DELTA"
   --replay-train "$RUN_DIR/bench_failure.train.tree.jsonl"
   --replay-weight "$REPLAY_WEIGHT"
+  "${policy_anchor_args[@]}"
   --log-path "$RUN_DIR/train.csv"
 )
 if [[ "$STREAM_TRAIN" == "1" ]]; then
