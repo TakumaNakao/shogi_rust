@@ -105,6 +105,37 @@ bench failure DAggerは、詰み級外れ値を外し、通常regret帯を使う
 更新をかなり弱めても、match率低下でrerank gateを通過できなかった。
 次はmatch率改善要件を緩めてベンチへ進めるのではなく、teacher matchを落とさない目的関数またはpolicy anchorを学習側に足す。
 
+## 追試: Policy Anchor付き弱め設定
+
+- run dir: `data/mmto/runs/bench_failure_dagger_anchor_20260629_032339`
+- regret帯: 50..150cp
+- extract: 184件中28件
+- dump: 28 train records
+- 追加条件:
+  - `POLICY_ANCHOR_WEIGHTS=policy_weights_v2.1.0.binary`
+  - `POLICY_ANCHOR_WEIGHT=0.05`
+  - `POLICY_ANCHOR_MARGIN_WEIGHT=0.03`
+  - `POLICY_ANCHOR_FEATURE_SOURCE=student-leaf`
+
+結果:
+
+- policy anchorは有効:
+  - baseline policy anchor top_match: 100.00%
+  - final policy anchor top_match: 90.60%
+- best epoch: 3
+- score gate: passed
+  - mean_abs_delta_cp: 0.129
+  - p95_abs_delta_cp: 0.378
+  - max_abs_delta_cp: 0.671
+- rerank gate: failed
+  - match rate: 44.25% -> 43.62%
+- 20局ベンチ: 未実行
+
+判断:
+
+policy anchorを入れても、今回の重みでは全体rerankのmatch率低下を抑えられなかった。
+bench failure hard shardは局所的には意味があるが、現行の混ぜ方では「失敗局面を直す代わりに広い局面で手選択が揺れる」傾向が残る。
+
 次は以下を試す。
 
 1. `REPLAY_WEIGHT`をさらに下げる。
