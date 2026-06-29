@@ -254,8 +254,33 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     pub fn quiescence_search(
         &mut self,
         position: &mut Position,
+        alpha: f32,
+        beta: f32,
+    ) -> Option<(f32, Vec<Move>)> {
+        self.quiescence_search_internal(position, alpha, beta, None)
+    }
+
+    fn filter_quiescence_moves_from_legal(
+        position: &Position,
+        mut moves: LegalMoves,
+    ) -> (LegalMoves, usize) {
+        let generated = moves.len();
+        moves.retain(|m| {
+            if let Move::Normal { to, .. } = *m {
+                position.piece_at(to).is_some() || position.is_check_move(*m)
+            } else {
+                position.is_check_move(*m)
+            }
+        });
+        (moves, generated)
+    }
+
+    fn quiescence_search_internal(
+        &mut self,
+        position: &mut Position,
         mut alpha: f32,
         beta: f32,
+        precomputed_moves: Option<LegalMoves>,
     ) -> Option<(f32, Vec<Move>)> {
         if self.is_time_up() {
             return None;
@@ -263,9 +288,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.nodes_searched += 1;
         self.quiescence_nodes_searched += 1;
 
-        if position.in_check() && !position.has_legal_evasion() {
-            self.quiescence_terminal_mates += 1;
-            return Some((-f32::INFINITY, Vec::new()));
+        if position.in_check() {
+            let has_evasion = precomputed_moves
+                .as_ref()
+                .map(|moves| !moves.is_empty())
+                .unwrap_or_else(|| position.has_legal_evasion());
+            if !has_evasion {
+                self.quiescence_terminal_mates += 1;
+                return Some((-f32::INFINITY, Vec::new()));
+            }
         }
 
         let stand_pat_score = self.evaluator.evaluate(position);
@@ -274,7 +305,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
         alpha = alpha.max(stand_pat_score);
 
-        let (moves, generated_moves) = position.legal_quiescence_moves_with_generated_count();
+        let (moves, generated_moves) = precomputed_moves
+            .map(|moves| Self::filter_quiescence_moves_from_legal(position, moves))
+            .unwrap_or_else(|| position.legal_quiescence_moves_with_generated_count());
 
         self.quiescence_moves_generated += generated_moves as u64;
         self.quiescence_moves_discarded += (generated_moves - moves.len()) as u64;
@@ -308,7 +341,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let score_result = match sennichite_status {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
                 SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
-                SennichiteStatus::None => self.quiescence_search(position, -beta, -alpha),
+                SennichiteStatus::None => {
+                    self.quiescence_search_internal(position, -beta, -alpha, None)
+                }
             };
             self.sennichite_detector.unrecord_last_position();
             position.undo_move(mv);
@@ -352,7 +387,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             return None;
         }
         if depth == 0 {
-            return self.quiescence_search(position, alpha, beta);
+            return self.quiescence_search_internal(position, alpha, beta, precomputed_moves);
         }
         self.nodes_searched += 1;
 
@@ -423,9 +458,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         if child_moves.len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES {
                             child_depth = 1;
                             child_extension_budget -= 1;
-                            child_precomputed_moves = Some(child_moves);
                             self.check_evasion_extensions += 1;
                         }
+                        child_precomputed_moves = Some(child_moves);
                     }
                     self.alpha_beta_search_internal(
                         position,
