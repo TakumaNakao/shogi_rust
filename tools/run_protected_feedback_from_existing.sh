@@ -240,9 +240,9 @@ env RUST_FONTCONFIG_DLOPEN=1 target/release/mmto_tree_train \
   --max-weight-delta "$MAX_WEIGHT_DELTA" \
   --anchor-l2 "$ANCHOR_L2" \
   --best-metric "$BEST_METRIC" \
-  --best-guard-max-regret-increase-cp "$BEST_GUARD_MAX_REGRET_INCREASE_CP" \
-  --best-guard-bad100-increase "$BEST_GUARD_BAD100_INCREASE" \
-  --best-guard-teacher-match-drop-pct "$BEST_GUARD_TEACHER_MATCH_DROP_PCT" \
+  --best-guard-max-regret-increase-cp="$BEST_GUARD_MAX_REGRET_INCREASE_CP" \
+  --best-guard-bad100-increase="$BEST_GUARD_BAD100_INCREASE" \
+  --best-guard-teacher-match-drop-pct="$BEST_GUARD_TEACHER_MATCH_DROP_PCT" \
   --best-guard-feedback-violation-increase="$BEST_GUARD_FEEDBACK_VIOLATION_INCREASE" \
   --best-guard-feedback-loss-increase="$BEST_GUARD_FEEDBACK_LOSS_INCREASE" \
   "${feedback_args[@]}" \
