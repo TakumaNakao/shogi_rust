@@ -192,6 +192,12 @@ fn validate_witness(witness: &Witness) -> bool {
     let Some(mut position) = position_from_sfen_or_usi(&witness.ancestor.sfen) else {
         return false;
     };
+    let replay_start = PathState::new(&position);
+    if replay_start.black_hand != witness.ancestor.black_hand
+        || replay_start.white_hand != witness.ancestor.white_hand
+    {
+        return false;
+    }
     for &mv in &witness.moves {
         if !position.legal_moves().contains(&mv) {
             return false;
@@ -199,8 +205,10 @@ fn validate_witness(witness: &Witness) -> bool {
         position.do_move(mv);
     }
     let final_state = PathState::new(&position);
-    final_state.board_key_with_side == witness.ancestor.board_key_with_side
-        && componentwise_loss(&witness.ancestor, &final_state) == Some(witness.loser)
+    final_state.board_key_with_side == replay_start.board_key_with_side
+        && final_state.black_hand == witness.final_black_hand
+        && final_state.white_hand == witness.final_white_hand
+        && componentwise_loss(&replay_start, &final_state) == Some(witness.loser)
 }
 
 #[derive(Serialize)]
@@ -270,7 +278,20 @@ fn main() -> Result<()> {
             };
             if !validate_witness(&witness) {
                 return Err(anyhow!(
-                    "internal error: generated cycle proof is not legal"
+                    "internal error: generated cycle proof is not legal: source_index={source_index} depth={depth} source_sfen={source_sfen:?} cycle_start={:?} prefix={:?} proof={:?}",
+                    witness.ancestor.sfen,
+                    witness
+                        .source_to_cycle_start
+                        .iter()
+                        .copied()
+                        .map(format_move_usi)
+                        .collect::<Vec<_>>(),
+                    witness
+                        .moves
+                        .iter()
+                        .copied()
+                        .map(format_move_usi)
+                        .collect::<Vec<_>>()
                 ));
             }
             let record = CycleRecord {
@@ -398,6 +419,67 @@ mod tests {
         assert_eq!(
             Some(Color::Black),
             componentwise_loss(&witness.ancestor, &final_state)
+        );
+    }
+
+    #[test]
+    fn replays_real_depth_six_cycle_candidate() {
+        let mut position = position_from_sfen_or_usi(
+            "ln1g3nl/1k7/1spsprbpp/p2p2p2/1Pg1Pp1P1/P1PSG1P2/1KNP1P2P/2SGR4/L6NL w bp 74",
+        )
+        .expect("valid cycle start");
+        let ancestor = PathState::new(&position);
+        for text in ["P*8h", "8g8h", "B*8g", "8h8g"] {
+            let mv = parse_usi_move_for_color(text, position.side_to_move()).expect("valid USI");
+            assert!(
+                position.legal_moves().contains(&mv),
+                "illegal fixture move {text}; in_check={}",
+                position.in_check()
+            );
+            position.do_move(mv);
+        }
+        let final_state = PathState::new(&position);
+        assert_eq!(
+            ancestor.board_key_with_side,
+            final_state.board_key_with_side
+        );
+        assert_eq!(
+            Some(Color::White),
+            componentwise_loss(&ancestor, &final_state)
+        );
+    }
+
+    #[test]
+    fn real_depth_six_search_only_returns_a_replayable_witness() {
+        let mut position = position_from_sfen_or_usi(
+            "ln1g3nl/1k7/1spsprbpp/p2p2p2/1Pg1Pp1P1/P1PSG1P2/1KN2P2P/2SGR4/L6NL b Pbp 73",
+        )
+        .expect("valid source");
+        let mut nodes = 0;
+        let mut states = vec![PathState::new(&position)];
+        let mut moves = Vec::new();
+        let mut checks = Vec::new();
+        let DfsResult::Found(witness) = find_cycle(
+            &mut position,
+            6,
+            250_000,
+            &mut nodes,
+            &mut states,
+            &mut moves,
+            &mut checks,
+        ) else {
+            panic!("fixture must find a witness");
+        };
+        assert!(
+            validate_witness(&witness),
+            "loser={:?} moves={:?}",
+            witness.loser,
+            witness
+                .moves
+                .iter()
+                .copied()
+                .map(format_move_usi)
+                .collect::<Vec<_>>(),
         );
     }
 }

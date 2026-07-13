@@ -30,6 +30,9 @@ impl Position {
                 }
             }
         }
+        if inner.side == Color::White {
+            keys.0 ^= Key::COLOR;
+        }
         let checkers = AttackInfo::calculate_checkers(&inner);
         let state = State {
             keys,
