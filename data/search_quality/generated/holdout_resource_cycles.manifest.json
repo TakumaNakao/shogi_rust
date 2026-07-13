@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "generator": "resource_cycle_miner",
+  "generator_commit": "a301313ee7b00d42180406ad924c3f05d1068ba8",
+  "generator_worktree_dirty": false,
+  "generator_source_sha256": "0ac1f68a191c710c6c7c2f06569821b0cb6c1f95177ba845aa669650232173e7",
+  "suite_kind": "resource_cycle",
+  "split": "holdout",
+  "weight_sha256": null,
+  "input_path": "/home/kuro/shogi_rust/data/wdoor/search_quality_phase0/pools/holdout.jsonl",
+  "input_sha256": "0ddd55724226c54615365957f309c7a4dc3feb597e0dbdb4c500c6086b3bca80",
+  "input_nonempty_lines": 50718,
+  "valid_positions": 50718,
+  "output_path": "/home/kuro/shogi_rust/data/search_quality/generated/holdout_resource_cycles.jsonl",
+  "output_sha256": "ee6ee2a25dd88eb7530042ce303358a5ae1a8e3593b34b5a2e618629d93d39c2",
+  "seed": 20260713,
+  "records_written": 50,
+  "duplicate_sfens_skipped": 0,
+  "filters": {
+    "depths": [
+      4,
+      6,
+      8
+    ],
+    "negative_policy": "absence is never labeled; node-limited searches are excluded",
+    "node_limit": 250000,
+    "position_limit": 250,
+    "proof": "legal replay, same board key and side, component-wise hand dominance",
+    "record_limit": 50
+  }
+}

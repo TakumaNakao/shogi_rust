@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "generator": "mate_sacrifice_miner",
+  "generator_commit": "a301313ee7b00d42180406ad924c3f05d1068ba8",
+  "generator_worktree_dirty": false,
+  "generator_source_sha256": "0ac1f68a191c710c6c7c2f06569821b0cb6c1f95177ba845aa669650232173e7",
+  "suite_kind": "mate_sacrifice",
+  "split": "dev",
+  "weight_sha256": null,
+  "input_path": "/home/kuro/shogi_rust/data/wdoor/search_quality_phase0/pools/dev.jsonl",
+  "input_sha256": "bbdd24e1690a4726b760321ee8ecc2eccba1f948fdf19a2f2a225a852d175659",
+  "input_nonempty_lines": 107320,
+  "valid_positions": 107320,
+  "output_path": "/home/kuro/shogi_rust/data/search_quality/generated/dev_mate_sacrifice.jsonl",
+  "output_sha256": "8d3830e96117398f447eaf29e10fee69514c3ebcfb45fb456d3cd6aaf2e76eb0",
+  "seed": 20260713,
+  "records_written": 200,
+  "duplicate_sfens_skipped": 0,
+  "filters": {
+    "candidate": "legal checking move with current simple SEE < 0",
+    "depths": [
+      1,
+      3,
+      5,
+      7
+    ],
+    "position_limit": 75000,
+    "proof_node_limit": 2000000,
+    "record_limit": 200,
+    "unknown_policy": "excluded"
+  }
+}
