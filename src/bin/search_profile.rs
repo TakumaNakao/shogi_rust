@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use shogi_ai::ai::ShogiAI;
+use shogi_ai::ai::{SearchLimits, SearchStopReason, ShogiAI};
 use shogi_ai::evaluation::{Evaluator, HybridNnueEvaluator, SparseModel, TinyNnueModel};
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_lib::Position;
@@ -31,6 +31,8 @@ struct Args {
     depth: u8,
     #[arg(long)]
     time_limit_ms: Option<u64>,
+    #[arg(long)]
+    nodes: Option<u64>,
     #[arg(long, default_value_t = 0)]
     seed: u64,
 }
@@ -105,10 +107,15 @@ where
     let mut total_quiescence_moves_searched = 0u64;
     let mut total_quiescence_see_skips = 0u64;
     let mut total_quiescence_terminal_mates = 0u64;
+    let mut total_terminal_mates = 0u64;
     let mut total_check_evasion_extensions = 0u64;
     let mut total_aspiration_fail_lows = 0u64;
     let mut total_aspiration_fail_highs = 0u64;
     let mut total_aspiration_researches = 0u64;
+    let mut total_in_check_qnodes = 0u64;
+    let mut total_negative_see_checks = 0u64;
+    let mut total_repetition_hits = 0u64;
+    let mut node_limit_stops = 0u64;
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -117,7 +124,14 @@ where
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
         ai.set_emit_info(false);
         ai.sennichite_detector.record_position(&position);
-        ai.find_best_move(&mut position, args.depth, args.time_limit_ms);
+        let report = ai.find_best_move_with_limits(
+            &mut position,
+            SearchLimits {
+                max_depth: args.depth,
+                time_limit_ms: args.time_limit_ms,
+                node_limit: args.nodes,
+            },
+        );
         total_nodes += ai.nodes_searched();
         total_quiescence_nodes += ai.quiescence_nodes_searched();
         total_quiescence_moves_considered += ai.quiescence_moves_considered();
@@ -126,10 +140,15 @@ where
         total_quiescence_moves_searched += ai.quiescence_moves_searched();
         total_quiescence_see_skips += ai.quiescence_see_skips();
         total_quiescence_terminal_mates += ai.quiescence_terminal_mates();
+        total_terminal_mates += report.terminal_mates;
         total_check_evasion_extensions += ai.check_evasion_extensions();
         total_aspiration_fail_lows += ai.aspiration_fail_lows();
         total_aspiration_fail_highs += ai.aspiration_fail_highs();
         total_aspiration_researches += ai.aspiration_researches();
+        total_in_check_qnodes += report.in_check_qnodes;
+        total_negative_see_checks += report.negative_see_checks_considered;
+        total_repetition_hits += report.repetition_hits;
+        node_limit_stops += u64::from(report.stop_reason == SearchStopReason::NodeLimit);
     }
 
     let elapsed = start.elapsed();
@@ -165,6 +184,7 @@ where
         "quiescence terminal mates: {}",
         total_quiescence_terminal_mates
     );
+    println!("terminal mates: {}", total_terminal_mates);
     println!(
         "check evasion extensions: {}",
         total_check_evasion_extensions
@@ -172,6 +192,13 @@ where
     println!("aspiration fail lows: {}", total_aspiration_fail_lows);
     println!("aspiration fail highs: {}", total_aspiration_fail_highs);
     println!("aspiration researches: {}", total_aspiration_researches);
+    println!("in-check qnodes: {}", total_in_check_qnodes);
+    println!(
+        "negative SEE checks considered: {}",
+        total_negative_see_checks
+    );
+    println!("repetition hits: {}", total_repetition_hits);
+    println!("node-limit stops: {}", node_limit_stops);
     println!("elapsed ms: {:.2}", elapsed_secs * 1000.0);
     println!("nodes/sec: {:.2}", nps);
     println!(
@@ -203,6 +230,9 @@ fn main() -> Result<()> {
     let args = Args::parse();
     if args.samples == 0 {
         return Err(anyhow!("--samples must be greater than zero"));
+    }
+    if args.nodes == Some(0) {
+        return Err(anyhow!("--nodes must be greater than zero"));
     }
 
     let mut positions = load_positions(&args.positions)?;

@@ -1,0 +1,106 @@
+# Search quality tools
+
+Phase 0 tooling provides deterministic search reports and rule-only evidence suites. None of
+the three miners loads an evaluation weight or another engine's output.
+Position inputs may be plain SFEN/USI lines or `dataset_build` JSONL records containing a `sfen`
+field. Frozen suites require JSONL records with `source_game_key` (the existing `game_key` field
+is accepted and normalized to that name). Every non-empty input line is parsed strictly; malformed
+lines and empty effective inputs are errors.
+
+## Fixed-node search
+
+The USI engine accepts `go nodes N`. A nodes-only command has no implicit wall-clock limit.
+When `nodes` is combined with `movetime` or clock fields, the first reached limit stops search;
+if both are observed at the same check, the node limit has priority.
+
+`search_profile` accepts the same limit:
+
+```console
+cargo run --release --bin search_profile -- \
+  --positions taya36.sfen --samples 36 --depth 8 --nodes 200000
+```
+
+`search_failure_probe` writes one JSONL record for every position/depth/node combination:
+
+```console
+cargo run --release --bin search_failure_probe -- \
+  --weights policy_weights_v2.1.0.binary \
+  --positions data/dev.sfen --output data/search_quality/probe.jsonl \
+  --depths 3,4,5,6,7,8 --nodes 10000,50000,200000
+```
+
+Each record contains the best move, score, PV, completed depth, stop reason, nodes, qnodes,
+in-check qnodes, terminal mates, negative-SEE checks, and repetition hits.
+
+## Rule-only miners
+
+```console
+cargo run --release --bin mate_sacrifice_miner -- \
+  --positions data/dev.sfen \
+  --output data/search_quality/generated/dev_mate_sacrifice.jsonl \
+  --split dev \
+  --depths 1,3,5,7 --proof-node-limit 2000000 --seed 20260713
+
+cargo run --release --bin quiet_evasion_miner -- \
+  --positions data/dev.sfen \
+  --output data/search_quality/generated/dev_quiet_evasion.jsonl \
+  --split dev \
+  --seed 20260713
+
+cargo run --release --bin resource_cycle_miner -- \
+  --positions data/dev.sfen \
+  --output data/search_quality/generated/dev_resource_cycles.jsonl \
+  --split dev \
+  --depths 4,6,8 --node-limit 250000 --seed 20260713
+```
+
+The mate miner uses full-width checking-move OR / legal-defense AND proof. A node-limit result
+is `Unknown` and is never emitted as positive or negative evidence. The cycle miner likewise
+emits only replay-validated positive witnesses; failure to find a cycle is not a negative label.
+The evasion miner stores the complete legal evasion set as its reference.
+
+Every miner writes `<output-stem>.manifest.json` with the generator commit, dirty-worktree flag,
+generator-source SHA-256, input and output SHA-256, seed, extraction filters, record count, and
+duplicate count. The generator hash covers `Cargo.toml`, `Cargo.lock`, `src`, and `shogi_lib`.
+Rule-only
+manifests record `weight_sha256` as `null` because no weight participates in labeling.
+The suite and sidecar are prepared in temporary files and published as one pair. If either publish
+step fails, both old files are restored. Inputs, outputs, weights, suites, and sidecars are rejected
+when paths or existing inodes collide. A run producing zero evidence records fails without replacing
+an existing suite or sidecar. Existing pair destinations must be regular files; directories,
+symlinks, and other file types are rejected before either destination is changed. Once both new
+files are published, removal of the old backup files is best effort: cleanup failure is warned but
+does not misreport the consistent new pair as a failed publication, and the backups remain available
+for manual recovery.
+
+After all dev and holdout suites are generated, freeze the aggregate manifest specified by the
+evaluation plan:
+
+```console
+cargo run --release --bin search_suite_manifest -- \
+  --source-files data/dev.sfen data/holdout.sfen \
+  --suite-files data/search_quality/generated/dev_mate_sacrifice.jsonl \
+    data/search_quality/generated/holdout_mate_sacrifice.jsonl \
+    data/search_quality/generated/dev_quiet_evasion.jsonl \
+    data/search_quality/generated/holdout_quiet_evasion.jsonl \
+    data/search_quality/generated/dev_resource_cycles.jsonl \
+    data/search_quality/generated/holdout_resource_cycles.jsonl \
+  --weight policy_weights_v2.1.0.binary \
+  --output data/search_quality/generated/suite_manifest.json
+```
+
+The aggregate command is a freeze gate, not only a hash writer. By default it requires a clean
+generator worktree and matching generator-source hashes, all six dev/holdout classifications,
+the planned minimum counts, mandatory sidecars,
+matching schema/count/seed/filter/dedupe/input/output SHA metadata, and zero source-game/SFEN
+intersection between the complete dev and holdout source pools. Every source row must have a game
+key, and every suite row must match the exact source line's game key and canonical SFEN. The gate
+also parses every classification-specific field and replays its evidence: mate lines must terminate
+in checkmate and be re-proved by the rule-only oracle, quiet-evasion sets must equal the complete
+legal move set, and resource cycles must replay from their source and reproduce the declared hand
+dominance. `--allow-dirty --allow-incomplete` exists only for smoke validation; using either flag
+makes `freeze_eligible: false`, as does any dirty sidecar, and the result must not be used as a
+release artifact.
+
+Dev and holdout inputs must already be split by source game. Do not inspect or tune against
+individual holdout records; if that happens, move the record to dev and freeze a replacement.

@@ -25,6 +25,7 @@ rand_chacha = "0.3.1"
 libc = "0.2"
 shogi_usi_parser = "0.1.0"
 clap = { version = "4.5.43", features = ["derive"] }
+sha2 = "0.10"
 
 [[bin]]
 name = "kpp_learn"
@@ -113,6 +114,26 @@ path = "src/bin/bench_failure_miner.rs"
 [[bin]]
 name = "bench_failure_feedback"
 path = "src/bin/bench_failure_feedback.rs"
+
+[[bin]]
+name = "search_failure_probe"
+path = "src/bin/search_failure_probe.rs"
+
+[[bin]]
+name = "mate_sacrifice_miner"
+path = "src/bin/mate_sacrifice_miner.rs"
+
+[[bin]]
+name = "quiet_evasion_miner"
+path = "src/bin/quiet_evasion_miner.rs"
+
+[[bin]]
+name = "resource_cycle_miner"
+path = "src/bin/resource_cycle_miner.rs"
+
+[[bin]]
+name = "search_suite_manifest"
+path = "src/bin/search_suite_manifest.rs"
 
 [[bin]]
 name = "rerank_feedback_collect"

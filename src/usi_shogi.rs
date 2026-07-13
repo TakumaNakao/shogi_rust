@@ -1,4 +1,4 @@
-use crate::ai::ShogiAI;
+use crate::ai::{SearchLimits, ShogiAI};
 use crate::evaluation::{EngineEvaluator, HybridNnueEvaluator};
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
@@ -16,12 +16,6 @@ const ENGINE_NAME: &str = "Shogi AI";
 const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
 const OVERWRITE_VALUE: f32 = 0.0;
-
-#[derive(Clone, Copy)]
-struct SearchLimits {
-    max_depth: u8,
-    time_limit_ms: Option<u64>,
-}
 
 struct UsiEngine {
     position: Position,
@@ -220,6 +214,7 @@ impl UsiEngine {
         let mut black_time: Option<u64> = None;
         let mut white_time: Option<u64> = None;
         let mut infinite = false;
+        let mut node_limit: Option<u64> = None;
 
         let mut i = 1;
         while i < tokens.len() {
@@ -250,6 +245,10 @@ impl UsiEngine {
                     infinite = true;
                     i += 1;
                 }
+                "nodes" => {
+                    node_limit = tokens.get(i + 1).and_then(|value| value.parse().ok());
+                    i += 2;
+                }
                 _ => i += 1,
             }
         }
@@ -258,6 +257,12 @@ impl UsiEngine {
             None
         } else if let Some(movetime) = movetime {
             Some(movetime)
+        } else if node_limit.is_some()
+            && black_time.is_none()
+            && white_time.is_none()
+            && byoyomi.is_none()
+        {
+            None
         } else {
             let side_time = match self.position.side_to_move() {
                 Color::Black => black_time,
@@ -280,6 +285,7 @@ impl UsiEngine {
         SearchLimits {
             max_depth,
             time_limit_ms,
+            node_limit,
         }
     }
 
@@ -306,11 +312,9 @@ impl UsiEngine {
             if let Some(thinking_ai) = ai_lock.as_mut() {
                 thinking_ai.set_stop_signal(Some(stop_signal.clone()));
                 thinking_ai.set_emit_info(true);
-                let best_move = thinking_ai.find_best_move(
-                    &mut position,
-                    limits.max_depth,
-                    limits.time_limit_ms,
-                );
+                let best_move = thinking_ai
+                    .find_best_move_with_limits(&mut position, limits)
+                    .best_move;
                 if let Some(best_move) = best_move {
                     thinking_ai.set_stop_signal(None);
                     println!("bestmove {}", format_move_usi(best_move));
@@ -332,4 +336,35 @@ impl UsiEngine {
 pub fn run_usi() {
     let mut engine = UsiEngine::new();
     engine.run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_go_nodes_with_depth_and_time() {
+        let engine = UsiEngine::new();
+        let limits =
+            engine.parse_go_limits(&["go", "depth", "9", "nodes", "12345", "movetime", "500"]);
+        assert_eq!(9, limits.max_depth);
+        assert_eq!(Some(12_345), limits.node_limit);
+        assert_eq!(Some(500), limits.time_limit_ms);
+    }
+
+    #[test]
+    fn go_infinite_disables_time_but_not_nodes() {
+        let engine = UsiEngine::new();
+        let limits = engine.parse_go_limits(&["go", "infinite", "nodes", "99"]);
+        assert_eq!(None, limits.time_limit_ms);
+        assert_eq!(Some(99), limits.node_limit);
+    }
+
+    #[test]
+    fn nodes_only_does_not_add_an_implicit_wall_clock_limit() {
+        let engine = UsiEngine::new();
+        let limits = engine.parse_go_limits(&["go", "nodes", "99"]);
+        assert_eq!(None, limits.time_limit_ms);
+        assert_eq!(Some(99), limits.node_limit);
+    }
 }
