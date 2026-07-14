@@ -6,7 +6,9 @@ use sha2::{Digest, Sha256};
 use shogi_ai::ai::{SearchLimits, SearchReport, ShogiAI};
 use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::search_quality::{canonical_sfen, MateOracle, MateProof};
-use shogi_ai::search_quality::{AtomicOutput, DatasetSplit, SuiteKind, SuiteManifest};
+use shogi_ai::search_quality::{
+    generator_source_sha256, AtomicOutput, DatasetSplit, SuiteKind, SuiteManifest,
+};
 use shogi_ai::utils::{format_move_usi, parse_usi_move_for_color, position_from_sfen_or_usi};
 use shogi_core::{Color, Move, PieceKind};
 use shogi_lib::Position;
@@ -245,6 +247,11 @@ fn verify_frozen_manifest(path: &Path, weights: &Path) -> Result<(Value, [Frozen
     let generator_source = manifest["generator_source_sha256"]
         .as_str()
         .ok_or_else(|| anyhow!("aggregate generator source SHA missing"))?;
+    if generator_source_sha256()? != generator_source {
+        return Err(anyhow!(
+            "aggregate generator source SHA does not match current tree"
+        ));
+    }
     let generator_commit = manifest["generator_commit"]
         .as_str()
         .ok_or_else(|| anyhow!("aggregate generator commit missing"))?;
