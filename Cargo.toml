@@ -150,3 +150,7 @@ path = "src/bin/mate_sacrifice_search_probe.rs"
 [[bin]]
 name = "mate_search_profile"
 path = "src/bin/mate_search_profile.rs"
+
+[[bin]]
+name = "mate_synthetic_augment"
+path = "src/bin/mate_synthetic_augment.rs"
