@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use shogi_ai::ai::{SearchLimits, SearchStopReason, ShogiAI};
+use shogi_ai::ai::{SearchLimits, SearchStopReason, ShogiAI, DEFAULT_MAX_QUIESCENCE_CHECK_PLY};
 use shogi_ai::evaluation::{Evaluator, HybridNnueEvaluator, SparseModel, TinyNnueModel};
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_lib::Position;
@@ -13,7 +13,7 @@ use std::time::Instant;
 const HISTORY_CAPACITY: usize = 256;
 
 #[derive(Parser, Debug)]
-#[command(about = "Profile search speed on SFEN positions")]
+#[command(about = "Profile search speed on SFEN positions (diagnostic settings only)")]
 struct Args {
     #[arg(long, default_value = "./policy_weights_v2.1.0.binary")]
     weights: PathBuf,
@@ -35,6 +35,12 @@ struct Args {
     nodes: Option<u64>,
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    #[arg(
+        long,
+        default_value_t = DEFAULT_MAX_QUIESCENCE_CHECK_PLY,
+        help = "Diagnostic override for this profile run; does not change the production engine setting"
+    )]
+    qcheck_ply: u16,
 }
 
 struct SharedModelEvaluator<'a> {
@@ -112,10 +118,17 @@ where
     let mut total_aspiration_fail_lows = 0u64;
     let mut total_aspiration_fail_highs = 0u64;
     let mut total_aspiration_researches = 0u64;
+    let mut total_evasion_cutoffs = [0u64; 4];
+    let mut total_tt_evasion_cutoffs = 0u64;
     let mut total_in_check_qnodes = 0u64;
     let mut total_negative_see_checks = 0u64;
     let mut total_repetition_hits = 0u64;
     let mut node_limit_stops = 0u64;
+    let mut time_limit_stops = 0u64;
+    let mut total_completed_depth = 0u64;
+    let mut min_completed_depth = u8::MAX;
+    let mut max_completed_depth = 0u8;
+    let mut max_quiescence_ply = 0u16;
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -123,6 +136,7 @@ where
         let evaluator = make_evaluator();
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
         ai.set_emit_info(false);
+        ai.set_max_quiescence_check_ply(args.qcheck_ply);
         ai.sennichite_detector.record_position(&position);
         let report = ai.find_best_move_with_limits(
             &mut position,
@@ -145,10 +159,22 @@ where
         total_aspiration_fail_lows += ai.aspiration_fail_lows();
         total_aspiration_fail_highs += ai.aspiration_fail_highs();
         total_aspiration_researches += ai.aspiration_researches();
+        for (total, value) in total_evasion_cutoffs
+            .iter_mut()
+            .zip(report.quiescence_evasion_cutoffs)
+        {
+            *total += value;
+        }
+        total_tt_evasion_cutoffs += report.quiescence_tt_evasion_cutoffs;
+        max_quiescence_ply = max_quiescence_ply.max(report.max_quiescence_ply);
         total_in_check_qnodes += report.in_check_qnodes;
         total_negative_see_checks += report.negative_see_checks_considered;
         total_repetition_hits += report.repetition_hits;
         node_limit_stops += u64::from(report.stop_reason == SearchStopReason::NodeLimit);
+        time_limit_stops += u64::from(report.stop_reason == SearchStopReason::TimeLimit);
+        total_completed_depth += u64::from(report.completed_depth);
+        min_completed_depth = min_completed_depth.min(report.completed_depth);
+        max_completed_depth = max_completed_depth.max(report.completed_depth);
     }
 
     let elapsed = start.elapsed();
@@ -161,6 +187,7 @@ where
 
     println!("model: {}", model_name);
     println!("samples: {}", args.samples);
+    println!("qcheck ply: {}", args.qcheck_ply);
     println!("total nodes: {}", total_nodes);
     println!("quiescence nodes: {}", total_quiescence_nodes);
     println!(
@@ -192,6 +219,15 @@ where
     println!("aspiration fail lows: {}", total_aspiration_fail_lows);
     println!("aspiration fail highs: {}", total_aspiration_fail_highs);
     println!("aspiration researches: {}", total_aspiration_researches);
+    println!(
+        "q evasion cutoffs capture/king/move/drop: {}/{}/{}/{}",
+        total_evasion_cutoffs[0],
+        total_evasion_cutoffs[1],
+        total_evasion_cutoffs[2],
+        total_evasion_cutoffs[3]
+    );
+    println!("q TT evasion cutoffs: {}", total_tt_evasion_cutoffs);
+    println!("max quiescence ply: {}", max_quiescence_ply);
     println!("in-check qnodes: {}", total_in_check_qnodes);
     println!(
         "negative SEE checks considered: {}",
@@ -199,6 +235,13 @@ where
     );
     println!("repetition hits: {}", total_repetition_hits);
     println!("node-limit stops: {}", node_limit_stops);
+    println!("time-limit stops: {}", time_limit_stops);
+    println!(
+        "completed depth avg/min/max: {:.2}/{}/{}",
+        total_completed_depth as f64 / args.samples as f64,
+        min_completed_depth,
+        max_completed_depth
+    );
     println!("elapsed ms: {:.2}", elapsed_secs * 1000.0);
     println!("nodes/sec: {:.2}", nps);
     println!(

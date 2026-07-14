@@ -20,6 +20,21 @@ cargo run --release --bin search_profile -- \
   --positions taya36.sfen --samples 36 --depth 8 --nodes 200000
 ```
 
+### Quiescence check boundary
+
+The production default is `DEFAULT_MAX_QUIESCENCE_CHECK_PLY=0`. At a non-check node this makes
+quiescence capture-only from its root. A checked node ignores the boundary: it never uses
+stand-pat and always searches every legal king move, capture, move interposition, and drop
+interposition. Complete checked-node evasions are required for correctness but substantially
+increase the tree, so non-capture checks are excluded from production quiescence to contain that
+growth.
+
+`search_profile --qcheck-ply N` is a diagnostic override for that profiling process only. It does
+not configure `usi_engine` or change the production default. The Phase 1 checked-evasion change
+must not be released on its own: on the fixed 200-record dev mate suite it reduced exact expected
+first moves from 83 to 71 and mate-acceptable choices from 187 to 172 under the planned search
+budget.
+
 `search_failure_probe` writes one JSONL record for every position/depth/node combination:
 
 ```console
@@ -31,6 +46,29 @@ cargo run --release --bin search_failure_probe -- \
 
 Each record contains the best move, score, PV, completed depth, stop reason, nodes, qnodes,
 in-check qnodes, terminal mates, negative-SEE checks, and repetition hits.
+
+## Mate-sacrifice search diagnosis
+
+`mate_sacrifice_search_probe` compares production search choices with rule-only mate evidence. It
+uses the production quiescence setting and accepts development-suite JSONL records containing
+`source_index`, `sfen`, `first_move`, and `mate_horizon`:
+
+```console
+cargo run --release --bin mate_sacrifice_search_probe -- \
+  --input data/search_quality/generated/dev_mate_sacrifice.jsonl \
+  --weights policy_weights_v2.1.0.binary \
+  --depth 7 --nodes 20000 --proof-node-limit 2000000
+```
+
+The primary metrics are exact expected-first-move matches and mate-acceptable choices. A choice is
+mate-acceptable only when the rule-only oracle proves mate after the selected root move within the
+record's remaining horizon. The report also includes total search nodes, average completed depth,
+mate scores, unknown oracle results, and the `source_index` values of mate-acceptable records;
+those indices support failure-set mining across revisions.
+
+This command is **dev-only**. Do not pass a holdout suite, inspect holdout record results, or use
+holdout source indices for tuning. Holdout is reserved for a single release-candidate gate after
+the implementation and thresholds have been frozen.
 
 ## Rule-only miners
 

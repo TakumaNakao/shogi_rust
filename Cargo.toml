@@ -142,3 +142,7 @@ path = "src/bin/rerank_feedback_collect.rs"
 [[bin]]
 name = "tree_feedback_collect"
 path = "src/bin/tree_feedback_collect.rs"
+
+[[bin]]
+name = "mate_sacrifice_search_probe"
+path = "src/bin/mate_sacrifice_search_probe.rs"
