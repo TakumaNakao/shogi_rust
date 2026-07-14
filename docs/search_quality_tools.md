@@ -22,18 +22,20 @@ cargo run --release --bin search_profile -- \
 
 ### Quiescence check boundary
 
-The production default is `DEFAULT_MAX_QUIESCENCE_CHECK_PLY=0`. At a non-check node this makes
-quiescence capture-only from its root. A checked node ignores the boundary: it never uses
+The production default is `DEFAULT_MAX_QUIESCENCE_CHECK_PLY=1`. At the first non-check qsearch
+node, captures are retained and direct non-capture checks are generated from checkable squares.
+At most two such checks are considered, and a check with more than four legal replies is skipped.
+Deeper non-check nodes are capture-only. A checked node ignores the boundary: it never uses
 stand-pat and always searches every legal king move, capture, move interposition, and drop
-interposition. Complete checked-node evasions are required for correctness but substantially
-increase the tree, so non-capture checks are excluded from production quiescence to contain that
-growth.
+interposition.
 
 `search_profile --qcheck-ply N` is a diagnostic override for that profiling process only. It does
-not configure `usi_engine` or change the production default. The Phase 1 checked-evasion change
-must not be released on its own: on the fixed 200-record dev mate suite it reduced exact expected
-first moves from 83 to 71 and mate-acceptable choices from 187 to 172 under the planned search
-budget.
+not configure `usi_engine` or change the production default. On 16 `taya36` samples at 50,000
+nodes, qcheck 1 and qcheck 0 both completed depth 3.62; measured NPS was 436,025 and 430,982,
+respectively. The qcheck 1 run searched 9,017 of 37,583 selective checks and skipped 28,566 for
+exceeding the reply bound. At 100 ms, two stable qcheck 1 runs searched 716,086--719,158 nodes at
+depth 3.50, versus 729,398--735,542 nodes at depth 3.56 for qcheck 0. Thus the timed cost is about
+2%, despite no fixed-node slowdown in this small sample.
 
 `search_failure_probe` writes one JSONL record for every position/depth/node combination:
 
@@ -79,9 +81,9 @@ all legal evasions as defender AND nodes. Repetition is not mate, budget or dead
 but constrained searches use a smaller local soft budget. A fixed-node search reserves at least
 half of its hard node limit for evaluation search. A timed search gives the root probe at most 10%
 of the clock (capped at 10 ms), with node caps of 512 at 50 ms or less and 2048 at 200 ms or less.
-Exhausting this local budget does not stop evaluation search. On the current dev suite the previous
-unconstrained p95 was 3967 nodes; ordinary `taya36` positions terminated early with a measured p95
-of 291 nodes.
+Exhausting this local budget does not stop evaluation search. On the current 200-record dev suite,
+mate search used 71,824 nodes in total with p95 1,995. On the fixed 50,000-node `taya36` profile,
+16 root probes used 310 nodes in total with p95 32.
 
 After evaluation search, only its leading completed root candidate may receive an opponent-mate
 probe of 128 nodes. No node or time is reserved in advance: if evaluation search reaches a hard
@@ -102,10 +104,11 @@ cargo run --release --bin mate_search_profile -- \
 The profiler rejects holdout-named inputs. Its results are development diagnostics and must not be
 used to inspect or tune against holdout records.
 
-With the fixed depth-7 / 20,000-total-node dev gate, the integrated default produces 110/200 exact
-expected first moves and 199/200 mate-acceptable choices, above the pre-Phase-1 baselines of 83 and
-187. All 16 Phase-1 mate-acceptable regressions are recovered. These are dev results, not release
-or holdout claims.
+With the fixed depth-7 / 20,000-total-node dev gate, the integrated default produces 111/200 exact
+expected first moves and 200/200 mate-acceptable choices. This is +1 exact and +1 acceptable over
+the previous integrated 110/199 result, and remains above the pre-Phase-1 baselines of 83 and 187.
+The run used 83,632 total nodes, reported 199 mate scores and no unknown oracle proofs. These final
+Phase 2 measurements are dev-only; no holdout gate was run for this change.
 
 ## Rule-only miners
 

@@ -6,6 +6,11 @@ the same shuffled starting-position sequence as the regular benchmark. The
 persistent mode is intentionally single-threaded, emits only the final
 aggregate, and does not write game records.
 
+The aggregate includes overall average/median plies and, for every end reason,
+its game count and average/median plies. End reasons distinguish resign,
+illegal move, repetition draw, perpetual-check loss, max-plies adjudication,
+and max-plies draw; zero-count reasons are also printed.
+
 Example (200 games, low-load guard):
 
 ```sh
@@ -27,3 +32,8 @@ Use the same engine binaries, weights, position file, depth, time limit, and
 seed for baseline/candidate comparisons. Do not combine this mode with
 `--record-dir`; the aggregate is the reproducible result artifact and the
 wrapper log records resource limits and exit status.
+
+Position rows may include `startpos moves ...` or `sfen ... moves ...`. The
+benchmark replays those opening moves into both the board and repetition
+history, so repetition and perpetual-check adjudication include the complete
+opening path rather than only moves played after the benchmark starts.
