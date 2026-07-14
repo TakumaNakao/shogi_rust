@@ -75,14 +75,21 @@ the implementation and thresholds have been frozen.
 Production search runs a rule-only mate probe before evaluation search and selects its first move
 only for `ProvenMate`. It searches 1, 3, 5, then 7 ply with checking moves as attacker OR nodes and
 all legal evasions as defender AND nodes. Repetition is not mate, budget or deadline exhaustion is
-`Unknown`, and `Unknown` is neither accepted nor rejected. The default root cap is 8192 nodes. On
-the current dev suite its actual p95 is 3967 nodes; ordinary `taya36` positions terminate early
-with a measured p95 of 291 nodes.
+`Unknown`, and `Unknown` is neither accepted nor rejected. The configured root cap is 8192 nodes,
+but constrained searches use a smaller local soft budget. A fixed-node search reserves at least
+half of its hard node limit for evaluation search. A timed search gives the root probe at most 10%
+of the clock (capped at 10 ms), with node caps of 512 at 50 ms or less and 2048 at 200 ms or less.
+Exhausting this local budget does not stop evaluation search. On the current dev suite the previous
+unconstrained p95 was 3967 nodes; ordinary `taya36` positions terminated early with a measured p95
+of 291 nodes.
 
-After evaluation search, at most three leading root candidates receive an opponent-mate probe of
-128 nodes each. Only a proven opponent mate rejects a candidate. Mate nodes are included in the
-global search node limit, and time probes share the global deadline. `SearchReport` exposes
-`mate_nodes`, `mate_probes`, `mate_proven`, `mate_unknown`, and `mate_rejected`.
+After evaluation search, only its leading completed root candidate may receive an opponent-mate
+probe of 128 nodes. No node or time is reserved in advance: if evaluation search reaches a hard
+limit, the reply probe is skipped; if the requested depth finishes with budget remaining, the probe
+uses only that remainder. Only a proven opponent mate rejects the candidate, after which the next
+line and its matching score/PV are selected. Mate nodes remain inside the global hard limit.
+`SearchReport` exposes `mate_nodes`, `mate_probes`, `mate_proven`, `mate_unknown`, and
+`mate_rejected`.
 
 Use the dev-only offline profiler to compare caps without evaluation values:
 

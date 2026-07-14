@@ -23,7 +23,14 @@ const SEE_ORDERING_SCALE: i32 = 20;
 const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 3;
 pub const DEFAULT_ROOT_MATE_NODE_BUDGET: u64 = 8_192;
 pub const DEFAULT_REPLY_MATE_NODE_BUDGET: u64 = 128;
-pub const DEFAULT_MATE_REPLY_CANDIDATES: usize = 3;
+pub const DEFAULT_MATE_REPLY_CANDIDATES: usize = 1;
+const ROOT_MATE_NODE_BUDGET_FRACTION: u64 = 2;
+const ROOT_MATE_TIME_BUDGET_FRACTION: u64 = 10;
+const ROOT_MATE_SOFT_TIME_MAX_MS: u64 = 10;
+const ROOT_MATE_SHORT_TIME_MS: u64 = 50;
+const ROOT_MATE_MEDIUM_TIME_MS: u64 = 200;
+const ROOT_MATE_SHORT_NODE_CAP: u64 = 512;
+const ROOT_MATE_MEDIUM_NODE_CAP: u64 = 2_048;
 /// Production keeps non-check quiescence capture-only because complete checked-node
 /// evasions substantially enlarge the tree. Checked nodes ignore this boundary and
 /// always search every legal evasion. This Phase 1 change is correctness-oriented and
@@ -66,6 +73,12 @@ enum EvasionKind {
     KingMove = 1,
     MoveInterposition = 2,
     DropInterposition = 3,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MateProbeStopScope {
+    Local,
+    Global,
 }
 
 const EVASION_KIND_COUNT: usize = 4;
@@ -403,6 +416,37 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
     }
 
+    fn root_mate_soft_limits(
+        &self,
+        hard_node_limit: Option<u64>,
+        hard_time_limit: Option<Duration>,
+    ) -> (u64, Option<Instant>) {
+        let mut node_limit = self.root_mate_node_budget;
+        if let Some(hard_limit) = hard_node_limit {
+            node_limit = node_limit.min(hard_limit / ROOT_MATE_NODE_BUDGET_FRACTION);
+        }
+
+        let soft_deadline = hard_time_limit.and_then(|hard_limit| {
+            let hard_ms = hard_limit.as_millis().min(u128::from(u64::MAX)) as u64;
+            let soft_ms =
+                (hard_ms / ROOT_MATE_TIME_BUDGET_FRACTION).min(ROOT_MATE_SOFT_TIME_MAX_MS);
+            if soft_ms == 0 {
+                node_limit = 0;
+                return None;
+            }
+            node_limit = node_limit.min(if hard_ms <= ROOT_MATE_SHORT_TIME_MS {
+                ROOT_MATE_SHORT_NODE_CAP
+            } else if hard_ms <= ROOT_MATE_MEDIUM_TIME_MS {
+                ROOT_MATE_MEDIUM_NODE_CAP
+            } else {
+                self.root_mate_node_budget
+            });
+            self.start_time?.checked_add(Duration::from_millis(soft_ms))
+        });
+
+        (node_limit, soft_deadline)
+    }
+
     fn run_mate_probe(
         &mut self,
         position: &mut Position,
@@ -410,6 +454,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         requested_nodes: u64,
         hard_node_limit: Option<u64>,
         deadline: Option<Instant>,
+        stop_scope: MateProbeStopScope,
     ) -> MateSearchResult {
         self.mate_probes += 1;
         let available_nodes = hard_node_limit
@@ -418,7 +463,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let node_limit = requested_nodes.min(available_nodes);
         if node_limit == 0 {
             self.mate_unknown += 1;
-            if hard_node_limit.is_some() {
+            if stop_scope == MateProbeStopScope::Global && hard_node_limit.is_some() {
                 self.stop_reason = SearchStopReason::NodeLimit;
             }
             return MateSearchResult::Unknown;
@@ -434,7 +479,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
         if deadline.is_some_and(|limit| Instant::now() >= limit) {
             self.mate_unknown += 1;
-            self.stop_reason = SearchStopReason::TimeLimit;
+            if stop_scope == MateProbeStopScope::Global {
+                self.stop_reason = SearchStopReason::TimeLimit;
+            }
             return MateSearchResult::Unknown;
         }
 
@@ -454,13 +501,16 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 self.mate_unknown += 1;
                 match searcher.stop_reason() {
                     Some(MateSearchStopReason::TimeLimit) => {
-                        self.stop_reason = SearchStopReason::TimeLimit;
+                        if stop_scope == MateProbeStopScope::Global {
+                            self.stop_reason = SearchStopReason::TimeLimit;
+                        }
                     }
                     Some(MateSearchStopReason::ExternalStop) => {
                         self.stop_reason = SearchStopReason::ExternalStop;
                     }
                     Some(MateSearchStopReason::NodeLimit)
-                        if hard_node_limit.is_some()
+                        if stop_scope == MateProbeStopScope::Global
+                            && hard_node_limit.is_some()
                             && self.nodes_searched >= hard_node_limit.unwrap_or(u64::MAX) =>
                     {
                         self.stop_reason = SearchStopReason::NodeLimit;
@@ -496,6 +546,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 self.reply_mate_node_budget,
                 hard_node_limit,
                 hard_deadline,
+                MateProbeStopScope::Global,
             );
             position.undo_move(candidate);
             if matches!(result, MateSearchResult::ProvenMate { .. }) {
@@ -1091,13 +1142,16 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let hard_time_limit = limits.time_limit_ms.map(Duration::from_millis);
         let hard_deadline = hard_time_limit.and_then(|limit| self.start_time?.checked_add(limit));
         let attacker = position.side_to_move();
-        if self.root_mate_node_budget > 0 {
+        let (root_mate_nodes, root_mate_deadline) =
+            self.root_mate_soft_limits(hard_node_limit, hard_time_limit);
+        if root_mate_nodes > 0 {
             let root_probe = self.run_mate_probe(
                 position,
                 attacker,
-                self.root_mate_node_budget,
+                root_mate_nodes,
                 hard_node_limit,
-                hard_deadline,
+                root_mate_deadline,
+                MateProbeStopScope::Local,
             );
             if let MateSearchResult::ProvenMate {
                 first_move: Some(first_move),
@@ -1107,24 +1161,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             {
                 return self.build_search_report(Some(first_move), Some(f32::INFINITY), proof, 0);
             }
-            if self.stop_reason != SearchStopReason::Completed {
-                let fallback = moves[0];
-                return self.build_search_report(Some(fallback), None, vec![fallback], 0);
-            }
+        }
+        if limits.max_depth == 0 {
+            let _ = self.should_stop();
         }
 
-        let reply_probe_reserve = self
-            .reply_mate_node_budget
-            .saturating_mul(self.mate_reply_candidates.min(moves.len()) as u64);
-        self.node_limit = hard_node_limit.map(|limit| limit.saturating_sub(reply_probe_reserve));
-        self.time_limit = hard_time_limit.map(|limit| {
-            let reserve = Duration::from_millis(
-                (limit.as_millis() as u64 / 10)
-                    .min(10)
-                    .min(limit.as_millis() as u64),
-            );
-            limit.saturating_sub(reserve)
-        });
+        self.node_limit = hard_node_limit;
+        self.time_limit = hard_time_limit;
 
         let mut scored_moves = Vec::with_capacity(moves.len());
         for mv in moves.iter() {
@@ -1330,20 +1373,22 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
 
-        self.node_limit = hard_node_limit;
-        self.time_limit = hard_time_limit;
         completed_root_lines.sort_unstable_by(|left, right| {
             right
                 .1
                 .total_cmp(&left.1)
                 .then_with(|| move_total_order_key(left.0).cmp(&move_total_order_key(right.0)))
         });
-        let rejected = self.reject_mated_root_candidates(
-            position,
-            &completed_root_lines,
-            hard_node_limit,
-            hard_deadline,
-        );
+        let rejected = completed_root_lines
+            .first()
+            .map_or_else(Vec::new, |best_line| {
+                self.reject_mated_root_candidates(
+                    position,
+                    std::slice::from_ref(best_line),
+                    hard_node_limit,
+                    hard_deadline,
+                )
+            });
         if let Some((candidate, score, pv)) = completed_root_lines
             .iter()
             .find(|(candidate, _, _)| !rejected.contains(candidate))
@@ -1788,8 +1833,8 @@ mod tests {
         assert_eq!(1, report.nodes);
         assert_eq!(SearchStopReason::NodeLimit, report.stop_reason);
         assert!(report.best_move.is_some(), "a legal fallback must remain");
-        assert_eq!(1, report.mate_nodes);
-        assert_eq!(1, report.mate_unknown);
+        assert_eq!(0, report.mate_nodes);
+        assert_eq!(0, report.mate_unknown);
     }
 
     #[test]
@@ -1823,8 +1868,8 @@ mod tests {
             },
         );
         assert_eq!(SearchStopReason::TimeLimit, deadline_report.stop_reason);
-        assert_eq!(1, deadline_report.mate_probes);
-        assert_eq!(1, deadline_report.mate_unknown);
+        assert_eq!(0, deadline_report.mate_probes);
+        assert_eq!(0, deadline_report.mate_unknown);
 
         let signal = Arc::new(AtomicBool::new(true));
         let mut external_position = Position::default();
@@ -1877,10 +1922,47 @@ mod tests {
         let mut position = position_from_sfen_or_usi(record["sfen"].as_str().unwrap()).unwrap();
         let attacker = position.side_to_move();
         let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
-        let result = ai.run_mate_probe(&mut position, attacker, 8, Some(16), None);
+        let result = ai.run_mate_probe(
+            &mut position,
+            attacker,
+            8,
+            Some(16),
+            None,
+            MateProbeStopScope::Local,
+        );
         assert!(matches!(result, MateSearchResult::Unknown));
         assert_eq!(SearchStopReason::Completed, ai.stop_reason);
         assert_eq!(8, ai.nodes_searched);
+    }
+
+    #[test]
+    fn local_mate_deadline_does_not_stop_normal_search() {
+        let mut position = Position::default();
+        let attacker = position.side_to_move();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        let result = ai.run_mate_probe(
+            &mut position,
+            attacker,
+            128,
+            None,
+            Some(Instant::now()),
+            MateProbeStopScope::Local,
+        );
+        assert_eq!(MateSearchResult::Unknown, result);
+        assert_eq!(SearchStopReason::Completed, ai.stop_reason);
+    }
+
+    #[test]
+    fn root_mate_budget_preserves_main_search_budget() {
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.start_time = Some(Instant::now());
+        assert_eq!(8_192, ai.root_mate_soft_limits(Some(20_000), None).0);
+        assert_eq!(
+            ROOT_MATE_SHORT_NODE_CAP,
+            ai.root_mate_soft_limits(None, Some(Duration::from_millis(30)))
+                .0
+        );
+        assert_eq!(0, ai.root_mate_soft_limits(None, Some(Duration::ZERO)).0);
     }
 
     #[test]
@@ -1925,6 +2007,25 @@ mod tests {
         assert_eq!(first.nodes, second.nodes);
         assert_eq!(first.qnodes, second.qnodes);
         assert_eq!(first.stop_reason, second.stop_reason);
+    }
+
+    #[test]
+    fn reply_probe_budget_does_not_reduce_main_node_limit() {
+        let mut position = Position::default();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_emit_info(false);
+        ai.set_mate_search_budgets(0, 128);
+        let report = ai.find_best_move_with_limits(
+            &mut position,
+            SearchLimits {
+                max_depth: 8,
+                time_limit_ms: None,
+                node_limit: Some(500),
+            },
+        );
+        assert_eq!(500, report.nodes);
+        assert_eq!(SearchStopReason::NodeLimit, report.stop_reason);
+        assert_eq!(0, report.mate_probes);
     }
 
     #[test]
