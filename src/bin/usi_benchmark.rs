@@ -49,6 +49,9 @@ struct Args {
     adjudicate_at_max_plies: bool,
     #[arg(long, default_value_t = 1)]
     jobs: usize,
+    /// Keep one USI process per side for all games (low-memory selfplay mode).
+    #[arg(long, default_value_t = false)]
+    persistent_engines: bool,
     #[arg(long, default_value_t = 0)]
     seed: u64,
     #[arg(long)]
@@ -447,6 +450,11 @@ fn main() -> Result<()> {
     if args.jobs == 0 {
         return Err(anyhow!("--jobs must be greater than zero"));
     }
+    if args.persistent_engines && args.jobs != 1 {
+        return Err(anyhow!(
+            "--persistent-engines requires --jobs 1 (one process per side)"
+        ));
+    }
 
     let mut positions = load_positions(&args.positions)?;
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
@@ -463,6 +471,54 @@ fn main() -> Result<()> {
 
     if let Some(record_dir) = &args.record_dir {
         fs::create_dir_all(record_dir)?;
+    }
+
+    // Selfplay mode deliberately keeps exactly one engine process per side.
+    // This avoids repeatedly loading the evaluator and bounds RSS for long runs.
+    if args.persistent_engines {
+        if args.record_dir.is_some() {
+            return Err(anyhow!(
+                "--record-dir cannot be combined with --persistent-engines"
+            ));
+        }
+
+        let mut new_engine = EngineProcess::start(
+            &args.new_engine,
+            &args.new_weights,
+            args.new_residual_weights.as_deref(),
+            args.new_residual_scale,
+            args.depth,
+            args.time_limit_ms,
+        )?;
+        let mut baseline_engine = EngineProcess::start(
+            &args.baseline_engine,
+            &args.baseline_weights,
+            args.baseline_residual_weights.as_deref(),
+            args.baseline_residual_scale,
+            args.depth,
+            args.time_limit_ms,
+        )?;
+
+        for game_index in 0..args.games {
+            let start_sfen = positions[(game_index / 2) % positions.len()].clone();
+            let new_is_black = game_index % 2 == 0;
+            let game = play_game(
+                &mut new_engine,
+                &mut baseline_engine,
+                adjudication_model.as_ref(),
+                &start_sfen,
+                new_is_black,
+                args.max_plies,
+            )?;
+            match game.result {
+                GameResult::NewWin => new_wins += 1,
+                GameResult::BaselineWin => baseline_wins += 1,
+                GameResult::Draw => draws += 1,
+            }
+        }
+
+        print_summary(args.games, new_wins, baseline_wins, draws);
+        return Ok(());
     }
 
     let play_one = |game_index: usize| -> Result<(usize, bool, String, PlayedGame)> {
@@ -530,6 +586,12 @@ fn main() -> Result<()> {
         );
     }
 
+    print_summary(args.games, new_wins, baseline_wins, draws);
+
+    Ok(())
+}
+
+fn print_summary(games: usize, new_wins: usize, baseline_wins: usize, draws: usize) {
     let decisive_games = new_wins + baseline_wins;
     let decisive_rate = if decisive_games == 0 {
         0.0
@@ -537,8 +599,9 @@ fn main() -> Result<()> {
         new_wins as f64 / decisive_games as f64
     };
     let total_score = new_wins as f64 + draws as f64 * 0.5;
-    let total_rate = total_score / args.games as f64;
+    let total_rate = total_score / games as f64;
 
+    println!("games: {}", games);
     println!("new wins: {}", new_wins);
     println!("baseline wins: {}", baseline_wins);
     println!("draws: {}", draws);
@@ -558,6 +621,4 @@ fn main() -> Result<()> {
             high * 100.0
         );
     }
-
-    Ok(())
 }
