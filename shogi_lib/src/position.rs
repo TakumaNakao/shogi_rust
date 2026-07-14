@@ -268,6 +268,10 @@ impl Position {
     fn checkable(&self, pk: PieceKind, sq: Square) -> bool {
         self.state().attack_info.checkable(pk, sq)
     }
+    #[inline(always)]
+    pub(crate) fn checkable_squares(&self, pk: PieceKind) -> Bitboard {
+        self.state().attack_info.checkables[pk.array_index()]
+    }
 
     pub fn switch_turn(&mut self) {
         self.inner.side = self.inner.side.flip();

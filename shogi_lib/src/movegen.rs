@@ -98,6 +98,71 @@ impl Position {
         (av, generated)
     }
 
+    pub fn legal_selective_quiescence_moves_with_generated_count(
+        &self,
+    ) -> (ArrayVec<Move, MAX_LEGAL_MOVES>, usize) {
+        assert!(
+            !self.in_check(),
+            "selective qsearch generation requires a quiet node"
+        );
+        let (mut moves, capture_generated) = self.legal_capture_moves_with_generated_count();
+        let empty = !self.occupied_bitboard();
+        let mut checks = ArrayVec::new();
+
+        let target = (self.checkable_squares(PieceKind::Pawn)
+            | self.checkable_squares(PieceKind::ProPawn))
+            & empty;
+        self.generate_for_fu(&mut checks, &target);
+        let target = (self.checkable_squares(PieceKind::Lance)
+            | self.checkable_squares(PieceKind::ProLance))
+            & empty;
+        self.generate_for_ky(&mut checks, &target);
+        let target = (self.checkable_squares(PieceKind::Knight)
+            | self.checkable_squares(PieceKind::ProKnight))
+            & empty;
+        self.generate_for_ke(&mut checks, &target);
+        let target = (self.checkable_squares(PieceKind::Silver)
+            | self.checkable_squares(PieceKind::ProSilver))
+            & empty;
+        self.generate_for_gi(&mut checks, &target);
+        let target = (self.checkable_squares(PieceKind::Bishop)
+            | self.checkable_squares(PieceKind::ProBishop))
+            & empty;
+        self.generate_for_ka(&mut checks, &target);
+        let target = (self.checkable_squares(PieceKind::Rook)
+            | self.checkable_squares(PieceKind::ProRook))
+            & empty;
+        self.generate_for_hi(&mut checks, &target);
+        let target = (self.checkable_squares(PieceKind::Gold)
+            | self.checkable_squares(PieceKind::ProPawn)
+            | self.checkable_squares(PieceKind::ProLance)
+            | self.checkable_squares(PieceKind::ProKnight)
+            | self.checkable_squares(PieceKind::ProSilver))
+            & empty;
+        self.generate_for_ki(&mut checks, &target);
+        let target = self.checkable_squares(PieceKind::King) & empty;
+        self.generate_for_ou(&mut checks, &target);
+        let target = self.checkable_squares(PieceKind::ProBishop) & empty;
+        self.generate_for_um(&mut checks, &target);
+        let target = self.checkable_squares(PieceKind::ProRook) & empty;
+        self.generate_for_ry(&mut checks, &target);
+
+        let drop_target = (self.checkable_squares(PieceKind::Pawn)
+            | self.checkable_squares(PieceKind::Lance)
+            | self.checkable_squares(PieceKind::Knight)
+            | self.checkable_squares(PieceKind::Silver)
+            | self.checkable_squares(PieceKind::Gold)
+            | self.checkable_squares(PieceKind::Bishop)
+            | self.checkable_squares(PieceKind::Rook))
+            & empty;
+        self.generate_drop(&mut checks, &drop_target);
+
+        let check_generated = checks.len();
+        checks.retain(|mv| self.is_check_move(*mv) && self.is_legal(*mv));
+        moves.extend(checks);
+        (moves, capture_generated + check_generated)
+    }
+
     pub fn has_legal_evasion(&self) -> bool {
         if !self.in_check() {
             return true;

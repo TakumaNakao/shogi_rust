@@ -123,6 +123,9 @@ where
     let mut total_quiescence_moves_searched = 0u64;
     let mut total_quiescence_see_skips = 0u64;
     let mut total_quiescence_terminal_mates = 0u64;
+    let mut total_selective_qchecks_considered = 0u64;
+    let mut total_selective_qchecks_searched = 0u64;
+    let mut total_selective_qchecks_reply_skipped = 0u64;
     let mut total_terminal_mates = 0u64;
     let mut total_check_evasion_extensions = 0u64;
     let mut total_aspiration_fail_lows = 0u64;
@@ -172,6 +175,9 @@ where
         total_quiescence_moves_searched += ai.quiescence_moves_searched();
         total_quiescence_see_skips += ai.quiescence_see_skips();
         total_quiescence_terminal_mates += ai.quiescence_terminal_mates();
+        total_selective_qchecks_considered += ai.selective_qchecks_considered();
+        total_selective_qchecks_searched += ai.selective_qchecks_searched();
+        total_selective_qchecks_reply_skipped += ai.selective_qchecks_reply_skipped();
         total_terminal_mates += report.terminal_mates;
         total_check_evasion_extensions += ai.check_evasion_extensions();
         total_aspiration_fail_lows += ai.aspiration_fail_lows();
@@ -238,6 +244,12 @@ where
     println!(
         "quiescence terminal mates: {}",
         total_quiescence_terminal_mates
+    );
+    println!(
+        "selective qchecks considered/searched/reply-skipped: {}/{}/{}",
+        total_selective_qchecks_considered,
+        total_selective_qchecks_searched,
+        total_selective_qchecks_reply_skipped
     );
     println!("terminal mates: {}", total_terminal_mates);
     println!(

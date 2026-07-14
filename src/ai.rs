@@ -31,11 +31,11 @@ const ROOT_MATE_SHORT_TIME_MS: u64 = 50;
 const ROOT_MATE_MEDIUM_TIME_MS: u64 = 200;
 const ROOT_MATE_SHORT_NODE_CAP: u64 = 512;
 const ROOT_MATE_MEDIUM_NODE_CAP: u64 = 2_048;
-/// Production keeps non-check quiescence capture-only because complete checked-node
-/// evasions substantially enlarge the tree. Checked nodes ignore this boundary and
-/// always search every legal evasion. This Phase 1 change is correctness-oriented and
-/// has a standalone dev-mate regression, so it is not sufficient for release by itself.
-pub const DEFAULT_MAX_QUIESCENCE_CHECK_PLY: u16 = 0;
+/// Non-check qsearch admits one bounded layer of selective checks. Checked nodes
+/// ignore this boundary and always search every legal evasion without stand pat.
+pub const DEFAULT_MAX_QUIESCENCE_CHECK_PLY: u16 = 1;
+const SELECTIVE_QCHECK_CANDIDATE_LIMIT: usize = 2;
+const SELECTIVE_QCHECK_REPLY_LIMIT: usize = 4;
 const TIME_CHECK_NODE_INTERVAL: u64 = 1024;
 const USI_SCORE_CP_LIMIT: i32 = 2_000;
 const USI_SCORE_CP_SOFT_START: i32 = 1_000;
@@ -189,6 +189,9 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     quiescence_moves_searched: u64,
     quiescence_see_skips: u64,
     quiescence_terminal_mates: u64,
+    selective_qchecks_considered: u64,
+    selective_qchecks_searched: u64,
+    selective_qchecks_reply_skipped: u64,
     terminal_mates: u64,
     in_check_quiescence_nodes: u64,
     negative_see_checks_considered: u64,
@@ -237,6 +240,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             quiescence_moves_searched: 0,
             quiescence_see_skips: 0,
             quiescence_terminal_mates: 0,
+            selective_qchecks_considered: 0,
+            selective_qchecks_searched: 0,
+            selective_qchecks_reply_skipped: 0,
             terminal_mates: 0,
             in_check_quiescence_nodes: 0,
             negative_see_checks_considered: 0,
@@ -345,6 +351,18 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn quiescence_terminal_mates(&self) -> u64 {
         self.quiescence_terminal_mates
+    }
+
+    pub fn selective_qchecks_considered(&self) -> u64 {
+        self.selective_qchecks_considered
+    }
+
+    pub fn selective_qchecks_searched(&self) -> u64 {
+        self.selective_qchecks_searched
+    }
+
+    pub fn selective_qchecks_reply_skipped(&self) -> u64 {
+        self.selective_qchecks_reply_skipped
     }
 
     pub fn check_evasion_extensions(&self) -> u64 {
@@ -724,14 +742,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         }
         alpha = alpha.max(stand_pat_score);
 
-        let (moves, generated_moves) = if qply >= self.max_quiescence_check_ply {
+        let selective_checks_enabled = qply < self.max_quiescence_check_ply;
+        let (moves, generated_moves) = if !selective_checks_enabled {
             precomputed_moves
                 .map(|moves| Self::filter_capture_moves_from_legal(position, moves))
                 .unwrap_or_else(|| position.legal_capture_moves_with_generated_count())
         } else {
             precomputed_moves
                 .map(|moves| Self::filter_quiescence_moves_from_legal(position, moves))
-                .unwrap_or_else(|| position.legal_quiescence_moves_with_generated_count())
+                .unwrap_or_else(|| position.legal_selective_quiescence_moves_with_generated_count())
         };
 
         self.quiescence_moves_generated += generated_moves as u64;
@@ -758,7 +777,20 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         });
 
         let mut best_score = stand_pat_score;
+        let mut selective_checks_considered = 0usize;
         for (mv, _) in scored_moves {
+            let is_capture =
+                matches!(mv, Move::Normal { to, .. } if position.piece_at(to).is_some());
+            let is_selective_check =
+                selective_checks_enabled && !is_capture && position.is_check_move(mv);
+            if is_selective_check {
+                if selective_checks_considered >= SELECTIVE_QCHECK_CANDIDATE_LIMIT {
+                    continue;
+                }
+                selective_checks_considered += 1;
+                self.selective_qchecks_considered += 1;
+            }
+
             let negative_see = self.see(position, mv) < 0;
             let negative_see_check = negative_see && position.is_check_move(mv);
             if negative_see_check {
@@ -773,16 +805,32 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 self.negative_see_check_searches += 1;
             }
 
-            self.quiescence_moves_searched += 1;
             position.do_move(mv);
             self.sennichite_detector.record_position(position);
-            let score_result = match self.recorded_path_score(position) {
+            let path_score = self.recorded_path_score(position);
+            let child_precomputed_moves = if path_score.is_none() && is_selective_check {
+                let (evasions, _) = position.legal_evasion_moves_with_generated_count();
+                if evasions.len() > SELECTIVE_QCHECK_REPLY_LIMIT {
+                    self.selective_qchecks_reply_skipped += 1;
+                    self.sennichite_detector.unrecord_last_position();
+                    position.undo_move(mv);
+                    continue;
+                }
+                Some(evasions)
+            } else {
+                None
+            };
+            if is_selective_check {
+                self.selective_qchecks_searched += 1;
+            }
+            self.quiescence_moves_searched += 1;
+            let score_result = match path_score {
                 Some(score) => Some((score, Vec::new())),
                 None => self.quiescence_search_internal(
                     position,
                     -beta,
                     -alpha,
-                    None,
+                    child_precomputed_moves,
                     evasion_source,
                     qply.saturating_add(1),
                 ),
@@ -811,48 +859,56 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         position: &Position,
         moves: &LegalMoves,
     ) -> Vec<(Move, i32, EvasionKind)> {
-        let mut scored_moves = moves
-            .iter()
-            .map(|&mv| {
-                let kind = if position.piece_at(mv.to()).is_some() {
-                    EvasionKind::Capture
-                } else {
-                    match mv {
-                        Move::Normal { from, .. }
-                            if position.piece_at(from).is_some_and(|piece| {
-                                piece.piece_kind() == shogi_core::PieceKind::King
-                            }) =>
-                        {
-                            EvasionKind::KingMove
-                        }
-                        Move::Normal { .. } => EvasionKind::MoveInterposition,
-                        Move::Drop { .. } => EvasionKind::DropInterposition,
-                    }
-                };
-                (
-                    mv,
-                    self.move_ordering.score_move_without_counter(&mv, position),
-                    kind,
-                )
-            })
-            .collect::<Vec<_>>();
-        scored_moves.sort_unstable_by(|left, right| {
-            right
-                .1
-                .cmp(&left.1)
-                .then_with(|| move_total_order_key(left.0).cmp(&move_total_order_key(right.0)))
-        });
         let tt_move = self
             .transposition_table
             .get(&PositionHasher::calculate_hash(position))
             .and_then(|entry| entry.best_move);
-        if let Some(tt_move) = tt_move {
-            if let Some(index) = scored_moves.iter().position(|&(mv, _, _)| mv == tt_move) {
-                let entry = scored_moves.remove(index);
-                scored_moves.insert(0, entry);
+
+        let mut tt_entry = None;
+        let mut buckets: [Vec<(Move, i32, EvasionKind)>; EVASION_KIND_COUNT] =
+            std::array::from_fn(|_| Vec::new());
+        for &mv in moves {
+            let kind = if position.piece_at(mv.to()).is_some() {
+                EvasionKind::Capture
+            } else {
+                match mv {
+                    Move::Normal { from, .. }
+                        if position.piece_at(from).is_some_and(|piece| {
+                            piece.piece_kind() == shogi_core::PieceKind::King
+                        }) =>
+                    {
+                        EvasionKind::KingMove
+                    }
+                    Move::Normal { .. } => EvasionKind::MoveInterposition,
+                    Move::Drop { .. } => EvasionKind::DropInterposition,
+                }
+            };
+            let entry = (
+                mv,
+                self.move_ordering.score_move_without_counter(&mv, position),
+                kind,
+            );
+            if Some(mv) == tt_move {
+                tt_entry = Some(entry);
+            } else {
+                buckets[kind as usize].push(entry);
             }
         }
-        scored_moves
+
+        let mut ordered = Vec::with_capacity(moves.len());
+        if let Some(entry) = tt_entry {
+            ordered.push(entry);
+        }
+        for bucket in &mut buckets {
+            bucket.sort_unstable_by(|left, right| {
+                right
+                    .1
+                    .cmp(&left.1)
+                    .then_with(|| move_total_order_key(left.0).cmp(&move_total_order_key(right.0)))
+            });
+            ordered.append(bucket);
+        }
+        ordered
     }
 
     fn quiescence_search_in_check(
@@ -1140,6 +1196,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_moves_searched = 0;
         self.quiescence_see_skips = 0;
         self.quiescence_terminal_mates = 0;
+        self.selective_qchecks_considered = 0;
+        self.selective_qchecks_searched = 0;
+        self.selective_qchecks_reply_skipped = 0;
         self.terminal_mates = 0;
         self.in_check_quiescence_nodes = 0;
         self.negative_see_checks_considered = 0;
@@ -1784,6 +1843,37 @@ mod tests {
         .expect("qsearch at boundary must complete");
         assert_eq!(0, at.quiescence_moves_considered());
         assert_eq!(0, at.quiescence_moves_searched());
+    }
+
+    #[test]
+    fn default_selective_qcheck_is_one_ply_and_bounded() {
+        let mut position = position_from_sfen_or_usi("4k4/9/9/9/9/9/9/9/K4R3 b - 1")
+            .expect("valid selective-check fixture");
+        let reference = position.legal_quiescence_moves_with_generated_count().0;
+        let selective = position
+            .legal_selective_quiescence_moves_with_generated_count()
+            .0;
+        let captures = position.legal_capture_moves_with_generated_count().0;
+        assert!(selective.iter().all(|mv| reference.contains(mv)));
+        assert!(captures.iter().all(|mv| selective.contains(mv)));
+        assert!(selective
+            .iter()
+            .any(|mv| { position.piece_at(mv.to()).is_none() && position.is_check_move(*mv) }));
+
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        assert_eq!(1, ai.max_quiescence_check_ply());
+        ai.sennichite_detector.record_position(&position);
+
+        ai.quiescence_search(&mut position, f32::NEG_INFINITY, f32::INFINITY)
+            .expect("bounded qsearch must complete");
+
+        assert!(ai.selective_qchecks_considered() > 0);
+        assert!(ai.selective_qchecks_considered() <= SELECTIVE_QCHECK_CANDIDATE_LIMIT as u64);
+        assert!(ai.selective_qchecks_searched() <= ai.selective_qchecks_considered());
+        assert_eq!(
+            ai.selective_qchecks_considered(),
+            ai.selective_qchecks_searched() + ai.selective_qchecks_reply_skipped()
+        );
     }
 
     #[test]

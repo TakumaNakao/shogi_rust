@@ -46,14 +46,6 @@ impl MateSearchLimits {
     }
 }
 
-#[derive(Clone, Copy)]
-enum CachedResult {
-    // Non-terminal mate proofs are path-sensitive because a new ancestor can turn a
-    // defense into repetition. Only terminal mate and path-independent no-mate are cached.
-    TerminalMate,
-    NoMate,
-}
-
 struct InternalResult {
     result: MateSearchResult,
     path_dependent: bool,
@@ -64,7 +56,12 @@ pub struct MateSearcher {
     nodes: u64,
     stopped: bool,
     stop_reason: Option<MateSearchStopReason>,
-    transposition: HashMap<(u64, u8), CachedResult>,
+    // Non-terminal mate proofs are path-sensitive because a new ancestor can turn a
+    // defense into repetition. Cache only terminal mates and path-independent no-mate.
+    terminal_mates: HashSet<u64>,
+    no_mate_depth: HashMap<u64, u8>,
+    mate_moves: HashMap<u64, Move>,
+    refutation_moves: HashMap<u64, Move>,
     path: HashSet<u64>,
 }
 
@@ -75,7 +72,10 @@ impl MateSearcher {
             nodes: 0,
             stopped: false,
             stop_reason: None,
-            transposition: HashMap::new(),
+            terminal_mates: HashSet::new(),
+            no_mate_depth: HashMap::new(),
+            mate_moves: HashMap::new(),
+            refutation_moves: HashMap::new(),
             path: HashSet::new(),
         }
     }
@@ -149,7 +149,10 @@ impl MateSearcher {
         self.nodes = 0;
         self.stopped = false;
         self.stop_reason = None;
-        self.transposition.clear();
+        self.terminal_mates.clear();
+        self.no_mate_depth.clear();
+        self.mate_moves.clear();
+        self.refutation_moves.clear();
         self.path.clear();
         self.path
             .extend(self.limits.prior_position_hashes.iter().copied());
@@ -211,17 +214,23 @@ impl MateSearcher {
         }
         self.nodes += 1;
 
-        if let Some(cached) = self.transposition.get(&(hash, depth)).copied() {
-            let result = match cached {
-                CachedResult::TerminalMate => MateSearchResult::ProvenMate {
+        if self.terminal_mates.contains(&hash) {
+            return InternalResult {
+                result: MateSearchResult::ProvenMate {
                     first_move: None,
                     ply: 0,
                     proof: Vec::new(),
                 },
-                CachedResult::NoMate => MateSearchResult::ProvenNoMateWithinHorizon,
+                path_dependent: false,
             };
+        }
+        if self
+            .no_mate_depth
+            .get(&hash)
+            .is_some_and(|&cached_depth| cached_depth >= depth)
+        {
             return InternalResult {
-                result,
+                result: MateSearchResult::ProvenNoMateWithinHorizon,
                 path_dependent: false,
             };
         }
@@ -230,16 +239,14 @@ impl MateSearcher {
         if moves.is_empty() {
             let is_mate = position.in_check() && position.side_to_move() != attacker;
             let result = if is_mate {
-                self.transposition
-                    .insert((hash, depth), CachedResult::TerminalMate);
+                self.terminal_mates.insert(hash);
                 MateSearchResult::ProvenMate {
                     first_move: None,
                     ply: 0,
                     proof: Vec::new(),
                 }
             } else {
-                self.transposition
-                    .insert((hash, depth), CachedResult::NoMate);
+                self.remember_no_mate(hash, depth);
                 MateSearchResult::ProvenNoMateWithinHorizon
             };
             return InternalResult {
@@ -248,8 +255,7 @@ impl MateSearcher {
             };
         }
         if depth == 0 {
-            self.transposition
-                .insert((hash, depth), CachedResult::NoMate);
+            self.remember_no_mate(hash, depth);
             return InternalResult {
                 result: MateSearchResult::ProvenNoMateWithinHorizon,
                 path_dependent: false,
@@ -267,10 +273,16 @@ impl MateSearcher {
         if matches!(result.result, MateSearchResult::ProvenNoMateWithinHorizon)
             && !result.path_dependent
         {
-            self.transposition
-                .insert((hash, depth), CachedResult::NoMate);
+            self.remember_no_mate(hash, depth);
         }
         result
+    }
+
+    fn remember_no_mate(&mut self, hash: u64, depth: u8) {
+        self.no_mate_depth
+            .entry(hash)
+            .and_modify(|cached_depth| *cached_depth = (*cached_depth).max(depth))
+            .or_insert(depth);
     }
 
     fn search_attacker(
@@ -280,11 +292,17 @@ impl MateSearcher {
         depth: u8,
         moves: impl IntoIterator<Item = Move>,
     ) -> InternalResult {
+        let hash = PositionHasher::calculate_hash(position);
         let mut checking_moves = moves
             .into_iter()
             .filter(|&mv| position.is_check_move(mv))
             .collect::<Vec<_>>();
         checking_moves.sort_unstable_by_key(|&mv| (simple_see(position, mv), move_order_key(mv)));
+        if let Some(preferred) = self.mate_moves.get(&hash).copied() {
+            if let Some(index) = checking_moves.iter().position(|&mv| mv == preferred) {
+                checking_moves.swap(0, index);
+            }
+        }
 
         let mut saw_unknown = false;
         let mut path_dependent = false;
@@ -294,6 +312,7 @@ impl MateSearcher {
             position.undo_move(mv);
             match child.result {
                 MateSearchResult::ProvenMate { mut proof, .. } => {
+                    self.mate_moves.insert(hash, mv);
                     proof.insert(0, mv);
                     return InternalResult {
                         result: MateSearchResult::ProvenMate {
@@ -327,8 +346,14 @@ impl MateSearcher {
         depth: u8,
         moves: impl IntoIterator<Item = Move>,
     ) -> InternalResult {
+        let hash = PositionHasher::calculate_hash(position);
         let mut moves = moves.into_iter().collect::<Vec<_>>();
-        moves.sort_unstable_by_key(|&mv| move_order_key(mv));
+        moves.sort_unstable_by_key(|&mv| (defender_move_class(position, mv), move_order_key(mv)));
+        if let Some(preferred) = self.refutation_moves.get(&hash).copied() {
+            if let Some(index) = moves.iter().position(|&mv| mv == preferred) {
+                moves.swap(0, index);
+            }
+        }
         let mut longest_proof = Vec::new();
         let mut saw_unknown = false;
         let mut path_dependent = false;
@@ -345,6 +370,9 @@ impl MateSearcher {
                     path_dependent |= child.path_dependent;
                 }
                 MateSearchResult::ProvenNoMateWithinHorizon => {
+                    if !child.path_dependent {
+                        self.refutation_moves.insert(hash, mv);
+                    }
                     return InternalResult {
                         result: MateSearchResult::ProvenNoMateWithinHorizon,
                         path_dependent: child.path_dependent,
@@ -384,6 +412,23 @@ fn move_order_key(mv: Move) -> (u8, u8, u8, u8) {
             };
             (1, piece, to.index(), 0)
         }
+    }
+}
+
+fn defender_move_class(position: &Position, mv: Move) -> u8 {
+    if position.piece_at(mv.to()).is_some() {
+        return 0;
+    }
+    match mv {
+        Move::Normal { from, .. }
+            if position
+                .piece_at(from)
+                .is_some_and(|piece| piece.piece_kind() == PieceKind::King) =>
+        {
+            1
+        }
+        Move::Normal { .. } => 2,
+        Move::Drop { .. } => 3,
     }
 }
 
