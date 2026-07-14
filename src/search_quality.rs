@@ -6,7 +6,6 @@ use shogi_core::{Color, Move, PieceKind};
 use shogi_lib::Position;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
@@ -306,15 +305,29 @@ fn comparable_path(path: &Path) -> Result<PathBuf> {
 }
 
 pub fn ensure_distinct_paths(paths: &[(&str, &Path)]) -> Result<()> {
+    #[cfg(unix)]
+    fn file_identity(path: &Path) -> Option<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+
+        fs::metadata(path)
+            .ok()
+            .map(|metadata| (metadata.dev(), metadata.ino()))
+    }
+
+    #[cfg(not(unix))]
+    fn file_identity(_path: &Path) -> Option<(u64, u64)> {
+        None
+    }
+
     let mut checked: Vec<(&str, &Path, PathBuf, Option<(u64, u64)>)> =
         Vec::with_capacity(paths.len());
     for &(label, path) in paths {
         let comparable = comparable_path(path)?;
-        let inode = fs::metadata(path)
-            .ok()
-            .map(|metadata| (metadata.dev(), metadata.ino()));
+        let identity = file_identity(path);
         for (other_label, other_path, other_comparable, other_inode) in &checked {
-            if &comparable == other_comparable || inode.is_some() && inode == *other_inode {
+            if &comparable == other_comparable
+                || identity.is_some() && identity == *other_inode
+            {
                 return Err(anyhow!(
                     "path collision: {label}={} and {other_label}={} refer to the same file",
                     path.display(),
@@ -322,7 +335,7 @@ pub fn ensure_distinct_paths(paths: &[(&str, &Path)]) -> Result<()> {
                 ));
             }
         }
-        checked.push((label, path, comparable, inode));
+        checked.push((label, path, comparable, identity));
     }
     Ok(())
 }
