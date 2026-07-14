@@ -137,6 +137,14 @@ fn expected_target(kind: SuiteKind, split: DatasetSplit) -> usize {
     }
 }
 
+fn expected_generator(kind: SuiteKind) -> &'static str {
+    match kind {
+        SuiteKind::MateSacrifice => "mate_sacrifice_miner",
+        SuiteKind::QuietEvasion => "quiet_evasion_miner",
+        SuiteKind::ResourceCycle => "resource_cycle_miner",
+    }
+}
+
 fn manifest_suite_paths(manifest: &Value) -> Result<[FrozenSuite; 3]> {
     let files = manifest["suite_files"]
         .as_array()
@@ -146,6 +154,7 @@ fn manifest_suite_paths(manifest: &Value) -> Result<[FrozenSuite; 3]> {
     }
     let mut suites = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut combinations = std::collections::HashSet::new();
     for file in files {
         let path = file["path"]
             .as_str()
@@ -174,25 +183,31 @@ fn manifest_suite_paths(manifest: &Value) -> Result<[FrozenSuite; 3]> {
                 .with_context(|| format!("failed to open sidecar {sidecar_path}"))?,
         )
         .with_context(|| format!("invalid sidecar {sidecar_path}"))?;
-        if sidecar.schema_version != 1
-            || sidecar.split != DatasetSplit::Holdout
-            || sidecar.generator_worktree_dirty
-        {
-            continue;
+        if sidecar.schema_version != 1 || sidecar.generator_worktree_dirty {
+            return Err(anyhow!("sidecar is not clean schema v1: {path}"));
         }
-        if sidecar.input_sha256.is_empty()
+        if !combinations.insert((sidecar.suite_kind, sidecar.split)) {
+            return Err(anyhow!("duplicate suite kind/split in sidecars: {path}"));
+        }
+        if sidecar.generator != expected_generator(sidecar.suite_kind)
+            || sidecar.input_sha256.is_empty()
             || sidecar.output_sha256 != sha256_file(&suite_path)?
+            || file["sha256"].as_str() != Some(sidecar.output_sha256.as_str())
+            || file["sidecar_manifest_sha256"].as_str()
+                != Some(sha256_file(&actual_sidecar_path)?.as_str())
             || sidecar.records_written != file["records"].as_u64().unwrap() as usize
         {
             return Err(anyhow!("sidecar/output metadata mismatch: {path}"));
         }
-        suites.push(FrozenSuite {
-            path: suite_path,
-            entry: file.clone(),
-            sidecar,
-        });
+        if sidecar.split == DatasetSplit::Holdout {
+            suites.push(FrozenSuite {
+                path: suite_path,
+                entry: file.clone(),
+                sidecar,
+            });
+        }
     }
-    if suites.len() != 3 {
+    if combinations.len() != 6 || suites.len() != 3 {
         return Err(anyhow!(
             "manifest must contain exactly three holdout suites"
         ));
@@ -230,6 +245,36 @@ fn verify_frozen_manifest(path: &Path, weights: &Path) -> Result<(Value, [Frozen
     let generator_source = manifest["generator_source_sha256"]
         .as_str()
         .ok_or_else(|| anyhow!("aggregate generator source SHA missing"))?;
+    let generator_commit = manifest["generator_commit"]
+        .as_str()
+        .ok_or_else(|| anyhow!("aggregate generator commit missing"))?;
+    if !Command::new("git")
+        .args(["cat-file", "-e", &format!("{generator_commit}^{{commit}}")])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+    {
+        return Err(anyhow!("aggregate generator commit is unavailable"));
+    }
+    let source_files = manifest["source_files"]
+        .as_array()
+        .ok_or_else(|| anyhow!("aggregate source_files missing"))?;
+    if source_files.is_empty() {
+        return Err(anyhow!("aggregate source_files is empty"));
+    }
+    for source in source_files {
+        let source_path = Path::new(
+            source["path"]
+                .as_str()
+                .ok_or_else(|| anyhow!("aggregate source path missing"))?,
+        );
+        let declared_sha = source["sha256"]
+            .as_str()
+            .ok_or_else(|| anyhow!("aggregate source SHA missing"))?;
+        if !source_path.is_file() || sha256_file(source_path)? != declared_sha {
+            return Err(anyhow!("aggregate source SHA-256 mismatch"));
+        }
+    }
     let targets = manifest["targets"]
         .as_array()
         .ok_or_else(|| anyhow!("aggregate targets missing"))?;
@@ -253,6 +298,28 @@ fn verify_frozen_manifest(path: &Path, weights: &Path) -> Result<(Value, [Frozen
             "aggregate targets are not the exact six combinations"
         ));
     }
+    if manifest["all_sidecars_clean"] != true {
+        return Err(anyhow!("aggregate reports dirty sidecars"));
+    }
+    let sources = manifest["source_files"]
+        .as_array()
+        .ok_or_else(|| anyhow!("aggregate source_files missing"))?;
+    if sources.is_empty() {
+        return Err(anyhow!("aggregate has no source files"));
+    }
+    let mut source_hashes = std::collections::HashSet::new();
+    for source in sources {
+        let source_path = source["path"]
+            .as_str()
+            .ok_or_else(|| anyhow!("aggregate source path missing"))?;
+        let source_sha = source["sha256"]
+            .as_str()
+            .ok_or_else(|| anyhow!("aggregate source SHA missing"))?;
+        let actual_sha = sha256_file(Path::new(source_path))?;
+        if actual_sha != source_sha || !source_hashes.insert(source_sha.to_string()) {
+            return Err(anyhow!("aggregate source path/SHA mismatch"));
+        }
+    }
     let weight_entry = &manifest["weight"];
     let manifest_weight_path = weight_entry["path"]
         .as_str()
@@ -274,6 +341,15 @@ fn verify_frozen_manifest(path: &Path, weights: &Path) -> Result<(Value, [Frozen
             || suite.sidecar.generator_worktree_dirty
         {
             return Err(anyhow!("holdout sidecar generator metadata mismatch"));
+        }
+        if !source_hashes.contains(&suite.sidecar.input_sha256)
+            || suite.sidecar.records_written
+                != expected_target(suite.sidecar.suite_kind, DatasetSplit::Holdout)
+            || fs::canonicalize(&suite.sidecar.output_path)? != fs::canonicalize(&suite.path)?
+        {
+            return Err(anyhow!(
+                "holdout sidecar source/count/path metadata mismatch"
+            ));
         }
         let suite_sha = sha256_file(&suite.path)?;
         let sidecar_sha = sha256_file(&suite.path.with_extension("manifest.json"))?;
@@ -325,7 +401,7 @@ fn parse_move(position: &Position, text: &str) -> Result<Move> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    if args.output.exists() {
+    if fs::symlink_metadata(&args.output).is_ok() {
         return Err(anyhow!(
             "output already exists; the holdout gate is one-shot"
         ));
@@ -359,12 +435,7 @@ fn main() -> Result<()> {
     let mut resource_selection_matches_proof = 0usize;
 
     for suite in &suites {
-        let name = suite
-            .path
-            .file_name()
-            .and_then(|v| v.to_str())
-            .unwrap_or("");
-        if name.contains("mate_sacrifice") {
+        if suite.sidecar.suite_kind == SuiteKind::MateSacrifice {
             for record in read_jsonl::<MateRecord>(&suite.path)? {
                 mate_records += 1;
                 let mut position = position_from_sfen_or_usi(&record.sfen)
@@ -397,7 +468,7 @@ fn main() -> Result<()> {
                     }
                 }
             }
-        } else if name.contains("quiet_evasion") {
+        } else if suite.sidecar.suite_kind == SuiteKind::QuietEvasion {
             for record in read_jsonl::<QuietRecord>(&suite.path)? {
                 quiet_records += 1;
                 let mut position = position_from_sfen_or_usi(&record.sfen)
@@ -407,15 +478,22 @@ fn main() -> Result<()> {
                 if legal == normalized_set(record.legal_evasions.clone()) {
                     quiet_legal_exact += 1;
                 }
-                if normalized_set(record.legal_evasions) == legal
-                    && normalized_set(record.quiet_evasions.clone())
+                let quiet = normalized_set(
+                    position
+                        .legal_moves()
                         .iter()
-                        .all(|mv| {
-                            position
-                                .legal_moves()
-                                .iter()
-                                .any(|candidate| format_move_usi(*candidate) == *mv)
+                        .copied()
+                        .filter(|mv| {
+                            let capture = match mv {
+                                Move::Normal { to, .. } => position.piece_at(*to).is_some(),
+                                Move::Drop { .. } => false,
+                            };
+                            !capture && !position.is_check_move(*mv)
                         })
+                        .map(format_move_usi),
+                );
+                if normalized_set(record.legal_evasions) == legal
+                    && normalized_set(record.quiet_evasions.clone()) == quiet
                 {
                     quiet_set_exact += 1;
                 }
@@ -426,7 +504,7 @@ fn main() -> Result<()> {
                     quiet_candidate_quiet += usize::from(record.quiet_evasions.contains(&text));
                 }
             }
-        } else if name.contains("resource_cycles") {
+        } else if suite.sidecar.suite_kind == SuiteKind::ResourceCycle {
             for record in read_jsonl::<ResourceRecord>(&suite.path)? {
                 resource_records += 1;
                 let mut source = position_from_sfen_or_usi(&record.source_sfen)
@@ -494,6 +572,5 @@ fn main() -> Result<()> {
     serde_json::to_writer_pretty(&mut file, &output)?;
     writeln!(file)?;
     file.commit()?;
-    println!("holdout gate complete: aggregate written");
     Ok(())
 }
