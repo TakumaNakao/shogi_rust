@@ -154,3 +154,7 @@ path = "src/bin/mate_search_profile.rs"
 [[bin]]
 name = "mate_synthetic_augment"
 path = "src/bin/mate_synthetic_augment.rs"
+
+[[bin]]
+name = "holdout_search_gate"
+path = "src/bin/holdout_search_gate.rs"

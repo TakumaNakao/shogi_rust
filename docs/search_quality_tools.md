@@ -251,3 +251,29 @@ stored outside repository history. Keep the suite JSONL, sidecars, and their
 SHA-256 metadata together in external artifact storage. The v2 holdout must be
 passed to the normal freeze gate exactly once after code and thresholds are
 committed; do not inspect it for tuning or regenerate it after that gate.
+
+### One-shot holdout search gate
+
+After the aggregate manifest is frozen, run the aggregate-only gate once through
+the safe wrapper. It reads the three holdout suites from the frozen manifest,
+rejects dirty/incomplete manifests, refuses an existing output path, and never
+prints SFENs, source indices, PVs, or per-record diagnostics. Its only output is
+one JSON aggregate containing fixed depth 7 / 20,000-node search metrics,
+mate-root 8,192 and reply 128 probe counters, quiet-evasion set checks,
+resource proof-replay/selection counts, and manifest/weight/commit SHA metadata.
+
+```console
+scripts/safe_search_run.sh --timeout 600 --cpu-sec 1200 \
+  --max-rss-kb 2097152 --vm-kb 3145728 --vm-limit-kb 3145728 \
+  --log data/search_quality/generated_v2/holdout_gate.run.log \
+  --lock data/search_quality/generated_v2/holdout_gate.lock -- \
+  target/release/holdout_search_gate \
+  --manifest data/search_quality/generated_v2/suite_manifest.json \
+  --weights policy_weights_v2.1.0.binary \
+  --output data/search_quality/generated_v2/holdout_gate.aggregate.json
+```
+
+The CLI has no tuning or threshold options. The dev reference values 110 exact
+first moves and 199 mate-acceptable choices are recorded as aggregate baseline
+fields only; they cannot alter holdout selection or pass/fail behavior. Do not
+rerun the command or expose its individual inputs after the release gate.
