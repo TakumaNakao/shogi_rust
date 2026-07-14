@@ -469,6 +469,11 @@ fn main() -> Result<()> {
     let mut baseline_wins = 0usize;
     let mut draws = 0usize;
 
+    if args.persistent_engines && args.record_dir.is_some() {
+        return Err(anyhow!(
+            "--record-dir cannot be combined with --persistent-engines"
+        ));
+    }
     if let Some(record_dir) = &args.record_dir {
         fs::create_dir_all(record_dir)?;
     }
@@ -476,12 +481,6 @@ fn main() -> Result<()> {
     // Selfplay mode deliberately keeps exactly one engine process per side.
     // This avoids repeatedly loading the evaluator and bounds RSS for long runs.
     if args.persistent_engines {
-        if args.record_dir.is_some() {
-            return Err(anyhow!(
-                "--record-dir cannot be combined with --persistent-engines"
-            ));
-        }
-
         let mut new_engine = EngineProcess::start(
             &args.new_engine,
             &args.new_weights,
