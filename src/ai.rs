@@ -41,6 +41,7 @@ const USI_SCORE_CP_LIMIT: i32 = 2_000;
 const USI_SCORE_CP_SOFT_START: i32 = 1_000;
 const RESOURCE_CYCLE_BASE_PENALTY: f32 = 1_000.0;
 type LegalMoves = ArrayVec<Move, 593>;
+type RootLine = (Move, f32, Vec<Move>);
 
 fn move_total_order_key(mv: Move) -> (u8, u8, u8, u8) {
     match mv {
@@ -58,6 +59,46 @@ fn move_total_order_key(mv: Move) -> (u8, u8, u8, u8) {
             };
             (1, kind, to.index(), 0)
         }
+    }
+}
+
+fn root_line_for_move(root_lines: &[RootLine], target: Move) -> Option<&RootLine> {
+    root_lines
+        .iter()
+        .find(|(candidate, _, _)| *candidate == target)
+}
+
+#[derive(Debug, PartialEq)]
+enum ReplyRootSelection<'a> {
+    KeepCompletedBest(&'a RootLine),
+    UseStoredExact(&'a RootLine),
+    Research(Move),
+}
+
+fn select_root_after_reply<'a>(
+    completed_best: &'a RootLine,
+    root_lines: &'a [RootLine],
+    rejected: &[Move],
+) -> ReplyRootSelection<'a> {
+    if !rejected.contains(&completed_best.0) {
+        return ReplyRootSelection::KeepCompletedBest(completed_best);
+    }
+
+    let Some((index, alternative)) = root_lines
+        .iter()
+        .enumerate()
+        .find(|(_, (candidate, _, _))| !rejected.contains(candidate))
+    else {
+        // A forced move still has to be returned even when it is mated.
+        return ReplyRootSelection::KeepCompletedBest(completed_best);
+    };
+
+    if index == 0 {
+        // The first root line is searched with the full root window and is exact.
+        ReplyRootSelection::UseStoredExact(alternative)
+    } else {
+        // Later root lines may contain only a zero-window bound.
+        ReplyRootSelection::Research(alternative.0)
     }
 }
 
@@ -585,7 +626,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     fn reject_mated_root_candidates(
         &mut self,
         position: &mut Position,
-        root_lines: &[(Move, f32, Vec<Move>)],
+        root_lines: &[RootLine],
         hard_node_limit: Option<u64>,
         hard_deadline: Option<Instant>,
     ) -> Vec<Move> {
@@ -614,6 +655,44 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
         rejected
+    }
+
+    fn research_root_candidate_exact(
+        &mut self,
+        position: &mut Position,
+        candidate: Move,
+        completed_depth: u8,
+    ) -> Option<(f32, Vec<Move>)> {
+        self.next_time_check_nodes = self.nodes_searched;
+        if completed_depth == 0 || self.should_stop() {
+            return None;
+        }
+
+        // Ignore bounds left by the earlier zero-window root search. Older entries
+        // remain available as ordering hints, but cannot cut off this exact re-search.
+        self.search_generation = self.search_generation.wrapping_add(1);
+        if self.search_generation == 0 {
+            self.search_generation = 1;
+            self.transposition_table.clear();
+        }
+
+        position.do_move(candidate);
+        self.sennichite_detector.record_position(position);
+        let result = match self.recorded_path_score(position) {
+            Some(score) => Some((score, Vec::new())),
+            None => {
+                self.alpha_beta_search(position, completed_depth - 1, -f32::INFINITY, f32::INFINITY)
+            }
+        };
+        self.sennichite_detector.unrecord_last_position();
+        position.undo_move(candidate);
+
+        result.map(|(score, child_pv)| {
+            let mut pv = Vec::with_capacity(child_pv.len() + 1);
+            pv.push(candidate);
+            pv.extend(child_pv);
+            (-score, pv)
+        })
     }
 
     fn search_ordering_score(&mut self, position: &mut Position, mv: Move) -> i32 {
@@ -1282,7 +1361,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
         let mut completed_depth = 0;
         let mut completed_pv = Vec::new();
-        let mut completed_root_lines: Vec<(Move, f32, Vec<Move>)> = Vec::new();
+        let mut completed_root_lines: Vec<RootLine> = Vec::new();
 
         for depth in 1..=limits.max_depth {
             if let Some(previous_best) = best_move {
@@ -1294,7 +1373,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let mut current_best_move_for_depth: Option<Move> = None;
             let mut best_eval_for_depth = -f32::INFINITY;
             let mut best_pv_for_depth: Vec<Move> = Vec::new();
-            let mut root_lines_for_depth: Vec<(Move, f32, Vec<Move>)> = Vec::new();
+            let mut root_lines_for_depth: Vec<RootLine> = Vec::new();
             let (mut alpha, mut beta) = previous_eval
                 .map(|eval| (eval - ASPIRATION_WINDOW, eval + ASPIRATION_WINDOW))
                 .unwrap_or((-f32::INFINITY, f32::INFINITY));
@@ -1443,29 +1522,40 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
 
-        completed_root_lines.sort_unstable_by(|left, right| {
-            right
-                .1
-                .total_cmp(&left.1)
-                .then_with(|| move_total_order_key(left.0).cmp(&move_total_order_key(right.0)))
-        });
-        let rejected = completed_root_lines
-            .first()
-            .map_or_else(Vec::new, |best_line| {
-                self.reject_mated_root_candidates(
-                    position,
-                    std::slice::from_ref(best_line),
-                    hard_node_limit,
-                    hard_deadline,
-                )
-            });
-        if let Some((candidate, score, pv)) = completed_root_lines
-            .iter()
-            .find(|(candidate, _, _)| !rejected.contains(candidate))
+        if let Some(completed_best_line) = best_move
+            .and_then(|current_best| root_line_for_move(&completed_root_lines, current_best))
         {
-            best_move = Some(*candidate);
-            previous_eval = Some(*score);
-            completed_pv = pv.clone();
+            let rejected = self.reject_mated_root_candidates(
+                position,
+                std::slice::from_ref(completed_best_line),
+                hard_node_limit,
+                hard_deadline,
+            );
+            match select_root_after_reply(completed_best_line, &completed_root_lines, &rejected) {
+                ReplyRootSelection::KeepCompletedBest(_) => {}
+                ReplyRootSelection::UseStoredExact((candidate, score, pv)) => {
+                    best_move = Some(*candidate);
+                    previous_eval = Some(*score);
+                    completed_pv = pv.clone();
+                }
+                ReplyRootSelection::Research(alternative) => {
+                    // Do not expose a zero-window bound as an exact score. Keep a legal
+                    // move-only fallback unless the full-window search finishes.
+                    best_move = Some(alternative);
+                    previous_eval = None;
+                    completed_pv = vec![alternative];
+                    if self.stop_reason == SearchStopReason::Completed {
+                        if let Some((exact_score, exact_pv)) = self.research_root_candidate_exact(
+                            position,
+                            alternative,
+                            completed_depth,
+                        ) {
+                            previous_eval = Some(exact_score);
+                            completed_pv = exact_pv;
+                        }
+                    }
+                }
+            }
         }
         self.build_search_report(best_move, previous_eval, completed_pv, completed_depth)
     }
@@ -2171,6 +2261,62 @@ mod tests {
         assert_eq!(500, report.nodes);
         assert_eq!(SearchStopReason::NodeLimit, report.stop_reason);
         assert_eq!(0, report.mate_probes);
+    }
+
+    #[test]
+    fn reply_selection_preserves_completed_best_without_rejection() {
+        let position = Position::default();
+        let mut moves = position.legal_moves().into_iter().collect::<Vec<_>>();
+        moves.sort_unstable_by_key(|&mv| move_total_order_key(mv));
+        let bound_move = moves[0];
+        let completed_best = *moves.last().expect("initial position has legal moves");
+        let expected_pv = vec![completed_best, bound_move];
+        let root_lines = vec![
+            (bound_move, 42.0, vec![bound_move]),
+            (completed_best, 42.0, expected_pv.clone()),
+        ];
+
+        let completed_line =
+            root_line_for_move(&root_lines, completed_best).expect("completed best line");
+        let ReplyRootSelection::KeepCompletedBest(selected) =
+            select_root_after_reply(completed_line, &root_lines, &[])
+        else {
+            panic!("an unrejected completed best must be kept");
+        };
+        assert_eq!(completed_best, selected.0);
+        assert_eq!(42.0, selected.1);
+        assert_eq!(expected_pv, selected.2);
+        assert_ne!(root_lines[0].0, selected.0);
+    }
+
+    #[test]
+    fn reply_selection_does_not_treat_later_bound_as_exact() {
+        let position = Position::default();
+        let moves = position.legal_moves();
+        let completed_best = moves[0];
+        let later_bound = moves[1];
+        let root_lines = vec![
+            (completed_best, 100.0, vec![completed_best]),
+            (later_bound, 100.0, vec![later_bound]),
+        ];
+
+        assert_eq!(
+            ReplyRootSelection::Research(later_bound),
+            select_root_after_reply(&root_lines[0], &root_lines, &[completed_best])
+        );
+
+        let exact_alternative = vec![
+            (later_bound, 25.0, vec![later_bound]),
+            (completed_best, 100.0, vec![completed_best]),
+        ];
+        let ReplyRootSelection::UseStoredExact(selected) =
+            select_root_after_reply(&exact_alternative[1], &exact_alternative, &[completed_best])
+        else {
+            panic!("the first full-window root line is an exact alternative");
+        };
+        assert_eq!(later_bound, selected.0);
+        assert_eq!(25.0, selected.1);
+        assert_eq!(vec![later_bound], selected.2);
     }
 
     #[test]
