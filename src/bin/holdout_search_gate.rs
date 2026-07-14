@@ -201,6 +201,15 @@ fn manifest_suite_paths(manifest: &Value) -> Result<[FrozenSuite; 3]> {
         {
             return Err(anyhow!("sidecar/output metadata mismatch: {path}"));
         }
+        if !Path::new(&sidecar.input_path).is_file()
+            || sha256_file(Path::new(&sidecar.input_path))? != sidecar.input_sha256
+            || !Path::new(&sidecar.output_path).is_file()
+            || fs::canonicalize(&sidecar.output_path)? != fs::canonicalize(&suite_path)?
+            || sidecar.generator_commit.is_empty()
+            || sidecar.generator_source_sha256.is_empty()
+        {
+            return Err(anyhow!("sidecar input/path metadata mismatch: {path}"));
+        }
         if sidecar.split == DatasetSplit::Holdout {
             suites.push(FrozenSuite {
                 path: suite_path,
@@ -338,6 +347,17 @@ fn verify_frozen_manifest(path: &Path, weights: &Path) -> Result<(Value, [Frozen
         return Err(anyhow!("weight path/SHA does not match frozen manifest"));
     }
     let suites = manifest_suite_paths(&manifest)?;
+    for file in manifest["suite_files"].as_array().unwrap() {
+        let suite_path = Path::new(file["path"].as_str().unwrap());
+        let sidecar_path = suite_path.with_extension("manifest.json");
+        let sidecar: SuiteManifest = serde_json::from_reader(File::open(&sidecar_path)?)?;
+        if sidecar.generator_source_sha256 != generator_source
+            || sidecar.generator_commit != generator_commit
+            || !source_hashes.contains(&sidecar.input_sha256)
+        {
+            return Err(anyhow!("suite sidecar generator/source metadata mismatch"));
+        }
+    }
     for suite in &suites {
         if !suite.path.is_file() || !suite.path.with_extension("manifest.json").is_file() {
             return Err(anyhow!("holdout suite or sidecar is missing"));
