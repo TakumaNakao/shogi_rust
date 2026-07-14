@@ -5,7 +5,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use shogi_ai::ai::{SearchLimits, SearchReport, ShogiAI};
 use shogi_ai::evaluation::{Evaluator, SparseModel};
-use shogi_ai::search_quality::AtomicOutput;
 use shogi_ai::search_quality::{canonical_sfen, MateOracle, MateProof};
 use shogi_ai::search_quality::{AtomicOutput, DatasetSplit, SuiteKind, SuiteManifest};
 use shogi_ai::utils::{format_move_usi, parse_usi_move_for_color, position_from_sfen_or_usi};
@@ -73,7 +72,6 @@ struct ResourceRecord {
     final_white_hand: [u8; 7],
 }
 
-#[derive(Clone)]
 struct FrozenSuite {
     path: PathBuf,
     entry: Value,
@@ -271,7 +269,8 @@ fn verify_frozen_manifest(path: &Path, weights: &Path) -> Result<(Value, [Frozen
             return Err(anyhow!("holdout suite or sidecar is missing"));
         }
         if suite.sidecar.generator_source_sha256 != generator_source
-            || Some(suite.sidecar.generator_commit.as_str()) != manifest["generator_commit"].as_str()
+            || Some(suite.sidecar.generator_commit.as_str())
+                != manifest["generator_commit"].as_str()
             || suite.sidecar.generator_worktree_dirty
         {
             return Err(anyhow!("holdout sidecar generator metadata mismatch"));
@@ -331,7 +330,7 @@ fn main() -> Result<()> {
             "output already exists; the holdout gate is one-shot"
         ));
     }
-    let (manifest, suites) = verify_frozen_manifest(&args.manifest)?;
+    let (manifest, suites) = verify_frozen_manifest(&args.manifest, &args.weights)?;
     let model = {
         let mut model = SparseModel::new(0.0, 0.0);
         model.load(&args.weights)?;
@@ -360,9 +359,13 @@ fn main() -> Result<()> {
     let mut resource_selection_matches_proof = 0usize;
 
     for suite in &suites {
-        let name = suite.file_name().and_then(|v| v.to_str()).unwrap_or("");
+        let name = suite
+            .path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("");
         if name.contains("mate_sacrifice") {
-            for record in read_jsonl::<MateRecord>(suite)? {
+            for record in read_jsonl::<MateRecord>(&suite.path)? {
                 mate_records += 1;
                 let mut position = position_from_sfen_or_usi(&record.sfen)
                     .ok_or_else(|| anyhow!("invalid holdout position"))?;
@@ -395,7 +398,7 @@ fn main() -> Result<()> {
                 }
             }
         } else if name.contains("quiet_evasion") {
-            for record in read_jsonl::<QuietRecord>(suite)? {
+            for record in read_jsonl::<QuietRecord>(&suite.path)? {
                 quiet_records += 1;
                 let mut position = position_from_sfen_or_usi(&record.sfen)
                     .ok_or_else(|| anyhow!("invalid holdout position"))?;
@@ -424,7 +427,7 @@ fn main() -> Result<()> {
                 }
             }
         } else if name.contains("resource_cycles") {
-            for record in read_jsonl::<ResourceRecord>(suite)? {
+            for record in read_jsonl::<ResourceRecord>(&suite.path)? {
                 resource_records += 1;
                 let mut source = position_from_sfen_or_usi(&record.source_sfen)
                     .ok_or_else(|| anyhow!("invalid holdout position"))?;
