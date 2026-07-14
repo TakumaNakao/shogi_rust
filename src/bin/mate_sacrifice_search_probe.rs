@@ -1,7 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use serde::Deserialize;
-use shogi_ai::ai::{SearchLimits, ShogiAI};
+use shogi_ai::ai::{
+    SearchLimits, ShogiAI, DEFAULT_MATE_REPLY_CANDIDATES, DEFAULT_REPLY_MATE_NODE_BUDGET,
+    DEFAULT_ROOT_MATE_NODE_BUDGET,
+};
 use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::search_quality::{MateOracle, MateProof};
 use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
@@ -30,6 +33,12 @@ struct Args {
     time_limit_ms: Option<u64>,
     #[arg(long, default_value_t = 2_000_000)]
     proof_node_limit: u64,
+    #[arg(long, default_value_t = DEFAULT_ROOT_MATE_NODE_BUDGET)]
+    mate_root_nodes: u64,
+    #[arg(long, default_value_t = DEFAULT_REPLY_MATE_NODE_BUDGET)]
+    mate_reply_nodes: u64,
+    #[arg(long, default_value_t = DEFAULT_MATE_REPLY_CANDIDATES)]
+    mate_reply_candidates: usize,
     #[arg(long, default_value_t = 0)]
     limit: usize,
 }
@@ -62,6 +71,15 @@ fn load_model(path: &Path) -> Result<SparseModel> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args
+        .input
+        .components()
+        .any(|part| part.as_os_str().to_string_lossy().contains("holdout"))
+    {
+        return Err(anyhow!(
+            "holdout input is prohibited for mate search diagnosis"
+        ));
+    }
     if args.nodes == Some(0) || args.proof_node_limit == 0 {
         return Err(anyhow!("node limits must be positive"));
     }
@@ -89,6 +107,12 @@ fn main() -> Result<()> {
     let mut completed_depth_total = 0u64;
     let mut total_nodes = 0u64;
     let mut mate_acceptable_indices = Vec::new();
+    let mut total_mate_nodes = 0u64;
+    let mut total_mate_probes = 0u64;
+    let mut total_mate_proven = 0u64;
+    let mut total_mate_unknown = 0u64;
+    let mut total_mate_rejected = 0u64;
+    let mut mate_nodes_per_sample = Vec::with_capacity(sample_count);
 
     for record in records.iter().take(sample_count) {
         let mut position = position_from_sfen_or_usi(&record.sfen)
@@ -96,6 +120,8 @@ fn main() -> Result<()> {
         let attacker = position.side_to_move();
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(SharedEvaluator { model: &model });
         ai.set_emit_info(false);
+        ai.set_mate_search_budgets(args.mate_root_nodes, args.mate_reply_nodes);
+        ai.set_mate_reply_candidates(args.mate_reply_candidates);
         ai.sennichite_detector.record_position(&position);
         let report = ai.find_best_move_with_limits(
             &mut position,
@@ -108,6 +134,12 @@ fn main() -> Result<()> {
         completed_depth_total += u64::from(report.completed_depth);
         total_nodes += report.nodes;
         mate_scores += usize::from(report.score.is_some_and(|score| score == f32::INFINITY));
+        total_mate_nodes += report.mate_nodes;
+        total_mate_probes += report.mate_probes;
+        total_mate_proven += report.mate_proven;
+        total_mate_unknown += report.mate_unknown;
+        total_mate_rejected += report.mate_rejected;
+        mate_nodes_per_sample.push(report.mate_nodes);
 
         let Some(best_move) = report.best_move else {
             continue;
@@ -150,6 +182,11 @@ fn main() -> Result<()> {
     );
     println!("mate scores: {mate_scores}");
     println!("unknown mate proofs: {unknown_proofs}");
+    mate_nodes_per_sample.sort_unstable();
+    let mate_p95 = mate_nodes_per_sample[(mate_nodes_per_sample.len() - 1) * 95 / 100];
+    println!("mate nodes: {total_mate_nodes}");
+    println!("mate nodes p95: {mate_p95}");
+    println!("mate probes/proven/unknown/rejected: {total_mate_probes}/{total_mate_proven}/{total_mate_unknown}/{total_mate_rejected}");
     println!(
         "mate acceptable source indices: {}",
         mate_acceptable_indices

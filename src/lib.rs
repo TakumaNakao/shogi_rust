@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod evaluation;
+pub mod mate_search;
 pub mod move_ordering;
 pub mod position_hash;
 pub mod search_quality;

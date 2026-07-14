@@ -70,6 +70,36 @@ This command is **dev-only**. Do not pass a holdout suite, inspect holdout recor
 holdout source indices for tuning. Holdout is reserved for a single release-candidate gate after
 the implementation and thresholds have been frozen.
 
+### Rule-only mate search budget
+
+Production search runs a rule-only mate probe before evaluation search and selects its first move
+only for `ProvenMate`. It searches 1, 3, 5, then 7 ply with checking moves as attacker OR nodes and
+all legal evasions as defender AND nodes. Repetition is not mate, budget or deadline exhaustion is
+`Unknown`, and `Unknown` is neither accepted nor rejected. The default root cap is 8192 nodes. On
+the current dev suite its actual p95 is 3967 nodes; ordinary `taya36` positions terminate early
+with a measured p95 of 291 nodes.
+
+After evaluation search, at most three leading root candidates receive an opponent-mate probe of
+128 nodes each. Only a proven opponent mate rejects a candidate. Mate nodes are included in the
+global search node limit, and time probes share the global deadline. `SearchReport` exposes
+`mate_nodes`, `mate_probes`, `mate_proven`, `mate_unknown`, and `mate_rejected`.
+
+Use the dev-only offline profiler to compare caps without evaluation values:
+
+```console
+cargo run --release --bin mate_search_profile -- \
+  --input data/search_quality/generated/dev_mate_sacrifice.jsonl \
+  --budgets 128,256,512,1024,2048,4096,8192
+```
+
+The profiler rejects holdout-named inputs. Its results are development diagnostics and must not be
+used to inspect or tune against holdout records.
+
+With the fixed depth-7 / 20,000-total-node dev gate, the integrated default produces 110/200 exact
+expected first moves and 199/200 mate-acceptable choices, above the pre-Phase-1 baselines of 83 and
+187. All 16 Phase-1 mate-acceptable regressions are recovered. These are dev results, not release
+or holdout claims.
+
 ## Rule-only miners
 
 ```console
@@ -142,3 +172,53 @@ release artifact.
 
 Dev and holdout inputs must already be split by source game. Do not inspect or tune against
 individual holdout records; if that happens, move the record to dev and freeze a replacement.
+
+### Safe small-batch verification
+
+Heavy probes must be run through `scripts/safe_search_run.sh`. It serializes jobs
+with `flock` (or an atomic `mkdir` fallback), defaults to CPUs `0-3`, `nice 10`,
+300 wall-clock seconds, 600 CPU seconds, a 1.5 GiB RSS limit, and a 1.5 GiB
+virtual-memory (`VM_LIMIT_KB`) limit. It polls the complete child tree,
+records maximum RSS and VmSize, and kills every recorded descendant with TERM
+followed by KILL at any limit. Exit reasons are `rss_limit`, `vm_limit`,
+`cpu_limit`, `timeout`, or `child_exit_N`; a nonzero child exit is never logged
+as `completed`.
+
+Example command:
+
+```console
+scripts/safe_search_run.sh --timeout 120 --log data/search_quality/safe-mate16.log -- \
+  cargo run --release --bin mate_sacrifice_search_probe -- \
+  --input data/search_quality/generated/dev_mate_sacrifice.jsonl --limit 16 \
+  --nodes 50000 --time-limit-ms 500
+```
+
+Before running the full dev suite, use only these bounded batches:
+
+- mate sacrifice: 16--32 records, at most 50,000 total nodes per record;
+- quiet evasion: 32 records (`--record-limit 32`), miner-only legal proof;
+- resource cycle: 16 records (`--record-limit 16`, `--node-limit 50000`),
+  with the wrapper's 120-second wall-clock cap.
+
+The miners' node limits are proof-search limits rather than evaluation limits.
+When a proof search reaches its limit, the record is omitted or marked
+`Unknown`; it is never treated as a negative label.
+
+Do not pass holdout files to smoke tests. Run one wrapper process at a time and
+inspect the log's `max_rss_kb` and exit reason. The 200-record mate run and self-play
+are later gates and are deliberately excluded from Phase 5 hardening.
+
+The wrapper's process-tree integration smoke covers normal completion, lock
+contention (exit 75), timeout descendant cleanup, RSS-limit termination, and
+CPU-limit termination:
+
+```console
+scripts/safe_search_run_smoke.sh
+```
+
+The default virtual-memory cap is intentionally conservative. A model-loading
+smoke that needs more address space may pass `--vm-kb 4194304` (and, if needed,
+`--vm-limit-kb 4194304`), but the measured RSS limit remains 1.5 GiB and is
+still enforced by the wrapper. `MAX_RSS_KB`, `CPU_LIMIT_SEC`, and
+`SAFE_SEARCH_VM_LIMIT_KB` can also override the defaults; unlimited values are
+never defaults.

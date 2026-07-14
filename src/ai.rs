@@ -1,4 +1,7 @@
 use crate::evaluation::Evaluator;
+use crate::mate_search::{
+    MateSearchLimits, MateSearchResult, MateSearchStopReason, MateSearcher, MAX_MATE_HORIZON,
+};
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
@@ -18,6 +21,9 @@ const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
 const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 3;
+pub const DEFAULT_ROOT_MATE_NODE_BUDGET: u64 = 8_192;
+pub const DEFAULT_REPLY_MATE_NODE_BUDGET: u64 = 128;
+pub const DEFAULT_MATE_REPLY_CANDIDATES: usize = 3;
 /// Production keeps non-check quiescence capture-only because complete checked-node
 /// evasions substantially enlarge the tree. Checked nodes ignore this boundary and
 /// always search every legal evasion. This Phase 1 change is correctness-oriented and
@@ -98,6 +104,11 @@ pub struct SearchReport {
     pub max_quiescence_ply: u16,
     pub quiescence_evasion_cutoffs: [u64; EVASION_KIND_COUNT],
     pub quiescence_tt_evasion_cutoffs: u64,
+    pub mate_nodes: u64,
+    pub mate_probes: u64,
+    pub mate_proven: u64,
+    pub mate_unknown: u64,
+    pub mate_rejected: u64,
     pub stop_reason: SearchStopReason,
 }
 
@@ -175,6 +186,14 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     aspiration_researches: u64,
     quiescence_evasion_cutoffs: [u64; EVASION_KIND_COUNT],
     quiescence_tt_evasion_cutoffs: u64,
+    root_mate_node_budget: u64,
+    reply_mate_node_budget: u64,
+    mate_reply_candidates: usize,
+    mate_nodes: u64,
+    mate_probes: u64,
+    mate_proven: u64,
+    mate_unknown: u64,
+    mate_rejected: u64,
     emit_info: bool,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
@@ -214,6 +233,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             aspiration_researches: 0,
             quiescence_evasion_cutoffs: [0; EVASION_KIND_COUNT],
             quiescence_tt_evasion_cutoffs: 0,
+            root_mate_node_budget: DEFAULT_ROOT_MATE_NODE_BUDGET,
+            reply_mate_node_budget: DEFAULT_REPLY_MATE_NODE_BUDGET,
+            mate_reply_candidates: DEFAULT_MATE_REPLY_CANDIDATES,
+            mate_nodes: 0,
+            mate_probes: 0,
+            mate_proven: 0,
+            mate_unknown: 0,
+            mate_rejected: 0,
             emit_info: true,
             search_generation: 0,
             stop_signal: None,
@@ -261,6 +288,15 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn max_quiescence_check_ply(&self) -> u16 {
         self.max_quiescence_check_ply
+    }
+
+    pub fn set_mate_search_budgets(&mut self, root_nodes: u64, reply_nodes: u64) {
+        self.root_mate_node_budget = root_nodes;
+        self.reply_mate_node_budget = reply_nodes;
+    }
+
+    pub fn set_mate_reply_candidates(&mut self, candidates: usize) {
+        self.mate_reply_candidates = candidates.min(DEFAULT_MATE_REPLY_CANDIDATES);
     }
 
     pub fn quiescence_moves_considered(&self) -> u64 {
@@ -365,6 +401,109 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         } else {
             false
         }
+    }
+
+    fn run_mate_probe(
+        &mut self,
+        position: &mut Position,
+        attacker: shogi_core::Color,
+        requested_nodes: u64,
+        hard_node_limit: Option<u64>,
+        deadline: Option<Instant>,
+    ) -> MateSearchResult {
+        self.mate_probes += 1;
+        let available_nodes = hard_node_limit
+            .map(|limit| limit.saturating_sub(self.nodes_searched))
+            .unwrap_or(requested_nodes);
+        let node_limit = requested_nodes.min(available_nodes);
+        if node_limit == 0 {
+            self.mate_unknown += 1;
+            if hard_node_limit.is_some() {
+                self.stop_reason = SearchStopReason::NodeLimit;
+            }
+            return MateSearchResult::Unknown;
+        }
+        if self
+            .stop_signal
+            .as_ref()
+            .is_some_and(|signal| signal.load(Ordering::Relaxed))
+        {
+            self.mate_unknown += 1;
+            self.stop_reason = SearchStopReason::ExternalStop;
+            return MateSearchResult::Unknown;
+        }
+        if deadline.is_some_and(|limit| Instant::now() >= limit) {
+            self.mate_unknown += 1;
+            self.stop_reason = SearchStopReason::TimeLimit;
+            return MateSearchResult::Unknown;
+        }
+
+        let mut searcher = MateSearcher::new(MateSearchLimits {
+            node_limit,
+            deadline,
+            stop_signal: self.stop_signal.clone(),
+            prior_position_hashes: self.sennichite_detector.prior_position_hashes(position),
+        });
+        let result = searcher.search_shortest(position, attacker, MAX_MATE_HORIZON);
+        let nodes = searcher.nodes();
+        self.mate_nodes += nodes;
+        self.nodes_searched += nodes;
+        match result {
+            MateSearchResult::ProvenMate { .. } => self.mate_proven += 1,
+            MateSearchResult::Unknown => {
+                self.mate_unknown += 1;
+                match searcher.stop_reason() {
+                    Some(MateSearchStopReason::TimeLimit) => {
+                        self.stop_reason = SearchStopReason::TimeLimit;
+                    }
+                    Some(MateSearchStopReason::ExternalStop) => {
+                        self.stop_reason = SearchStopReason::ExternalStop;
+                    }
+                    Some(MateSearchStopReason::NodeLimit)
+                        if hard_node_limit.is_some()
+                            && self.nodes_searched >= hard_node_limit.unwrap_or(u64::MAX) =>
+                    {
+                        self.stop_reason = SearchStopReason::NodeLimit;
+                    }
+                    _ => {}
+                }
+            }
+            MateSearchResult::ProvenNoMateWithinHorizon => {}
+        }
+        result
+    }
+
+    fn reject_mated_root_candidates(
+        &mut self,
+        position: &mut Position,
+        root_lines: &[(Move, f32, Vec<Move>)],
+        hard_node_limit: Option<u64>,
+        hard_deadline: Option<Instant>,
+    ) -> Vec<Move> {
+        let mut rejected = Vec::new();
+        for &(candidate, _, _) in root_lines.iter().take(self.mate_reply_candidates) {
+            if self.stop_reason != SearchStopReason::Completed {
+                break;
+            }
+            if self.reply_mate_node_budget == 0 {
+                break;
+            }
+            position.do_move(candidate);
+            let opponent = position.side_to_move();
+            let result = self.run_mate_probe(
+                position,
+                opponent,
+                self.reply_mate_node_budget,
+                hard_node_limit,
+                hard_deadline,
+            );
+            position.undo_move(candidate);
+            if matches!(result, MateSearchResult::ProvenMate { .. }) {
+                rejected.push(candidate);
+                self.mate_rejected += 1;
+            }
+        }
+        rejected
     }
 
     fn search_ordering_score(&mut self, position: &mut Position, mv: Move) -> i32 {
@@ -935,6 +1074,11 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.aspiration_researches = 0;
         self.quiescence_evasion_cutoffs = [0; EVASION_KIND_COUNT];
         self.quiescence_tt_evasion_cutoffs = 0;
+        self.mate_nodes = 0;
+        self.mate_probes = 0;
+        self.mate_proven = 0;
+        self.mate_unknown = 0;
+        self.mate_rejected = 0;
 
         let moves = position.legal_moves();
         if moves.is_empty() {
@@ -942,6 +1086,45 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             self.stop_reason = SearchStopReason::NoLegalMove;
             return self.build_search_report(None, None, Vec::new(), 0);
         }
+
+        let hard_node_limit = limits.node_limit;
+        let hard_time_limit = limits.time_limit_ms.map(Duration::from_millis);
+        let hard_deadline = hard_time_limit.and_then(|limit| self.start_time?.checked_add(limit));
+        let attacker = position.side_to_move();
+        if self.root_mate_node_budget > 0 {
+            let root_probe = self.run_mate_probe(
+                position,
+                attacker,
+                self.root_mate_node_budget,
+                hard_node_limit,
+                hard_deadline,
+            );
+            if let MateSearchResult::ProvenMate {
+                first_move: Some(first_move),
+                proof,
+                ..
+            } = root_probe
+            {
+                return self.build_search_report(Some(first_move), Some(f32::INFINITY), proof, 0);
+            }
+            if self.stop_reason != SearchStopReason::Completed {
+                let fallback = moves[0];
+                return self.build_search_report(Some(fallback), None, vec![fallback], 0);
+            }
+        }
+
+        let reply_probe_reserve = self
+            .reply_mate_node_budget
+            .saturating_mul(self.mate_reply_candidates.min(moves.len()) as u64);
+        self.node_limit = hard_node_limit.map(|limit| limit.saturating_sub(reply_probe_reserve));
+        self.time_limit = hard_time_limit.map(|limit| {
+            let reserve = Duration::from_millis(
+                (limit.as_millis() as u64 / 10)
+                    .min(10)
+                    .min(limit.as_millis() as u64),
+            );
+            limit.saturating_sub(reserve)
+        });
 
         let mut scored_moves = Vec::with_capacity(moves.len());
         for mv in moves.iter() {
@@ -970,6 +1153,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
         let mut completed_depth = 0;
         let mut completed_pv = Vec::new();
+        let mut completed_root_lines: Vec<(Move, f32, Vec<Move>)> = Vec::new();
 
         for depth in 1..=limits.max_depth {
             if let Some(previous_best) = best_move {
@@ -981,6 +1165,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let mut current_best_move_for_depth: Option<Move> = None;
             let mut best_eval_for_depth = -f32::INFINITY;
             let mut best_pv_for_depth: Vec<Move> = Vec::new();
+            let mut root_lines_for_depth: Vec<(Move, f32, Vec<Move>)> = Vec::new();
             let (mut alpha, mut beta) = previous_eval
                 .map(|eval| (eval - ASPIRATION_WINDOW, eval + ASPIRATION_WINDOW))
                 .unwrap_or((-f32::INFINITY, f32::INFINITY));
@@ -1023,6 +1208,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                 if let Some((eval, pv)) = eval_result {
                     let current_eval = -eval;
+                    let mut candidate_pv = vec![mv];
+                    candidate_pv.extend(pv.iter().copied());
+                    root_lines_for_depth.push((mv, current_eval, candidate_pv));
                     if current_eval > best_eval_for_depth {
                         best_eval_for_depth = current_eval;
                         current_best_move_for_depth = Some(mv);
@@ -1053,6 +1241,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     current_best_move_for_depth = None;
                     best_eval_for_depth = -f32::INFINITY;
                     best_pv_for_depth.clear();
+                    root_lines_for_depth.clear();
 
                     for &(mv, _) in &sorted_moves {
                         if self.should_stop() {
@@ -1081,6 +1270,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                         if let Some((eval, pv)) = eval_result {
                             let current_eval = -eval;
+                            let mut candidate_pv = vec![mv];
+                            candidate_pv.extend(pv.iter().copied());
+                            root_lines_for_depth.push((mv, current_eval, candidate_pv));
                             if current_eval > best_eval_for_depth {
                                 best_eval_for_depth = current_eval;
                                 current_best_move_for_depth = Some(mv);
@@ -1103,6 +1295,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     previous_eval = Some(best_eval_for_depth);
                     completed_depth = depth;
                     completed_pv = best_pv_for_depth.clone();
+                    completed_root_lines = root_lines_for_depth;
                 }
                 if let Some(bm) = best_move {
                     self.move_ordering
@@ -1136,6 +1329,29 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 break;
             }
         }
+
+        self.node_limit = hard_node_limit;
+        self.time_limit = hard_time_limit;
+        completed_root_lines.sort_unstable_by(|left, right| {
+            right
+                .1
+                .total_cmp(&left.1)
+                .then_with(|| move_total_order_key(left.0).cmp(&move_total_order_key(right.0)))
+        });
+        let rejected = self.reject_mated_root_candidates(
+            position,
+            &completed_root_lines,
+            hard_node_limit,
+            hard_deadline,
+        );
+        if let Some((candidate, score, pv)) = completed_root_lines
+            .iter()
+            .find(|(candidate, _, _)| !rejected.contains(candidate))
+        {
+            best_move = Some(*candidate);
+            previous_eval = Some(*score);
+            completed_pv = pv.clone();
+        }
         self.build_search_report(best_move, previous_eval, completed_pv, completed_depth)
     }
 
@@ -1162,6 +1378,11 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             max_quiescence_ply: self.max_quiescence_ply,
             quiescence_evasion_cutoffs: self.quiescence_evasion_cutoffs,
             quiescence_tt_evasion_cutoffs: self.quiescence_tt_evasion_cutoffs,
+            mate_nodes: self.mate_nodes,
+            mate_probes: self.mate_probes,
+            mate_proven: self.mate_proven,
+            mate_unknown: self.mate_unknown,
+            mate_rejected: self.mate_rejected,
             stop_reason: self.stop_reason,
         }
     }
@@ -1567,6 +1788,8 @@ mod tests {
         assert_eq!(1, report.nodes);
         assert_eq!(SearchStopReason::NodeLimit, report.stop_reason);
         assert!(report.best_move.is_some(), "a legal fallback must remain");
+        assert_eq!(1, report.mate_nodes);
+        assert_eq!(1, report.mate_unknown);
     }
 
     #[test]
@@ -1584,6 +1807,98 @@ mod tests {
         );
         assert_eq!(0, report.nodes);
         assert_eq!(SearchStopReason::NodeLimit, report.stop_reason);
+    }
+
+    #[test]
+    fn mate_probe_global_deadline_and_external_stop_reach_report() {
+        let mut deadline_position = Position::default();
+        let mut deadline_ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        deadline_ai.set_emit_info(false);
+        let deadline_report = deadline_ai.find_best_move_with_limits(
+            &mut deadline_position,
+            SearchLimits {
+                max_depth: 0,
+                time_limit_ms: Some(0),
+                node_limit: None,
+            },
+        );
+        assert_eq!(SearchStopReason::TimeLimit, deadline_report.stop_reason);
+        assert_eq!(1, deadline_report.mate_probes);
+        assert_eq!(1, deadline_report.mate_unknown);
+
+        let signal = Arc::new(AtomicBool::new(true));
+        let mut external_position = Position::default();
+        let mut external_ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        external_ai.set_emit_info(false);
+        external_ai.set_stop_signal(Some(signal));
+        let external_report = external_ai.find_best_move_with_limits(
+            &mut external_position,
+            SearchLimits {
+                max_depth: 0,
+                time_limit_ms: None,
+                node_limit: None,
+            },
+        );
+        assert_eq!(SearchStopReason::ExternalStop, external_report.stop_reason);
+        assert_eq!(1, external_report.mate_probes);
+        assert_eq!(1, external_report.mate_unknown);
+    }
+
+    #[test]
+    fn zero_depth_local_mate_budget_unknown_does_not_stop_search() {
+        let mut position = Position::default();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_emit_info(false);
+        ai.set_mate_search_budgets(1, 0);
+        let report = ai.find_best_move_with_limits(
+            &mut position,
+            SearchLimits {
+                max_depth: 0,
+                time_limit_ms: None,
+                node_limit: None,
+            },
+        );
+        assert_eq!(SearchStopReason::Completed, report.stop_reason);
+        assert_eq!(1, report.mate_probes);
+        assert_eq!(1, report.mate_unknown);
+        assert_eq!(1, report.mate_nodes);
+        assert_eq!(report.mate_nodes, report.nodes);
+    }
+
+    #[test]
+    fn local_mate_budget_does_not_claim_global_node_stop_with_room_left() {
+        let record: Value = serde_json::from_str(
+            include_str!("../data/search_quality/generated/dev_mate_sacrifice.jsonl")
+                .lines()
+                .find(|line| line.contains("\"mate_horizon\":7"))
+                .expect("depth-seven dev fixture"),
+        )
+        .expect("valid mate record");
+        let mut position = position_from_sfen_or_usi(record["sfen"].as_str().unwrap()).unwrap();
+        let attacker = position.side_to_move();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        let result = ai.run_mate_probe(&mut position, attacker, 8, Some(16), None);
+        assert!(matches!(result, MateSearchResult::Unknown));
+        assert_eq!(SearchStopReason::Completed, ai.stop_reason);
+        assert_eq!(8, ai.nodes_searched);
+    }
+
+    #[test]
+    fn reply_probe_global_external_stop_is_reported() {
+        let mut position = checked_position(
+            "l2l4l/3ks1G2/2p1pgn1p/3p1ppp1/p1P5P/3P3P1/P1N+bPPPs1/1r3S3/+p3GKSNL b RBNgp 77",
+        );
+        let bad = parse_usi_move_for_color("5i5h", position.side_to_move()).unwrap();
+        let signal = Arc::new(AtomicBool::new(true));
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_stop_signal(Some(signal));
+        ai.set_mate_search_budgets(0, 128);
+        ai.set_mate_reply_candidates(1);
+        let rejected =
+            ai.reject_mated_root_candidates(&mut position, &[(bad, 1.0, vec![bad])], None, None);
+        assert!(rejected.is_empty());
+        assert_eq!(SearchStopReason::ExternalStop, ai.stop_reason);
+        assert_eq!(1, ai.mate_unknown);
     }
 
     #[test]
@@ -1610,6 +1925,78 @@ mod tests {
         assert_eq!(first.nodes, second.nodes);
         assert_eq!(first.qnodes, second.qnodes);
         assert_eq!(first.stop_reason, second.stop_reason);
+    }
+
+    #[test]
+    fn reply_mate_probe_rejects_only_proven_mated_candidate_and_restores_position() {
+        let mut position = checked_position(
+            "l2l4l/3ks1G2/2p1pgn1p/3p1ppp1/p1P5P/3P3P1/P1N+bPPPs1/1r3S3/+p3GKSNL b RBNgp 77",
+        );
+        let original = position.to_sfen_owned();
+        let bad = parse_usi_move_for_color("5i5h", position.side_to_move()).unwrap();
+        let good = parse_usi_move_for_color("R*5h", position.side_to_move()).unwrap();
+        assert!(position.legal_moves().contains(&bad));
+        assert!(position.legal_moves().contains(&good));
+        let root_lines = vec![(bad, 100.0, vec![bad]), (good, 0.0, vec![good])];
+
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_mate_search_budgets(0, 128);
+        ai.set_mate_reply_candidates(2);
+        let rejected = ai.reject_mated_root_candidates(&mut position, &root_lines, None, None);
+
+        assert_eq!(vec![bad], rejected);
+        assert_eq!(1, ai.mate_rejected);
+        assert_eq!(1, ai.mate_proven);
+        assert_eq!(original, position.to_sfen_owned());
+    }
+
+    #[test]
+    fn reply_mate_probe_does_not_reject_unknown() {
+        let mut position = checked_position(
+            "l2l4l/3ks1G2/2p1pgn1p/3p1ppp1/p1P5P/3P3P1/P1N+bPPPs1/1r3S3/+p3GKSNL b RBNgp 77",
+        );
+        let original = position.to_sfen_owned();
+        let bad = parse_usi_move_for_color("5i5h", position.side_to_move()).unwrap();
+        let root_lines = vec![(bad, 100.0, vec![bad])];
+
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_mate_search_budgets(0, 1);
+        let rejected = ai.reject_mated_root_candidates(&mut position, &root_lines, None, None);
+
+        assert!(rejected.is_empty());
+        assert_eq!(1, ai.mate_unknown);
+        assert_eq!(0, ai.mate_rejected);
+        assert_eq!(original, position.to_sfen_owned());
+    }
+
+    #[test]
+    fn root_mate_probe_selects_proven_move_within_total_node_budget() {
+        let mut position = position_from_sfen_or_usi(
+            "7n1/4+R2s+L/p1p+Bppkp1/1p4p2/3g5/PP7/2P1PPPP1/1B2G2R1/LN1GK1SN1 b G2L2P2sn2p 55",
+        )
+        .unwrap();
+        let original = position.to_sfen_owned();
+        let expected = parse_usi_move_for_color("5b2b", position.side_to_move()).unwrap();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_emit_info(false);
+        ai.set_mate_search_budgets(8_192, 0);
+        ai.sennichite_detector.record_position(&position);
+
+        let report = ai.find_best_move_with_limits(
+            &mut position,
+            SearchLimits {
+                max_depth: 7,
+                time_limit_ms: None,
+                node_limit: Some(20_000),
+            },
+        );
+
+        assert_eq!(Some(expected), report.best_move);
+        assert_eq!(Some(f32::INFINITY), report.score);
+        assert_eq!(1, report.mate_proven);
+        assert!(report.mate_nodes <= 8_192);
+        assert!(report.nodes <= 20_000);
+        assert_eq!(original, position.to_sfen_owned());
     }
 
     #[test]

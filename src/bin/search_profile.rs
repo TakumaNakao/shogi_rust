@@ -2,7 +2,11 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use shogi_ai::ai::{SearchLimits, SearchStopReason, ShogiAI, DEFAULT_MAX_QUIESCENCE_CHECK_PLY};
+use shogi_ai::ai::{
+    SearchLimits, SearchStopReason, ShogiAI, DEFAULT_MATE_REPLY_CANDIDATES,
+    DEFAULT_MAX_QUIESCENCE_CHECK_PLY, DEFAULT_REPLY_MATE_NODE_BUDGET,
+    DEFAULT_ROOT_MATE_NODE_BUDGET,
+};
 use shogi_ai::evaluation::{Evaluator, HybridNnueEvaluator, SparseModel, TinyNnueModel};
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_lib::Position;
@@ -41,6 +45,12 @@ struct Args {
         help = "Diagnostic override for this profile run; does not change the production engine setting"
     )]
     qcheck_ply: u16,
+    #[arg(long, default_value_t = DEFAULT_ROOT_MATE_NODE_BUDGET)]
+    mate_root_nodes: u64,
+    #[arg(long, default_value_t = DEFAULT_REPLY_MATE_NODE_BUDGET)]
+    mate_reply_nodes: u64,
+    #[arg(long, default_value_t = DEFAULT_MATE_REPLY_CANDIDATES)]
+    mate_reply_candidates: usize,
 }
 
 struct SharedModelEvaluator<'a> {
@@ -129,6 +139,12 @@ where
     let mut min_completed_depth = u8::MAX;
     let mut max_completed_depth = 0u8;
     let mut max_quiescence_ply = 0u16;
+    let mut total_mate_nodes = 0u64;
+    let mut total_mate_probes = 0u64;
+    let mut total_mate_proven = 0u64;
+    let mut total_mate_unknown = 0u64;
+    let mut total_mate_rejected = 0u64;
+    let mut mate_nodes_per_sample = Vec::with_capacity(args.samples);
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -137,6 +153,8 @@ where
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
         ai.set_emit_info(false);
         ai.set_max_quiescence_check_ply(args.qcheck_ply);
+        ai.set_mate_search_budgets(args.mate_root_nodes, args.mate_reply_nodes);
+        ai.set_mate_reply_candidates(args.mate_reply_candidates);
         ai.sennichite_detector.record_position(&position);
         let report = ai.find_best_move_with_limits(
             &mut position,
@@ -175,6 +193,12 @@ where
         total_completed_depth += u64::from(report.completed_depth);
         min_completed_depth = min_completed_depth.min(report.completed_depth);
         max_completed_depth = max_completed_depth.max(report.completed_depth);
+        total_mate_nodes += report.mate_nodes;
+        total_mate_probes += report.mate_probes;
+        total_mate_proven += report.mate_proven;
+        total_mate_unknown += report.mate_unknown;
+        total_mate_rejected += report.mate_rejected;
+        mate_nodes_per_sample.push(report.mate_nodes);
     }
 
     let elapsed = start.elapsed();
@@ -188,6 +212,10 @@ where
     println!("model: {}", model_name);
     println!("samples: {}", args.samples);
     println!("qcheck ply: {}", args.qcheck_ply);
+    println!(
+        "mate root/reply nodes: {}/{}",
+        args.mate_root_nodes, args.mate_reply_nodes
+    );
     println!("total nodes: {}", total_nodes);
     println!("quiescence nodes: {}", total_quiescence_nodes);
     println!(
@@ -228,6 +256,14 @@ where
     );
     println!("q TT evasion cutoffs: {}", total_tt_evasion_cutoffs);
     println!("max quiescence ply: {}", max_quiescence_ply);
+    mate_nodes_per_sample.sort_unstable();
+    let mate_p95 = mate_nodes_per_sample[(mate_nodes_per_sample.len() - 1) * 95 / 100];
+    println!("mate nodes: {total_mate_nodes}");
+    println!("mate nodes p95: {mate_p95}");
+    println!("mate probes: {total_mate_probes}");
+    println!("mate proven: {total_mate_proven}");
+    println!("mate unknown: {total_mate_unknown}");
+    println!("mate rejected: {total_mate_rejected}");
     println!("in-check qnodes: {}", total_in_check_qnodes);
     println!(
         "negative SEE checks considered: {}",

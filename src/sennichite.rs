@@ -46,6 +46,14 @@ impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
         self.history.iter().filter(|&&h| h == target_hash).count() as u32
     }
 
+    pub fn prior_position_hashes(&self, current: &Position) -> Vec<u64> {
+        let mut hashes = self.history.iter().copied().collect::<Vec<_>>();
+        if hashes.last().copied() == Some(PositionHasher::calculate_hash(current)) {
+            hashes.pop();
+        }
+        hashes
+    }
+
     /// 特定の局面が千日手であるか（4回出現したか）をチェックします。
     pub fn check_sennichite(&self, position: &Position) -> SennichiteStatus {
         let count = self.get_position_count(position);
