@@ -341,6 +341,17 @@ fn play_game(
                     moves,
                 });
             }
+            SennichiteStatus::PerpetualCheckWin => {
+                return Ok(PlayedGame {
+                    result: if new_to_move {
+                        GameResult::NewWin
+                    } else {
+                        GameResult::BaselineWin
+                    },
+                    reason: GameEndReason::PerpetualCheckLoss,
+                    moves,
+                });
+            }
             SennichiteStatus::None => {}
         }
     }

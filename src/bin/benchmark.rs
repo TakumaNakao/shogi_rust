@@ -211,6 +211,16 @@ fn play_game(
                     moves,
                 };
             }
+            SennichiteStatus::PerpetualCheckWin => {
+                return PlayedGame {
+                    result: if new_to_move {
+                        GameResult::NewWin
+                    } else {
+                        GameResult::BaselineWin
+                    },
+                    moves,
+                };
+            }
             SennichiteStatus::None => {}
         }
     }

@@ -87,6 +87,10 @@ fn main() {
                         break;
                     }
                     SennichiteStatus::PerpetualCheckLoss => {
+                        println!("連続王手により対局終了（直前に着手した側の負け）。");
+                        break;
+                    }
+                    SennichiteStatus::PerpetualCheckWin => {
                         println!(
                             "連続王手により対局終了（{:?}の負け）。",
                             position.side_to_move()

@@ -19,6 +19,7 @@ const OVERWRITE_VALUE: f32 = 0.0;
 
 struct UsiEngine {
     position: Position,
+    game_history: Vec<Position>,
     stop_signal: Arc<AtomicBool>,
     eval_file_path: Option<PathBuf>,
     residual_eval_file_path: Option<PathBuf>,
@@ -28,10 +29,43 @@ struct UsiEngine {
     ai: Arc<Mutex<Option<ShogiAI<EngineEvaluator, HISTORY_CAPACITY>>>>,
 }
 
+fn replay_position_with_history(tokens: &[&str]) -> (Position, Vec<Position>) {
+    let moves_idx = tokens
+        .iter()
+        .position(|&token| token == "moves")
+        .unwrap_or(tokens.len());
+    let mut position = if tokens.get(1) == Some(&"sfen") {
+        let sfen = tokens[2..moves_idx].join(" ");
+        position_from_sfen_or_usi(&sfen).unwrap_or_else(Position::default)
+    } else {
+        Position::default()
+    };
+    let mut history = vec![position.clone()];
+
+    if moves_idx < tokens.len() {
+        for move_str in &tokens[moves_idx + 1..] {
+            let Some(mut mv) = parse_usi_move(move_str) else {
+                continue;
+            };
+            if let Move::Drop { piece, to } = mv {
+                mv = Move::Drop {
+                    piece: Piece::new(piece.piece_kind(), position.side_to_move()),
+                    to,
+                };
+            }
+            position.do_move(mv);
+            history.push(position.clone());
+        }
+    }
+    (position, history)
+}
+
 impl UsiEngine {
     fn new() -> Self {
+        let position = Position::default();
         UsiEngine {
-            position: Position::default(),
+            game_history: vec![position.clone()],
+            position,
             stop_signal: Arc::new(AtomicBool::new(false)),
             eval_file_path: None,
             residual_eval_file_path: None,
@@ -102,7 +136,8 @@ impl UsiEngine {
         match evaluator_result {
             Ok(evaluator) => {
                 let evaluator_name = evaluator.name();
-                let new_ai = ShogiAI::new(evaluator);
+                let mut new_ai = ShogiAI::new(evaluator);
+                new_ai.set_game_history(&self.game_history);
                 *self.ai.lock().unwrap() = Some(new_ai);
                 if let Some(residual_path) = &self.residual_eval_file_path {
                     eprintln!(
@@ -173,37 +208,20 @@ impl UsiEngine {
 
     fn handle_usinewgame(&mut self) {
         self.position = Position::default();
+        self.game_history.clear();
+        self.game_history.push(self.position.clone());
         if let Some(ai_instance) = self.ai.lock().unwrap().as_mut() {
             ai_instance.clear();
+            ai_instance.set_game_history(&self.game_history);
         }
     }
 
     fn handle_position(&mut self, tokens: &[&str]) {
-        self.position = if tokens.get(1) == Some(&"sfen") {
-            let moves_idx = tokens
-                .iter()
-                .position(|&s| s == "moves")
-                .unwrap_or(tokens.len());
-            let sfen = tokens[2..moves_idx].join(" ");
-            position_from_sfen_or_usi(&sfen).unwrap_or_else(Position::default)
-        } else {
-            Position::default()
-        };
-
-        if let Some(moves_idx) = tokens.iter().position(|&s| s == "moves") {
-            for move_str in &tokens[moves_idx + 1..] {
-                if let Some(mut mv) = parse_usi_move(move_str) {
-                    if let Move::Drop { piece, to } = mv {
-                        let colored_piece =
-                            Piece::new(piece.piece_kind(), self.position.side_to_move());
-                        mv = Move::Drop {
-                            piece: colored_piece,
-                            to,
-                        };
-                    }
-                    self.position.do_move(mv);
-                }
-            }
+        let (position, history) = replay_position_with_history(tokens);
+        self.position = position;
+        self.game_history = history;
+        if let Some(ai_instance) = self.ai.lock().unwrap().as_mut() {
+            ai_instance.set_game_history(&self.game_history);
         }
     }
 
@@ -366,5 +384,46 @@ mod tests {
         let limits = engine.parse_go_limits(&["go", "nodes", "99"]);
         assert_eq!(None, limits.time_limit_ms);
         assert_eq!(Some(99), limits.node_limit);
+    }
+
+    #[test]
+    fn position_command_replays_every_position_into_game_history() {
+        let tokens = [
+            "position",
+            "sfen",
+            "4k4/9/9/9/9/9/9/9/4K4",
+            "b",
+            "-",
+            "1",
+            "moves",
+            "5i5h",
+            "5a5b",
+            "5h5i",
+            "5b5a",
+            "5i5h",
+            "5a5b",
+            "5h5i",
+            "5b5a",
+            "5i5h",
+            "5a5b",
+            "5h5i",
+            "5b5a",
+        ];
+        let mut engine = UsiEngine::new();
+        engine.handle_position(&tokens);
+
+        assert_eq!(13, engine.game_history.len());
+        assert_eq!(
+            engine.game_history.last().unwrap().to_sfen_owned(),
+            engine.position.to_sfen_owned()
+        );
+        let mut detector = crate::sennichite::SennichiteDetector::<32>::new();
+        for position in &engine.game_history {
+            detector.record_position(position);
+        }
+        assert_eq!(
+            crate::sennichite::SennichiteStatus::Draw,
+            detector.check_sennichite_assuming_alternating_history(&engine.position)
+        );
     }
 }

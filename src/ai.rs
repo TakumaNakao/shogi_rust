@@ -39,6 +39,7 @@ pub const DEFAULT_MAX_QUIESCENCE_CHECK_PLY: u16 = 0;
 const TIME_CHECK_NODE_INTERVAL: u64 = 1024;
 const USI_SCORE_CP_LIMIT: i32 = 2_000;
 const USI_SCORE_CP_SOFT_START: i32 = 1_000;
+const RESOURCE_CYCLE_BASE_PENALTY: f32 = 1_000.0;
 type LegalMoves = ArrayVec<Move, 593>;
 
 fn move_total_order_key(mv: Move) -> (u8, u8, u8, u8) {
@@ -193,6 +194,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     negative_see_checks_considered: u64,
     negative_see_check_searches: u64,
     repetition_hits: u64,
+    resource_cycle_hits: u64,
     check_evasion_extensions: u64,
     aspiration_fail_lows: u64,
     aspiration_fail_highs: u64,
@@ -240,6 +242,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             negative_see_checks_considered: 0,
             negative_see_check_searches: 0,
             repetition_hits: 0,
+            resource_cycle_hits: 0,
             check_evasion_extensions: 0,
             aspiration_fail_lows: 0,
             aspiration_fail_highs: 0,
@@ -281,6 +284,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn set_stop_signal(&mut self, stop_signal: Option<Arc<AtomicBool>>) {
         self.stop_signal = stop_signal;
+    }
+
+    /// Replaces only the game-path state. Search heuristics and the evaluator are kept.
+    pub fn set_game_history(&mut self, positions: &[Position]) {
+        self.sennichite_detector.clear();
+        for position in positions {
+            self.sennichite_detector.record_position(position);
+        }
     }
 
     pub fn nodes_searched(&self) -> u64 {
@@ -445,6 +456,36 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         });
 
         (node_limit, soft_deadline)
+    }
+
+    /// Returns a score from the current side-to-move's perspective when the
+    /// just-recorded path is terminal for repetition or resource dominance.
+    fn recorded_path_score(&mut self, position: &Position) -> Option<f32> {
+        match self.is_sennichite_internal(position) {
+            SennichiteStatus::Draw => {
+                self.repetition_hits += 1;
+                return Some(0.0);
+            }
+            SennichiteStatus::PerpetualCheckLoss => {
+                self.repetition_hits += 1;
+                return Some(f32::INFINITY);
+            }
+            SennichiteStatus::PerpetualCheckWin => {
+                self.repetition_hits += 1;
+                return Some(f32::NEG_INFINITY);
+            }
+            SennichiteStatus::None => {}
+        }
+
+        let cycle = self.sennichite_detector.resource_cycle(position)?;
+        self.resource_cycle_hits += 1;
+        let penalty = RESOURCE_CYCLE_BASE_PENALTY + cycle.material_swing as f32;
+        let static_score = self.evaluator.evaluate(position);
+        Some(if cycle.loser == position.side_to_move() {
+            static_score - penalty
+        } else {
+            static_score + penalty
+        })
     }
 
     fn run_mate_probe(
@@ -735,14 +776,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             self.quiescence_moves_searched += 1;
             position.do_move(mv);
             self.sennichite_detector.record_position(position);
-            let sennichite_status = self.is_sennichite_internal(position);
-            if sennichite_status != SennichiteStatus::None {
-                self.repetition_hits += 1;
-            }
-            let score_result = match sennichite_status {
-                SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
-                SennichiteStatus::None => self.quiescence_search_internal(
+            let score_result = match self.recorded_path_score(position) {
+                Some(score) => Some((score, Vec::new())),
+                None => self.quiescence_search_internal(
                     position,
                     -beta,
                     -alpha,
@@ -851,14 +887,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             self.quiescence_moves_searched += 1;
             position.do_move(mv);
             self.sennichite_detector.record_position(position);
-            let sennichite_status = self.is_sennichite_internal(position);
-            if sennichite_status != SennichiteStatus::None {
-                self.repetition_hits += 1;
-            }
-            let score_result = match sennichite_status {
-                SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
-                SennichiteStatus::None => self.quiescence_search_internal(
+            let score_result = match self.recorded_path_score(position) {
+                Some(score) => Some((score, Vec::new())),
+                None => self.quiescence_search_internal(
                     position,
                     -beta,
                     -alpha,
@@ -991,14 +1022,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         for (mv, _) in sorted_moves {
             position.do_move(mv);
             self.sennichite_detector.record_position(position);
-            let sennichite_status = self.is_sennichite_internal(position);
-            if sennichite_status != SennichiteStatus::None {
-                self.repetition_hits += 1;
-            }
-            let search_result = match sennichite_status {
-                SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
-                SennichiteStatus::None => {
+            let search_result = match self.recorded_path_score(position) {
+                Some(score) => Some((score, Vec::new())),
+                None => {
                     let mut child_depth = depth - 1;
                     let mut child_extension_budget = check_evasion_extension_budget;
                     let mut child_precomputed_moves = None;
@@ -1119,6 +1145,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.negative_see_checks_considered = 0;
         self.negative_see_check_searches = 0;
         self.repetition_hits = 0;
+        self.resource_cycle_hits = 0;
         self.check_evasion_extensions = 0;
         self.aspiration_fail_lows = 0;
         self.aspiration_fail_highs = 0;
@@ -1224,15 +1251,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                 position.do_move(mv);
                 self.sennichite_detector.record_position(position);
-                let sennichite_status = self.is_sennichite_internal(position);
-                if sennichite_status != SennichiteStatus::None {
-                    self.repetition_hits += 1;
-                }
-
-                let eval_result = match sennichite_status {
-                    SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                    SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
-                    SennichiteStatus::None => {
+                let eval_result = match self.recorded_path_score(position) {
+                    Some(score) => Some((score, Vec::new())),
+                    None => {
                         if current_best_move_for_depth.is_some() && alpha.is_finite() {
                             match self.alpha_beta_search(position, depth - 1, -alpha - 1.0, -alpha)
                             {
@@ -1294,19 +1315,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                         position.do_move(mv);
                         self.sennichite_detector.record_position(position);
-                        let sennichite_status = self.is_sennichite_internal(position);
-                        if sennichite_status != SennichiteStatus::None {
-                            self.repetition_hits += 1;
-                        }
-
-                        let eval_result = match sennichite_status {
-                            SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                            SennichiteStatus::PerpetualCheckLoss => {
-                                Some((f32::INFINITY, Vec::new()))
-                            }
-                            SennichiteStatus::None => {
-                                self.alpha_beta_search(position, depth - 1, -beta, -alpha)
-                            }
+                        let eval_result = match self.recorded_path_score(position) {
+                            Some(score) => Some((score, Vec::new())),
+                            None => self.alpha_beta_search(position, depth - 1, -beta, -alpha),
                         };
                         self.sennichite_detector.unrecord_last_position();
                         position.undo_move(mv);
@@ -1419,7 +1430,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             negative_see_checks_considered: self.negative_see_checks_considered,
             negative_see_check_searches: self.negative_see_check_searches,
             repetition_hits: self.repetition_hits,
-            resource_cycle_hits: 0,
+            resource_cycle_hits: self.resource_cycle_hits,
             max_quiescence_ply: self.max_quiescence_ply,
             quiescence_evasion_cutoffs: self.quiescence_evasion_cutoffs,
             quiescence_tt_evasion_cutoffs: self.quiescence_tt_evasion_cutoffs,
@@ -1469,6 +1480,50 @@ mod tests {
         let mut moves = moves.into_iter().map(format_move_usi).collect::<Vec<_>>();
         moves.sort_unstable();
         moves
+    }
+
+    fn resource_cycle_before_final_move() -> (Position, Vec<Position>, Move) {
+        let mut position = position_from_sfen_or_usi(
+            "ln1g3nl/1k7/1spsprbpp/p2p2p2/1Pg1Pp1P1/P1PSG1P2/1KNP1P2P/2SGR4/L6NL w bp 74",
+        )
+        .expect("valid suite cycle");
+        let mut history = vec![position.clone()];
+        for text in ["P*8h", "8g8h", "B*8g"] {
+            let mv =
+                parse_usi_move_for_color(text, position.side_to_move()).expect("valid proof move");
+            assert!(
+                position.legal_moves().contains(&mv),
+                "illegal move {text}; legal={:?}",
+                sorted_usi(position.legal_moves())
+            );
+            position.do_move(mv);
+            history.push(position.clone());
+        }
+        let final_move =
+            parse_usi_move_for_color("8h8g", position.side_to_move()).expect("valid final move");
+        assert!(position.legal_moves().contains(&final_move));
+        (position, history, final_move)
+    }
+
+    fn qsearch_resource_cycle_before_final_move() -> (Position, Vec<Position>, Move) {
+        let mut position =
+            position_from_sfen_or_usi("k8/9/9/4G4/9/9/9/9/K8 w r 1").expect("valid qsearch cycle");
+        let mut history = vec![position.clone()];
+        for text in ["R*5e", "5d4d", "5e5d"] {
+            let mv =
+                parse_usi_move_for_color(text, position.side_to_move()).expect("valid proof move");
+            assert!(
+                position.legal_moves().contains(&mv),
+                "illegal move {text}; legal={:?}",
+                sorted_usi(position.legal_moves())
+            );
+            position.do_move(mv);
+            history.push(position.clone());
+        }
+        let final_move =
+            parse_usi_move_for_color("4d5d", position.side_to_move()).expect("valid final move");
+        assert!(position.legal_moves().contains(&final_move));
+        (position, history, final_move)
     }
 
     const EVASION_CLASS_SFENS: [&str; 5] = [
@@ -2097,6 +2152,59 @@ mod tests {
         assert_eq!(1, report.mate_proven);
         assert!(report.mate_nodes <= 8_192);
         assert!(report.nodes <= 20_000);
+        assert_eq!(original, position.to_sfen_owned());
+    }
+
+    #[test]
+    fn alpha_beta_scores_suite_resource_cycle_as_finite_material_loss() {
+        let (mut position, history, final_move) = resource_cycle_before_final_move();
+        let original = position.to_sfen_owned();
+        let mut only_final = LegalMoves::new();
+        only_final.push(final_move);
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_game_history(&history);
+
+        let (score, pv) = ai
+            .alpha_beta_search_internal(
+                &mut position,
+                1,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                1,
+                Some(only_final),
+            )
+            .expect("search completes");
+
+        assert!(score.is_finite());
+        assert_eq!(2_800.0, score);
+        assert_eq!(vec![final_move], pv);
+        assert_eq!(1, ai.resource_cycle_hits);
+        assert_eq!(original, position.to_sfen_owned());
+    }
+
+    #[test]
+    fn qsearch_scores_resource_cycle_and_counts_the_hit() {
+        let (mut position, history, final_move) = qsearch_resource_cycle_before_final_move();
+        let original = position.to_sfen_owned();
+        let mut only_final = LegalMoves::new();
+        only_final.push(final_move);
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_game_history(&history);
+
+        let (score, _) = ai
+            .quiescence_search_internal(
+                &mut position,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                Some(only_final),
+                EvasionMoveSource::Dedicated,
+                0,
+            )
+            .expect("qsearch completes");
+
+        assert!(score.is_finite());
+        assert_eq!(3_000.0, score);
+        assert_eq!(1, ai.resource_cycle_hits);
         assert_eq!(original, position.to_sfen_owned());
     }
 
