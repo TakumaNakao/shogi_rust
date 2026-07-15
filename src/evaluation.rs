@@ -3,7 +3,7 @@ use anyhow::{anyhow, Result};
 use rand::prelude::*;
 use rand_distr::Distribution;
 use rayon::prelude::*;
-use shogi_core::{Color, Piece, PieceKind, Square};
+use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use shogi_lib;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
@@ -124,6 +124,7 @@ pub struct HalfKpFeatures {
 #[derive(Debug, Clone, Copy)]
 struct HalfKpFixedFeatures {
     king_bucket: usize,
+    mirror: bool,
     features: [usize; 64],
     len: usize,
     material: f32,
@@ -149,6 +150,7 @@ pub struct HalfKpModel {
 pub struct HalfKpAccumulator {
     pub perspective: Color,
     pub king_bucket: usize,
+    pub mirror: bool,
     pub hidden: [f32; HALFKP_HIDDEN],
     pub material: f32,
 }
@@ -157,14 +159,16 @@ pub struct HalfKpAccumulator {
 pub struct HalfKpSearchContext {
     pub black: HalfKpAccumulator,
     pub white: HalfKpAccumulator,
-    black_features: HalfKpFixedFeatures,
-    white_features: HalfKpFixedFeatures,
-    history: Vec<(
-        HalfKpAccumulator,
-        HalfKpAccumulator,
-        HalfKpFixedFeatures,
-        HalfKpFixedFeatures,
-    )>,
+    history: Vec<(HalfKpAccumulator, HalfKpAccumulator)>,
+    pending: Option<HalfKpPendingMove>,
+}
+
+#[derive(Clone, Copy)]
+struct HalfKpPendingMove {
+    mv: Move,
+    moved: Option<Piece>,
+    captured: Option<Piece>,
+    hand_index: usize,
 }
 
 static BOARD_SQUARES: LazyLock<[Square; NUM_SQUARES]> = LazyLock::new(|| {
@@ -183,6 +187,13 @@ pub trait Evaluator {
         _context: &(dyn Any + Send),
     ) -> Option<f32> {
         None
+    }
+    fn prepare_context_move(
+        &self,
+        _context: &mut (dyn Any + Send),
+        _position: &shogi_lib::Position,
+        _mv: Move,
+    ) {
     }
     fn commit_context_move(
         &self,
@@ -566,6 +577,7 @@ fn extract_halfkp_features_fixed(
     }
     Some(HalfKpFixedFeatures {
         king_bucket,
+        mirror,
         features,
         len: unique,
         material,
@@ -582,6 +594,12 @@ pub fn extract_halfkp_features_for(
         features: fixed.features[..fixed.len].to_vec(),
         material: fixed.material,
     })
+}
+
+fn extract_halfkp_fixed_mirror(pos: &shogi_lib::Position, perspective: Color) -> bool {
+    extract_halfkp_features_fixed(pos, perspective)
+        .map(|features| features.mirror)
+        .unwrap_or(false)
 }
 
 fn read_u32_le(file: &mut File) -> Result<u32> {
@@ -745,6 +763,7 @@ impl HalfKpModel {
         Some(HalfKpAccumulator {
             perspective,
             king_bucket: extract_halfkp_features_for(pos, perspective)?.king_bucket,
+            mirror: extract_halfkp_fixed_mirror(pos, perspective),
             hidden,
             material,
         })
@@ -756,9 +775,8 @@ impl HalfKpModel {
         Some(HalfKpSearchContext {
             black: self.accumulator_from_fixed(&black_features),
             white: self.accumulator_from_fixed(&white_features),
-            black_features,
-            white_features,
             history: Vec::with_capacity(128),
+            pending: None,
         })
     }
 
@@ -773,6 +791,7 @@ impl HalfKpModel {
                 Color::White
             },
             king_bucket: features.king_bucket,
+            mirror: false,
             hidden,
             material: features.material,
         }
@@ -780,6 +799,7 @@ impl HalfKpModel {
 
     fn accumulator_from_fixed(&self, features: &HalfKpFixedFeatures) -> HalfKpAccumulator {
         let mut hidden = [0.0; HALFKP_HIDDEN];
+        hidden.copy_from_slice(&self.hidden_b);
         for &feature in &features.features[..features.len] {
             let base = feature * self.hidden;
             for h in 0..HALFKP_HIDDEN {
@@ -789,68 +809,133 @@ impl HalfKpModel {
         HalfKpAccumulator {
             perspective: Color::Black,
             king_bucket: features.king_bucket,
+            mirror: features.mirror,
             hidden,
             material: features.material,
         }
     }
 
-    pub fn update_search_context(&self, ctx: &mut HalfKpSearchContext, pos: &shogi_lib::Position) {
-        let old_black = ctx.black;
-        let old_white = ctx.white;
-        let old_bf = ctx.black_features;
-        let old_wf = ctx.white_features;
-        ctx.history.push((old_black, old_white, old_bf, old_wf));
-        let Some(black) = extract_halfkp_features_fixed(pos, Color::Black) else {
-            return;
+    pub fn prepare_search_context(
+        &self,
+        ctx: &mut HalfKpSearchContext,
+        pos: &shogi_lib::Position,
+        mv: Move,
+    ) {
+        let (moved, captured, hand_index) = match mv {
+            Move::Normal { from, to, .. } => {
+                let moved = pos.piece_at(from);
+                let captured = pos.piece_at(to);
+                let hand_index = captured
+                    .and_then(|piece| pos.hand(pos.side_to_move()).count(piece.piece_kind()))
+                    .unwrap_or(0) as usize;
+                (moved, captured, hand_index)
+            }
+            Move::Drop { piece, to: _ } => {
+                let count = pos
+                    .hand(piece.color())
+                    .count(piece.piece_kind())
+                    .unwrap_or(1);
+                (Some(piece), None, count.saturating_sub(1) as usize)
+            }
         };
-        let Some(white) = extract_halfkp_features_fixed(pos, Color::White) else {
-            return;
-        };
-        ctx.black = self.apply_feature_delta(&ctx.black, &old_bf, &black);
-        ctx.white = self.apply_feature_delta(&ctx.white, &old_wf, &white);
-        ctx.black_features = black;
-        ctx.white_features = white;
+        ctx.pending = Some(HalfKpPendingMove {
+            mv,
+            moved,
+            captured,
+            hand_index,
+        });
     }
 
-    fn apply_feature_delta(
+    pub fn commit_search_context_move(
         &self,
-        old_acc: &HalfKpAccumulator,
-        old: &HalfKpFixedFeatures,
-        new: &HalfKpFixedFeatures,
-    ) -> HalfKpAccumulator {
-        if old_acc.king_bucket != new.king_bucket {
-            return self.accumulator_from_fixed(new);
-        }
-        let mut acc = *old_acc;
-        let mut i = 0;
-        let mut j = 0;
-        while i < old.len || j < new.len {
-            match (old.features.get(i), new.features.get(j)) {
-                (Some(&a), Some(&b)) if a == b => {
-                    i += 1;
-                    j += 1;
+        ctx: &mut HalfKpSearchContext,
+        pos: &shogi_lib::Position,
+    ) {
+        let Some(pending) = ctx.pending.take() else {
+            return;
+        };
+        ctx.history.push((ctx.black, ctx.white));
+        Self::apply_move_to_accumulator(self, &mut ctx.black, &pending, pos);
+        Self::apply_move_to_accumulator(self, &mut ctx.white, &pending, pos);
+    }
+
+    fn apply_move_to_accumulator(
+        &self,
+        acc: &mut HalfKpAccumulator,
+        pending: &HalfKpPendingMove,
+        after: &shogi_lib::Position,
+    ) {
+        let Some(moved) = pending.moved else { return };
+        if let Move::Normal { from, to, promote } = pending.mv {
+            if moved.piece_kind() == PieceKind::King && moved.color() == acc.perspective {
+                if let Some(refreshed) = self.accumulator_for_position(after, acc.perspective) {
+                    *acc = refreshed;
                 }
-                (Some(&a), Some(&b)) if a < b => {
-                    self.add_feature_row_fixed(&mut acc, a, -1.0);
-                    i += 1;
-                }
-                (Some(_), Some(&b)) => {
-                    self.add_feature_row_fixed(&mut acc, b, 1.0);
-                    j += 1;
-                }
-                (Some(&a), None) => {
-                    self.add_feature_row_fixed(&mut acc, a, -1.0);
-                    i += 1;
-                }
-                (None, Some(&b)) => {
-                    self.add_feature_row_fixed(&mut acc, b, 1.0);
-                    j += 1;
-                }
-                (None, None) => break,
+                return;
+            }
+            self.add_piece_row(acc, moved, Some(from), 0, -1.0);
+            if let Some(captured) = pending.captured {
+                self.add_piece_row(acc, captured, Some(to), 0, -1.0);
+            }
+            if let Some(after_piece) = after.piece_at(to) {
+                self.add_piece_row(acc, after_piece, Some(to), 0, 1.0);
+            }
+            if let Some(captured) = pending.captured {
+                self.add_piece_row(
+                    acc,
+                    Piece::new(captured.piece_kind(), moved.color()),
+                    None,
+                    pending.hand_index,
+                    1.0,
+                );
+            }
+            let old_value = piece_kind_value(moved.piece_kind());
+            let new_value = after
+                .piece_at(to)
+                .map(|p| piece_kind_value(p.piece_kind()))
+                .unwrap_or(old_value);
+            let sign = if moved.color() == acc.perspective {
+                1.0
+            } else {
+                -1.0
+            };
+            acc.material += sign * (new_value - old_value);
+            if let Some(captured) = pending.captured {
+                acc.material += if moved.color() == acc.perspective {
+                    2.0
+                } else {
+                    -2.0
+                } * piece_kind_value(captured.piece_kind());
+            }
+            let _ = promote;
+        } else if let Move::Drop { piece, to } = pending.mv {
+            self.add_piece_row(acc, piece, None, pending.hand_index, -1.0);
+            if let Some(after_piece) = after.piece_at(to) {
+                self.add_piece_row(acc, after_piece, Some(to), 0, 1.0);
             }
         }
-        acc.material = new.material;
-        acc
+    }
+
+    fn add_piece_row(
+        &self,
+        acc: &mut HalfKpAccumulator,
+        piece: Piece,
+        square: Option<Square>,
+        hand_index: usize,
+        sign: f32,
+    ) {
+        if piece.piece_kind() == PieceKind::King
+            && piece.color() == acc.perspective
+            && square.is_some()
+        {
+            return;
+        }
+        if let Some(state) =
+            halfkp_piece_state(piece, square, hand_index, acc.perspective, acc.mirror)
+        {
+            let row = acc.king_bucket * HALFKP_PIECE_STATES + state;
+            self.add_feature_row_fixed(acc, row, sign);
+        }
     }
 
     fn add_feature_row_fixed(&self, acc: &mut HalfKpAccumulator, feature: usize, sign: f32) {
@@ -861,11 +946,9 @@ impl HalfKpModel {
     }
 
     pub fn undo_search_context(&self, ctx: &mut HalfKpSearchContext) {
-        if let Some((black, white, bf, wf)) = ctx.history.pop() {
+        if let Some((black, white)) = ctx.history.pop() {
             ctx.black = black;
             ctx.white = white;
-            ctx.black_features = bf;
-            ctx.white_features = wf;
         }
     }
 
@@ -1593,7 +1676,20 @@ impl Evaluator for EngineEvaluator {
     fn commit_context_move(&self, context: &mut (dyn Any + Send), position: &shogi_lib::Position) {
         if let EngineEvaluator::HalfKp(model) = self {
             if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
-                model.update_search_context(ctx, position);
+                model.commit_search_context_move(ctx, position);
+            }
+        }
+    }
+
+    fn prepare_context_move(
+        &self,
+        context: &mut (dyn Any + Send),
+        position: &shogi_lib::Position,
+        mv: Move,
+    ) {
+        if let EngineEvaluator::HalfKp(model) = self {
+            if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
+                model.prepare_search_context(ctx, position, mv);
             }
         }
     }
@@ -2060,5 +2156,46 @@ mod tests {
                 assert!((delta.material - refreshed.material).abs() < 1e-5);
             }
         }
+    }
+
+    #[test]
+    fn halfkp_search_context_move_matches_refresh() {
+        let position = shogi_lib::Position::default();
+        let mv = position.legal_moves()[0];
+        let mut after = position.clone();
+        after.do_move(mv);
+        let model = HalfKpModel {
+            hidden: HALFKP_HIDDEN,
+            target_scale: 1000.0,
+            feature_emb: vec![0.001; HALFKP_INPUTS * HALFKP_HIDDEN],
+            hidden_b: vec![0.25; HALFKP_HIDDEN],
+            out_w: vec![0.1; HALFKP_HIDDEN * 2 + 1],
+            out_b: 0.0,
+        };
+        let mut ctx = model.begin_search_context(&position).unwrap();
+        model.prepare_search_context(&mut ctx, &position, mv);
+        model.commit_search_context_move(&mut ctx, &after);
+        let black = model
+            .accumulator_for_position(&after, Color::Black)
+            .unwrap();
+        let white = model
+            .accumulator_for_position(&after, Color::White)
+            .unwrap();
+        for (a, b) in ctx.black.hidden.iter().zip(black.hidden.iter()) {
+            assert!((a - b).abs() < 1e-5, "black {} {}", a, b);
+        }
+        for (a, b) in ctx.white.hidden.iter().zip(white.hidden.iter()) {
+            assert!((a - b).abs() < 1e-5, "white {} {}", a, b);
+        }
+        model.undo_search_context(&mut ctx);
+        let root_black = model
+            .accumulator_for_position(&position, Color::Black)
+            .unwrap();
+        assert!(ctx
+            .black
+            .hidden
+            .iter()
+            .zip(root_black.hidden.iter())
+            .all(|(a, b)| (a - b).abs() < 1e-5));
     }
 }

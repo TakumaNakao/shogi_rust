@@ -135,6 +135,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     fn make_move(&mut self, position: &mut Position, mv: Move) {
+        if let Some(ctx) = self.eval_context.as_deref_mut() {
+            self.evaluator.prepare_context_move(ctx, position, mv);
+        }
         position.do_move(mv);
         if let Some(ctx) = self.eval_context.as_deref_mut() {
             self.evaluator.commit_context_move(ctx, position);
