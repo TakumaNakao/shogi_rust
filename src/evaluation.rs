@@ -92,6 +92,7 @@ pub const NNUE_NUM_FEATURES: usize = NNUE_NUM_BOARD_FEATURES + NNUE_NUM_HAND_FEA
 pub const HALFKP_KING_BUCKETS: usize = 5 * 9;
 pub const HALFKP_PIECE_STATES: usize = NUM_PIECE_STATES;
 pub const HALFKP_INPUTS: usize = HALFKP_KING_BUCKETS * HALFKP_PIECE_STATES;
+pub const HALFKP_HIDDEN: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct NnueFeatures {
@@ -139,7 +140,7 @@ pub struct HalfKpModel {
 pub struct HalfKpAccumulator {
     pub perspective: Color,
     pub king_bucket: usize,
-    pub hidden: Vec<f32>,
+    pub hidden: [f32; HALFKP_HIDDEN],
     pub material: f32,
 }
 
@@ -633,7 +634,7 @@ impl HalfKpModel {
         let piece_states = read_u32_le(&mut file)? as usize;
         let target_scale = read_f32_le(&mut file)?;
         if version != 1
-            || hidden == 0
+            || hidden != HALFKP_HIDDEN
             || inputs != HALFKP_INPUTS
             || buckets != HALFKP_KING_BUCKETS
             || piece_states != HALFKP_PIECE_STATES
@@ -676,7 +677,9 @@ impl HalfKpModel {
         pos: &shogi_lib::Position,
         perspective: Color,
     ) -> Option<HalfKpAccumulator> {
-        let (hidden, material) = self.fast_accumulator(pos, perspective)?;
+        let (hidden_vec, material) = self.fast_accumulator(pos, perspective)?;
+        let mut hidden = [0.0; HALFKP_HIDDEN];
+        hidden.copy_from_slice(&hidden_vec);
         Some(HalfKpAccumulator {
             perspective,
             king_bucket: extract_halfkp_features_for(pos, perspective)?.king_bucket,
@@ -1759,7 +1762,8 @@ mod tests {
         let mut file = File::create(&path).expect("create HalfKP test file");
         file.write_all(HalfKpModel::MAGIC).unwrap();
         file.write_all(&1u32.to_le_bytes()).unwrap();
-        file.write_all(&1u32.to_le_bytes()).unwrap();
+        file.write_all(&(HALFKP_HIDDEN as u32).to_le_bytes())
+            .unwrap();
         file.write_all(&(HALFKP_INPUTS as u32).to_le_bytes())
             .unwrap();
         file.write_all(&(HALFKP_KING_BUCKETS as u32).to_le_bytes())
@@ -1767,13 +1771,15 @@ mod tests {
         file.write_all(&(HALFKP_PIECE_STATES as u32).to_le_bytes())
             .unwrap();
         file.write_all(&1000.0f32.to_le_bytes()).unwrap();
-        for _ in 0..HALFKP_INPUTS {
+        for _ in 0..HALFKP_INPUTS * HALFKP_HIDDEN {
             file.write_all(&0.0f32.to_le_bytes()).unwrap();
         }
-        file.write_all(&0.0f32.to_le_bytes()).unwrap();
-        file.write_all(&0.0f32.to_le_bytes()).unwrap();
-        file.write_all(&0.0f32.to_le_bytes()).unwrap();
-        file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        for _ in 0..HALFKP_HIDDEN {
+            file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        }
+        for _ in 0..(HALFKP_HIDDEN * 2 + 1) {
+            file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        }
         file.write_all(&0.0f32.to_le_bytes()).unwrap();
         drop(file);
 
@@ -1788,7 +1794,7 @@ mod tests {
             .expect("white accumulator");
         let accumulated_score = model.evaluate_accumulators(&position, &black, &white);
         std::fs::remove_file(&path).ok();
-        assert_eq!(model.hidden, 1);
+        assert_eq!(model.hidden, HALFKP_HIDDEN);
         assert_eq!(score, 0.0);
         assert_eq!(score, accumulated_score);
     }
@@ -1805,13 +1811,13 @@ mod tests {
         after.do_move(mv);
 
         let model = HalfKpModel {
-            hidden: 2,
+            hidden: HALFKP_HIDDEN,
             target_scale: 1000.0,
-            feature_emb: (0..HALFKP_INPUTS * 2)
+            feature_emb: (0..HALFKP_INPUTS * HALFKP_HIDDEN)
                 .map(|i| (i as f32 % 13.0) * 0.001)
                 .collect(),
-            hidden_b: vec![0.25, 0.5],
-            out_w: vec![1.0, -0.5, 0.25, 0.75, 0.1],
+            hidden_b: vec![0.25; HALFKP_HIDDEN],
+            out_w: vec![0.1; HALFKP_HIDDEN * 2 + 1],
             out_b: 0.0,
         };
         for perspective in [Color::Black, Color::White] {
@@ -1821,8 +1827,10 @@ mod tests {
             let refreshed = model.accumulator_for_position(&after, perspective).unwrap();
             if delta.king_bucket == refreshed.king_bucket {
                 assert!(model.update_accumulator_from_positions(&mut delta, &position, &after));
-                assert_eq!(delta.hidden, refreshed.hidden);
-                assert_eq!(delta.material, refreshed.material);
+                for (actual, expected) in delta.hidden.iter().zip(refreshed.hidden.iter()) {
+                    assert!((actual - expected).abs() < 1e-5);
+                }
+                assert!((delta.material - refreshed.material).abs() < 1e-5);
             }
         }
     }
