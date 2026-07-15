@@ -87,6 +87,12 @@ pub const NNUE_NUM_BOARD_FEATURES: usize = NUM_BOARD_PIECE_KINDS * NUM_SQUARES *
 pub const NNUE_NUM_HAND_FEATURES: usize = NUM_HAND_PIECE_SLOTS_PER_PLAYER * 2;
 pub const NNUE_NUM_FEATURES: usize = NNUE_NUM_BOARD_FEATURES + NNUE_NUM_HAND_FEATURES;
 
+// Compact HalfKP feature space.  The king file is mirrored so equivalent
+// left/right positions share the same transformer rows.
+pub const HALFKP_KING_BUCKETS: usize = 5 * 9;
+pub const HALFKP_PIECE_STATES: usize = NUM_PIECE_STATES;
+pub const HALFKP_INPUTS: usize = HALFKP_KING_BUCKETS * HALFKP_PIECE_STATES;
+
 #[derive(Debug, Clone)]
 pub struct NnueFeatures {
     pub king_bucket: usize,
@@ -102,6 +108,24 @@ pub struct TinyNnueModel {
     king_emb: Vec<f32>,
     material_w: Vec<f32>,
     hidden_b: Vec<f32>,
+    out_w: Vec<f32>,
+    out_b: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct HalfKpFeatures {
+    pub king_bucket: usize,
+    pub features: Vec<usize>,
+    pub material: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct HalfKpModel {
+    pub hidden: usize,
+    pub target_scale: f32,
+    feature_emb: Vec<f32>,
+    hidden_b: Vec<f32>,
+    // STM accumulator, non-STM accumulator, material, tempo.
     out_w: Vec<f32>,
     out_b: f32,
 }
@@ -360,6 +384,130 @@ pub fn extract_nnue_features(pos: &shogi_lib::Position) -> Option<NnueFeatures> 
     })
 }
 
+fn halfkp_oriented_square(sq: Square, perspective: Color, mirror: bool) -> Square {
+    let oriented = if perspective == Color::Black {
+        sq
+    } else {
+        sq.flip()
+    };
+    if mirror {
+        Square::new(10 - oriented.file(), oriented.rank()).expect("mirrored square is valid")
+    } else {
+        oriented
+    }
+}
+
+fn halfkp_piece_state(
+    piece: Piece,
+    square: Option<Square>,
+    hand_index: usize,
+    perspective: Color,
+    mirror: bool,
+) -> Option<usize> {
+    let normalized_color = if piece.color() == perspective {
+        Color::Black
+    } else {
+        Color::White
+    };
+    let color_offset = if normalized_color == Color::Black {
+        0
+    } else {
+        1
+    };
+    if let Some(square) = square {
+        let square = halfkp_oriented_square(square, perspective, mirror);
+        let kind_index = board_kind_to_index(piece.piece_kind())?;
+        Some(
+            color_offset * NUM_BOARD_PIECE_KINDS * NUM_SQUARES
+                + kind_index * NUM_SQUARES
+                + (square.index() - 1) as usize,
+        )
+    } else {
+        let kind_offset = hand_kind_to_offset(piece.piece_kind())?;
+        Some(
+            NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2
+                + color_offset * NUM_HAND_PIECE_SLOTS_PER_PLAYER
+                + kind_offset
+                + hand_index,
+        )
+    }
+}
+
+/// Extract one perspective of the compact HalfKP representation.
+///
+/// The returned feature ids include the king bucket, so they can be summed
+/// directly into a feature-transformer accumulator.
+pub fn extract_halfkp_features_for(
+    pos: &shogi_lib::Position,
+    perspective: Color,
+) -> Option<HalfKpFeatures> {
+    let mut own_king = None;
+    let mut material = 0.0;
+    for &sq in BOARD_SQUARES.iter() {
+        if let Some(piece) = pos.piece_at(sq) {
+            let value = piece_kind_value(piece.piece_kind());
+            material += if piece.color() == perspective {
+                value
+            } else {
+                -value
+            };
+            if piece.piece_kind() == PieceKind::King && piece.color() == perspective {
+                own_king = Some(sq);
+            }
+        }
+    }
+    let own_king = own_king?;
+    let oriented_king = if perspective == Color::Black {
+        own_king
+    } else {
+        own_king.flip()
+    };
+    let mirror = oriented_king.file() > 5;
+    let oriented_king = halfkp_oriented_square(own_king, perspective, mirror);
+    let king_bucket = (oriented_king.file() as usize - 1) * 9 + (oriented_king.rank() as usize - 1);
+
+    let mut features = Vec::with_capacity(48);
+    for &sq in BOARD_SQUARES.iter() {
+        if let Some(piece) = pos.piece_at(sq) {
+            if piece.piece_kind() == PieceKind::King && piece.color() == perspective {
+                continue;
+            }
+            if let Some(state) = halfkp_piece_state(piece, Some(sq), 0, perspective, mirror) {
+                features.push(king_bucket * HALFKP_PIECE_STATES + state);
+            }
+        }
+    }
+    for color in [Color::Black, Color::White] {
+        for kind in ALL_HAND_PIECES {
+            let count = pos.hand(color).count(kind).unwrap_or(0);
+            let value = piece_kind_value(kind);
+            material += if color == perspective {
+                count as f32 * value
+            } else {
+                -(count as f32 * value)
+            };
+            for hand_index in 0..count {
+                if let Some(state) = halfkp_piece_state(
+                    Piece::new(kind, color),
+                    None,
+                    hand_index as usize,
+                    perspective,
+                    mirror,
+                ) {
+                    features.push(king_bucket * HALFKP_PIECE_STATES + state);
+                }
+            }
+        }
+    }
+    features.sort_unstable();
+    features.dedup();
+    Some(HalfKpFeatures {
+        king_bucket,
+        features,
+        material,
+    })
+}
+
 fn read_u32_le(file: &mut File) -> Result<u32> {
     let mut bytes = [0u8; 4];
     file.read_exact(&mut bytes)?;
@@ -451,6 +599,153 @@ impl TinyNnueModel {
         for (value, weight) in hidden.iter().zip(&self.out_w) {
             score += value.clamp(0.0, 1.0) * weight;
         }
+        score * self.target_scale
+    }
+}
+
+impl HalfKpModel {
+    pub const MAGIC: &'static [u8; 8] = b"HKP00001";
+
+    pub fn load(path: &Path) -> Result<Self> {
+        let mut file = File::open(path)?;
+        let mut magic = [0u8; 8];
+        file.read_exact(&mut magic)?;
+        if &magic != Self::MAGIC {
+            return Err(anyhow!("invalid HalfKP magic"));
+        }
+        let version = read_u32_le(&mut file)? as usize;
+        let hidden = read_u32_le(&mut file)? as usize;
+        let inputs = read_u32_le(&mut file)? as usize;
+        let buckets = read_u32_le(&mut file)? as usize;
+        let piece_states = read_u32_le(&mut file)? as usize;
+        let target_scale = read_f32_le(&mut file)?;
+        if version != 1
+            || hidden == 0
+            || inputs != HALFKP_INPUTS
+            || buckets != HALFKP_KING_BUCKETS
+            || piece_states != HALFKP_PIECE_STATES
+            || !target_scale.is_finite()
+            || target_scale <= 0.0
+        {
+            return Err(anyhow!("invalid HalfKP header"));
+        }
+        let feature_emb = read_f32_vec(&mut file, inputs * hidden)?;
+        let hidden_b = read_f32_vec(&mut file, hidden)?;
+        let out_w = read_f32_vec(&mut file, hidden * 2 + 1)?;
+        let out_b = read_f32_le(&mut file)?;
+        let mut trailing = [0u8; 1];
+        if file.read(&mut trailing)? != 0 {
+            return Err(anyhow!("trailing bytes in HalfKP file"));
+        }
+        Ok(Self {
+            hidden,
+            target_scale,
+            feature_emb,
+            hidden_b,
+            out_w,
+            out_b,
+        })
+    }
+
+    fn accumulator(&self, features: &HalfKpFeatures) -> Vec<f32> {
+        let mut acc = self.hidden_b.clone();
+        for &feature in &features.features {
+            let base = feature * self.hidden;
+            for h in 0..self.hidden {
+                acc[h] += self.feature_emb[base + h];
+            }
+        }
+        acc
+    }
+
+    fn fast_accumulator(
+        &self,
+        pos: &shogi_lib::Position,
+        perspective: Color,
+    ) -> Option<(Vec<f32>, f32)> {
+        let mut own_king = None;
+        let mut material = 0.0;
+        for &sq in BOARD_SQUARES.iter() {
+            if let Some(piece) = pos.piece_at(sq) {
+                let value = piece_kind_value(piece.piece_kind());
+                material += if piece.color() == perspective {
+                    value
+                } else {
+                    -value
+                };
+                if piece.piece_kind() == PieceKind::King && piece.color() == perspective {
+                    own_king = Some(sq);
+                }
+            }
+        }
+        let own_king = own_king?;
+        let oriented_king = if perspective == Color::Black {
+            own_king
+        } else {
+            own_king.flip()
+        };
+        let mirror = oriented_king.file() > 5;
+        let oriented_king = halfkp_oriented_square(own_king, perspective, mirror);
+        let king_bucket =
+            (oriented_king.file() as usize - 1) * 9 + (oriented_king.rank() as usize - 1);
+        let feature_base = king_bucket * HALFKP_PIECE_STATES;
+        let mut acc = self.hidden_b.clone();
+        let mut add_piece = |piece: Piece, square: Option<Square>, hand_index: usize| {
+            if piece.piece_kind() == PieceKind::King
+                && piece.color() == perspective
+                && square.is_some()
+            {
+                return;
+            }
+            let Some(state) = halfkp_piece_state(piece, square, hand_index, perspective, mirror)
+            else {
+                return;
+            };
+            let base = (feature_base + state) * self.hidden;
+            for h in 0..self.hidden {
+                acc[h] += self.feature_emb[base + h];
+            }
+        };
+        for &sq in BOARD_SQUARES.iter() {
+            if let Some(piece) = pos.piece_at(sq) {
+                add_piece(piece, Some(sq), 0);
+            }
+        }
+        for color in [Color::Black, Color::White] {
+            for kind in ALL_HAND_PIECES {
+                let count = pos.hand(color).count(kind).unwrap_or(0);
+                let value = piece_kind_value(kind);
+                material += if color == perspective {
+                    count as f32 * value
+                } else {
+                    -(count as f32 * value)
+                };
+                for hand_index in 0..count {
+                    add_piece(Piece::new(kind, color), None, hand_index as usize);
+                }
+            }
+        }
+        Some((acc, material))
+    }
+
+    pub fn predict_from_position(&self, pos: &shogi_lib::Position) -> f32 {
+        let Some((black_acc, black_material)) = self.fast_accumulator(pos, Color::Black) else {
+            return 0.0;
+        };
+        let Some((white_acc, white_material)) = self.fast_accumulator(pos, Color::White) else {
+            return 0.0;
+        };
+        let (stm_acc, nstm_acc, stm_material) = if pos.side_to_move() == Color::Black {
+            (&black_acc, &white_acc, black_material)
+        } else {
+            (&white_acc, &black_acc, white_material)
+        };
+        let mut score = self.out_b;
+        for h in 0..self.hidden {
+            score += stm_acc[h].clamp(0.0, 1.0) * self.out_w[h];
+            score += nstm_acc[h].clamp(0.0, 1.0) * self.out_w[self.hidden + h];
+        }
+        score += (stm_material / 1000.0) * self.out_w[self.hidden * 2];
         score * self.target_scale
     }
 }
@@ -943,6 +1238,7 @@ impl Evaluator for HybridNnueEvaluator {
 pub enum EngineEvaluator {
     Sparse(SparseModelEvaluator),
     TinyNnue(TinyNnueModel),
+    HalfKp(HalfKpModel),
     HybridNnue(HybridNnueEvaluator),
 }
 
@@ -955,6 +1251,8 @@ impl EngineEvaluator {
 
         if read == magic.len() && &magic == b"TNNUE001" {
             Ok(EngineEvaluator::TinyNnue(TinyNnueModel::load(path)?))
+        } else if read == magic.len() && &magic == HalfKpModel::MAGIC {
+            Ok(EngineEvaluator::HalfKp(HalfKpModel::load(path)?))
         } else {
             Ok(EngineEvaluator::Sparse(SparseModelEvaluator::new(
                 path,
@@ -967,6 +1265,7 @@ impl EngineEvaluator {
         match self {
             EngineEvaluator::Sparse(_) => "sparse",
             EngineEvaluator::TinyNnue(_) => "tiny-nnue",
+            EngineEvaluator::HalfKp(_) => "halfkp",
             EngineEvaluator::HybridNnue(_) => "hybrid-nnue",
         }
     }
@@ -977,6 +1276,7 @@ impl Evaluator for EngineEvaluator {
         match self {
             EngineEvaluator::Sparse(evaluator) => evaluator.evaluate(position),
             EngineEvaluator::TinyNnue(model) => model.predict_from_position(position),
+            EngineEvaluator::HalfKp(model) => model.predict_from_position(position),
             EngineEvaluator::HybridNnue(evaluator) => evaluator.evaluate(position),
         }
     }
@@ -1337,5 +1637,55 @@ mod tests {
 
         assert_eq!(model.hidden, 1);
         assert_eq!(score, 1250.0);
+    }
+
+    #[test]
+    fn halfkp_features_are_compact_and_sorted() {
+        let position = shogi_lib::Position::default();
+        for perspective in [Color::Black, Color::White] {
+            let features = extract_halfkp_features_for(&position, perspective)
+                .expect("initial position has both kings");
+            assert!(features.king_bucket < HALFKP_KING_BUCKETS);
+            assert!(!features.features.is_empty());
+            assert!(features
+                .features
+                .iter()
+                .all(|&feature| feature < HALFKP_INPUTS));
+            assert!(features.features.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+    }
+
+    #[test]
+    fn halfkp_model_loads_binary_and_evaluates() {
+        let path = std::env::temp_dir().join(format!(
+            "halfkp_model_loads_binary_and_evaluates_{}.bin",
+            std::process::id()
+        ));
+        let mut file = File::create(&path).expect("create HalfKP test file");
+        file.write_all(HalfKpModel::MAGIC).unwrap();
+        file.write_all(&1u32.to_le_bytes()).unwrap();
+        file.write_all(&1u32.to_le_bytes()).unwrap();
+        file.write_all(&(HALFKP_INPUTS as u32).to_le_bytes())
+            .unwrap();
+        file.write_all(&(HALFKP_KING_BUCKETS as u32).to_le_bytes())
+            .unwrap();
+        file.write_all(&(HALFKP_PIECE_STATES as u32).to_le_bytes())
+            .unwrap();
+        file.write_all(&1000.0f32.to_le_bytes()).unwrap();
+        for _ in 0..HALFKP_INPUTS {
+            file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        }
+        file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        drop(file);
+
+        let model = HalfKpModel::load(&path).expect("load HalfKP model");
+        let score = model.predict_from_position(&shogi_lib::Position::default());
+        std::fs::remove_file(&path).ok();
+        assert_eq!(model.hidden, 1);
+        assert_eq!(score, 0.0);
     }
 }

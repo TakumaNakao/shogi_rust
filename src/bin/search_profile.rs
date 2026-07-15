@@ -3,7 +3,9 @@ use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use shogi_ai::ai::ShogiAI;
-use shogi_ai::evaluation::{Evaluator, HybridNnueEvaluator, SparseModel, TinyNnueModel};
+use shogi_ai::evaluation::{
+    Evaluator, HalfKpModel, HybridNnueEvaluator, SparseModel, TinyNnueModel,
+};
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_lib::Position;
 use std::fs;
@@ -21,6 +23,8 @@ struct Args {
     nnue_weights: Option<PathBuf>,
     #[arg(long)]
     residual_nnue_weights: Option<PathBuf>,
+    #[arg(long)]
+    halfkp_weights: Option<PathBuf>,
     #[arg(long, default_value_t = 1.0)]
     residual_scale: f32,
     #[arg(long, default_value = "./taya36.sfen")]
@@ -60,6 +64,16 @@ struct SharedHybridNnueEvaluator<'a> {
 }
 
 impl Evaluator for SharedHybridNnueEvaluator<'_> {
+    fn evaluate(&self, position: &Position) -> f32 {
+        self.model.predict_from_position(position)
+    }
+}
+
+struct SharedHalfKpEvaluator<'a> {
+    model: &'a HalfKpModel,
+}
+
+impl Evaluator for SharedHalfKpEvaluator<'_> {
     fn evaluate(&self, position: &Position) -> f32 {
         self.model.predict_from_position(position)
     }
@@ -214,6 +228,12 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow!("failed to load hybrid evaluator: {e}"))?;
         run_profile::<SharedHybridNnueEvaluator<'_>, _>(&args, &positions, "hybrid-nnue", || {
             SharedHybridNnueEvaluator { model: &model }
+        })
+    } else if let Some(path) = &args.halfkp_weights {
+        let model = HalfKpModel::load(path)
+            .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
+        run_profile::<SharedHalfKpEvaluator<'_>, _>(&args, &positions, "halfkp", || {
+            SharedHalfKpEvaluator { model: &model }
         })
     } else if let Some(path) = &args.nnue_weights {
         let model = TinyNnueModel::load(path)

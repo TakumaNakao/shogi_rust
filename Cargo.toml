@@ -99,6 +99,10 @@ name = "dataset_build"
 path = "src/bin/dataset_build.rs"
 
 [[bin]]
+name = "halfkp_feature_dump"
+path = "src/bin/halfkp_feature_dump.rs"
+
+[[bin]]
 name = "mmto_balance_dataset"
 path = "src/bin/mmto_balance_dataset.rs"
 
