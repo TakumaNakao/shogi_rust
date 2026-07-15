@@ -130,6 +130,18 @@ pub struct HalfKpModel {
     out_b: f32,
 }
 
+/// Reusable feature-transformer state for one side's HalfKP perspective.
+///
+/// Search can retain one of these per side and refresh it after make/undo;
+/// the move-delta update is intentionally kept separate from the model so it
+/// can be tested without changing the Evaluator trait.
+#[derive(Debug, Clone)]
+pub struct HalfKpAccumulator {
+    pub perspective: Color,
+    pub hidden: Vec<f32>,
+    pub material: f32,
+}
+
 static BOARD_SQUARES: LazyLock<[Square; NUM_SQUARES]> = LazyLock::new(|| {
     std::array::from_fn(|i| Square::from_u8(i as u8 + 1).expect("valid board square"))
 });
@@ -658,6 +670,39 @@ impl HalfKpModel {
         acc
     }
 
+    pub fn accumulator_for_position(
+        &self,
+        pos: &shogi_lib::Position,
+        perspective: Color,
+    ) -> Option<HalfKpAccumulator> {
+        let (hidden, material) = self.fast_accumulator(pos, perspective)?;
+        Some(HalfKpAccumulator {
+            perspective,
+            hidden,
+            material,
+        })
+    }
+
+    pub fn evaluate_accumulators(
+        &self,
+        pos: &shogi_lib::Position,
+        black: &HalfKpAccumulator,
+        white: &HalfKpAccumulator,
+    ) -> f32 {
+        let (stm, nstm) = if pos.side_to_move() == Color::Black {
+            (black, white)
+        } else {
+            (white, black)
+        };
+        let mut score = self.out_b;
+        for h in 0..self.hidden {
+            score += stm.hidden[h].clamp(0.0, 1.0) * self.out_w[h];
+            score += nstm.hidden[h].clamp(0.0, 1.0) * self.out_w[self.hidden + h];
+        }
+        score += (stm.material / 1000.0) * self.out_w[self.hidden * 2];
+        score * self.target_scale
+    }
+
     fn fast_accumulator(
         &self,
         pos: &shogi_lib::Position,
@@ -729,24 +774,13 @@ impl HalfKpModel {
     }
 
     pub fn predict_from_position(&self, pos: &shogi_lib::Position) -> f32 {
-        let Some((black_acc, black_material)) = self.fast_accumulator(pos, Color::Black) else {
+        let Some(black) = self.accumulator_for_position(pos, Color::Black) else {
             return 0.0;
         };
-        let Some((white_acc, white_material)) = self.fast_accumulator(pos, Color::White) else {
+        let Some(white) = self.accumulator_for_position(pos, Color::White) else {
             return 0.0;
         };
-        let (stm_acc, nstm_acc, stm_material) = if pos.side_to_move() == Color::Black {
-            (&black_acc, &white_acc, black_material)
-        } else {
-            (&white_acc, &black_acc, white_material)
-        };
-        let mut score = self.out_b;
-        for h in 0..self.hidden {
-            score += stm_acc[h].clamp(0.0, 1.0) * self.out_w[h];
-            score += nstm_acc[h].clamp(0.0, 1.0) * self.out_w[self.hidden + h];
-        }
-        score += (stm_material / 1000.0) * self.out_w[self.hidden * 2];
-        score * self.target_scale
+        self.evaluate_accumulators(pos, &black, &white)
     }
 }
 
@@ -1683,9 +1717,18 @@ mod tests {
         drop(file);
 
         let model = HalfKpModel::load(&path).expect("load HalfKP model");
-        let score = model.predict_from_position(&shogi_lib::Position::default());
+        let position = shogi_lib::Position::default();
+        let score = model.predict_from_position(&position);
+        let black = model
+            .accumulator_for_position(&position, Color::Black)
+            .expect("black accumulator");
+        let white = model
+            .accumulator_for_position(&position, Color::White)
+            .expect("white accumulator");
+        let accumulated_score = model.evaluate_accumulators(&position, &black, &white);
         std::fs::remove_file(&path).ok();
         assert_eq!(model.hidden, 1);
         assert_eq!(score, 0.0);
+        assert_eq!(score, accumulated_score);
     }
 }
