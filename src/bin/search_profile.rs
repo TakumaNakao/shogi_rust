@@ -4,10 +4,12 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{
-    Evaluator, HalfKpModel, HybridNnueEvaluator, SparseModel, TinyNnueModel,
+    Evaluator, HalfKpModel, HalfKpSearchContext, HybridNnueEvaluator, SparseModel, TinyNnueModel,
 };
 use shogi_ai::utils::position_from_sfen_or_usi;
+use shogi_core::Move;
 use shogi_lib::Position;
+use std::any::Any;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -76,6 +78,36 @@ struct SharedHalfKpEvaluator<'a> {
 impl Evaluator for SharedHalfKpEvaluator<'_> {
     fn evaluate(&self, position: &Position) -> f32 {
         self.model.predict_from_position(position)
+    }
+
+    fn begin_context(&self, position: &Position) -> Option<Box<dyn Any + Send>> {
+        self.model
+            .begin_search_context(position)
+            .map(|ctx| Box::new(ctx) as Box<dyn Any + Send>)
+    }
+
+    fn evaluate_context(&self, position: &Position, context: &(dyn Any + Send)) -> Option<f32> {
+        context
+            .downcast_ref::<HalfKpSearchContext>()
+            .map(|ctx| self.model.evaluate_search_context(position, ctx))
+    }
+
+    fn prepare_context_move(&self, context: &mut (dyn Any + Send), position: &Position, mv: Move) {
+        if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
+            self.model.prepare_search_context(ctx, position, mv);
+        }
+    }
+
+    fn commit_context_move(&self, context: &mut (dyn Any + Send), position: &Position) {
+        if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
+            self.model.commit_search_context_move(ctx, position);
+        }
+    }
+
+    fn undo_context_move(&self, context: &mut (dyn Any + Send)) {
+        if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
+            self.model.undo_search_context(ctx);
+        }
     }
 }
 
