@@ -138,6 +138,7 @@ pub struct HalfKpModel {
 #[derive(Debug, Clone)]
 pub struct HalfKpAccumulator {
     pub perspective: Color,
+    pub king_bucket: usize,
     pub hidden: Vec<f32>,
     pub material: f32,
 }
@@ -678,9 +679,69 @@ impl HalfKpModel {
         let (hidden, material) = self.fast_accumulator(pos, perspective)?;
         Some(HalfKpAccumulator {
             perspective,
+            king_bucket: extract_halfkp_features_for(pos, perspective)?.king_bucket,
             hidden,
             material,
         })
+    }
+
+    /// Apply the feature-row delta between two adjacent positions.
+    ///
+    /// This is the correctness-first bridge to search integration: callers
+    /// keep the previous accumulator and pass the pre/post move positions.
+    /// Only rows whose occupancy changed are touched; no network output is
+    /// recomputed here.
+    pub fn update_accumulator_from_positions(
+        &self,
+        accumulator: &mut HalfKpAccumulator,
+        before: &shogi_lib::Position,
+        after: &shogi_lib::Position,
+    ) -> bool {
+        let Some(old) = extract_halfkp_features_for(before, accumulator.perspective) else {
+            return false;
+        };
+        let Some(new) = extract_halfkp_features_for(after, accumulator.perspective) else {
+            return false;
+        };
+        if accumulator.king_bucket != old.king_bucket || old.king_bucket != new.king_bucket {
+            return false;
+        }
+        let mut i = 0;
+        let mut j = 0;
+        while i < old.features.len() || j < new.features.len() {
+            match (old.features.get(i), new.features.get(j)) {
+                (Some(&a), Some(&b)) if a == b => {
+                    i += 1;
+                    j += 1;
+                }
+                (Some(&a), Some(&b)) if a < b => {
+                    self.add_feature_row(accumulator, a, -1.0);
+                    i += 1;
+                }
+                (Some(_), Some(&b)) => {
+                    self.add_feature_row(accumulator, b, 1.0);
+                    j += 1;
+                }
+                (Some(&a), None) => {
+                    self.add_feature_row(accumulator, a, -1.0);
+                    i += 1;
+                }
+                (None, Some(&b)) => {
+                    self.add_feature_row(accumulator, b, 1.0);
+                    j += 1;
+                }
+                (None, None) => break,
+            }
+        }
+        accumulator.material += new.material - old.material;
+        true
+    }
+
+    fn add_feature_row(&self, accumulator: &mut HalfKpAccumulator, feature: usize, sign: f32) {
+        let base = feature * self.hidden;
+        for h in 0..self.hidden {
+            accumulator.hidden[h] += sign * self.feature_emb[base + h];
+        }
     }
 
     pub fn evaluate_accumulators(
@@ -1730,5 +1791,39 @@ mod tests {
         assert_eq!(model.hidden, 1);
         assert_eq!(score, 0.0);
         assert_eq!(score, accumulated_score);
+    }
+
+    #[test]
+    fn halfkp_accumulator_feature_delta_matches_refresh() {
+        let position = shogi_lib::Position::default();
+        let mv = position
+            .legal_moves()
+            .into_iter()
+            .find(|mv| !matches!(mv, shogi_core::Move::Normal { from, .. } if from.index() == 0))
+            .expect("initial position has a legal move");
+        let mut after = position.clone();
+        after.do_move(mv);
+
+        let model = HalfKpModel {
+            hidden: 2,
+            target_scale: 1000.0,
+            feature_emb: (0..HALFKP_INPUTS * 2)
+                .map(|i| (i as f32 % 13.0) * 0.001)
+                .collect(),
+            hidden_b: vec![0.25, 0.5],
+            out_w: vec![1.0, -0.5, 0.25, 0.75, 0.1],
+            out_b: 0.0,
+        };
+        for perspective in [Color::Black, Color::White] {
+            let mut delta = model
+                .accumulator_for_position(&position, perspective)
+                .unwrap();
+            let refreshed = model.accumulator_for_position(&after, perspective).unwrap();
+            if delta.king_bucket == refreshed.king_bucket {
+                assert!(model.update_accumulator_from_positions(&mut delta, &position, &after));
+                assert_eq!(delta.hidden, refreshed.hidden);
+                assert_eq!(delta.material, refreshed.material);
+            }
+        }
     }
 }
