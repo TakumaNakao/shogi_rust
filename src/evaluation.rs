@@ -121,6 +121,14 @@ pub struct HalfKpFeatures {
     pub material: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct HalfKpFixedFeatures {
+    king_bucket: usize,
+    features: [usize; 64],
+    len: usize,
+    material: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct HalfKpModel {
     pub hidden: usize,
@@ -149,9 +157,14 @@ pub struct HalfKpAccumulator {
 pub struct HalfKpSearchContext {
     pub black: HalfKpAccumulator,
     pub white: HalfKpAccumulator,
-    black_features: Vec<usize>,
-    white_features: Vec<usize>,
-    history: Vec<(HalfKpAccumulator, HalfKpAccumulator, Vec<usize>, Vec<usize>)>,
+    black_features: HalfKpFixedFeatures,
+    white_features: HalfKpFixedFeatures,
+    history: Vec<(
+        HalfKpAccumulator,
+        HalfKpAccumulator,
+        HalfKpFixedFeatures,
+        HalfKpFixedFeatures,
+    )>,
 }
 
 static BOARD_SQUARES: LazyLock<[Square; NUM_SQUARES]> = LazyLock::new(|| {
@@ -478,10 +491,10 @@ fn halfkp_piece_state(
 ///
 /// The returned feature ids include the king bucket, so they can be summed
 /// directly into a feature-transformer accumulator.
-pub fn extract_halfkp_features_for(
+fn extract_halfkp_features_fixed(
     pos: &shogi_lib::Position,
     perspective: Color,
-) -> Option<HalfKpFeatures> {
+) -> Option<HalfKpFixedFeatures> {
     let mut own_king = None;
     let mut material = 0.0;
     for &sq in BOARD_SQUARES.iter() {
@@ -507,14 +520,16 @@ pub fn extract_halfkp_features_for(
     let oriented_king = halfkp_oriented_square(own_king, perspective, mirror);
     let king_bucket = (oriented_king.file() as usize - 1) * 9 + (oriented_king.rank() as usize - 1);
 
-    let mut features = Vec::with_capacity(48);
+    let mut features = [0usize; 64];
+    let mut len = 0;
     for &sq in BOARD_SQUARES.iter() {
         if let Some(piece) = pos.piece_at(sq) {
             if piece.piece_kind() == PieceKind::King && piece.color() == perspective {
                 continue;
             }
             if let Some(state) = halfkp_piece_state(piece, Some(sq), 0, perspective, mirror) {
-                features.push(king_bucket * HALFKP_PIECE_STATES + state);
+                features[len] = king_bucket * HALFKP_PIECE_STATES + state;
+                len += 1;
             }
         }
     }
@@ -535,17 +550,37 @@ pub fn extract_halfkp_features_for(
                     perspective,
                     mirror,
                 ) {
-                    features.push(king_bucket * HALFKP_PIECE_STATES + state);
+                    features[len] = king_bucket * HALFKP_PIECE_STATES + state;
+                    len += 1;
                 }
             }
         }
     }
-    features.sort_unstable();
-    features.dedup();
-    Some(HalfKpFeatures {
+    features[..len].sort_unstable();
+    let mut unique = 0;
+    for i in 0..len {
+        if unique == 0 || features[i] != features[unique - 1] {
+            features[unique] = features[i];
+            unique += 1;
+        }
+    }
+    Some(HalfKpFixedFeatures {
         king_bucket,
         features,
+        len: unique,
         material,
+    })
+}
+
+pub fn extract_halfkp_features_for(
+    pos: &shogi_lib::Position,
+    perspective: Color,
+) -> Option<HalfKpFeatures> {
+    let fixed = extract_halfkp_features_fixed(pos, perspective)?;
+    Some(HalfKpFeatures {
+        king_bucket: fixed.king_bucket,
+        features: fixed.features[..fixed.len].to_vec(),
+        material: fixed.material,
     })
 }
 
@@ -716,13 +751,13 @@ impl HalfKpModel {
     }
 
     pub fn begin_search_context(&self, pos: &shogi_lib::Position) -> Option<HalfKpSearchContext> {
-        let black_features = extract_halfkp_features_for(pos, Color::Black)?;
-        let white_features = extract_halfkp_features_for(pos, Color::White)?;
+        let black_features = extract_halfkp_features_fixed(pos, Color::Black)?;
+        let white_features = extract_halfkp_features_fixed(pos, Color::White)?;
         Some(HalfKpSearchContext {
-            black: self.accumulator_from_features(&black_features),
-            white: self.accumulator_from_features(&white_features),
-            black_features: black_features.features,
-            white_features: white_features.features,
+            black: self.accumulator_from_fixed(&black_features),
+            white: self.accumulator_from_fixed(&white_features),
+            black_features,
+            white_features,
             history: Vec::with_capacity(128),
         })
     }
@@ -743,39 +778,54 @@ impl HalfKpModel {
         }
     }
 
+    fn accumulator_from_fixed(&self, features: &HalfKpFixedFeatures) -> HalfKpAccumulator {
+        let mut hidden = [0.0; HALFKP_HIDDEN];
+        for &feature in &features.features[..features.len] {
+            let base = feature * self.hidden;
+            for h in 0..HALFKP_HIDDEN {
+                hidden[h] += self.feature_emb[base + h];
+            }
+        }
+        HalfKpAccumulator {
+            perspective: Color::Black,
+            king_bucket: features.king_bucket,
+            hidden,
+            material: features.material,
+        }
+    }
+
     pub fn update_search_context(&self, ctx: &mut HalfKpSearchContext, pos: &shogi_lib::Position) {
-        let old_black = ctx.black.clone();
-        let old_white = ctx.white.clone();
-        let old_bf = std::mem::take(&mut ctx.black_features);
-        let old_wf = std::mem::take(&mut ctx.white_features);
-        ctx.history
-            .push((old_black, old_white, old_bf.clone(), old_wf.clone()));
-        let Some(black) = extract_halfkp_features_for(pos, Color::Black) else {
+        let old_black = ctx.black;
+        let old_white = ctx.white;
+        let old_bf = ctx.black_features;
+        let old_wf = ctx.white_features;
+        ctx.history.push((old_black, old_white, old_bf, old_wf));
+        let Some(black) = extract_halfkp_features_fixed(pos, Color::Black) else {
             return;
         };
-        let Some(white) = extract_halfkp_features_for(pos, Color::White) else {
+        let Some(white) = extract_halfkp_features_fixed(pos, Color::White) else {
             return;
         };
         ctx.black = self.apply_feature_delta(&ctx.black, &old_bf, &black);
         ctx.white = self.apply_feature_delta(&ctx.white, &old_wf, &white);
-        ctx.black_features = black.features;
-        ctx.white_features = white.features;
+        ctx.black_features = black;
+        ctx.white_features = white;
     }
 
     fn apply_feature_delta(
         &self,
         old_acc: &HalfKpAccumulator,
-        old_features: &[usize],
-        new: &HalfKpFeatures,
+        old: &HalfKpFixedFeatures,
+        new: &HalfKpFixedFeatures,
     ) -> HalfKpAccumulator {
         if old_acc.king_bucket != new.king_bucket {
-            return self.accumulator_from_features(new);
+            return self.accumulator_from_fixed(new);
         }
         let mut acc = *old_acc;
         let mut i = 0;
         let mut j = 0;
-        while i < old_features.len() || j < new.features.len() {
-            match (old_features.get(i), new.features.get(j)) {
+        while i < old.len || j < new.len {
+            match (old.features.get(i), new.features.get(j)) {
                 (Some(&a), Some(&b)) if a == b => {
                     i += 1;
                     j += 1;
