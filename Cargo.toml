@@ -103,6 +103,10 @@ name = "halfkp_feature_dump"
 path = "src/bin/halfkp_feature_dump.rs"
 
 [[bin]]
+name = "halfkp_trace_bench"
+path = "src/bin/halfkp_trace_bench.rs"
+
+[[bin]]
 name = "mmto_balance_dataset"
 path = "src/bin/mmto_balance_dataset.rs"
 

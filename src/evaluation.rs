@@ -46,6 +46,18 @@ fn piece_kind_value(kind: PieceKind) -> f32 {
     }
 }
 
+fn unpromoted_kind(kind: PieceKind) -> PieceKind {
+    match kind {
+        PieceKind::ProPawn => PieceKind::Pawn,
+        PieceKind::ProLance => PieceKind::Lance,
+        PieceKind::ProKnight => PieceKind::Knight,
+        PieceKind::ProSilver => PieceKind::Silver,
+        PieceKind::ProBishop => PieceKind::Bishop,
+        PieceKind::ProRook => PieceKind::Rook,
+        other => other,
+    }
+}
+
 // --- Public Constants for KPP Feature Space ---
 pub const NUM_SQUARES: usize = 81;
 pub const NUM_BOARD_PIECE_KINDS: usize = 14;
@@ -773,8 +785,8 @@ impl HalfKpModel {
         let black_features = extract_halfkp_features_fixed(pos, Color::Black)?;
         let white_features = extract_halfkp_features_fixed(pos, Color::White)?;
         Some(HalfKpSearchContext {
-            black: self.accumulator_from_fixed(&black_features),
-            white: self.accumulator_from_fixed(&white_features),
+            black: self.accumulator_from_fixed(&black_features, Color::Black),
+            white: self.accumulator_from_fixed(&white_features, Color::White),
             history: Vec::with_capacity(128),
             pending: None,
         })
@@ -797,7 +809,11 @@ impl HalfKpModel {
         }
     }
 
-    fn accumulator_from_fixed(&self, features: &HalfKpFixedFeatures) -> HalfKpAccumulator {
+    fn accumulator_from_fixed(
+        &self,
+        features: &HalfKpFixedFeatures,
+        perspective: Color,
+    ) -> HalfKpAccumulator {
         let mut hidden = [0.0; HALFKP_HIDDEN];
         hidden.copy_from_slice(&self.hidden_b);
         for &feature in &features.features[..features.len] {
@@ -807,7 +823,7 @@ impl HalfKpModel {
             }
         }
         HalfKpAccumulator {
-            perspective: Color::Black,
+            perspective,
             king_bucket: features.king_bucket,
             mirror: features.mirror,
             hidden,
@@ -826,7 +842,8 @@ impl HalfKpModel {
                 let moved = pos.piece_at(from);
                 let captured = pos.piece_at(to);
                 let hand_index = captured
-                    .and_then(|piece| pos.hand(pos.side_to_move()).count(piece.piece_kind()))
+                    .map(|piece| unpromoted_kind(piece.piece_kind()))
+                    .and_then(|kind| pos.hand(pos.side_to_move()).count(kind))
                     .unwrap_or(0) as usize;
                 (moved, captured, hand_index)
             }
@@ -883,7 +900,7 @@ impl HalfKpModel {
             if let Some(captured) = pending.captured {
                 self.add_piece_row(
                     acc,
-                    Piece::new(captured.piece_kind(), moved.color()),
+                    Piece::new(unpromoted_kind(captured.piece_kind()), moved.color()),
                     None,
                     pending.hand_index,
                     1.0,
@@ -902,10 +919,11 @@ impl HalfKpModel {
             acc.material += sign * (new_value - old_value);
             if let Some(captured) = pending.captured {
                 acc.material += if moved.color() == acc.perspective {
-                    2.0
+                    1.0
                 } else {
-                    -2.0
-                } * piece_kind_value(captured.piece_kind());
+                    -1.0
+                } * (piece_kind_value(captured.piece_kind())
+                    + piece_kind_value(unpromoted_kind(captured.piece_kind())));
             }
             let _ = promote;
         } else if let Move::Drop { piece, to } = pending.mv {
@@ -2167,9 +2185,13 @@ mod tests {
         let model = HalfKpModel {
             hidden: HALFKP_HIDDEN,
             target_scale: 1000.0,
-            feature_emb: vec![0.001; HALFKP_INPUTS * HALFKP_HIDDEN],
-            hidden_b: vec![0.25; HALFKP_HIDDEN],
-            out_w: vec![0.1; HALFKP_HIDDEN * 2 + 1],
+            feature_emb: (0..HALFKP_INPUTS * HALFKP_HIDDEN)
+                .map(|i| ((i % 97) as f32) * 0.0001)
+                .collect(),
+            hidden_b: (0..HALFKP_HIDDEN).map(|i| i as f32 * 0.001).collect(),
+            out_w: (0..HALFKP_HIDDEN * 2 + 1)
+                .map(|i| i as f32 * 0.01)
+                .collect(),
             out_b: 0.0,
         };
         let mut ctx = model.begin_search_context(&position).unwrap();
