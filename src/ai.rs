@@ -6,6 +6,7 @@ use crate::utils::{format_move_usi, get_piece_value};
 use arrayvec::ArrayVec;
 use shogi_core::Move;
 use shogi_lib::Position;
+use std::any::Any;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,6 +90,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     emit_info: bool,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
+    eval_context: Option<Box<dyn Any + Send>>,
 }
 
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
@@ -117,6 +119,32 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             emit_info: true,
             search_generation: 0,
             stop_signal: None,
+            eval_context: None,
+        }
+    }
+
+    fn begin_eval_context(&mut self, position: &Position) {
+        self.eval_context = self.evaluator.begin_context(position);
+    }
+
+    fn evaluate_position(&self, position: &Position) -> f32 {
+        self.eval_context
+            .as_deref()
+            .and_then(|ctx| self.evaluator.evaluate_context(position, ctx))
+            .unwrap_or_else(|| self.evaluator.evaluate(position))
+    }
+
+    fn make_move(&mut self, position: &mut Position, mv: Move) {
+        position.do_move(mv);
+        if let Some(ctx) = self.eval_context.as_deref_mut() {
+            self.evaluator.commit_context_move(ctx, position);
+        }
+    }
+
+    fn undo_move(&mut self, position: &mut Position, mv: Move) {
+        position.undo_move(mv);
+        if let Some(ctx) = self.eval_context.as_deref_mut() {
+            self.evaluator.undo_context_move(ctx);
         }
     }
 
@@ -296,7 +324,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
 
-        let stand_pat_score = self.evaluator.evaluate(position);
+        let stand_pat_score = self.evaluate_position(position);
         if stand_pat_score >= beta {
             return Some((beta, Vec::new()));
         }
@@ -332,7 +360,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
 
             self.quiescence_moves_searched += 1;
-            position.do_move(mv);
+            self.make_move(position, mv);
             self.sennichite_detector.record_position(position);
             let sennichite_status = self.is_sennichite_internal(position);
             let score_result = match sennichite_status {
@@ -343,7 +371,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 }
             };
             self.sennichite_detector.unrecord_last_position();
-            position.undo_move(mv);
+            self.undo_move(position, mv);
 
             if let Some((current_score, _)) = score_result {
                 let negated_score = -current_score;
@@ -368,6 +396,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         alpha: f32,
         beta: f32,
     ) -> Option<(f32, Vec<Move>)> {
+        if self.eval_context.is_none() {
+            self.begin_eval_context(position);
+        }
         self.alpha_beta_search_internal(position, depth, alpha, beta, 1, None)
     }
 
@@ -440,7 +471,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let mut node_type = NodeType::UpperBound;
 
         for (mv, _) in sorted_moves {
-            position.do_move(mv);
+            self.make_move(position, mv);
             self.sennichite_detector.record_position(position);
             let sennichite_status = self.is_sennichite_internal(position);
             let search_result = match sennichite_status {
@@ -470,7 +501,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 }
             };
             self.sennichite_detector.unrecord_last_position();
-            position.undo_move(mv);
+            self.undo_move(position, mv);
 
             if let Some((score, pv)) = search_result {
                 let current_score = -score;
@@ -523,6 +554,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         max_depth: u8,
         time_limit_ms: Option<u64>,
     ) -> Option<Move> {
+        self.begin_eval_context(position);
         if self.transposition_table.len() > TRANSPOSITION_TABLE_MAX_ENTRIES {
             self.transposition_table.clear();
         }
@@ -596,7 +628,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     break;
                 }
 
-                position.do_move(mv);
+                self.make_move(position, mv);
                 self.sennichite_detector.record_position(position);
                 let sennichite_status = self.is_sennichite_internal(position);
 
@@ -618,7 +650,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     }
                 };
                 self.sennichite_detector.unrecord_last_position();
-                position.undo_move(mv);
+                self.undo_move(position, mv);
 
                 if let Some((eval, pv)) = eval_result {
                     let current_eval = -eval;
@@ -659,7 +691,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                             break;
                         }
 
-                        position.do_move(mv);
+                        self.make_move(position, mv);
                         self.sennichite_detector.record_position(position);
                         let sennichite_status = self.is_sennichite_internal(position);
 
@@ -673,7 +705,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                             }
                         };
                         self.sennichite_detector.unrecord_last_position();
-                        position.undo_move(mv);
+                        self.undo_move(position, mv);
 
                         if let Some((eval, pv)) = eval_result {
                             let current_eval = -eval;

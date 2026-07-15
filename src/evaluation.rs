@@ -5,6 +5,7 @@ use rand_distr::Distribution;
 use rayon::prelude::*;
 use shogi_core::{Color, Piece, PieceKind, Square};
 use shogi_lib;
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -136,12 +137,21 @@ pub struct HalfKpModel {
 /// Search can retain one of these per side and refresh it after make/undo;
 /// the move-delta update is intentionally kept separate from the model so it
 /// can be tested without changing the Evaluator trait.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct HalfKpAccumulator {
     pub perspective: Color,
     pub king_bucket: usize,
     pub hidden: [f32; HALFKP_HIDDEN],
     pub material: f32,
+}
+
+#[derive(Clone)]
+pub struct HalfKpSearchContext {
+    pub black: HalfKpAccumulator,
+    pub white: HalfKpAccumulator,
+    black_features: Vec<usize>,
+    white_features: Vec<usize>,
+    history: Vec<(HalfKpAccumulator, HalfKpAccumulator, Vec<usize>, Vec<usize>)>,
 }
 
 static BOARD_SQUARES: LazyLock<[Square; NUM_SQUARES]> = LazyLock::new(|| {
@@ -151,6 +161,23 @@ static BOARD_SQUARES: LazyLock<[Square; NUM_SQUARES]> = LazyLock::new(|| {
 // --- Evaluator Trait ---
 pub trait Evaluator {
     fn evaluate(&self, position: &shogi_lib::Position) -> f32;
+    fn begin_context(&self, _position: &shogi_lib::Position) -> Option<Box<dyn Any + Send>> {
+        None
+    }
+    fn evaluate_context(
+        &self,
+        _position: &shogi_lib::Position,
+        _context: &(dyn Any + Send),
+    ) -> Option<f32> {
+        None
+    }
+    fn commit_context_move(
+        &self,
+        _context: &mut (dyn Any + Send),
+        _position: &shogi_lib::Position,
+    ) {
+    }
+    fn undo_context_move(&self, _context: &mut (dyn Any + Send)) {}
 }
 
 // --- KPP-based Evaluator ---
@@ -686,6 +713,118 @@ impl HalfKpModel {
             hidden,
             material,
         })
+    }
+
+    pub fn begin_search_context(&self, pos: &shogi_lib::Position) -> Option<HalfKpSearchContext> {
+        let black_features = extract_halfkp_features_for(pos, Color::Black)?;
+        let white_features = extract_halfkp_features_for(pos, Color::White)?;
+        Some(HalfKpSearchContext {
+            black: self.accumulator_from_features(&black_features),
+            white: self.accumulator_from_features(&white_features),
+            black_features: black_features.features,
+            white_features: white_features.features,
+            history: Vec::with_capacity(128),
+        })
+    }
+
+    fn accumulator_from_features(&self, features: &HalfKpFeatures) -> HalfKpAccumulator {
+        let values = self.accumulator(features);
+        let mut hidden = [0.0; HALFKP_HIDDEN];
+        hidden.copy_from_slice(&values);
+        HalfKpAccumulator {
+            perspective: if features.king_bucket < HALFKP_KING_BUCKETS {
+                Color::Black
+            } else {
+                Color::White
+            },
+            king_bucket: features.king_bucket,
+            hidden,
+            material: features.material,
+        }
+    }
+
+    pub fn update_search_context(&self, ctx: &mut HalfKpSearchContext, pos: &shogi_lib::Position) {
+        let old_black = ctx.black.clone();
+        let old_white = ctx.white.clone();
+        let old_bf = std::mem::take(&mut ctx.black_features);
+        let old_wf = std::mem::take(&mut ctx.white_features);
+        ctx.history
+            .push((old_black, old_white, old_bf.clone(), old_wf.clone()));
+        let Some(black) = extract_halfkp_features_for(pos, Color::Black) else {
+            return;
+        };
+        let Some(white) = extract_halfkp_features_for(pos, Color::White) else {
+            return;
+        };
+        ctx.black = self.apply_feature_delta(&ctx.black, &old_bf, &black);
+        ctx.white = self.apply_feature_delta(&ctx.white, &old_wf, &white);
+        ctx.black_features = black.features;
+        ctx.white_features = white.features;
+    }
+
+    fn apply_feature_delta(
+        &self,
+        old_acc: &HalfKpAccumulator,
+        old_features: &[usize],
+        new: &HalfKpFeatures,
+    ) -> HalfKpAccumulator {
+        if old_acc.king_bucket != new.king_bucket {
+            return self.accumulator_from_features(new);
+        }
+        let mut acc = *old_acc;
+        let mut i = 0;
+        let mut j = 0;
+        while i < old_features.len() || j < new.features.len() {
+            match (old_features.get(i), new.features.get(j)) {
+                (Some(&a), Some(&b)) if a == b => {
+                    i += 1;
+                    j += 1;
+                }
+                (Some(&a), Some(&b)) if a < b => {
+                    self.add_feature_row_fixed(&mut acc, a, -1.0);
+                    i += 1;
+                }
+                (Some(_), Some(&b)) => {
+                    self.add_feature_row_fixed(&mut acc, b, 1.0);
+                    j += 1;
+                }
+                (Some(&a), None) => {
+                    self.add_feature_row_fixed(&mut acc, a, -1.0);
+                    i += 1;
+                }
+                (None, Some(&b)) => {
+                    self.add_feature_row_fixed(&mut acc, b, 1.0);
+                    j += 1;
+                }
+                (None, None) => break,
+            }
+        }
+        acc.material = new.material;
+        acc
+    }
+
+    fn add_feature_row_fixed(&self, acc: &mut HalfKpAccumulator, feature: usize, sign: f32) {
+        let base = feature * self.hidden;
+        for h in 0..HALFKP_HIDDEN {
+            acc.hidden[h] += sign * self.feature_emb[base + h];
+        }
+    }
+
+    pub fn undo_search_context(&self, ctx: &mut HalfKpSearchContext) {
+        if let Some((black, white, bf, wf)) = ctx.history.pop() {
+            ctx.black = black;
+            ctx.white = white;
+            ctx.black_features = bf;
+            ctx.white_features = wf;
+        }
+    }
+
+    pub fn evaluate_search_context(
+        &self,
+        pos: &shogi_lib::Position,
+        ctx: &HalfKpSearchContext,
+    ) -> f32 {
+        self.evaluate_accumulators(pos, &ctx.black, &ctx.white)
     }
 
     /// Apply the feature-row delta between two adjacent positions.
@@ -1376,6 +1515,44 @@ impl Evaluator for EngineEvaluator {
             EngineEvaluator::TinyNnue(model) => model.predict_from_position(position),
             EngineEvaluator::HalfKp(model) => model.predict_from_position(position),
             EngineEvaluator::HybridNnue(evaluator) => evaluator.evaluate(position),
+        }
+    }
+
+    fn begin_context(&self, position: &shogi_lib::Position) -> Option<Box<dyn Any + Send>> {
+        match self {
+            EngineEvaluator::HalfKp(model) => model
+                .begin_search_context(position)
+                .map(|ctx| Box::new(ctx) as Box<dyn Any + Send>),
+            _ => None,
+        }
+    }
+
+    fn evaluate_context(
+        &self,
+        position: &shogi_lib::Position,
+        context: &(dyn Any + Send),
+    ) -> Option<f32> {
+        match self {
+            EngineEvaluator::HalfKp(model) => context
+                .downcast_ref::<HalfKpSearchContext>()
+                .map(|ctx| model.evaluate_search_context(position, ctx)),
+            _ => None,
+        }
+    }
+
+    fn commit_context_move(&self, context: &mut (dyn Any + Send), position: &shogi_lib::Position) {
+        if let EngineEvaluator::HalfKp(model) = self {
+            if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
+                model.update_search_context(ctx, position);
+            }
+        }
+    }
+
+    fn undo_context_move(&self, context: &mut (dyn Any + Send)) {
+        if let EngineEvaluator::HalfKp(model) = self {
+            if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
+                model.undo_search_context(ctx);
+            }
         }
     }
 }
