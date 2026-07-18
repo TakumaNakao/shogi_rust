@@ -48,7 +48,7 @@ impl UsiEngine {
             eval_dirty: false,
             max_depth: 30,            // Default max depth
             search_time_limit: 10000, // Default time limit in ms
-            threads: 1,
+            threads: 0,
             ai: Arc::new(Mutex::new(None)),
         }
     }
@@ -93,7 +93,7 @@ impl UsiEngine {
             self.search_time_limit
         );
         println!(
-            "option name Threads type spin default {} min 1 max 256",
+            "option name Threads type spin default {} min 0 max 256",
             self.threads
         );
         println!("usiok");
@@ -199,7 +199,7 @@ impl UsiEngine {
                 Some(&"Threads") => {
                     if let Some(val_str) = tokens.get(4) {
                         if let Ok(value) = val_str.parse::<usize>() {
-                            self.threads = value.clamp(1, 256);
+                            self.threads = value.min(256);
                         }
                     }
                 }

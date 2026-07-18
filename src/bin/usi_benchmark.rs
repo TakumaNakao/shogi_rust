@@ -449,10 +449,6 @@ fn main() -> Result<()> {
     if args.jobs == 0 {
         return Err(anyhow!("--jobs must be greater than zero"));
     }
-    if args.new_threads == 0 || args.baseline_threads == 0 {
-        return Err(anyhow!("thread counts must be greater than zero"));
-    }
-
     let mut positions = load_positions(&args.positions)?;
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
     positions.shuffle(&mut rng);

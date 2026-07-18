@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use shogi_ai::ai::ShogiAI;
+use shogi_ai::ai::{resolve_search_threads, ShogiAI};
 use shogi_ai::evaluation::{
     Evaluator, HalfKpModel, HalfKpSearchContext, HybridNnueEvaluator, SparseModel, TinyNnueModel,
 };
@@ -40,7 +40,7 @@ struct Args {
     time_limit_ms: Option<u64>,
     #[arg(long, default_value_t = 0)]
     seed: u64,
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 0)]
     threads: usize,
 }
 
@@ -163,6 +163,7 @@ where
     let mut total_aspiration_fail_highs = 0u64;
     let mut total_aspiration_researches = 0u64;
     let mut total_completed_depth = 0u64;
+    let resolved_threads = resolve_search_threads(args.threads);
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -171,7 +172,12 @@ where
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
         ai.set_emit_info(false);
         ai.sennichite_detector.record_position(&position);
-        ai.find_best_move_parallel(&mut position, args.depth, args.time_limit_ms, args.threads);
+        ai.find_best_move_parallel(
+            &mut position,
+            args.depth,
+            args.time_limit_ms,
+            resolved_threads,
+        );
         total_nodes += ai.nodes_searched();
         total_quiescence_nodes += ai.quiescence_nodes_searched();
         total_quiescence_moves_considered += ai.quiescence_moves_considered();
@@ -196,7 +202,7 @@ where
     };
 
     println!("model: {}", model_name);
-    println!("threads: {}", args.threads);
+    println!("threads: {}", resolved_threads);
     println!("samples: {}", args.samples);
     println!("total nodes: {}", total_nodes);
     println!("quiescence nodes: {}", total_quiescence_nodes);
@@ -264,10 +270,6 @@ fn main() -> Result<()> {
     if args.samples == 0 {
         return Err(anyhow!("--samples must be greater than zero"));
     }
-    if args.threads == 0 {
-        return Err(anyhow!("--threads must be greater than zero"));
-    }
-
     let mut positions = load_positions(&args.positions)?;
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
     positions.shuffle(&mut rng);

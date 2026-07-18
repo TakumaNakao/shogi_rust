@@ -5,7 +5,13 @@ extension, or evaluation rules.
 
 ## USI
 
-The default remains one thread:
+The default is automatic and uses all logical CPUs available to the process:
+
+```text
+setoption name Threads value 0
+```
+
+Set an explicit limit when the engine must share the CPU:
 
 ```text
 setoption name Threads value 16
@@ -36,5 +42,6 @@ HALFKP_THREADS=16 KPP_THREADS=1 JOBS=1 \
   ./scripts/bench_halfkp64_vs_kpp_5s.sh
 ```
 
-`Threads=1` uses the original local `HashMap` transposition table and bypasses
-all parallel synchronization.
+`Threads=0` resolves through `std::thread::available_parallelism()` and is
+capped at 256. `Threads=1` uses the original local `HashMap` transposition table
+and bypasses all parallel synchronization.

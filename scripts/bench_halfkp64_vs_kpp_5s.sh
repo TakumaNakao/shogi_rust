@@ -25,8 +25,8 @@ if (( GAMES < 2 || GAMES % 2 != 0 )); then
   echo "GAMES must be an even number >= 2 (paired side swaps)" >&2
   exit 2
 fi
-if (( HALFKP_THREADS < 1 || KPP_THREADS < 1 )); then
-  echo "HALFKP_THREADS and KPP_THREADS must be >= 1" >&2
+if (( HALFKP_THREADS < 0 || KPP_THREADS < 0 )); then
+  echo "HALFKP_THREADS and KPP_THREADS must be >= 0 (0 selects all available threads)" >&2
   exit 2
 fi
 [[ -s "$POSITIONS" ]] || { echo "positions file not found: $POSITIONS" >&2; exit 2; }

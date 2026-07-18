@@ -928,7 +928,7 @@ where
         time_limit_ms: Option<u64>,
         threads: usize,
     ) -> Option<Move> {
-        let threads = threads.max(1);
+        let threads = resolve_search_threads(threads);
         if threads == 1 {
             if matches!(&self.transposition_table, TranspositionTable::Shared(_)) {
                 self.transposition_table = TranspositionTable::Local(HashMap::new());
@@ -999,6 +999,17 @@ where
     }
 }
 
+pub fn resolve_search_threads(requested: usize) -> usize {
+    if requested == 0 {
+        thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .min(256)
+    } else {
+        requested.clamp(1, 256)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1046,6 +1057,19 @@ mod tests {
         ai.sennichite_detector.record_position(&position);
 
         assert!(ai.find_best_move(&mut position, 5, None).is_some());
+    }
+
+    #[test]
+    fn search_thread_count_resolves_auto_and_explicit_values() {
+        let available = thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .min(256);
+
+        assert_eq!(available, resolve_search_threads(0));
+        assert_eq!(1, resolve_search_threads(1));
+        assert_eq!(16, resolve_search_threads(16));
+        assert_eq!(256, resolve_search_threads(usize::MAX));
     }
 
     #[test]
