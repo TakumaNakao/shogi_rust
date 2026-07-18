@@ -30,9 +30,6 @@ impl Position {
                 }
             }
         }
-        if inner.side == Color::White {
-            keys.0 ^= Key::COLOR;
-        }
         let checkers = AttackInfo::calculate_checkers(&inner);
         let state = State {
             keys,
@@ -267,10 +264,6 @@ impl Position {
     #[inline(always)]
     fn checkable(&self, pk: PieceKind, sq: Square) -> bool {
         self.state().attack_info.checkable(pk, sq)
-    }
-    #[inline(always)]
-    pub(crate) fn checkable_squares(&self, pk: PieceKind) -> Bitboard {
-        self.state().attack_info.checkables[pk.array_index()]
     }
 
     pub fn switch_turn(&mut self) {

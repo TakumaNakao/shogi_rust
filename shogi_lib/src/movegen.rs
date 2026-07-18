@@ -7,14 +7,6 @@ use shogi_core::{Color, Hand, Move, Piece, PieceKind, Square};
 const MAX_LEGAL_MOVES: usize = 593;
 
 impl Position {
-    pub fn is_king_in_check(&self, color: Color) -> bool {
-        self.king_position(color).is_some_and(|king| {
-            !self
-                .attackers_to(color.flip(), king, &self.occupied_bitboard())
-                .is_empty()
-        })
-    }
-
     pub fn legal_moves(&self) -> ArrayVec<Move, MAX_LEGAL_MOVES> {
         let mut av = ArrayVec::new();
         if self.in_check() {
@@ -53,17 +45,6 @@ impl Position {
         (av, generated)
     }
 
-    pub fn legal_evasion_moves_with_generated_count(
-        &self,
-    ) -> (ArrayVec<Move, MAX_LEGAL_MOVES>, usize) {
-        assert!(self.in_check(), "legal evasion generation requires check");
-        let mut moves = ArrayVec::new();
-        self.generate_evasions(&mut moves);
-        let generated = moves.len();
-        moves.retain(|mv| self.is_legal(*mv));
-        (moves, generated)
-    }
-
     pub fn legal_capture_moves_with_generated_count(
         &self,
     ) -> (ArrayVec<Move, MAX_LEGAL_MOVES>, usize) {
@@ -96,71 +77,6 @@ impl Position {
         let generated = av.len();
         av.retain(|m| self.is_legal(*m));
         (av, generated)
-    }
-
-    pub fn legal_selective_quiescence_moves_with_generated_count(
-        &self,
-    ) -> (ArrayVec<Move, MAX_LEGAL_MOVES>, usize) {
-        assert!(
-            !self.in_check(),
-            "selective qsearch generation requires a quiet node"
-        );
-        let (mut moves, capture_generated) = self.legal_capture_moves_with_generated_count();
-        let empty = !self.occupied_bitboard();
-        let mut checks = ArrayVec::new();
-
-        let target = (self.checkable_squares(PieceKind::Pawn)
-            | self.checkable_squares(PieceKind::ProPawn))
-            & empty;
-        self.generate_for_fu(&mut checks, &target);
-        let target = (self.checkable_squares(PieceKind::Lance)
-            | self.checkable_squares(PieceKind::ProLance))
-            & empty;
-        self.generate_for_ky(&mut checks, &target);
-        let target = (self.checkable_squares(PieceKind::Knight)
-            | self.checkable_squares(PieceKind::ProKnight))
-            & empty;
-        self.generate_for_ke(&mut checks, &target);
-        let target = (self.checkable_squares(PieceKind::Silver)
-            | self.checkable_squares(PieceKind::ProSilver))
-            & empty;
-        self.generate_for_gi(&mut checks, &target);
-        let target = (self.checkable_squares(PieceKind::Bishop)
-            | self.checkable_squares(PieceKind::ProBishop))
-            & empty;
-        self.generate_for_ka(&mut checks, &target);
-        let target = (self.checkable_squares(PieceKind::Rook)
-            | self.checkable_squares(PieceKind::ProRook))
-            & empty;
-        self.generate_for_hi(&mut checks, &target);
-        let target = (self.checkable_squares(PieceKind::Gold)
-            | self.checkable_squares(PieceKind::ProPawn)
-            | self.checkable_squares(PieceKind::ProLance)
-            | self.checkable_squares(PieceKind::ProKnight)
-            | self.checkable_squares(PieceKind::ProSilver))
-            & empty;
-        self.generate_for_ki(&mut checks, &target);
-        let target = self.checkable_squares(PieceKind::King) & empty;
-        self.generate_for_ou(&mut checks, &target);
-        let target = self.checkable_squares(PieceKind::ProBishop) & empty;
-        self.generate_for_um(&mut checks, &target);
-        let target = self.checkable_squares(PieceKind::ProRook) & empty;
-        self.generate_for_ry(&mut checks, &target);
-
-        let drop_target = (self.checkable_squares(PieceKind::Pawn)
-            | self.checkable_squares(PieceKind::Lance)
-            | self.checkable_squares(PieceKind::Knight)
-            | self.checkable_squares(PieceKind::Silver)
-            | self.checkable_squares(PieceKind::Gold)
-            | self.checkable_squares(PieceKind::Bishop)
-            | self.checkable_squares(PieceKind::Rook))
-            & empty;
-        self.generate_drop(&mut checks, &drop_target);
-
-        let check_generated = checks.len();
-        checks.retain(|mv| self.is_check_move(*mv) && self.is_legal(*mv));
-        moves.extend(checks);
-        (moves, capture_generated + check_generated)
     }
 
     pub fn has_legal_evasion(&self) -> bool {
@@ -730,42 +646,6 @@ mod tests {
                 "sfen: {}",
                 sfen
             );
-        }
-    }
-
-    #[test]
-    fn legal_evasions_match_shared_legality_oracle_and_leave_mover_king_safe() {
-        // legal_moves is a behavioral oracle only: both paths share this crate's
-        // attack tables and legality rules, so applied-move king safety is checked too.
-        let fixtures = [
-            // Unique quiet king escape.
-            "sfen l5r1l/1S1g2g2/2n1pkn2/p1pp2BRp/1p2S1b2/P1PP4P/1PS1P1+p2/2G1G4/LNK5L w sn5p 72",
-            // Move interposition and rook/knight/bishop drop interpositions.
-            "sfen l2l4l/3ks1G2/2p1pgn1p/3p1ppp1/p1P5P/3P3P1/P1N+bPPPs1/1r3S3/+p3GKSNL b RBNgp 77",
-            // King capture evasion.
-            "sfen +Bn1g4l/4k1s2/1p1p+Np2n/6p1p/p5Pp1/5G3/PP1PPP1RP/2+r+s1G3/L4K2L w BSNL2Pgs2p 86",
-            // Checkmate.
-            "sfen 9/7pp/8k/7PP/7G1/9/9/9/K8 w 2r2b3g4s4n4l14p 2",
-        ];
-        for sfen in fixtures {
-            let pos =
-                Position::new(PartialPosition::from_usi(sfen).expect("valid evasion fixture"));
-            assert!(pos.in_check(), "fixture must be checked: {sfen}");
-            let dedicated = pos.legal_evasion_moves_with_generated_count().0;
-            assert_eq!(
-                sorted_move_debug(pos.legal_moves()),
-                sorted_move_debug(dedicated.clone()),
-                "sfen: {sfen}"
-            );
-            let mover = pos.side_to_move();
-            for mv in dedicated {
-                let mut child = pos.clone();
-                child.do_move(mv);
-                assert!(
-                    !child.is_king_in_check(mover),
-                    "evasion leaves mover king checked: {mv:?} in {sfen}"
-                );
-            }
         }
     }
 

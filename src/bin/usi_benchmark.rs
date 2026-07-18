@@ -6,7 +6,7 @@ use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use shogi_ai::evaluation::SparseModel;
 use shogi_ai::sennichite::{SennichiteDetector, SennichiteStatus};
-use shogi_ai::utils::{parse_usi_move, parse_usi_move_for_color, position_from_sfen_or_usi};
+use shogi_ai::utils::{parse_usi_move, position_from_sfen_or_usi};
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
 use std::fs;
@@ -49,9 +49,6 @@ struct Args {
     adjudicate_at_max_plies: bool,
     #[arg(long, default_value_t = 1)]
     jobs: usize,
-    /// Keep one USI process per side for all games (low-memory selfplay mode).
-    #[arg(long, default_value_t = false)]
-    persistent_engines: bool,
     #[arg(long, default_value_t = 0)]
     seed: u64,
     #[arg(long)]
@@ -73,28 +70,6 @@ enum GameEndReason {
     PerpetualCheckLoss,
     MaxPliesAdjudication,
     MaxPliesDraw,
-}
-
-const GAME_END_REASONS: [GameEndReason; 6] = [
-    GameEndReason::Resign,
-    GameEndReason::IllegalMove,
-    GameEndReason::RepetitionDraw,
-    GameEndReason::PerpetualCheckLoss,
-    GameEndReason::MaxPliesAdjudication,
-    GameEndReason::MaxPliesDraw,
-];
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct GameObservation {
-    reason: GameEndReason,
-    plies: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PlyStatistics {
-    count: usize,
-    average: f64,
-    median: f64,
 }
 
 #[derive(Debug)]
@@ -251,51 +226,11 @@ fn build_position_command(start_position: &str, moves: &[String]) -> String {
     command
 }
 
-fn replay_start_position(start_position: &str) -> Option<(Position, Vec<Position>)> {
-    let start_position = start_position.trim();
-    let (base, opening_moves) =
-        if let Some(opening_moves) = start_position.strip_prefix("startpos moves ") {
-            ("startpos", Some(opening_moves))
-        } else if start_position == "startpos" {
-            ("startpos", None)
-        } else {
-            let sfen = start_position
-                .strip_prefix("sfen ")
-                .unwrap_or(start_position);
-            if let Some((sfen, opening_moves)) = sfen.split_once(" moves ") {
-                (sfen, Some(opening_moves))
-            } else {
-                (sfen, None)
-            }
-        };
-
-    let mut position = position_from_sfen_or_usi(base)?;
-    let mut history = vec![position.clone()];
-    if let Some(opening_moves) = opening_moves {
-        for token in opening_moves.split_whitespace() {
-            let mv = parse_usi_move_for_color(token, position.side_to_move())?;
-            if !position.legal_moves().contains(&mv) {
-                return None;
-            }
-            position.do_move(mv);
-            history.push(position.clone());
-        }
-    }
-    Some((position, history))
-}
-
-fn repetition_status<const CAPACITY: usize>(
-    detector: &SennichiteDetector<CAPACITY>,
-    position: &Position,
-) -> SennichiteStatus {
-    detector.check_sennichite_assuming_alternating_history(position)
-}
-
 fn load_positions(path: &Path) -> Result<Vec<String>> {
     let content = fs::read_to_string(path)?;
     let positions: Vec<_> = content
         .lines()
-        .filter(|line| replay_start_position(line).is_some())
+        .filter(|line| position_from_sfen_or_usi(line).is_some())
         .map(str::to_string)
         .collect();
 
@@ -336,13 +271,11 @@ fn play_game(
     new_is_black: bool,
     max_plies: usize,
 ) -> Result<PlayedGame> {
-    let (mut position, start_history) = replay_start_position(start_sfen)
+    let mut position = position_from_sfen_or_usi(start_sfen)
         .ok_or_else(|| anyhow!("invalid start sfen: {}", start_sfen))?;
     let mut moves = Vec::new();
     let mut detector = SennichiteDetector::<HISTORY_CAPACITY>::new();
-    for historical_position in &start_history {
-        detector.record_position(historical_position);
-    }
+    detector.record_position(&position);
     new_engine.new_game()?;
     baseline_engine.new_game()?;
 
@@ -386,7 +319,7 @@ fn play_game(
         moves.push(bestmove);
         detector.record_position(&position);
 
-        match repetition_status(&detector, &position) {
+        match detector.check_sennichite(&position) {
             SennichiteStatus::Draw => {
                 return Ok(PlayedGame {
                     result: GameResult::Draw,
@@ -400,17 +333,6 @@ fn play_game(
                         GameResult::BaselineWin
                     } else {
                         GameResult::NewWin
-                    },
-                    reason: GameEndReason::PerpetualCheckLoss,
-                    moves,
-                });
-            }
-            SennichiteStatus::PerpetualCheckWin => {
-                return Ok(PlayedGame {
-                    result: if new_to_move {
-                        GameResult::NewWin
-                    } else {
-                        GameResult::BaselineWin
                     },
                     reason: GameEndReason::PerpetualCheckLoss,
                     moves,
@@ -517,44 +439,6 @@ fn total_score_interval(
     Some(((mean - margin).max(0.0), (mean + margin).min(1.0)))
 }
 
-fn ply_statistics(plies: impl IntoIterator<Item = usize>) -> Option<PlyStatistics> {
-    let mut plies = plies.into_iter().collect::<Vec<_>>();
-    if plies.is_empty() {
-        return None;
-    }
-    plies.sort_unstable();
-    let count = plies.len();
-    let average = plies.iter().map(|&plies| plies as f64).sum::<f64>() / count as f64;
-    let median = if count % 2 == 0 {
-        (plies[count / 2 - 1] as f64 + plies[count / 2] as f64) / 2.0
-    } else {
-        plies[count / 2] as f64
-    };
-    Some(PlyStatistics {
-        count,
-        average,
-        median,
-    })
-}
-
-fn end_reason_statistics(
-    observations: &[GameObservation],
-) -> Vec<(GameEndReason, Option<PlyStatistics>)> {
-    GAME_END_REASONS
-        .iter()
-        .copied()
-        .map(|reason| {
-            let statistics = ply_statistics(
-                observations
-                    .iter()
-                    .filter(|observation| observation.reason == reason)
-                    .map(|observation| observation.plies),
-            );
-            (reason, statistics)
-        })
-        .collect()
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
     if args.games == 0 {
@@ -562,11 +446,6 @@ fn main() -> Result<()> {
     }
     if args.jobs == 0 {
         return Err(anyhow!("--jobs must be greater than zero"));
-    }
-    if args.persistent_engines && args.jobs != 1 {
-        return Err(anyhow!(
-            "--persistent-engines requires --jobs 1 (one process per side)"
-        ));
     }
 
     let mut positions = load_positions(&args.positions)?;
@@ -581,61 +460,9 @@ fn main() -> Result<()> {
     let mut new_wins = 0usize;
     let mut baseline_wins = 0usize;
     let mut draws = 0usize;
-    let mut observations = Vec::with_capacity(args.games);
 
-    if args.persistent_engines && args.record_dir.is_some() {
-        return Err(anyhow!(
-            "--record-dir cannot be combined with --persistent-engines"
-        ));
-    }
     if let Some(record_dir) = &args.record_dir {
         fs::create_dir_all(record_dir)?;
-    }
-
-    // Selfplay mode deliberately keeps exactly one engine process per side.
-    // This avoids repeatedly loading the evaluator and bounds RSS for long runs.
-    if args.persistent_engines {
-        let mut new_engine = EngineProcess::start(
-            &args.new_engine,
-            &args.new_weights,
-            args.new_residual_weights.as_deref(),
-            args.new_residual_scale,
-            args.depth,
-            args.time_limit_ms,
-        )?;
-        let mut baseline_engine = EngineProcess::start(
-            &args.baseline_engine,
-            &args.baseline_weights,
-            args.baseline_residual_weights.as_deref(),
-            args.baseline_residual_scale,
-            args.depth,
-            args.time_limit_ms,
-        )?;
-
-        for game_index in 0..args.games {
-            let start_sfen = positions[(game_index / 2) % positions.len()].clone();
-            let new_is_black = game_index % 2 == 0;
-            let game = play_game(
-                &mut new_engine,
-                &mut baseline_engine,
-                adjudication_model.as_ref(),
-                &start_sfen,
-                new_is_black,
-                args.max_plies,
-            )?;
-            match game.result {
-                GameResult::NewWin => new_wins += 1,
-                GameResult::BaselineWin => baseline_wins += 1,
-                GameResult::Draw => draws += 1,
-            }
-            observations.push(GameObservation {
-                reason: game.reason,
-                plies: game.moves.len(),
-            });
-        }
-
-        print_summary(args.games, new_wins, baseline_wins, draws, &observations);
-        return Ok(());
     }
 
     let play_one = |game_index: usize| -> Result<(usize, bool, String, PlayedGame)> {
@@ -701,24 +528,8 @@ fn main() -> Result<()> {
             game.reason,
             if new_is_black { "black" } else { "white" }
         );
-        observations.push(GameObservation {
-            reason: game.reason,
-            plies: game.moves.len(),
-        });
     }
 
-    print_summary(args.games, new_wins, baseline_wins, draws, &observations);
-
-    Ok(())
-}
-
-fn print_summary(
-    games: usize,
-    new_wins: usize,
-    baseline_wins: usize,
-    draws: usize,
-    observations: &[GameObservation],
-) {
     let decisive_games = new_wins + baseline_wins;
     let decisive_rate = if decisive_games == 0 {
         0.0
@@ -726,9 +537,8 @@ fn print_summary(
         new_wins as f64 / decisive_games as f64
     };
     let total_score = new_wins as f64 + draws as f64 * 0.5;
-    let total_rate = total_score / games as f64;
+    let total_rate = total_score / args.games as f64;
 
-    println!("games: {}", games);
     println!("new wins: {}", new_wins);
     println!("baseline wins: {}", baseline_wins);
     println!("draws: {}", draws);
@@ -748,173 +558,6 @@ fn print_summary(
             high * 100.0
         );
     }
-    if let Some(statistics) = ply_statistics(observations.iter().map(|game| game.plies)) {
-        println!("average plies: {:.2}", statistics.average);
-        println!("median plies: {:.2}", statistics.median);
-    }
-    println!("end reason statistics:");
-    for (reason, statistics) in end_reason_statistics(observations) {
-        if let Some(statistics) = statistics {
-            println!(
-                "  {:?}: count={} average_plies={:.2} median_plies={:.2}",
-                reason, statistics.count, statistics.average, statistics.median
-            );
-        } else {
-            println!("  {:?}: count=0 average_plies=n/a median_plies=n/a", reason);
-        }
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn detector_from_history(history: &[Position]) -> SennichiteDetector<HISTORY_CAPACITY> {
-        let mut detector = SennichiteDetector::new();
-        for position in history {
-            detector.record_position(position);
-        }
-        detector
-    }
-
-    #[test]
-    fn final_checked_repetition_with_an_intermittent_check_is_a_draw() {
-        let cycle = ["5a4a", "5b6b", "4a5a", "6b5b"];
-        let start = format!(
-            "sfen 4k4/4R4/9/9/9/9/9/9/K8 w - 1 moves {}",
-            cycle.repeat(3).join(" ")
-        );
-        let (position, history) = replay_start_position(&start).expect("legal repetition");
-        let detector = detector_from_history(&history);
-
-        assert!(position.in_check());
-        assert_eq!(
-            SennichiteStatus::PerpetualCheckLoss,
-            detector.check_sennichite(&position),
-            "the legacy final-position check misclassifies this cycle"
-        );
-        assert_eq!(
-            SennichiteStatus::Draw,
-            repetition_status(&detector, &position)
-        );
-    }
-
-    #[test]
-    fn repetition_on_the_continuous_checkers_turn_is_the_checkers_loss() {
-        let cycle = ["4b5b", "5a4a", "5b4b", "4a5a"];
-        let start = format!(
-            "sfen 4k4/5R3/9/9/9/9/9/9/K8 b - 1 moves {}",
-            cycle.repeat(3).join(" ")
-        );
-        let (position, history) = replay_start_position(&start).expect("legal repetition");
-        let detector = detector_from_history(&history);
-
-        assert!(!position.in_check());
-        assert_eq!(
-            SennichiteStatus::Draw,
-            detector.check_sennichite(&position),
-            "the legacy final-position check misses this perpetual check"
-        );
-        assert_eq!(
-            SennichiteStatus::PerpetualCheckWin,
-            repetition_status(&detector, &position)
-        );
-    }
-
-    #[test]
-    fn opening_moves_restore_every_position_for_repetition_adjudication() {
-        let cycle = ["5i5h", "5a5b", "5h5i", "5b5a"];
-        let start = format!("startpos moves {}", cycle.repeat(2).join(" "));
-        let (mut position, history) = replay_start_position(&start).expect("legal opening history");
-        let mut detector = detector_from_history(&history);
-
-        assert_eq!(9, history.len());
-        assert_eq!(Position::default().keys(), position.keys());
-        assert_eq!(
-            SennichiteStatus::None,
-            repetition_status(&detector, &position)
-        );
-
-        for token in cycle {
-            let mv = parse_usi_move_for_color(token, position.side_to_move()).expect("valid move");
-            assert!(position.legal_moves().contains(&mv));
-            position.do_move(mv);
-            detector.record_position(&position);
-        }
-        assert_eq!(
-            SennichiteStatus::Draw,
-            repetition_status(&detector, &position)
-        );
-    }
-
-    #[test]
-    fn end_reason_statistics_report_counts_and_ply_distribution() {
-        let observations = [
-            GameObservation {
-                reason: GameEndReason::Resign,
-                plies: 10,
-            },
-            GameObservation {
-                reason: GameEndReason::Resign,
-                plies: 20,
-            },
-            GameObservation {
-                reason: GameEndReason::PerpetualCheckLoss,
-                plies: 30,
-            },
-            GameObservation {
-                reason: GameEndReason::MaxPliesDraw,
-                plies: 200,
-            },
-            GameObservation {
-                reason: GameEndReason::MaxPliesDraw,
-                plies: 200,
-            },
-            GameObservation {
-                reason: GameEndReason::MaxPliesDraw,
-                plies: 200,
-            },
-        ];
-
-        assert_eq!(
-            Some(PlyStatistics {
-                count: 6,
-                average: 110.0,
-                median: 115.0,
-            }),
-            ply_statistics(observations.iter().map(|game| game.plies))
-        );
-
-        let statistics = end_reason_statistics(&observations);
-        assert_eq!(GAME_END_REASONS.len(), statistics.len());
-        assert_eq!(
-            Some(PlyStatistics {
-                count: 2,
-                average: 15.0,
-                median: 15.0,
-            }),
-            statistics
-                .iter()
-                .find(|(reason, _)| *reason == GameEndReason::Resign)
-                .and_then(|(_, statistics)| *statistics)
-        );
-        assert_eq!(
-            Some(PlyStatistics {
-                count: 3,
-                average: 200.0,
-                median: 200.0,
-            }),
-            statistics
-                .iter()
-                .find(|(reason, _)| *reason == GameEndReason::MaxPliesDraw)
-                .and_then(|(_, statistics)| *statistics)
-        );
-        assert_eq!(
-            None,
-            statistics
-                .iter()
-                .find(|(reason, _)| *reason == GameEndReason::MaxPliesAdjudication)
-                .and_then(|(_, statistics)| *statistics)
-        );
-    }
+    Ok(())
 }

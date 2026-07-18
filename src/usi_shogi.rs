@@ -1,4 +1,4 @@
-use crate::ai::{SearchLimits, ShogiAI};
+use crate::ai::ShogiAI;
 use crate::evaluation::{EngineEvaluator, HybridNnueEvaluator};
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
@@ -17,9 +17,14 @@ const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
 const OVERWRITE_VALUE: f32 = 0.0;
 
+#[derive(Clone, Copy)]
+struct SearchLimits {
+    max_depth: u8,
+    time_limit_ms: Option<u64>,
+}
+
 struct UsiEngine {
     position: Position,
-    game_history: Vec<Position>,
     stop_signal: Arc<AtomicBool>,
     eval_file_path: Option<PathBuf>,
     residual_eval_file_path: Option<PathBuf>,
@@ -29,43 +34,10 @@ struct UsiEngine {
     ai: Arc<Mutex<Option<ShogiAI<EngineEvaluator, HISTORY_CAPACITY>>>>,
 }
 
-fn replay_position_with_history(tokens: &[&str]) -> (Position, Vec<Position>) {
-    let moves_idx = tokens
-        .iter()
-        .position(|&token| token == "moves")
-        .unwrap_or(tokens.len());
-    let mut position = if tokens.get(1) == Some(&"sfen") {
-        let sfen = tokens[2..moves_idx].join(" ");
-        position_from_sfen_or_usi(&sfen).unwrap_or_else(Position::default)
-    } else {
-        Position::default()
-    };
-    let mut history = vec![position.clone()];
-
-    if moves_idx < tokens.len() {
-        for move_str in &tokens[moves_idx + 1..] {
-            let Some(mut mv) = parse_usi_move(move_str) else {
-                continue;
-            };
-            if let Move::Drop { piece, to } = mv {
-                mv = Move::Drop {
-                    piece: Piece::new(piece.piece_kind(), position.side_to_move()),
-                    to,
-                };
-            }
-            position.do_move(mv);
-            history.push(position.clone());
-        }
-    }
-    (position, history)
-}
-
 impl UsiEngine {
     fn new() -> Self {
-        let position = Position::default();
         UsiEngine {
-            game_history: vec![position.clone()],
-            position,
+            position: Position::default(),
             stop_signal: Arc::new(AtomicBool::new(false)),
             eval_file_path: None,
             residual_eval_file_path: None,
@@ -136,8 +108,7 @@ impl UsiEngine {
         match evaluator_result {
             Ok(evaluator) => {
                 let evaluator_name = evaluator.name();
-                let mut new_ai = ShogiAI::new(evaluator);
-                new_ai.set_game_history(&self.game_history);
+                let new_ai = ShogiAI::new(evaluator);
                 *self.ai.lock().unwrap() = Some(new_ai);
                 if let Some(residual_path) = &self.residual_eval_file_path {
                     eprintln!(
@@ -208,20 +179,37 @@ impl UsiEngine {
 
     fn handle_usinewgame(&mut self) {
         self.position = Position::default();
-        self.game_history.clear();
-        self.game_history.push(self.position.clone());
         if let Some(ai_instance) = self.ai.lock().unwrap().as_mut() {
             ai_instance.clear();
-            ai_instance.set_game_history(&self.game_history);
         }
     }
 
     fn handle_position(&mut self, tokens: &[&str]) {
-        let (position, history) = replay_position_with_history(tokens);
-        self.position = position;
-        self.game_history = history;
-        if let Some(ai_instance) = self.ai.lock().unwrap().as_mut() {
-            ai_instance.set_game_history(&self.game_history);
+        self.position = if tokens.get(1) == Some(&"sfen") {
+            let moves_idx = tokens
+                .iter()
+                .position(|&s| s == "moves")
+                .unwrap_or(tokens.len());
+            let sfen = tokens[2..moves_idx].join(" ");
+            position_from_sfen_or_usi(&sfen).unwrap_or_else(Position::default)
+        } else {
+            Position::default()
+        };
+
+        if let Some(moves_idx) = tokens.iter().position(|&s| s == "moves") {
+            for move_str in &tokens[moves_idx + 1..] {
+                if let Some(mut mv) = parse_usi_move(move_str) {
+                    if let Move::Drop { piece, to } = mv {
+                        let colored_piece =
+                            Piece::new(piece.piece_kind(), self.position.side_to_move());
+                        mv = Move::Drop {
+                            piece: colored_piece,
+                            to,
+                        };
+                    }
+                    self.position.do_move(mv);
+                }
+            }
         }
     }
 
@@ -232,7 +220,6 @@ impl UsiEngine {
         let mut black_time: Option<u64> = None;
         let mut white_time: Option<u64> = None;
         let mut infinite = false;
-        let mut node_limit: Option<u64> = None;
 
         let mut i = 1;
         while i < tokens.len() {
@@ -263,10 +250,6 @@ impl UsiEngine {
                     infinite = true;
                     i += 1;
                 }
-                "nodes" => {
-                    node_limit = tokens.get(i + 1).and_then(|value| value.parse().ok());
-                    i += 2;
-                }
                 _ => i += 1,
             }
         }
@@ -275,12 +258,6 @@ impl UsiEngine {
             None
         } else if let Some(movetime) = movetime {
             Some(movetime)
-        } else if node_limit.is_some()
-            && black_time.is_none()
-            && white_time.is_none()
-            && byoyomi.is_none()
-        {
-            None
         } else {
             let side_time = match self.position.side_to_move() {
                 Color::Black => black_time,
@@ -303,7 +280,6 @@ impl UsiEngine {
         SearchLimits {
             max_depth,
             time_limit_ms,
-            node_limit,
         }
     }
 
@@ -330,9 +306,11 @@ impl UsiEngine {
             if let Some(thinking_ai) = ai_lock.as_mut() {
                 thinking_ai.set_stop_signal(Some(stop_signal.clone()));
                 thinking_ai.set_emit_info(true);
-                let best_move = thinking_ai
-                    .find_best_move_with_limits(&mut position, limits)
-                    .best_move;
+                let best_move = thinking_ai.find_best_move(
+                    &mut position,
+                    limits.max_depth,
+                    limits.time_limit_ms,
+                );
                 if let Some(best_move) = best_move {
                     thinking_ai.set_stop_signal(None);
                     println!("bestmove {}", format_move_usi(best_move));
@@ -354,76 +332,4 @@ impl UsiEngine {
 pub fn run_usi() {
     let mut engine = UsiEngine::new();
     engine.run();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_go_nodes_with_depth_and_time() {
-        let engine = UsiEngine::new();
-        let limits =
-            engine.parse_go_limits(&["go", "depth", "9", "nodes", "12345", "movetime", "500"]);
-        assert_eq!(9, limits.max_depth);
-        assert_eq!(Some(12_345), limits.node_limit);
-        assert_eq!(Some(500), limits.time_limit_ms);
-    }
-
-    #[test]
-    fn go_infinite_disables_time_but_not_nodes() {
-        let engine = UsiEngine::new();
-        let limits = engine.parse_go_limits(&["go", "infinite", "nodes", "99"]);
-        assert_eq!(None, limits.time_limit_ms);
-        assert_eq!(Some(99), limits.node_limit);
-    }
-
-    #[test]
-    fn nodes_only_does_not_add_an_implicit_wall_clock_limit() {
-        let engine = UsiEngine::new();
-        let limits = engine.parse_go_limits(&["go", "nodes", "99"]);
-        assert_eq!(None, limits.time_limit_ms);
-        assert_eq!(Some(99), limits.node_limit);
-    }
-
-    #[test]
-    fn position_command_replays_every_position_into_game_history() {
-        let tokens = [
-            "position",
-            "sfen",
-            "4k4/9/9/9/9/9/9/9/4K4",
-            "b",
-            "-",
-            "1",
-            "moves",
-            "5i5h",
-            "5a5b",
-            "5h5i",
-            "5b5a",
-            "5i5h",
-            "5a5b",
-            "5h5i",
-            "5b5a",
-            "5i5h",
-            "5a5b",
-            "5h5i",
-            "5b5a",
-        ];
-        let mut engine = UsiEngine::new();
-        engine.handle_position(&tokens);
-
-        assert_eq!(13, engine.game_history.len());
-        assert_eq!(
-            engine.game_history.last().unwrap().to_sfen_owned(),
-            engine.position.to_sfen_owned()
-        );
-        let mut detector = crate::sennichite::SennichiteDetector::<32>::new();
-        for position in &engine.game_history {
-            detector.record_position(position);
-        }
-        assert_eq!(
-            crate::sennichite::SennichiteStatus::Draw,
-            detector.check_sennichite_assuming_alternating_history(&engine.position)
-        );
-    }
 }

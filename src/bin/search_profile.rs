@@ -2,11 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use shogi_ai::ai::{
-    SearchLimits, SearchStopReason, ShogiAI, DEFAULT_MATE_REPLY_CANDIDATES,
-    DEFAULT_MAX_QUIESCENCE_CHECK_PLY, DEFAULT_REPLY_MATE_NODE_BUDGET,
-    DEFAULT_ROOT_MATE_NODE_BUDGET,
-};
+use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{Evaluator, HybridNnueEvaluator, SparseModel, TinyNnueModel};
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_lib::Position;
@@ -17,7 +13,7 @@ use std::time::Instant;
 const HISTORY_CAPACITY: usize = 256;
 
 #[derive(Parser, Debug)]
-#[command(about = "Profile search speed on SFEN positions (diagnostic settings only)")]
+#[command(about = "Profile search speed on SFEN positions")]
 struct Args {
     #[arg(long, default_value = "./policy_weights_v2.1.0.binary")]
     weights: PathBuf,
@@ -35,22 +31,8 @@ struct Args {
     depth: u8,
     #[arg(long)]
     time_limit_ms: Option<u64>,
-    #[arg(long)]
-    nodes: Option<u64>,
     #[arg(long, default_value_t = 0)]
     seed: u64,
-    #[arg(
-        long,
-        default_value_t = DEFAULT_MAX_QUIESCENCE_CHECK_PLY,
-        help = "Diagnostic override for this profile run; does not change the production engine setting"
-    )]
-    qcheck_ply: u16,
-    #[arg(long, default_value_t = DEFAULT_ROOT_MATE_NODE_BUDGET)]
-    mate_root_nodes: u64,
-    #[arg(long, default_value_t = DEFAULT_REPLY_MATE_NODE_BUDGET)]
-    mate_reply_nodes: u64,
-    #[arg(long, default_value_t = DEFAULT_MATE_REPLY_CANDIDATES)]
-    mate_reply_candidates: usize,
 }
 
 struct SharedModelEvaluator<'a> {
@@ -123,31 +105,10 @@ where
     let mut total_quiescence_moves_searched = 0u64;
     let mut total_quiescence_see_skips = 0u64;
     let mut total_quiescence_terminal_mates = 0u64;
-    let mut total_selective_qchecks_considered = 0u64;
-    let mut total_selective_qchecks_searched = 0u64;
-    let mut total_selective_qchecks_reply_skipped = 0u64;
-    let mut total_terminal_mates = 0u64;
     let mut total_check_evasion_extensions = 0u64;
     let mut total_aspiration_fail_lows = 0u64;
     let mut total_aspiration_fail_highs = 0u64;
     let mut total_aspiration_researches = 0u64;
-    let mut total_evasion_cutoffs = [0u64; 4];
-    let mut total_tt_evasion_cutoffs = 0u64;
-    let mut total_in_check_qnodes = 0u64;
-    let mut total_negative_see_checks = 0u64;
-    let mut total_repetition_hits = 0u64;
-    let mut node_limit_stops = 0u64;
-    let mut time_limit_stops = 0u64;
-    let mut total_completed_depth = 0u64;
-    let mut min_completed_depth = u8::MAX;
-    let mut max_completed_depth = 0u8;
-    let mut max_quiescence_ply = 0u16;
-    let mut total_mate_nodes = 0u64;
-    let mut total_mate_probes = 0u64;
-    let mut total_mate_proven = 0u64;
-    let mut total_mate_unknown = 0u64;
-    let mut total_mate_rejected = 0u64;
-    let mut mate_nodes_per_sample = Vec::with_capacity(args.samples);
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -155,18 +116,8 @@ where
         let evaluator = make_evaluator();
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
         ai.set_emit_info(false);
-        ai.set_max_quiescence_check_ply(args.qcheck_ply);
-        ai.set_mate_search_budgets(args.mate_root_nodes, args.mate_reply_nodes);
-        ai.set_mate_reply_candidates(args.mate_reply_candidates);
         ai.sennichite_detector.record_position(&position);
-        let report = ai.find_best_move_with_limits(
-            &mut position,
-            SearchLimits {
-                max_depth: args.depth,
-                time_limit_ms: args.time_limit_ms,
-                node_limit: args.nodes,
-            },
-        );
+        ai.find_best_move(&mut position, args.depth, args.time_limit_ms);
         total_nodes += ai.nodes_searched();
         total_quiescence_nodes += ai.quiescence_nodes_searched();
         total_quiescence_moves_considered += ai.quiescence_moves_considered();
@@ -175,36 +126,10 @@ where
         total_quiescence_moves_searched += ai.quiescence_moves_searched();
         total_quiescence_see_skips += ai.quiescence_see_skips();
         total_quiescence_terminal_mates += ai.quiescence_terminal_mates();
-        total_selective_qchecks_considered += ai.selective_qchecks_considered();
-        total_selective_qchecks_searched += ai.selective_qchecks_searched();
-        total_selective_qchecks_reply_skipped += ai.selective_qchecks_reply_skipped();
-        total_terminal_mates += report.terminal_mates;
         total_check_evasion_extensions += ai.check_evasion_extensions();
         total_aspiration_fail_lows += ai.aspiration_fail_lows();
         total_aspiration_fail_highs += ai.aspiration_fail_highs();
         total_aspiration_researches += ai.aspiration_researches();
-        for (total, value) in total_evasion_cutoffs
-            .iter_mut()
-            .zip(report.quiescence_evasion_cutoffs)
-        {
-            *total += value;
-        }
-        total_tt_evasion_cutoffs += report.quiescence_tt_evasion_cutoffs;
-        max_quiescence_ply = max_quiescence_ply.max(report.max_quiescence_ply);
-        total_in_check_qnodes += report.in_check_qnodes;
-        total_negative_see_checks += report.negative_see_checks_considered;
-        total_repetition_hits += report.repetition_hits;
-        node_limit_stops += u64::from(report.stop_reason == SearchStopReason::NodeLimit);
-        time_limit_stops += u64::from(report.stop_reason == SearchStopReason::TimeLimit);
-        total_completed_depth += u64::from(report.completed_depth);
-        min_completed_depth = min_completed_depth.min(report.completed_depth);
-        max_completed_depth = max_completed_depth.max(report.completed_depth);
-        total_mate_nodes += report.mate_nodes;
-        total_mate_probes += report.mate_probes;
-        total_mate_proven += report.mate_proven;
-        total_mate_unknown += report.mate_unknown;
-        total_mate_rejected += report.mate_rejected;
-        mate_nodes_per_sample.push(report.mate_nodes);
     }
 
     let elapsed = start.elapsed();
@@ -217,11 +142,6 @@ where
 
     println!("model: {}", model_name);
     println!("samples: {}", args.samples);
-    println!("qcheck ply: {}", args.qcheck_ply);
-    println!(
-        "mate root/reply nodes: {}/{}",
-        args.mate_root_nodes, args.mate_reply_nodes
-    );
     println!("total nodes: {}", total_nodes);
     println!("quiescence nodes: {}", total_quiescence_nodes);
     println!(
@@ -246,50 +166,12 @@ where
         total_quiescence_terminal_mates
     );
     println!(
-        "selective qchecks considered/searched/reply-skipped: {}/{}/{}",
-        total_selective_qchecks_considered,
-        total_selective_qchecks_searched,
-        total_selective_qchecks_reply_skipped
-    );
-    println!("terminal mates: {}", total_terminal_mates);
-    println!(
         "check evasion extensions: {}",
         total_check_evasion_extensions
     );
     println!("aspiration fail lows: {}", total_aspiration_fail_lows);
     println!("aspiration fail highs: {}", total_aspiration_fail_highs);
     println!("aspiration researches: {}", total_aspiration_researches);
-    println!(
-        "q evasion cutoffs capture/king/move/drop: {}/{}/{}/{}",
-        total_evasion_cutoffs[0],
-        total_evasion_cutoffs[1],
-        total_evasion_cutoffs[2],
-        total_evasion_cutoffs[3]
-    );
-    println!("q TT evasion cutoffs: {}", total_tt_evasion_cutoffs);
-    println!("max quiescence ply: {}", max_quiescence_ply);
-    mate_nodes_per_sample.sort_unstable();
-    let mate_p95 = mate_nodes_per_sample[(mate_nodes_per_sample.len() - 1) * 95 / 100];
-    println!("mate nodes: {total_mate_nodes}");
-    println!("mate nodes p95: {mate_p95}");
-    println!("mate probes: {total_mate_probes}");
-    println!("mate proven: {total_mate_proven}");
-    println!("mate unknown: {total_mate_unknown}");
-    println!("mate rejected: {total_mate_rejected}");
-    println!("in-check qnodes: {}", total_in_check_qnodes);
-    println!(
-        "negative SEE checks considered: {}",
-        total_negative_see_checks
-    );
-    println!("repetition hits: {}", total_repetition_hits);
-    println!("node-limit stops: {}", node_limit_stops);
-    println!("time-limit stops: {}", time_limit_stops);
-    println!(
-        "completed depth avg/min/max: {:.2}/{}/{}",
-        total_completed_depth as f64 / args.samples as f64,
-        min_completed_depth,
-        max_completed_depth
-    );
     println!("elapsed ms: {:.2}", elapsed_secs * 1000.0);
     println!("nodes/sec: {:.2}", nps);
     println!(
@@ -321,9 +203,6 @@ fn main() -> Result<()> {
     let args = Args::parse();
     if args.samples == 0 {
         return Err(anyhow!("--samples must be greater than zero"));
-    }
-    if args.nodes == Some(0) {
-        return Err(anyhow!("--nodes must be greater than zero"));
     }
 
     let mut positions = load_positions(&args.positions)?;

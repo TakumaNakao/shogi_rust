@@ -89,7 +89,7 @@ pub static ZOBRIST_TABLE: Lazy<ZobristTable> = Lazy::new(|| {
 mod tests {
     use super::*;
     use crate::Position;
-    use shogi_core::{Color, Move, PartialPosition, Square};
+    use shogi_core::{Move, PartialPosition};
     use shogi_usi_parser::FromUsi;
     use std::collections::HashSet;
 
@@ -103,22 +103,6 @@ mod tests {
     fn default() {
         let pos = Position::default();
         assert_ne!(0, pos.key());
-    }
-
-    #[test]
-    fn white_position_key_matches_sfen_reconstruction() {
-        let mut reached = Position::default();
-        reached.do_move(Move::Normal {
-            from: Square::SQ_7G,
-            to: Square::SQ_7F,
-            promote: false,
-        });
-        assert_eq!(Color::White, reached.side_to_move());
-        let rebuilt = Position::new(
-            PartialPosition::from_usi(&format!("sfen {}", reached.to_sfen_owned()))
-                .expect("rebuild reached position"),
-        );
-        assert_eq!(reached.keys(), rebuilt.keys());
     }
 
     #[test]
