@@ -3,9 +3,13 @@ use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use shogi_ai::ai::ShogiAI;
-use shogi_ai::evaluation::{Evaluator, HybridNnueEvaluator, SparseModel, TinyNnueModel};
+use shogi_ai::evaluation::{
+    Evaluator, HalfKpModel, HalfKpSearchContext, HybridNnueEvaluator, SparseModel, TinyNnueModel,
+};
 use shogi_ai::utils::position_from_sfen_or_usi;
+use shogi_core::Move;
 use shogi_lib::Position;
+use std::any::Any;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -21,6 +25,8 @@ struct Args {
     nnue_weights: Option<PathBuf>,
     #[arg(long)]
     residual_nnue_weights: Option<PathBuf>,
+    #[arg(long)]
+    halfkp_weights: Option<PathBuf>,
     #[arg(long, default_value_t = 1.0)]
     residual_scale: f32,
     #[arg(long, default_value = "./taya36.sfen")]
@@ -62,6 +68,46 @@ struct SharedHybridNnueEvaluator<'a> {
 impl Evaluator for SharedHybridNnueEvaluator<'_> {
     fn evaluate(&self, position: &Position) -> f32 {
         self.model.predict_from_position(position)
+    }
+}
+
+struct SharedHalfKpEvaluator<'a> {
+    model: &'a HalfKpModel,
+}
+
+impl Evaluator for SharedHalfKpEvaluator<'_> {
+    fn evaluate(&self, position: &Position) -> f32 {
+        self.model.predict_from_position(position)
+    }
+
+    fn begin_context(&self, position: &Position) -> Option<Box<dyn Any + Send>> {
+        self.model
+            .begin_search_context(position)
+            .map(|ctx| Box::new(ctx) as Box<dyn Any + Send>)
+    }
+
+    fn evaluate_context(&self, position: &Position, context: &(dyn Any + Send)) -> Option<f32> {
+        context
+            .downcast_ref::<HalfKpSearchContext>()
+            .map(|ctx| self.model.evaluate_search_context(position, ctx))
+    }
+
+    fn prepare_context_move(&self, context: &mut (dyn Any + Send), position: &Position, mv: Move) {
+        if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
+            self.model.prepare_search_context(ctx, position, mv);
+        }
+    }
+
+    fn commit_context_move(&self, context: &mut (dyn Any + Send), position: &Position) {
+        if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
+            self.model.commit_search_context_move(ctx, position);
+        }
+    }
+
+    fn undo_context_move(&self, context: &mut (dyn Any + Send)) {
+        if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
+            self.model.undo_search_context(ctx);
+        }
     }
 }
 
@@ -214,6 +260,12 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow!("failed to load hybrid evaluator: {e}"))?;
         run_profile::<SharedHybridNnueEvaluator<'_>, _>(&args, &positions, "hybrid-nnue", || {
             SharedHybridNnueEvaluator { model: &model }
+        })
+    } else if let Some(path) = &args.halfkp_weights {
+        let model = HalfKpModel::load(path)
+            .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
+        run_profile::<SharedHalfKpEvaluator<'_>, _>(&args, &positions, "halfkp", || {
+            SharedHalfKpEvaluator { model: &model }
         })
     } else if let Some(path) = &args.nnue_weights {
         let model = TinyNnueModel::load(path)

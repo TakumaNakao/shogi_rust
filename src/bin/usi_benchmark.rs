@@ -4,7 +4,7 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
-use shogi_ai::evaluation::SparseModel;
+use shogi_ai::evaluation::{EngineEvaluator, Evaluator};
 use shogi_ai::sennichite::{SennichiteDetector, SennichiteStatus};
 use shogi_ai::utils::{parse_usi_move, position_from_sfen_or_usi};
 use shogi_core::{Color, Move, Piece};
@@ -241,12 +241,8 @@ fn load_positions(path: &Path) -> Result<Vec<String>> {
     Ok(positions)
 }
 
-fn load_model(path: &Path) -> Result<SparseModel> {
-    let mut model = SparseModel::new(0.0, 0.0);
-    model
-        .load(path)
-        .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
-    Ok(model)
+fn load_model(path: &Path) -> Result<EngineEvaluator> {
+    EngineEvaluator::new(path, 0.0).map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))
 }
 
 fn parse_engine_move(position: &Position, bestmove: &str) -> Option<Move> {
@@ -266,7 +262,7 @@ fn parse_engine_move(position: &Position, bestmove: &str) -> Option<Move> {
 fn play_game(
     new_engine: &mut EngineProcess,
     baseline_engine: &mut EngineProcess,
-    adjudication_model: Option<&SparseModel>,
+    adjudication_model: Option<&EngineEvaluator>,
     start_sfen: &str,
     new_is_black: bool,
     max_plies: usize,
@@ -343,7 +339,7 @@ fn play_game(
     }
 
     if let Some(model) = adjudication_model {
-        let score = model.predict_from_position(&position);
+        let score = model.evaluate(&position);
         let score_for_new = match position.side_to_move() {
             Color::Black if new_is_black => score,
             Color::White if !new_is_black => score,

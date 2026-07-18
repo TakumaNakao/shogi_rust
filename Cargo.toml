@@ -3,6 +3,16 @@ name = "shogi_ai"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+halfkp64 = []
+
+# Keep the distributed CPU binary optimized across Linux and Windows MSVC.
+# ThinLTO improves cross-module inlining without the memory cost of full LTO.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [dependencies]
 shogi_core = { version = "0.1.5" }
 csa = "1.0.2"
@@ -41,6 +51,10 @@ path = "src/bin/shogi_game.rs"
 [[bin]]
 name = "usi_engine"
 path = "src/bin/usi_engine.rs"
+
+[[bin]]
+name = "usi_benchmark"
+path = "src/bin/usi_benchmark.rs"
 
 [[bin]]
 name = "kpp_weight_check"
@@ -97,6 +111,34 @@ path = "src/bin/csa_policy_dump.rs"
 [[bin]]
 name = "dataset_build"
 path = "src/bin/dataset_build.rs"
+
+[[bin]]
+name = "halfkp_feature_dump"
+path = "src/bin/halfkp_feature_dump.rs"
+
+[[bin]]
+name = "halfkp_trace_bench"
+path = "src/bin/halfkp_trace_bench.rs"
+
+[[bin]]
+name = "halfkp_train"
+path = "src/bin/halfkp_train.rs"
+
+[[bin]]
+name = "halfkp_kpp_train"
+path = "src/bin/halfkp_kpp_train.rs"
+
+[[bin]]
+name = "kpp_position_pool"
+path = "src/bin/kpp_position_pool.rs"
+
+[[bin]]
+name = "halfkp_dataset_shard"
+path = "src/bin/halfkp_dataset_shard.rs"
+
+[[bin]]
+name = "halfkp_rank_dataset"
+path = "src/bin/halfkp_rank_dataset.rs"
 
 [[bin]]
 name = "mmto_balance_dataset"
