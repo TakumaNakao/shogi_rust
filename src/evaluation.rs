@@ -731,11 +731,15 @@ fn read_f32_le(file: &mut File) -> Result<f32> {
 }
 
 fn read_f32_vec(file: &mut File, len: usize) -> Result<Vec<f32>> {
-    let mut values = Vec::with_capacity(len);
-    for _ in 0..len {
-        values.push(read_f32_le(file)?);
-    }
-    Ok(values)
+    let byte_len = len
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| anyhow!("f32 vector byte length overflow"))?;
+    let mut bytes = vec![0u8; byte_len];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
 }
 
 fn read_f32_array<const N: usize>(file: &mut File) -> Result<[f32; N]> {
