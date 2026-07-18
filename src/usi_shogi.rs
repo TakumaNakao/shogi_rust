@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use crate::utils::{format_move_usi, parse_usi_move, position_from_sfen_or_usi};
 
@@ -29,6 +30,7 @@ struct UsiEngine {
     eval_file_path: Option<PathBuf>,
     residual_eval_file_path: Option<PathBuf>,
     residual_scale: f32,
+    eval_dirty: bool,
     max_depth: u8,
     search_time_limit: u64,
     threads: usize,
@@ -43,6 +45,7 @@ impl UsiEngine {
             eval_file_path: None,
             residual_eval_file_path: None,
             residual_scale: 1.0,
+            eval_dirty: false,
             max_depth: 30,            // Default max depth
             search_time_limit: 10000, // Default time limit in ms
             threads: 1,
@@ -96,7 +99,11 @@ impl UsiEngine {
         println!("usiok");
     }
 
-    fn handle_isready(&self) {
+    fn handle_isready(&mut self) {
+        if self.eval_dirty {
+            self.rebuild_ai();
+            self.eval_dirty = false;
+        }
         println!("readyok");
     }
 
@@ -104,6 +111,7 @@ impl UsiEngine {
         let Some(eval_path) = self.eval_file_path.clone() else {
             return;
         };
+        let started_at = Instant::now();
         let evaluator_result = if let Some(residual_path) = &self.residual_eval_file_path {
             HybridNnueEvaluator::new(&eval_path, residual_path, self.residual_scale)
                 .map(EngineEvaluator::HybridNnue)
@@ -118,16 +126,18 @@ impl UsiEngine {
                 *self.ai.lock().unwrap() = Some(new_ai);
                 if let Some(residual_path) = &self.residual_eval_file_path {
                     eprintln!(
-                        "info string Loaded {} evaluation files: base={} residual={} residual_scale={}",
+                        "info string Loaded {} evaluation files in {} ms: base={} residual={} residual_scale={}",
                         evaluator_name,
+                        started_at.elapsed().as_millis(),
                         eval_path.display(),
                         residual_path.display(),
                         self.residual_scale
                     );
                 } else {
                     eprintln!(
-                        "info string Loaded {} evaluation file: {}",
+                        "info string Loaded {} evaluation file in {} ms: {}",
                         evaluator_name,
+                        started_at.elapsed().as_millis(),
                         eval_path.display()
                     );
                 }
@@ -146,21 +156,29 @@ impl UsiEngine {
             match tokens.get(2) {
                 Some(&"EvalFile") => {
                     if let Some(path_str) = tokens.get(4) {
-                        self.eval_file_path = Some(PathBuf::from(path_str));
-                        self.rebuild_ai();
+                        let path = PathBuf::from(path_str);
+                        if self.eval_file_path.as_ref() != Some(&path) {
+                            self.eval_file_path = Some(path);
+                            self.eval_dirty = true;
+                        }
                     }
                 }
                 Some(&"ResidualEvalFile") => {
                     if let Some(path_str) = tokens.get(4) {
-                        self.residual_eval_file_path = Some(PathBuf::from(path_str));
-                        self.rebuild_ai();
+                        let path = PathBuf::from(path_str);
+                        if self.residual_eval_file_path.as_ref() != Some(&path) {
+                            self.residual_eval_file_path = Some(path);
+                            self.eval_dirty = true;
+                        }
                     }
                 }
                 Some(&"ResidualScale") => {
                     if let Some(val_str) = tokens.get(4) {
                         if let Ok(val) = val_str.parse::<f32>() {
-                            self.residual_scale = val;
-                            self.rebuild_ai();
+                            if self.residual_scale != val {
+                                self.residual_scale = val;
+                                self.eval_dirty |= self.residual_eval_file_path.is_some();
+                            }
                         }
                     }
                 }
