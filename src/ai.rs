@@ -10,11 +10,14 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_DEPTH: usize = 64;
 const TRANSPOSITION_TABLE_MAX_ENTRIES: usize = 1_000_000;
+const SHARED_TT_SHARDS: usize = 4096;
+const SHARED_TT_ENTRIES_PER_SHARD: usize = TRANSPOSITION_TABLE_MAX_ENTRIES / SHARED_TT_SHARDS + 1;
 const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
@@ -65,12 +68,103 @@ struct TranspositionEntry {
     generation: u32,
 }
 
+struct SharedTranspositionTable {
+    shards: Box<[RwLock<HashMap<u64, TranspositionEntry>>]>,
+}
+
+impl SharedTranspositionTable {
+    fn new() -> Self {
+        let shards = (0..SHARED_TT_SHARDS)
+            .map(|_| RwLock::new(HashMap::with_capacity(SHARED_TT_ENTRIES_PER_SHARD)))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self { shards }
+    }
+
+    #[inline]
+    fn shard_index(hash: u64) -> usize {
+        (hash as usize) & (SHARED_TT_SHARDS - 1)
+    }
+
+    fn get(&self, hash: u64) -> Option<TranspositionEntry> {
+        let shard = self.shards[Self::shard_index(hash)]
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        shard.get(&hash).copied()
+    }
+
+    fn insert(&self, hash: u64, entry: TranspositionEntry) {
+        let mut shard = self.shards[Self::shard_index(hash)]
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !shard.contains_key(&hash) && shard.len() >= SHARED_TT_ENTRIES_PER_SHARD {
+            let replacement = shard
+                .iter()
+                .take(8)
+                .min_by_key(|(_, candidate)| {
+                    (candidate.generation == entry.generation, candidate.depth)
+                })
+                .map(|(&key, _)| key);
+            if let Some(key) = replacement {
+                shard.remove(&key);
+            }
+        }
+        shard.insert(hash, entry);
+    }
+
+    fn clear(&self) {
+        for shard in &self.shards {
+            shard
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
+        }
+    }
+}
+
+enum TranspositionTable {
+    Local(HashMap<u64, TranspositionEntry>),
+    Shared(Arc<SharedTranspositionTable>),
+}
+
+impl TranspositionTable {
+    fn get(&self, hash: u64) -> Option<TranspositionEntry> {
+        match self {
+            Self::Local(table) => table.get(&hash).copied(),
+            Self::Shared(table) => table.get(hash),
+        }
+    }
+
+    fn insert(&mut self, hash: u64, entry: TranspositionEntry) {
+        match self {
+            Self::Local(table) => {
+                table.insert(hash, entry);
+            }
+            Self::Shared(table) => table.insert(hash, entry),
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            Self::Local(table) => table.clear(),
+            Self::Shared(table) => table.clear(),
+        }
+    }
+
+    fn local_len(&self) -> Option<usize> {
+        match self {
+            Self::Local(table) => Some(table.len()),
+            Self::Shared(_) => None,
+        }
+    }
+}
+
 /// 将棋のアルファベータ探索を管理する構造体
 pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     move_ordering: MoveOrdering,
     pub evaluator: E,
     pub sennichite_detector: SennichiteDetector<HISTORY_CAPACITY>,
-    transposition_table: HashMap<u64, TranspositionEntry>,
+    transposition_table: TranspositionTable,
     killer_moves: [[Option<Move>; 2]; MAX_DEPTH],
     start_time: Option<Instant>,
     time_limit: Option<Duration>,
@@ -91,6 +185,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
     eval_context: Option<Box<dyn Any + Send>>,
+    last_completed_depth: u8,
 }
 
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
@@ -99,7 +194,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             move_ordering: MoveOrdering::new(),
             evaluator,
             sennichite_detector: SennichiteDetector::new(),
-            transposition_table: HashMap::new(),
+            transposition_table: TranspositionTable::Local(HashMap::new()),
             killer_moves: [[None; 2]; MAX_DEPTH],
             start_time: None,
             time_limit: None,
@@ -120,7 +215,19 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             search_generation: 0,
             stop_signal: None,
             eval_context: None,
+            last_completed_depth: 0,
         }
+    }
+
+    fn new_with_shared_tt(
+        evaluator: E,
+        transposition_table: Arc<SharedTranspositionTable>,
+        search_generation: u32,
+    ) -> Self {
+        let mut ai = Self::new(evaluator);
+        ai.transposition_table = TranspositionTable::Shared(transposition_table);
+        ai.search_generation = search_generation;
+        ai
     }
 
     fn begin_eval_context(&mut self, position: &Position) {
@@ -220,6 +327,25 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn aspiration_researches(&self) -> u64 {
         self.aspiration_researches
+    }
+
+    pub fn last_completed_depth(&self) -> u8 {
+        self.last_completed_depth
+    }
+
+    fn absorb_statistics(&mut self, other: &Self) {
+        self.nodes_searched += other.nodes_searched;
+        self.quiescence_nodes_searched += other.quiescence_nodes_searched;
+        self.quiescence_moves_considered += other.quiescence_moves_considered;
+        self.quiescence_moves_generated += other.quiescence_moves_generated;
+        self.quiescence_moves_discarded += other.quiescence_moves_discarded;
+        self.quiescence_moves_searched += other.quiescence_moves_searched;
+        self.quiescence_see_skips += other.quiescence_see_skips;
+        self.quiescence_terminal_mates += other.quiescence_terminal_mates;
+        self.check_evasion_extensions += other.check_evasion_extensions;
+        self.aspiration_fail_lows += other.aspiration_fail_lows;
+        self.aspiration_fail_highs += other.aspiration_fail_highs;
+        self.aspiration_researches += other.aspiration_researches;
     }
 
     fn update_killer_moves(&mut self, depth: u8, mv: Move) {
@@ -423,7 +549,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.nodes_searched += 1;
 
         let hash = PositionHasher::calculate_hash(position);
-        let tt_entry = self.transposition_table.get(&hash).copied();
+        let tt_entry = self.transposition_table.get(hash);
         let tt_best_move = tt_entry.and_then(|entry| entry.best_move);
         if let Some(entry) = tt_entry {
             if entry.generation == self.search_generation && entry.depth >= depth {
@@ -557,8 +683,24 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         max_depth: u8,
         time_limit_ms: Option<u64>,
     ) -> Option<Move> {
+        self.find_best_move_with_root_offset(position, max_depth, time_limit_ms, 0, true)
+    }
+
+    fn find_best_move_with_root_offset(
+        &mut self,
+        position: &mut Position,
+        max_depth: u8,
+        time_limit_ms: Option<u64>,
+        root_offset: usize,
+        primary_worker: bool,
+    ) -> Option<Move> {
         self.begin_eval_context(position);
-        if self.transposition_table.len() > TRANSPOSITION_TABLE_MAX_ENTRIES {
+        if primary_worker
+            && self
+                .transposition_table
+                .local_len()
+                .is_some_and(|len| len > TRANSPOSITION_TABLE_MAX_ENTRIES)
+        {
             self.transposition_table.clear();
         }
         self.search_generation = self.search_generation.wrapping_add(1);
@@ -582,6 +724,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.aspiration_fail_lows = 0;
         self.aspiration_fail_highs = 0;
         self.aspiration_researches = 0;
+        self.last_completed_depth = 0;
 
         let moves = position.legal_moves();
         if moves.is_empty() {
@@ -597,7 +740,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let root_hash = PositionHasher::calculate_hash(position);
         if let Some(tt_move) = self
             .transposition_table
-            .get(&root_hash)
+            .get(root_hash)
             .and_then(|entry| entry.best_move)
         {
             if let Some(pos) = sorted_moves.iter().position(|&(m, _)| m == tt_move) {
@@ -614,6 +757,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     let mv = sorted_moves.remove(pos);
                     sorted_moves.insert(0, mv);
                 }
+            }
+            if root_offset > 0 && sorted_moves.len() > 1 {
+                let offset = (root_offset + depth as usize - 1) % sorted_moves.len();
+                sorted_moves.rotate_left(offset);
             }
             let mut current_best_move_for_depth: Option<Move> = None;
             let mut best_eval_for_depth = -f32::INFINITY;
@@ -733,6 +880,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     best_move = Some(current_best_move);
                     previous_eval = Some(best_eval_for_depth);
                 }
+                self.last_completed_depth = depth;
                 if let Some(bm) = best_move {
                     self.move_ordering
                         .update_history(&bm, position, depth as i32 * 20);
@@ -769,11 +917,94 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 }
 
+impl<E, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY>
+where
+    E: Evaluator + Clone + Send + Sync + 'static,
+{
+    pub fn find_best_move_parallel(
+        &mut self,
+        position: &mut Position,
+        max_depth: u8,
+        time_limit_ms: Option<u64>,
+        threads: usize,
+    ) -> Option<Move> {
+        let threads = threads.max(1);
+        if threads == 1 {
+            if matches!(&self.transposition_table, TranspositionTable::Shared(_)) {
+                self.transposition_table = TranspositionTable::Local(HashMap::new());
+            }
+            return self.find_best_move(position, max_depth, time_limit_ms);
+        }
+
+        let shared_tt = match &self.transposition_table {
+            TranspositionTable::Shared(table) => table.clone(),
+            TranspositionTable::Local(_) => {
+                let table = Arc::new(SharedTranspositionTable::new());
+                self.transposition_table = TranspositionTable::Shared(table.clone());
+                table
+            }
+        };
+        let stop_signal = self
+            .stop_signal
+            .clone()
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        stop_signal.store(false, Ordering::Relaxed);
+        self.stop_signal = Some(stop_signal.clone());
+
+        let evaluator = self.evaluator.clone();
+        let generation = self.search_generation;
+        let root_position = position.clone();
+        let emit_info = self.emit_info;
+
+        thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(threads - 1);
+            for worker_id in 1..threads {
+                let evaluator = evaluator.clone();
+                let table = shared_tt.clone();
+                let stop_signal = stop_signal.clone();
+                let mut worker_position = root_position.clone();
+                handles.push(scope.spawn(move || {
+                    let mut worker = ShogiAI::new_with_shared_tt(evaluator, table, generation);
+                    worker.set_emit_info(false);
+                    worker.set_stop_signal(Some(stop_signal));
+                    let best_move = worker.find_best_move_with_root_offset(
+                        &mut worker_position,
+                        max_depth,
+                        time_limit_ms,
+                        worker_id,
+                        false,
+                    );
+                    (best_move, worker)
+                }));
+            }
+
+            self.set_emit_info(emit_info);
+            let main_move =
+                self.find_best_move_with_root_offset(position, max_depth, time_limit_ms, 0, true);
+            stop_signal.store(true, Ordering::Relaxed);
+
+            let mut selected_move = main_move;
+            let mut selected_depth = self.last_completed_depth;
+            for handle in handles {
+                let (worker_move, worker) = handle.join().expect("parallel search worker panicked");
+                if worker.last_completed_depth > selected_depth {
+                    selected_depth = worker.last_completed_depth;
+                    selected_move = worker_move;
+                }
+                self.absorb_statistics(&worker);
+            }
+            self.last_completed_depth = selected_depth;
+            selected_move
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::utils::position_from_sfen_or_usi;
 
+    #[derive(Clone, Copy)]
     struct ZeroEvaluator;
 
     impl Evaluator for ZeroEvaluator {
@@ -815,5 +1046,70 @@ mod tests {
         ai.sennichite_detector.record_position(&position);
 
         assert!(ai.find_best_move(&mut position, 5, None).is_some());
+    }
+
+    #[test]
+    fn one_thread_parallel_entry_matches_legacy_search() {
+        let position = Position::default();
+        let mut legacy_position = position.clone();
+        let mut parallel_position = position;
+        let mut legacy = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        let mut parallel = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        legacy.set_emit_info(false);
+        parallel.set_emit_info(false);
+
+        let legacy_move = legacy.find_best_move(&mut legacy_position, 4, None);
+        let parallel_move = parallel.find_best_move_parallel(&mut parallel_position, 4, None, 1);
+
+        assert_eq!(legacy_move, parallel_move);
+        assert_eq!(legacy.nodes_searched(), parallel.nodes_searched());
+        assert_eq!(
+            legacy.last_completed_depth(),
+            parallel.last_completed_depth()
+        );
+    }
+
+    #[test]
+    fn parallel_search_returns_a_legal_move_and_restores_position() {
+        let mut position = Position::default();
+        let original_sfen = position.to_sfen_owned();
+        let legal_moves = position.legal_moves();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_emit_info(false);
+
+        let best_move = ai
+            .find_best_move_parallel(&mut position, 4, None, 4)
+            .expect("parallel search should find a move");
+
+        assert!(legal_moves.contains(&best_move));
+        assert_eq!(original_sfen, position.to_sfen_owned());
+        assert_eq!(4, ai.last_completed_depth());
+    }
+
+    #[test]
+    fn shared_transposition_table_handles_concurrent_access() {
+        let table = Arc::new(SharedTranspositionTable::new());
+        thread::scope(|scope| {
+            for worker in 0..8u64 {
+                let table = table.clone();
+                scope.spawn(move || {
+                    for index in 0..10_000u64 {
+                        let hash = index.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ worker;
+                        let entry = TranspositionEntry {
+                            score: worker as f32,
+                            depth: (index % 32) as u8,
+                            node_type: NodeType::Exact,
+                            best_move: None,
+                            generation: 7,
+                        };
+                        table.insert(hash, entry);
+                        if let Some(read) = table.get(hash) {
+                            assert_eq!(7, read.generation);
+                            assert!(read.score.is_finite());
+                        }
+                    }
+                });
+            }
+        });
     }
 }

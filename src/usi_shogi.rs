@@ -31,7 +31,8 @@ struct UsiEngine {
     residual_scale: f32,
     max_depth: u8,
     search_time_limit: u64,
-    ai: Arc<Mutex<Option<ShogiAI<EngineEvaluator, HISTORY_CAPACITY>>>>,
+    threads: usize,
+    ai: Arc<Mutex<Option<ShogiAI<Arc<EngineEvaluator>, HISTORY_CAPACITY>>>>,
 }
 
 impl UsiEngine {
@@ -44,6 +45,7 @@ impl UsiEngine {
             residual_scale: 1.0,
             max_depth: 30,            // Default max depth
             search_time_limit: 10000, // Default time limit in ms
+            threads: 1,
             ai: Arc::new(Mutex::new(None)),
         }
     }
@@ -87,6 +89,10 @@ impl UsiEngine {
             "option name SearchTimeLimit type spin default {} min 100 max 300000",
             self.search_time_limit
         );
+        println!(
+            "option name Threads type spin default {} min 1 max 256",
+            self.threads
+        );
         println!("usiok");
     }
 
@@ -108,7 +114,7 @@ impl UsiEngine {
         match evaluator_result {
             Ok(evaluator) => {
                 let evaluator_name = evaluator.name();
-                let new_ai = ShogiAI::new(evaluator);
+                let new_ai = ShogiAI::new(Arc::new(evaluator));
                 *self.ai.lock().unwrap() = Some(new_ai);
                 if let Some(residual_path) = &self.residual_eval_file_path {
                     eprintln!(
@@ -169,6 +175,13 @@ impl UsiEngine {
                     if let Some(val_str) = tokens.get(4) {
                         if let Ok(val) = val_str.parse::<u64>() {
                             self.search_time_limit = val;
+                        }
+                    }
+                }
+                Some(&"Threads") => {
+                    if let Some(val_str) = tokens.get(4) {
+                        if let Ok(value) = val_str.parse::<usize>() {
+                            self.threads = value.clamp(1, 256);
                         }
                     }
                 }
@@ -300,16 +313,18 @@ impl UsiEngine {
         let mut position = self.position.clone();
         let stop_signal = self.stop_signal.clone();
         let ai = self.ai.clone();
+        let threads = self.threads;
 
         thread::spawn(move || {
             let mut ai_lock = ai.lock().unwrap();
             if let Some(thinking_ai) = ai_lock.as_mut() {
                 thinking_ai.set_stop_signal(Some(stop_signal.clone()));
                 thinking_ai.set_emit_info(true);
-                let best_move = thinking_ai.find_best_move(
+                let best_move = thinking_ai.find_best_move_parallel(
                     &mut position,
                     limits.max_depth,
                     limits.time_limit_ms,
+                    threads,
                 );
                 if let Some(best_move) = best_move {
                     thinking_ai.set_stop_signal(None);
