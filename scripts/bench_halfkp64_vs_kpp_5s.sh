@@ -15,12 +15,18 @@ DEPTH="${DEPTH:-32}"
 MAX_PLIES="${MAX_PLIES:-256}"
 SEED="${SEED:-20260716}"
 JOBS="${JOBS:-1}"
+HALFKP_THREADS="${HALFKP_THREADS:-1}"
+KPP_THREADS="${KPP_THREADS:-1}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/data/bench_halfkp64_vs_kpp_5s}"
 HALFKP_WEIGHTS="${HALFKP_WEIGHTS:-$ROOT_DIR/data/policy_weights_halfkp64_kpp_distilled.binary}"
 KPP_WEIGHTS="${KPP_WEIGHTS:-$ROOT_DIR/policy_weights_v2.1.0.binary}"
 
 if (( GAMES < 2 || GAMES % 2 != 0 )); then
   echo "GAMES must be an even number >= 2 (paired side swaps)" >&2
+  exit 2
+fi
+if (( HALFKP_THREADS < 1 || KPP_THREADS < 1 )); then
+  echo "HALFKP_THREADS and KPP_THREADS must be >= 1" >&2
   exit 2
 fi
 [[ -s "$POSITIONS" ]] || { echo "positions file not found: $POSITIONS" >&2; exit 2; }
@@ -56,6 +62,8 @@ echo "[3/4] Running $GAMES paired games at ${TIME_LIMIT_MS} ms/move"
   --games "$GAMES" \
   --depth "$DEPTH" \
   --time-limit-ms "$TIME_LIMIT_MS" \
+  --new-threads "$HALFKP_THREADS" \
+  --baseline-threads "$KPP_THREADS" \
   --max-plies "$MAX_PLIES" \
   --jobs "$JOBS" \
   --seed "$SEED" \
@@ -63,8 +71,10 @@ echo "[3/4] Running $GAMES paired games at ${TIME_LIMIT_MS} ms/move"
 
 echo "[4/4] Measuring search speed with the same time limit"
 "$KPP_PROFILE" --weights "$KPP_WEIGHTS" --positions "$POSITIONS" --samples "$GAMES" \
-  --depth "$DEPTH" --time-limit-ms "$TIME_LIMIT_MS" --seed "$SEED" | tee "$KPP_SPEED_LOG"
+  --depth "$DEPTH" --time-limit-ms "$TIME_LIMIT_MS" --threads "$KPP_THREADS" \
+  --seed "$SEED" | tee "$KPP_SPEED_LOG"
 "$HALFKP_PROFILE" --halfkp-weights "$HALFKP_WEIGHTS" --positions "$POSITIONS" --samples "$GAMES" \
-  --depth "$DEPTH" --time-limit-ms "$TIME_LIMIT_MS" --seed "$SEED" | tee "$HALFKP_SPEED_LOG"
+  --depth "$DEPTH" --time-limit-ms "$TIME_LIMIT_MS" --threads "$HALFKP_THREADS" \
+  --seed "$SEED" | tee "$HALFKP_SPEED_LOG"
 
 echo "Results: $OUT_DIR"

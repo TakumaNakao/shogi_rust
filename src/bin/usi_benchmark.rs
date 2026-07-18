@@ -35,6 +35,10 @@ struct Args {
     new_residual_scale: f32,
     #[arg(long, default_value_t = 1.0)]
     baseline_residual_scale: f32,
+    #[arg(long, default_value_t = 1)]
+    new_threads: usize,
+    #[arg(long, default_value_t = 1)]
+    baseline_threads: usize,
     #[arg(long, default_value = "./taya36.sfen")]
     positions: PathBuf,
     #[arg(long, default_value_t = 20)]
@@ -93,6 +97,7 @@ impl EngineProcess {
         residual_scale: f32,
         depth: u8,
         time_limit_ms: u64,
+        threads: usize,
     ) -> Result<Self> {
         let mut child = Command::new(engine_path)
             .stdin(Stdio::piped())
@@ -133,6 +138,7 @@ impl EngineProcess {
             "setoption name SearchTimeLimit value {}",
             time_limit_ms
         ))?;
+        engine.send(&format!("setoption name Threads value {}", threads))?;
         engine.send("isready")?;
         engine.read_until("readyok")?;
 
@@ -443,6 +449,9 @@ fn main() -> Result<()> {
     if args.jobs == 0 {
         return Err(anyhow!("--jobs must be greater than zero"));
     }
+    if args.new_threads == 0 || args.baseline_threads == 0 {
+        return Err(anyhow!("thread counts must be greater than zero"));
+    }
 
     let mut positions = load_positions(&args.positions)?;
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
@@ -471,6 +480,7 @@ fn main() -> Result<()> {
             args.new_residual_scale,
             args.depth,
             args.time_limit_ms,
+            args.new_threads,
         )?;
         let mut baseline_engine = EngineProcess::start(
             &args.baseline_engine,
@@ -479,6 +489,7 @@ fn main() -> Result<()> {
             args.baseline_residual_scale,
             args.depth,
             args.time_limit_ms,
+            args.baseline_threads,
         )?;
         let result = play_game(
             &mut new_engine,

@@ -12,6 +12,7 @@ use shogi_lib::Position;
 use std::any::Any;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 const HISTORY_CAPACITY: usize = 256;
@@ -39,43 +40,49 @@ struct Args {
     time_limit_ms: Option<u64>,
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    #[arg(long, default_value_t = 1)]
+    threads: usize,
 }
 
-struct SharedModelEvaluator<'a> {
-    model: &'a SparseModel,
+#[derive(Clone)]
+struct SharedModelEvaluator {
+    model: Arc<SparseModel>,
 }
 
-impl Evaluator for SharedModelEvaluator<'_> {
+impl Evaluator for SharedModelEvaluator {
     fn evaluate(&self, position: &Position) -> f32 {
         self.model.predict_from_position(position)
     }
 }
 
-struct SharedTinyNnueEvaluator<'a> {
-    model: &'a TinyNnueModel,
+#[derive(Clone)]
+struct SharedTinyNnueEvaluator {
+    model: Arc<TinyNnueModel>,
 }
 
-impl Evaluator for SharedTinyNnueEvaluator<'_> {
+impl Evaluator for SharedTinyNnueEvaluator {
     fn evaluate(&self, position: &Position) -> f32 {
         self.model.predict_from_position(position)
     }
 }
 
-struct SharedHybridNnueEvaluator<'a> {
-    model: &'a HybridNnueEvaluator,
+#[derive(Clone)]
+struct SharedHybridNnueEvaluator {
+    model: Arc<HybridNnueEvaluator>,
 }
 
-impl Evaluator for SharedHybridNnueEvaluator<'_> {
+impl Evaluator for SharedHybridNnueEvaluator {
     fn evaluate(&self, position: &Position) -> f32 {
         self.model.predict_from_position(position)
     }
 }
 
-struct SharedHalfKpEvaluator<'a> {
-    model: &'a HalfKpModel,
+#[derive(Clone)]
+struct SharedHalfKpEvaluator {
+    model: Arc<HalfKpModel>,
 }
 
-impl Evaluator for SharedHalfKpEvaluator<'_> {
+impl Evaluator for SharedHalfKpEvaluator {
     fn evaluate(&self, position: &Position) -> f32 {
         self.model.predict_from_position(position)
     }
@@ -140,7 +147,7 @@ fn run_profile<E, F>(
     mut make_evaluator: F,
 ) -> Result<()>
 where
-    E: Evaluator,
+    E: Evaluator + Clone + Send + Sync + 'static,
     F: FnMut() -> E,
 {
     let mut total_nodes = 0u64;
@@ -155,6 +162,7 @@ where
     let mut total_aspiration_fail_lows = 0u64;
     let mut total_aspiration_fail_highs = 0u64;
     let mut total_aspiration_researches = 0u64;
+    let mut total_completed_depth = 0u64;
     let start = Instant::now();
 
     for i in 0..args.samples {
@@ -163,7 +171,7 @@ where
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
         ai.set_emit_info(false);
         ai.sennichite_detector.record_position(&position);
-        ai.find_best_move(&mut position, args.depth, args.time_limit_ms);
+        ai.find_best_move_parallel(&mut position, args.depth, args.time_limit_ms, args.threads);
         total_nodes += ai.nodes_searched();
         total_quiescence_nodes += ai.quiescence_nodes_searched();
         total_quiescence_moves_considered += ai.quiescence_moves_considered();
@@ -176,6 +184,7 @@ where
         total_aspiration_fail_lows += ai.aspiration_fail_lows();
         total_aspiration_fail_highs += ai.aspiration_fail_highs();
         total_aspiration_researches += ai.aspiration_researches();
+        total_completed_depth += ai.last_completed_depth() as u64;
     }
 
     let elapsed = start.elapsed();
@@ -187,6 +196,7 @@ where
     };
 
     println!("model: {}", model_name);
+    println!("threads: {}", args.threads);
     println!("samples: {}", args.samples);
     println!("total nodes: {}", total_nodes);
     println!("quiescence nodes: {}", total_quiescence_nodes);
@@ -225,6 +235,10 @@ where
         total_nodes as f64 / args.samples as f64
     );
     println!(
+        "avg completed depth: {:.2}",
+        total_completed_depth as f64 / args.samples as f64
+    );
+    println!(
         "quiescence node rate: {:.2}%",
         total_quiescence_nodes as f64 / total_nodes.max(1) as f64 * 100.0
     );
@@ -250,33 +264,50 @@ fn main() -> Result<()> {
     if args.samples == 0 {
         return Err(anyhow!("--samples must be greater than zero"));
     }
+    if args.threads == 0 {
+        return Err(anyhow!("--threads must be greater than zero"));
+    }
 
     let mut positions = load_positions(&args.positions)?;
     let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
     positions.shuffle(&mut rng);
 
     if let Some(path) = &args.residual_nnue_weights {
-        let model = HybridNnueEvaluator::new(&args.weights, path, args.residual_scale)
-            .map_err(|e| anyhow!("failed to load hybrid evaluator: {e}"))?;
-        run_profile::<SharedHybridNnueEvaluator<'_>, _>(&args, &positions, "hybrid-nnue", || {
-            SharedHybridNnueEvaluator { model: &model }
+        let model = Arc::new(
+            HybridNnueEvaluator::new(&args.weights, path, args.residual_scale)
+                .map_err(|e| anyhow!("failed to load hybrid evaluator: {e}"))?,
+        );
+        run_profile::<SharedHybridNnueEvaluator, _>(&args, &positions, "hybrid-nnue", || {
+            SharedHybridNnueEvaluator {
+                model: model.clone(),
+            }
         })
     } else if let Some(path) = &args.halfkp_weights {
-        let model = HalfKpModel::load(path)
-            .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
-        run_profile::<SharedHalfKpEvaluator<'_>, _>(&args, &positions, "halfkp", || {
-            SharedHalfKpEvaluator { model: &model }
+        let model = Arc::new(
+            HalfKpModel::load(path)
+                .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?,
+        );
+        run_profile::<SharedHalfKpEvaluator, _>(&args, &positions, "halfkp", || {
+            SharedHalfKpEvaluator {
+                model: model.clone(),
+            }
         })
     } else if let Some(path) = &args.nnue_weights {
-        let model = TinyNnueModel::load(path)
-            .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?;
-        run_profile::<SharedTinyNnueEvaluator<'_>, _>(&args, &positions, "tiny-nnue", || {
-            SharedTinyNnueEvaluator { model: &model }
+        let model = Arc::new(
+            TinyNnueModel::load(path)
+                .map_err(|e| anyhow!("failed to load {}: {}", path.display(), e))?,
+        );
+        run_profile::<SharedTinyNnueEvaluator, _>(&args, &positions, "tiny-nnue", || {
+            SharedTinyNnueEvaluator {
+                model: model.clone(),
+            }
         })
     } else {
-        let model = load_model(&args.weights)?;
-        run_profile::<SharedModelEvaluator<'_>, _>(&args, &positions, "sparse", || {
-            SharedModelEvaluator { model: &model }
+        let model = Arc::new(load_model(&args.weights)?);
+        run_profile::<SharedModelEvaluator, _>(&args, &positions, "sparse", || {
+            SharedModelEvaluator {
+                model: model.clone(),
+            }
         })
     }
 }

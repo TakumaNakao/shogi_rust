@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{_mm256_add_ps, _mm256_loadu_ps, _mm256_storeu_ps, _mm256_sub_ps};
@@ -289,6 +289,41 @@ pub trait Evaluator {
     ) {
     }
     fn undo_context_move(&self, _context: &mut (dyn Any + Send)) {}
+}
+
+impl<T: Evaluator + ?Sized> Evaluator for Arc<T> {
+    fn evaluate(&self, position: &shogi_lib::Position) -> f32 {
+        (**self).evaluate(position)
+    }
+
+    fn begin_context(&self, position: &shogi_lib::Position) -> Option<Box<dyn Any + Send>> {
+        (**self).begin_context(position)
+    }
+
+    fn evaluate_context(
+        &self,
+        position: &shogi_lib::Position,
+        context: &(dyn Any + Send),
+    ) -> Option<f32> {
+        (**self).evaluate_context(position, context)
+    }
+
+    fn prepare_context_move(
+        &self,
+        context: &mut (dyn Any + Send),
+        position: &shogi_lib::Position,
+        mv: Move,
+    ) {
+        (**self).prepare_context_move(context, position, mv);
+    }
+
+    fn commit_context_move(&self, context: &mut (dyn Any + Send), position: &shogi_lib::Position) {
+        (**self).commit_context_move(context, position);
+    }
+
+    fn undo_context_move(&self, context: &mut (dyn Any + Send)) {
+        (**self).undo_context_move(context);
+    }
 }
 
 // --- KPP-based Evaluator ---
