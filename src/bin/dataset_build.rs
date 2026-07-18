@@ -41,6 +41,8 @@ struct Args {
     target_late_records: usize,
     #[arg(long)]
     max_records_per_game: Option<usize>,
+    #[arg(long, default_value_t = 1)]
+    sample_every: usize,
     #[arg(long, default_value_t = 0)]
     min_ply: usize,
     #[arg(long)]
@@ -86,6 +88,8 @@ struct DatasetRecord {
     player_rate: Option<i32>,
     opponent_rate: Option<i32>,
     winner: Option<&'static str>,
+    result_known: bool,
+    termination: &'static str,
     is_winner_move: Option<bool>,
     legal_moves: usize,
     in_check: bool,
@@ -138,6 +142,7 @@ struct DatasetManifest {
     target_middle_records: usize,
     target_late_records: usize,
     max_records_per_game: Option<usize>,
+    sample_every: usize,
     min_ply: usize,
     max_ply: Option<usize>,
     min_player_rate: Option<i32>,
@@ -149,11 +154,25 @@ struct DatasetManifest {
     stats: DatasetStats,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 struct CsaMetadata {
     black_rate: Option<i32>,
     white_rate: Option<i32>,
     winner: Option<Color>,
+    result_known: bool,
+    termination: &'static str,
+}
+
+impl Default for CsaMetadata {
+    fn default() -> Self {
+        Self {
+            black_rate: None,
+            white_rate: None,
+            winner: None,
+            result_known: false,
+            termination: "unknown",
+        }
+    }
 }
 
 struct Writers {
@@ -274,7 +293,7 @@ fn parse_rate_line(line: &str, prefix: &str) -> Option<i32> {
         .map(|rate| rate.round() as i32)
 }
 
-fn infer_winner(record: &csa::GameRecord) -> Option<Color> {
+fn infer_outcome(record: &csa::GameRecord) -> (Option<Color>, bool, &'static str) {
     let mut last_mover = None;
     for move_record in &record.moves {
         match move_record.action {
@@ -282,24 +301,27 @@ fn infer_winner(record: &csa::GameRecord) -> Option<Color> {
                 last_mover = Some(csa_to_shogi_color(color));
             }
             csa::Action::Toryo | csa::Action::TimeUp | csa::Action::IllegalMove => {
-                return last_mover;
+                return (last_mover, last_mover.is_some(), "decisive");
             }
             csa::Action::IllegalAction(color) => {
-                return Some(csa_to_shogi_color(color).flip());
+                return (
+                    Some(csa_to_shogi_color(color).flip()),
+                    true,
+                    "illegal_action",
+                );
             }
             csa::Action::Tsumi | csa::Action::Kachi => {
-                return last_mover;
+                return (last_mover, last_mover.is_some(), "decisive");
             }
-            csa::Action::Chudan
-            | csa::Action::Sennichite
-            | csa::Action::Jishogi
-            | csa::Action::Hikiwake
-            | csa::Action::Matta
-            | csa::Action::Fuzumi
-            | csa::Action::Error => return None,
+            csa::Action::Sennichite | csa::Action::Jishogi | csa::Action::Hikiwake => {
+                return (None, true, "draw");
+            }
+            csa::Action::Chudan | csa::Action::Matta | csa::Action::Fuzumi | csa::Action::Error => {
+                return (None, false, "unknown");
+            }
         }
     }
-    None
+    (None, false, "unknown")
 }
 
 fn parse_csa_metadata(text: &str, record: &csa::GameRecord) -> CsaMetadata {
@@ -311,7 +333,10 @@ fn parse_csa_metadata(text: &str, record: &csa::GameRecord) -> CsaMetadata {
             metadata.white_rate = Some(rate);
         }
     }
-    metadata.winner = infer_winner(record);
+    let (winner, result_known, termination) = infer_outcome(record);
+    metadata.winner = winner;
+    metadata.result_known = result_known;
+    metadata.termination = termination;
     metadata
 }
 
@@ -495,6 +520,7 @@ fn process_game(
 
     let mut position = Position::default();
     let mut written = 0usize;
+    let mut eligible_seen = 0usize;
     let game_key = format!("{:016x}", stable_hash(args.seed, &path.to_string_lossy()));
 
     for (ply_index, csa_move) in record.moves.iter().enumerate() {
@@ -537,6 +563,11 @@ fn process_game(
             legal_moves.len(),
             in_check,
         ) {
+            eligible_seen += 1;
+            if (eligible_seen - 1) % args.sample_every != 0 {
+                position.do_move(mv);
+                continue;
+            }
             let phase = phase_for_ply(ply);
             if phase_target_reached(args, stats, phase) {
                 stats.records_filtered += 1;
@@ -557,6 +588,8 @@ fn process_game(
                 player_rate: player_rate(&metadata, move_color),
                 opponent_rate: player_rate(&metadata, opponent),
                 winner: metadata.winner.map(color_text),
+                result_known: metadata.result_known,
+                termination: metadata.termination,
                 is_winner_move,
                 legal_moves: legal_moves.len(),
                 in_check,
@@ -601,6 +634,9 @@ fn main() -> Result<()> {
         return Err(anyhow!(
             "--valid-percent + --test-percent must be <= 90 to leave training data"
         ));
+    }
+    if args.sample_every == 0 {
+        return Err(anyhow!("--sample-every must be greater than zero"));
     }
     let mut files = collect_csa_files(&args.input)?;
     if args.shuffle_games {
@@ -660,6 +696,7 @@ fn main() -> Result<()> {
         target_middle_records: args.target_middle_records,
         target_late_records: args.target_late_records,
         max_records_per_game: args.max_records_per_game,
+        sample_every: args.sample_every,
         min_ply: args.min_ply,
         max_ply: args.max_ply,
         min_player_rate: args.min_player_rate,

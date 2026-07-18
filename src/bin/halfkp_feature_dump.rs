@@ -26,6 +26,8 @@ struct InputRecord {
     sfen: String,
     side_to_move: String,
     winner: Option<String>,
+    result_known: Option<bool>,
+    termination: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -38,6 +40,8 @@ struct OutputRecord {
     material_black: f32,
     material_white: f32,
     result: f32,
+    result_known: bool,
+    termination: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     static_eval: Option<f32>,
 }
@@ -120,6 +124,12 @@ fn main() -> Result<()> {
             material_black: black.material,
             material_white: white.material,
             result: result_for(input_record.winner.as_deref(), side),
+            result_known: input_record
+                .result_known
+                .unwrap_or_else(|| input_record.winner.is_some()),
+            termination: input_record
+                .termination
+                .unwrap_or_else(|| "legacy".to_string()),
             static_eval,
         };
         serde_json::to_writer(&mut output, &record)?;

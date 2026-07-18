@@ -12,6 +12,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::LazyLock;
 
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{_mm256_add_ps, _mm256_loadu_ps, _mm256_storeu_ps, _mm256_sub_ps};
+
 // --- Piece Values ---
 const PAWN_VALUE: f32 = 100.0;
 const LANCE_VALUE: f32 = 300.0;
@@ -105,6 +108,9 @@ pub const NNUE_NUM_FEATURES: usize = NNUE_NUM_BOARD_FEATURES + NNUE_NUM_HAND_FEA
 pub const HALFKP_KING_BUCKETS: usize = 5 * 9;
 pub const HALFKP_PIECE_STATES: usize = NUM_PIECE_STATES;
 pub const HALFKP_INPUTS: usize = HALFKP_KING_BUCKETS * HALFKP_PIECE_STATES;
+#[cfg(feature = "halfkp64")]
+pub const HALFKP_HIDDEN: usize = 64;
+#[cfg(not(feature = "halfkp64"))]
 pub const HALFKP_HIDDEN: usize = 32;
 
 #[derive(Debug, Clone)]
@@ -133,6 +139,13 @@ pub struct HalfKpFeatures {
     pub material: f32,
 }
 
+/// One aligned feature-transformer row.  Keeping the hidden width in the
+/// type lets release builds eliminate per-element bounds checks and makes the
+/// row suitable for portable SIMD or the AVX2 backend.
+#[repr(C, align(64))]
+#[derive(Debug, Clone, Copy)]
+struct HalfKpFeatureRow([f32; HALFKP_HIDDEN]);
+
 #[derive(Debug, Clone, Copy)]
 struct HalfKpFixedFeatures {
     king_bucket: usize,
@@ -144,13 +157,13 @@ struct HalfKpFixedFeatures {
 
 #[derive(Debug, Clone)]
 pub struct HalfKpModel {
-    pub hidden: usize,
     pub target_scale: f32,
-    feature_emb: Vec<f32>,
-    hidden_b: Vec<f32>,
+    feature_emb: Box<[HalfKpFeatureRow]>,
+    hidden_b: [f32; HALFKP_HIDDEN],
     // STM accumulator, non-STM accumulator, material, tempo.
-    out_w: Vec<f32>,
+    out_w: [f32; HALFKP_HIDDEN * 2 + 1],
     out_b: f32,
+    use_avx2: bool,
 }
 
 /// Reusable feature-transformer state for one side's HalfKP perspective.
@@ -169,10 +182,15 @@ pub struct HalfKpAccumulator {
 
 #[derive(Clone)]
 pub struct HalfKpSearchContext {
-    pub black: HalfKpAccumulator,
-    pub white: HalfKpAccumulator,
-    history: Vec<(HalfKpAccumulator, HalfKpAccumulator)>,
+    frames: Vec<HalfKpFrame>,
+    ply: usize,
     pending: Option<HalfKpPendingMove>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HalfKpFrame {
+    black: HalfKpAccumulator,
+    white: HalfKpAccumulator,
 }
 
 #[derive(Clone, Copy)]
@@ -181,6 +199,63 @@ struct HalfKpPendingMove {
     moved: Option<Piece>,
     captured: Option<Piece>,
     hand_index: usize,
+}
+
+#[inline]
+fn halfkp_avx2_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::is_x86_feature_detected!("avx2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_feature_rows_avx2(
+    hidden: &mut [f32; HALFKP_HIDDEN],
+    rows: &[HalfKpFeatureRow],
+    removed: &[usize],
+    added: &[usize],
+) {
+    for lane in 0..(HALFKP_HIDDEN / 8) {
+        let offset = lane * 8;
+        let mut value = unsafe { _mm256_loadu_ps(hidden.as_ptr().add(offset)) };
+        for &feature in removed {
+            let row = &rows[feature].0;
+            let delta = unsafe { std::arch::x86_64::_mm256_load_ps(row.as_ptr().add(offset)) };
+            value = _mm256_sub_ps(value, delta);
+        }
+        for &feature in added {
+            let row = &rows[feature].0;
+            let delta = unsafe { std::arch::x86_64::_mm256_load_ps(row.as_ptr().add(offset)) };
+            value = _mm256_add_ps(value, delta);
+        }
+        unsafe { _mm256_storeu_ps(hidden.as_mut_ptr().add(offset), value) };
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn accumulate_rows_avx2(
+    hidden: &mut [f32; HALFKP_HIDDEN],
+    bias: &[f32; HALFKP_HIDDEN],
+    rows: &[HalfKpFeatureRow],
+    features: &[usize],
+) {
+    for lane in 0..(HALFKP_HIDDEN / 8) {
+        let offset = lane * 8;
+        let mut value = unsafe { _mm256_loadu_ps(bias.as_ptr().add(offset)) };
+        for &feature in features {
+            let row = &rows[feature].0;
+            let delta = unsafe { std::arch::x86_64::_mm256_load_ps(row.as_ptr().add(offset)) };
+            value = _mm256_add_ps(value, delta);
+        }
+        unsafe { _mm256_storeu_ps(hidden.as_mut_ptr().add(offset), value) };
+    }
 }
 
 static BOARD_SQUARES: LazyLock<[Square; NUM_SQUARES]> = LazyLock::new(|| {
@@ -608,12 +683,6 @@ pub fn extract_halfkp_features_for(
     })
 }
 
-fn extract_halfkp_fixed_mirror(pos: &shogi_lib::Position, perspective: Color) -> bool {
-    extract_halfkp_features_fixed(pos, perspective)
-        .map(|features| features.mirror)
-        .unwrap_or(false)
-}
-
 fn read_u32_le(file: &mut File) -> Result<u32> {
     let mut bytes = [0u8; 4];
     file.read_exact(&mut bytes)?;
@@ -632,6 +701,28 @@ fn read_f32_vec(file: &mut File, len: usize) -> Result<Vec<f32>> {
         values.push(read_f32_le(file)?);
     }
     Ok(values)
+}
+
+fn read_f32_array<const N: usize>(file: &mut File) -> Result<[f32; N]> {
+    read_f32_vec(file, N)?
+        .try_into()
+        .map_err(|_| anyhow!("invalid f32 array length"))
+}
+
+fn feature_rows_from_flat(values: Vec<f32>) -> Result<Box<[HalfKpFeatureRow]>> {
+    if values.len() != HALFKP_INPUTS * HALFKP_HIDDEN {
+        return Err(anyhow!("invalid HalfKP feature row length"));
+    }
+    let rows = values
+        .chunks_exact(HALFKP_HIDDEN)
+        .map(|chunk| {
+            let row: [f32; HALFKP_HIDDEN] = chunk
+                .try_into()
+                .expect("chunks_exact guarantees HalfKP row width");
+            HalfKpFeatureRow(row)
+        })
+        .collect::<Vec<_>>();
+    Ok(rows.into_boxed_slice())
 }
 
 impl TinyNnueModel {
@@ -710,7 +801,11 @@ impl TinyNnueModel {
 }
 
 impl HalfKpModel {
-    pub const MAGIC: &'static [u8; 8] = b"HKP00001";
+    pub const MAGIC: &'static [u8; 8] = if cfg!(feature = "halfkp64") {
+        b"HKP00064"
+    } else {
+        b"HKP00001"
+    };
 
     pub fn load(path: &Path) -> Result<Self> {
         let mut file = File::open(path)?;
@@ -735,30 +830,42 @@ impl HalfKpModel {
         {
             return Err(anyhow!("invalid HalfKP header"));
         }
-        let feature_emb = read_f32_vec(&mut file, inputs * hidden)?;
-        let hidden_b = read_f32_vec(&mut file, hidden)?;
-        let out_w = read_f32_vec(&mut file, hidden * 2 + 1)?;
+        let feature_emb = feature_rows_from_flat(read_f32_vec(&mut file, inputs * hidden)?)?;
+        let hidden_b = read_f32_array::<HALFKP_HIDDEN>(&mut file)?;
+        let out_w = read_f32_array::<{ HALFKP_HIDDEN * 2 + 1 }>(&mut file)?;
         let out_b = read_f32_le(&mut file)?;
         let mut trailing = [0u8; 1];
         if file.read(&mut trailing)? != 0 {
             return Err(anyhow!("trailing bytes in HalfKP file"));
         }
         Ok(Self {
-            hidden,
             target_scale,
             feature_emb,
             hidden_b,
             out_w,
             out_b,
+            use_avx2: halfkp_avx2_available(),
         })
     }
 
-    fn accumulator(&self, features: &HalfKpFeatures) -> Vec<f32> {
-        let mut acc = self.hidden_b.clone();
+    fn accumulator(&self, features: &HalfKpFeatures) -> [f32; HALFKP_HIDDEN] {
+        let mut acc = self.hidden_b;
+        #[cfg(target_arch = "x86_64")]
+        if self.use_avx2 {
+            unsafe {
+                accumulate_rows_avx2(
+                    &mut acc,
+                    &self.hidden_b,
+                    &self.feature_emb,
+                    &features.features,
+                );
+            }
+            return acc;
+        }
         for &feature in &features.features {
-            let base = feature * self.hidden;
-            for h in 0..self.hidden {
-                acc[h] += self.feature_emb[base + h];
+            let row = &self.feature_emb[feature].0;
+            for h in 0..HALFKP_HIDDEN {
+                acc[h] += row[h];
             }
         }
         acc
@@ -769,33 +876,26 @@ impl HalfKpModel {
         pos: &shogi_lib::Position,
         perspective: Color,
     ) -> Option<HalfKpAccumulator> {
-        let (hidden_vec, material) = self.fast_accumulator(pos, perspective)?;
-        let mut hidden = [0.0; HALFKP_HIDDEN];
-        hidden.copy_from_slice(&hidden_vec);
-        Some(HalfKpAccumulator {
-            perspective,
-            king_bucket: extract_halfkp_features_for(pos, perspective)?.king_bucket,
-            mirror: extract_halfkp_fixed_mirror(pos, perspective),
-            hidden,
-            material,
-        })
+        let features = extract_halfkp_features_fixed(pos, perspective)?;
+        Some(self.accumulator_from_fixed(&features, perspective))
     }
 
     pub fn begin_search_context(&self, pos: &shogi_lib::Position) -> Option<HalfKpSearchContext> {
         let black_features = extract_halfkp_features_fixed(pos, Color::Black)?;
         let white_features = extract_halfkp_features_fixed(pos, Color::White)?;
+        let black = self.accumulator_from_fixed(&black_features, Color::Black);
+        let white = self.accumulator_from_fixed(&white_features, Color::White);
+        let mut frames = Vec::with_capacity(128);
+        frames.push(HalfKpFrame { black, white });
         Some(HalfKpSearchContext {
-            black: self.accumulator_from_fixed(&black_features, Color::Black),
-            white: self.accumulator_from_fixed(&white_features, Color::White),
-            history: Vec::with_capacity(128),
+            frames,
+            ply: 0,
             pending: None,
         })
     }
 
     fn accumulator_from_features(&self, features: &HalfKpFeatures) -> HalfKpAccumulator {
-        let values = self.accumulator(features);
-        let mut hidden = [0.0; HALFKP_HIDDEN];
-        hidden.copy_from_slice(&values);
+        let hidden = self.accumulator(features);
         HalfKpAccumulator {
             perspective: if features.king_bucket < HALFKP_KING_BUCKETS {
                 Color::Black
@@ -814,12 +914,30 @@ impl HalfKpModel {
         features: &HalfKpFixedFeatures,
         perspective: Color,
     ) -> HalfKpAccumulator {
-        let mut hidden = [0.0; HALFKP_HIDDEN];
-        hidden.copy_from_slice(&self.hidden_b);
+        let mut hidden = self.hidden_b;
+        #[cfg(target_arch = "x86_64")]
+        if self.use_avx2 {
+            unsafe {
+                accumulate_rows_avx2(
+                    &mut hidden,
+                    &self.hidden_b,
+                    &self.feature_emb,
+                    &features.features[..features.len],
+                );
+            }
+        } else {
+            for &feature in &features.features[..features.len] {
+                let row = &self.feature_emb[feature].0;
+                for h in 0..HALFKP_HIDDEN {
+                    hidden[h] += row[h];
+                }
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
         for &feature in &features.features[..features.len] {
-            let base = feature * self.hidden;
+            let row = &self.feature_emb[feature].0;
             for h in 0..HALFKP_HIDDEN {
-                hidden[h] += self.feature_emb[base + h];
+                hidden[h] += row[h];
             }
         }
         HalfKpAccumulator {
@@ -871,9 +989,16 @@ impl HalfKpModel {
         let Some(pending) = ctx.pending.take() else {
             return;
         };
-        ctx.history.push((ctx.black, ctx.white));
-        Self::apply_move_to_accumulator(self, &mut ctx.black, &pending, pos);
-        Self::apply_move_to_accumulator(self, &mut ctx.white, &pending, pos);
+        let parent = ctx.frames[ctx.ply];
+        let mut child = parent;
+        Self::apply_move_to_accumulator(self, &mut child.black, &pending, pos);
+        Self::apply_move_to_accumulator(self, &mut child.white, &pending, pos);
+        ctx.ply += 1;
+        if ctx.ply == ctx.frames.len() {
+            ctx.frames.push(child);
+        } else {
+            ctx.frames[ctx.ply] = child;
+        }
     }
 
     fn apply_move_to_accumulator(
@@ -883,32 +1008,44 @@ impl HalfKpModel {
         after: &shogi_lib::Position,
     ) {
         let Some(moved) = pending.moved else { return };
-        if let Move::Normal { from, to, promote } = pending.mv {
+        if let Move::Normal { from, to, .. } = pending.mv {
             if moved.piece_kind() == PieceKind::King && moved.color() == acc.perspective {
                 if let Some(refreshed) = self.accumulator_for_position(after, acc.perspective) {
                     *acc = refreshed;
                 }
                 return;
             }
-            self.add_piece_row(acc, moved, Some(from), 0, -1.0);
+            let mut removed = [0usize; 2];
+            let mut removed_len = 0;
+            if let Some(row) = self.piece_row(acc, moved, Some(from), 0) {
+                removed[removed_len] = row;
+                removed_len += 1;
+            }
             if let Some(captured) = pending.captured {
-                self.add_piece_row(acc, captured, Some(to), 0, -1.0);
+                if let Some(row) = self.piece_row(acc, captured, Some(to), 0) {
+                    removed[removed_len] = row;
+                    removed_len += 1;
+                }
             }
-            if let Some(after_piece) = after.piece_at(to) {
-                self.add_piece_row(acc, after_piece, Some(to), 0, 1.0);
+            let mut added = [0usize; 2];
+            let mut added_len = 0;
+            let after_piece = after.piece_at(to);
+            if let Some(after_piece) = after_piece {
+                if let Some(row) = self.piece_row(acc, after_piece, Some(to), 0) {
+                    added[added_len] = row;
+                    added_len += 1;
+                }
             }
             if let Some(captured) = pending.captured {
-                self.add_piece_row(
-                    acc,
-                    Piece::new(unpromoted_kind(captured.piece_kind()), moved.color()),
-                    None,
-                    pending.hand_index,
-                    1.0,
-                );
+                let hand_piece = Piece::new(unpromoted_kind(captured.piece_kind()), moved.color());
+                if let Some(row) = self.piece_row(acc, hand_piece, None, pending.hand_index) {
+                    added[added_len] = row;
+                    added_len += 1;
+                }
             }
+            self.apply_feature_rows(acc, &removed[..removed_len], &added[..added_len]);
             let old_value = piece_kind_value(moved.piece_kind());
-            let new_value = after
-                .piece_at(to)
+            let new_value = after_piece
                 .map(|p| piece_kind_value(p.piece_kind()))
                 .unwrap_or(old_value);
             let sign = if moved.color() == acc.perspective {
@@ -925,48 +1062,73 @@ impl HalfKpModel {
                 } * (piece_kind_value(captured.piece_kind())
                     + piece_kind_value(unpromoted_kind(captured.piece_kind())));
             }
-            let _ = promote;
         } else if let Move::Drop { piece, to } = pending.mv {
-            self.add_piece_row(acc, piece, None, pending.hand_index, -1.0);
-            if let Some(after_piece) = after.piece_at(to) {
-                self.add_piece_row(acc, after_piece, Some(to), 0, 1.0);
-            }
+            let mut removed = [0usize; 1];
+            let removed_len = self
+                .piece_row(acc, piece, None, pending.hand_index)
+                .map(|row| {
+                    removed[0] = row;
+                    1
+                })
+                .unwrap_or(0);
+            let mut added = [0usize; 1];
+            let added_len = after
+                .piece_at(to)
+                .and_then(|after_piece| self.piece_row(acc, after_piece, Some(to), 0))
+                .map(|row| {
+                    added[0] = row;
+                    1
+                })
+                .unwrap_or(0);
+            self.apply_feature_rows(acc, &removed[..removed_len], &added[..added_len]);
         }
     }
 
-    fn add_piece_row(
+    fn piece_row(
         &self,
-        acc: &mut HalfKpAccumulator,
+        acc: &HalfKpAccumulator,
         piece: Piece,
         square: Option<Square>,
         hand_index: usize,
-        sign: f32,
-    ) {
+    ) -> Option<usize> {
         if piece.piece_kind() == PieceKind::King
             && piece.color() == acc.perspective
             && square.is_some()
         {
-            return;
+            return None;
         }
-        if let Some(state) =
-            halfkp_piece_state(piece, square, hand_index, acc.perspective, acc.mirror)
-        {
-            let row = acc.king_bucket * HALFKP_PIECE_STATES + state;
-            self.add_feature_row_fixed(acc, row, sign);
-        }
+        halfkp_piece_state(piece, square, hand_index, acc.perspective, acc.mirror)
+            .map(|state| acc.king_bucket * HALFKP_PIECE_STATES + state)
     }
 
-    fn add_feature_row_fixed(&self, acc: &mut HalfKpAccumulator, feature: usize, sign: f32) {
-        let base = feature * self.hidden;
-        for h in 0..HALFKP_HIDDEN {
-            acc.hidden[h] += sign * self.feature_emb[base + h];
+    fn apply_feature_rows(&self, acc: &mut HalfKpAccumulator, removed: &[usize], added: &[usize]) {
+        let mut hidden = acc.hidden;
+        #[cfg(target_arch = "x86_64")]
+        if self.use_avx2 {
+            unsafe {
+                apply_feature_rows_avx2(&mut hidden, &self.feature_emb, removed, added);
+            }
+            acc.hidden = hidden;
+            return;
         }
+        for &feature in removed {
+            let row = &self.feature_emb[feature].0;
+            for h in 0..HALFKP_HIDDEN {
+                hidden[h] -= row[h];
+            }
+        }
+        for &feature in added {
+            let row = &self.feature_emb[feature].0;
+            for h in 0..HALFKP_HIDDEN {
+                hidden[h] += row[h];
+            }
+        }
+        acc.hidden = hidden;
     }
 
     pub fn undo_search_context(&self, ctx: &mut HalfKpSearchContext) {
-        if let Some((black, white)) = ctx.history.pop() {
-            ctx.black = black;
-            ctx.white = white;
+        if ctx.ply > 0 {
+            ctx.ply -= 1;
         }
     }
 
@@ -975,7 +1137,8 @@ impl HalfKpModel {
         pos: &shogi_lib::Position,
         ctx: &HalfKpSearchContext,
     ) -> f32 {
-        self.evaluate_accumulators(pos, &ctx.black, &ctx.white)
+        let frame = &ctx.frames[ctx.ply];
+        self.evaluate_accumulators(pos, &frame.black, &frame.white)
     }
 
     /// Apply the feature-row delta between two adjacent positions.
@@ -1031,9 +1194,9 @@ impl HalfKpModel {
     }
 
     fn add_feature_row(&self, accumulator: &mut HalfKpAccumulator, feature: usize, sign: f32) {
-        let base = feature * self.hidden;
-        for h in 0..self.hidden {
-            accumulator.hidden[h] += sign * self.feature_emb[base + h];
+        let row = &self.feature_emb[feature].0;
+        for h in 0..HALFKP_HIDDEN {
+            accumulator.hidden[h] += sign * row[h];
         }
     }
 
@@ -1049,82 +1212,12 @@ impl HalfKpModel {
             (white, black)
         };
         let mut score = self.out_b;
-        for h in 0..self.hidden {
+        for h in 0..HALFKP_HIDDEN {
             score += stm.hidden[h].clamp(0.0, 1.0) * self.out_w[h];
-            score += nstm.hidden[h].clamp(0.0, 1.0) * self.out_w[self.hidden + h];
+            score += nstm.hidden[h].clamp(0.0, 1.0) * self.out_w[HALFKP_HIDDEN + h];
         }
-        score += (stm.material / 1000.0) * self.out_w[self.hidden * 2];
+        score += (stm.material / 1000.0) * self.out_w[HALFKP_HIDDEN * 2];
         score * self.target_scale
-    }
-
-    fn fast_accumulator(
-        &self,
-        pos: &shogi_lib::Position,
-        perspective: Color,
-    ) -> Option<(Vec<f32>, f32)> {
-        let mut own_king = None;
-        let mut material = 0.0;
-        for &sq in BOARD_SQUARES.iter() {
-            if let Some(piece) = pos.piece_at(sq) {
-                let value = piece_kind_value(piece.piece_kind());
-                material += if piece.color() == perspective {
-                    value
-                } else {
-                    -value
-                };
-                if piece.piece_kind() == PieceKind::King && piece.color() == perspective {
-                    own_king = Some(sq);
-                }
-            }
-        }
-        let own_king = own_king?;
-        let oriented_king = if perspective == Color::Black {
-            own_king
-        } else {
-            own_king.flip()
-        };
-        let mirror = oriented_king.file() > 5;
-        let oriented_king = halfkp_oriented_square(own_king, perspective, mirror);
-        let king_bucket =
-            (oriented_king.file() as usize - 1) * 9 + (oriented_king.rank() as usize - 1);
-        let feature_base = king_bucket * HALFKP_PIECE_STATES;
-        let mut acc = self.hidden_b.clone();
-        let mut add_piece = |piece: Piece, square: Option<Square>, hand_index: usize| {
-            if piece.piece_kind() == PieceKind::King
-                && piece.color() == perspective
-                && square.is_some()
-            {
-                return;
-            }
-            let Some(state) = halfkp_piece_state(piece, square, hand_index, perspective, mirror)
-            else {
-                return;
-            };
-            let base = (feature_base + state) * self.hidden;
-            for h in 0..self.hidden {
-                acc[h] += self.feature_emb[base + h];
-            }
-        };
-        for &sq in BOARD_SQUARES.iter() {
-            if let Some(piece) = pos.piece_at(sq) {
-                add_piece(piece, Some(sq), 0);
-            }
-        }
-        for color in [Color::Black, Color::White] {
-            for kind in ALL_HAND_PIECES {
-                let count = pos.hand(color).count(kind).unwrap_or(0);
-                let value = piece_kind_value(kind);
-                material += if color == perspective {
-                    count as f32 * value
-                } else {
-                    -(count as f32 * value)
-                };
-                for hand_index in 0..count {
-                    add_piece(Piece::new(kind, color), None, hand_index as usize);
-                }
-            }
-        }
-        Some((acc, material))
     }
 
     pub fn predict_from_position(&self, pos: &shogi_lib::Position) -> f32 {
@@ -2028,6 +2121,19 @@ pub fn generate_sfen(
 mod tests {
     use super::*;
 
+    fn test_feature_rows<F>(mut value: F) -> Box<[HalfKpFeatureRow]>
+    where
+        F: FnMut(usize) -> f32,
+    {
+        (0..HALFKP_INPUTS)
+            .map(|row_index| {
+                HalfKpFeatureRow(std::array::from_fn(|h| {
+                    value(row_index * HALFKP_HIDDEN + h)
+                }))
+            })
+            .collect()
+    }
+
     #[test]
     fn nnue_features_are_in_declared_ranges() {
         let position = shogi_lib::Position::default();
@@ -2135,7 +2241,7 @@ mod tests {
             .expect("white accumulator");
         let accumulated_score = model.evaluate_accumulators(&position, &black, &white);
         std::fs::remove_file(&path).ok();
-        assert_eq!(model.hidden, HALFKP_HIDDEN);
+        assert_eq!(model.feature_emb.len(), HALFKP_INPUTS);
         assert_eq!(score, 0.0);
         assert_eq!(score, accumulated_score);
     }
@@ -2152,14 +2258,12 @@ mod tests {
         after.do_move(mv);
 
         let model = HalfKpModel {
-            hidden: HALFKP_HIDDEN,
             target_scale: 1000.0,
-            feature_emb: (0..HALFKP_INPUTS * HALFKP_HIDDEN)
-                .map(|i| (i as f32 % 13.0) * 0.001)
-                .collect(),
-            hidden_b: vec![0.25; HALFKP_HIDDEN],
-            out_w: vec![0.1; HALFKP_HIDDEN * 2 + 1],
+            feature_emb: test_feature_rows(|i| (i as f32 % 13.0) * 0.001),
+            hidden_b: [0.25; HALFKP_HIDDEN],
+            out_w: [0.1; HALFKP_HIDDEN * 2 + 1],
             out_b: 0.0,
+            use_avx2: false,
         };
         for perspective in [Color::Black, Color::White] {
             let mut delta = model
@@ -2183,16 +2287,12 @@ mod tests {
         let mut after = position.clone();
         after.do_move(mv);
         let model = HalfKpModel {
-            hidden: HALFKP_HIDDEN,
             target_scale: 1000.0,
-            feature_emb: (0..HALFKP_INPUTS * HALFKP_HIDDEN)
-                .map(|i| ((i % 97) as f32) * 0.0001)
-                .collect(),
-            hidden_b: (0..HALFKP_HIDDEN).map(|i| i as f32 * 0.001).collect(),
-            out_w: (0..HALFKP_HIDDEN * 2 + 1)
-                .map(|i| i as f32 * 0.01)
-                .collect(),
+            feature_emb: test_feature_rows(|i| ((i % 97) as f32) * 0.0001),
+            hidden_b: std::array::from_fn(|i| i as f32 * 0.001),
+            out_w: std::array::from_fn(|i| i as f32 * 0.01),
             out_b: 0.0,
+            use_avx2: false,
         };
         let mut ctx = model.begin_search_context(&position).unwrap();
         model.prepare_search_context(&mut ctx, &position, mv);
@@ -2203,21 +2303,79 @@ mod tests {
         let white = model
             .accumulator_for_position(&after, Color::White)
             .unwrap();
-        for (a, b) in ctx.black.hidden.iter().zip(black.hidden.iter()) {
+        let frame = &ctx.frames[ctx.ply];
+        for (a, b) in frame.black.hidden.iter().zip(black.hidden.iter()) {
             assert!((a - b).abs() < 1e-5, "black {} {}", a, b);
         }
-        for (a, b) in ctx.white.hidden.iter().zip(white.hidden.iter()) {
+        for (a, b) in frame.white.hidden.iter().zip(white.hidden.iter()) {
             assert!((a - b).abs() < 1e-5, "white {} {}", a, b);
         }
         model.undo_search_context(&mut ctx);
         let root_black = model
             .accumulator_for_position(&position, Color::Black)
             .unwrap();
-        assert!(ctx
+        let frame = &ctx.frames[ctx.ply];
+        assert!(frame
             .black
             .hidden
             .iter()
             .zip(root_black.hidden.iter())
             .all(|(a, b)| (a - b).abs() < 1e-5));
+    }
+
+    #[test]
+    fn halfkp_avx2_kernel_matches_portable_kernel() {
+        if !halfkp_avx2_available() {
+            return;
+        }
+        let position = shogi_lib::Position::default();
+        let mv = position.legal_moves()[0];
+        let mut after = position.clone();
+        after.do_move(mv);
+        let portable = HalfKpModel {
+            target_scale: 1000.0,
+            feature_emb: test_feature_rows(|i| ((i % 53) as f32 - 20.0) * 0.0003),
+            hidden_b: std::array::from_fn(|i| i as f32 * 0.002),
+            out_w: std::array::from_fn(|i| i as f32 * 0.01),
+            out_b: -0.25,
+            use_avx2: false,
+        };
+        let mut avx2 = portable.clone();
+        avx2.use_avx2 = true;
+        for perspective in [Color::Black, Color::White] {
+            let a = portable
+                .accumulator_for_position(&after, perspective)
+                .unwrap();
+            let b = avx2.accumulator_for_position(&after, perspective).unwrap();
+            assert!(a
+                .hidden
+                .iter()
+                .zip(b.hidden.iter())
+                .all(|(x, y)| (x - y).abs() < 1e-5));
+        }
+        let mut portable_ctx = portable.begin_search_context(&position).unwrap();
+        let mut avx2_ctx = avx2.begin_search_context(&position).unwrap();
+        portable.prepare_search_context(&mut portable_ctx, &position, mv);
+        avx2.prepare_search_context(&mut avx2_ctx, &position, mv);
+        portable.commit_search_context_move(&mut portable_ctx, &after);
+        avx2.commit_search_context_move(&mut avx2_ctx, &after);
+        let portable_frame = &portable_ctx.frames[portable_ctx.ply];
+        let avx2_frame = &avx2_ctx.frames[avx2_ctx.ply];
+        assert!(portable_frame
+            .black
+            .hidden
+            .iter()
+            .zip(avx2_frame.black.hidden.iter())
+            .all(|(x, y)| (x - y).abs() < 1e-5));
+        assert!(portable_frame
+            .white
+            .hidden
+            .iter()
+            .zip(avx2_frame.white.hidden.iter())
+            .all(|(x, y)| (x - y).abs() < 1e-5));
+        assert!(
+            (portable.predict_from_position(&after) - avx2.predict_from_position(&after)).abs()
+                < 1e-4
+        );
     }
 }
