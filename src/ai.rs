@@ -25,7 +25,42 @@ const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 3;
 const TIME_CHECK_NODE_INTERVAL: u64 = 1024;
 const USI_SCORE_CP_LIMIT: i32 = 2_000;
 const USI_SCORE_CP_SOFT_START: i32 = 1_000;
+const MATE_SCORE: f32 = 1_000_000.0;
+const MATE_THRESHOLD: f32 = MATE_SCORE - 1_000.0;
+const REPETITION_WIN_SCORE: f32 = 500_000.0;
 type LegalMoves = ArrayVec<Move, 593>;
+
+#[inline]
+fn mate_loss_score(ply_from_root: u16) -> f32 {
+    -MATE_SCORE + f32::from(ply_from_root)
+}
+
+#[inline]
+fn score_to_tt(score: f32, ply_from_root: u16) -> f32 {
+    if score >= MATE_THRESHOLD {
+        score + f32::from(ply_from_root)
+    } else if score <= -MATE_THRESHOLD {
+        score - f32::from(ply_from_root)
+    } else {
+        score
+    }
+}
+
+#[inline]
+fn score_from_tt(score: f32, ply_from_root: u16) -> f32 {
+    if score >= MATE_THRESHOLD {
+        score - f32::from(ply_from_root)
+    } else if score <= -MATE_THRESHOLD {
+        score + f32::from(ply_from_root)
+    } else {
+        score
+    }
+}
+
+#[inline]
+fn is_history_dependent_score(score: f32) -> bool {
+    score == 0.0 || (score.abs() >= REPETITION_WIN_SCORE - 1.0 && score.abs() < MATE_THRESHOLD)
+}
 
 fn usi_display_score_cp(score: f32) -> i32 {
     if !score.is_finite() {
@@ -411,7 +446,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         alpha: f32,
         beta: f32,
     ) -> Option<(f32, Vec<Move>)> {
-        self.quiescence_search_internal(position, alpha, beta, None)
+        self.quiescence_search_internal(position, alpha, beta, 0, None)
     }
 
     fn filter_quiescence_moves_from_legal(
@@ -434,8 +469,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         position: &mut Position,
         mut alpha: f32,
         beta: f32,
+        ply_from_root: u16,
         precomputed_moves: Option<LegalMoves>,
     ) -> Option<(f32, Vec<Move>)> {
+        assert!(
+            alpha < beta,
+            "invalid quiescence window: alpha={alpha}, beta={beta}"
+        );
         if self.is_time_up() {
             return None;
         }
@@ -449,7 +489,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 .unwrap_or_else(|| position.has_legal_evasion());
             if !has_evasion {
                 self.quiescence_terminal_mates += 1;
-                return Some((-f32::INFINITY, Vec::new()));
+                return Some((mate_loss_score(ply_from_root), Vec::new()));
             }
         }
 
@@ -494,10 +534,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let sennichite_status = self.is_sennichite_internal(position);
             let score_result = match sennichite_status {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
-                SennichiteStatus::None => {
-                    self.quiescence_search_internal(position, -beta, -alpha, None)
-                }
+                SennichiteStatus::PerpetualCheckLoss => Some((REPETITION_WIN_SCORE, Vec::new())),
+                SennichiteStatus::None => self.quiescence_search_internal(
+                    position,
+                    -beta,
+                    -alpha,
+                    ply_from_root.saturating_add(1),
+                    None,
+                ),
             };
             self.sennichite_detector.unrecord_last_position();
             self.undo_move(position, mv);
@@ -528,7 +572,17 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         if self.eval_context.is_none() {
             self.begin_eval_context(position);
         }
-        self.alpha_beta_search_internal(position, depth, alpha, beta, 1, None)
+        self.alpha_beta_search_internal(position, depth, alpha, beta, 1, 0, None)
+    }
+
+    fn search_root_child(
+        &mut self,
+        position: &mut Position,
+        depth: u8,
+        alpha: f32,
+        beta: f32,
+    ) -> Option<(f32, Vec<Move>)> {
+        self.alpha_beta_search_internal(position, depth, alpha, beta, 1, 1, None)
     }
 
     fn alpha_beta_search_internal(
@@ -538,13 +592,24 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         mut alpha: f32,
         mut beta: f32,
         check_evasion_extension_budget: u8,
+        ply_from_root: u16,
         precomputed_moves: Option<LegalMoves>,
     ) -> Option<(f32, Vec<Move>)> {
+        assert!(
+            alpha < beta,
+            "invalid alpha-beta window: alpha={alpha}, beta={beta}"
+        );
         if self.is_time_up() {
             return None;
         }
         if depth == 0 {
-            return self.quiescence_search_internal(position, alpha, beta, precomputed_moves);
+            return self.quiescence_search_internal(
+                position,
+                alpha,
+                beta,
+                ply_from_root,
+                precomputed_moves,
+            );
         }
         self.nodes_searched += 1;
 
@@ -553,22 +618,23 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let tt_best_move = tt_entry.and_then(|entry| entry.best_move);
         if let Some(entry) = tt_entry {
             if entry.generation == self.search_generation && entry.depth >= depth {
+                let tt_score = score_from_tt(entry.score, ply_from_root);
                 match entry.node_type {
                     NodeType::Exact => {
-                        return Some((entry.score, entry.best_move.map_or(Vec::new(), |m| vec![m])))
+                        return Some((tt_score, entry.best_move.map_or(Vec::new(), |m| vec![m])))
                     }
-                    NodeType::LowerBound => alpha = alpha.max(entry.score),
-                    NodeType::UpperBound => beta = beta.min(entry.score),
+                    NodeType::LowerBound => alpha = alpha.max(tt_score),
+                    NodeType::UpperBound => beta = beta.min(tt_score),
                 }
                 if alpha >= beta {
-                    return Some((entry.score, entry.best_move.map_or(Vec::new(), |m| vec![m])));
+                    return Some((tt_score, entry.best_move.map_or(Vec::new(), |m| vec![m])));
                 }
             }
         }
 
         let moves = precomputed_moves.unwrap_or_else(|| position.legal_moves());
         if moves.is_empty() {
-            return Some((-f32::INFINITY, Vec::new()));
+            return Some((mate_loss_score(ply_from_root), Vec::new()));
         }
 
         let mut scored_moves = Vec::with_capacity(moves.len());
@@ -605,7 +671,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let sennichite_status = self.is_sennichite_internal(position);
             let search_result = match sennichite_status {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
+                SennichiteStatus::PerpetualCheckLoss => Some((REPETITION_WIN_SCORE, Vec::new())),
                 SennichiteStatus::None => {
                     let mut child_depth = depth - 1;
                     let mut child_extension_budget = check_evasion_extension_budget;
@@ -625,6 +691,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         -beta,
                         -alpha,
                         child_extension_budget,
+                        ply_from_root.saturating_add(1),
                         child_precomputed_moves,
                     )
                 }
@@ -661,14 +728,16 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             final_pv.extend(best_pv);
         }
 
-        let entry = TranspositionEntry {
-            score: best_score,
-            depth,
-            node_type,
-            best_move,
-            generation: self.search_generation,
-        };
-        self.transposition_table.insert(hash, entry);
+        if !is_history_dependent_score(best_score) {
+            let entry = TranspositionEntry {
+                score: score_to_tt(best_score, ply_from_root),
+                depth,
+                node_type,
+                best_move,
+                generation: self.search_generation,
+            };
+            self.transposition_table.insert(hash, entry);
+        }
         Some((best_score, final_pv))
     }
 
@@ -784,18 +853,20 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                 let eval_result = match sennichite_status {
                     SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                    SennichiteStatus::PerpetualCheckLoss => Some((f32::INFINITY, Vec::new())),
+                    SennichiteStatus::PerpetualCheckLoss => {
+                        Some((REPETITION_WIN_SCORE, Vec::new()))
+                    }
                     SennichiteStatus::None => {
                         if current_best_move_for_depth.is_some() && alpha.is_finite() {
-                            match self.alpha_beta_search(position, depth - 1, -alpha - 1.0, -alpha)
+                            match self.search_root_child(position, depth - 1, -alpha - 1.0, -alpha)
                             {
                                 Some((score, _)) if -score > alpha => {
-                                    self.alpha_beta_search(position, depth - 1, -beta, -alpha)
+                                    self.search_root_child(position, depth - 1, -beta, -alpha)
                                 }
                                 narrow_result => narrow_result,
                             }
                         } else {
-                            self.alpha_beta_search(position, depth - 1, -beta, -alpha)
+                            self.search_root_child(position, depth - 1, -beta, -alpha)
                         }
                     }
                 };
@@ -848,10 +919,10 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         let eval_result = match sennichite_status {
                             SennichiteStatus::Draw => Some((0.0, Vec::new())),
                             SennichiteStatus::PerpetualCheckLoss => {
-                                Some((f32::INFINITY, Vec::new()))
+                                Some((REPETITION_WIN_SCORE, Vec::new()))
                             }
                             SennichiteStatus::None => {
-                                self.alpha_beta_search(position, depth - 1, -beta, -alpha)
+                                self.search_root_child(position, depth - 1, -beta, -alpha)
                             }
                         };
                         self.sennichite_detector.unrecord_last_position();
@@ -876,10 +947,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
 
             if !search_interrupted {
-                if let Some(current_best_move) = current_best_move_for_depth {
-                    best_move = Some(current_best_move);
-                    previous_eval = Some(best_eval_for_depth);
+                let Some(current_best_move) = current_best_move_for_depth else {
+                    break;
+                };
+                if best_pv_for_depth.is_empty() {
+                    break;
                 }
+                best_move = Some(current_best_move);
+                previous_eval = Some(best_eval_for_depth);
                 self.last_completed_depth = depth;
                 if let Some(bm) = best_move {
                     self.move_ordering
@@ -983,18 +1058,12 @@ where
                 self.find_best_move_with_root_offset(position, max_depth, time_limit_ms, 0, true);
             stop_signal.store(true, Ordering::Relaxed);
 
-            let mut selected_move = main_move;
-            let mut selected_depth = self.last_completed_depth;
             for handle in handles {
-                let (worker_move, worker) = handle.join().expect("parallel search worker panicked");
-                if worker.last_completed_depth > selected_depth {
-                    selected_depth = worker.last_completed_depth;
-                    selected_move = worker_move;
-                }
+                let (_worker_move, worker) =
+                    handle.join().expect("parallel search worker panicked");
                 self.absorb_statistics(&worker);
             }
-            self.last_completed_depth = selected_depth;
-            selected_move
+            main_move
         })
     }
 }
@@ -1013,7 +1082,16 @@ pub fn resolve_search_threads(requested: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::position_from_sfen_or_usi;
+    use crate::utils::{parse_usi_move_for_color, position_from_sfen_or_usi};
+
+    const V252_INCIDENT_POSITION: &str = "startpos moves \
+        7g7f 8c8d 2g2f 4a3b 2f2e 8d8e 8h7g 3c3d 7i6h 2b7g+ 6h7g 3a2b \
+        3i4h 2b3c 6i7h 7a7b 4g4f 5a4b 4h4g 9c9d 9g9f 6c6d 3g3f 1c1d \
+        1g1f 7c7d 2i3g 8a7c 6g6f 7b6c 4g5f 6a6b 2h2i 6c5d 4i4h 8b8a \
+        3g4e 3c4d 2e2d 2c2d 2i2d P*2c 2d2h B*1c P*2d 1c2d 4h4g 2a1c \
+        B*3g 4d5e 5f5e 5d5e 1f1e 1d1e 1i1e S*1g 2h2g 1g1h 2g2h 4c4d \
+        2h1h 4d4e 4f4e P*4f 4g5f 5e5f 5g5f G*2g S*8b 8a8b S*7a 2g1h \
+        7a8b R*3i 5i6h 4f4g+ 3f3e";
 
     #[derive(Clone, Copy)]
     struct ZeroEvaluator;
@@ -1042,6 +1120,24 @@ mod tests {
         assert_eq!(-four_thousand, usi_display_score_cp(-4000.0));
         assert_eq!(USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::INFINITY));
         assert_eq!(-USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::NEG_INFINITY));
+    }
+
+    #[test]
+    fn mate_scores_round_trip_through_tt_at_different_ply() {
+        let win_at_ply_seven = MATE_SCORE - 7.0;
+        let loss_at_ply_nine = -MATE_SCORE + 9.0;
+        assert_eq!(
+            MATE_SCORE - 10.0,
+            score_from_tt(score_to_tt(win_at_ply_seven, 3), 6)
+        );
+        assert_eq!(
+            -MATE_SCORE + 12.0,
+            score_from_tt(score_to_tt(loss_at_ply_nine, 3), 6)
+        );
+        assert!(!is_history_dependent_score(win_at_ply_seven));
+        assert!(is_history_dependent_score(0.0));
+        assert!(is_history_dependent_score(REPETITION_WIN_SCORE));
+        assert!(is_history_dependent_score(-REPETITION_WIN_SCORE));
     }
 
     #[test]
@@ -1108,6 +1204,32 @@ mod tests {
         assert!(legal_moves.contains(&best_move));
         assert_eq!(original_sfen, position.to_sfen_owned());
         assert_eq!(4, ai.last_completed_depth());
+    }
+
+    #[test]
+    fn v252_incident_parallel_search_keeps_the_mating_move() {
+        let position =
+            position_from_sfen_or_usi(V252_INCIDENT_POSITION).expect("valid incident position");
+        let expected =
+            parse_usi_move_for_color("S*5g", position.side_to_move()).expect("valid mating move");
+        assert!(position.legal_moves().contains(&expected));
+
+        let mut single_position = position.clone();
+        let mut parallel_position = position;
+        let mut single = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        let mut parallel = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        single.set_emit_info(false);
+        parallel.set_emit_info(false);
+
+        let single_move = single.find_best_move(&mut single_position, 3, None);
+        assert_eq!(Some(expected), single_move);
+        for _ in 0..8 {
+            let original_sfen = parallel_position.to_sfen_owned();
+            let parallel_move =
+                parallel.find_best_move_parallel(&mut parallel_position, 3, None, 4);
+            assert_eq!(single_move, parallel_move);
+            assert_eq!(original_sfen, parallel_position.to_sfen_owned());
+        }
     }
 
     #[test]
