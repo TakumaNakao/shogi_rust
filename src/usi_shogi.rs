@@ -3,6 +3,7 @@ use crate::evaluation::{EngineEvaluator, HybridNnueEvaluator};
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
 use std::io::{self, BufRead, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -336,20 +337,35 @@ impl UsiEngine {
         thread::spawn(move || {
             let mut ai_lock = ai.lock().unwrap();
             if let Some(thinking_ai) = ai_lock.as_mut() {
+                let root_position = position.clone();
+                let fallback_move = position.legal_moves().first().copied();
                 thinking_ai.set_stop_signal(Some(stop_signal.clone()));
                 thinking_ai.set_emit_info(true);
-                let best_move = thinking_ai.find_best_move_parallel(
-                    &mut position,
-                    limits.max_depth,
-                    limits.time_limit_ms,
-                    threads,
-                );
+                let search_result = catch_unwind(AssertUnwindSafe(|| {
+                    thinking_ai.find_best_move_parallel(
+                        &mut position,
+                        limits.max_depth,
+                        limits.time_limit_ms,
+                        threads,
+                    )
+                }));
+                let best_move = match search_result {
+                    Ok(best_move) => best_move,
+                    Err(_) => {
+                        stop_signal.store(true, Ordering::Relaxed);
+                        position = root_position;
+                        thinking_ai.recover_from_search_failure(&position);
+                        fallback_move
+                    }
+                };
+                if thinking_ai.last_search_failed() {
+                    println!("info string Internal search error; returning a legal fallback move");
+                }
+                thinking_ai.set_stop_signal(None);
                 if let Some(best_move) = best_move {
-                    thinking_ai.set_stop_signal(None);
                     println!("bestmove {}", format_move_usi(best_move));
                     let _ = io::stdout().flush();
                 } else {
-                    thinking_ai.set_stop_signal(None);
                     println!("bestmove resign");
                     let _ = io::stdout().flush();
                 }

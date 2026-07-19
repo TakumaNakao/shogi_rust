@@ -9,6 +9,7 @@ use shogi_lib::Position;
 use std::any::Any;
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -221,6 +222,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     stop_signal: Option<Arc<AtomicBool>>,
     eval_context: Option<Box<dyn Any + Send>>,
     last_completed_depth: u8,
+    last_search_failed: bool,
 }
 
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
@@ -251,6 +253,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             stop_signal: None,
             eval_context: None,
             last_completed_depth: 0,
+            last_search_failed: false,
         }
     }
 
@@ -298,6 +301,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.sennichite_detector.clear();
         self.transposition_table.clear();
         self.clear_killer_moves();
+        self.last_search_failed = false;
     }
 
     fn clear_killer_moves(&mut self) {
@@ -366,6 +370,23 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn last_completed_depth(&self) -> u8 {
         self.last_completed_depth
+    }
+
+    pub fn last_search_failed(&self) -> bool {
+        self.last_search_failed
+    }
+
+    pub fn recover_from_search_failure(&mut self, position: &Position) {
+        self.move_ordering.clear();
+        self.sennichite_detector.clear();
+        self.transposition_table.clear();
+        self.clear_killer_moves();
+        self.begin_eval_context(position);
+        self.start_time = None;
+        self.time_limit = None;
+        self.next_time_check_nodes = 0;
+        self.last_completed_depth = 0;
+        self.last_search_failed = true;
     }
 
     fn absorb_statistics(&mut self, other: &Self) {
@@ -752,6 +773,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         max_depth: u8,
         time_limit_ms: Option<u64>,
     ) -> Option<Move> {
+        self.last_search_failed = false;
         self.find_best_move_with_root_offset(position, max_depth, time_limit_ms, 0, true)
     }
 
@@ -883,6 +905,9 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         best_pv_for_depth = current_pv;
                     }
                     alpha = alpha.max(current_eval);
+                    if alpha >= beta {
+                        break;
+                    }
                 } else {
                     search_interrupted = true;
                     break;
@@ -1004,11 +1029,24 @@ where
         threads: usize,
     ) -> Option<Move> {
         let threads = resolve_search_threads(threads);
+        let root_position = position.clone();
+        let fallback_move = position.legal_moves().first().copied();
+        self.last_search_failed = false;
+
         if threads == 1 {
             if matches!(&self.transposition_table, TranspositionTable::Shared(_)) {
                 self.transposition_table = TranspositionTable::Local(HashMap::new());
             }
-            return self.find_best_move(position, max_depth, time_limit_ms);
+            return match catch_unwind(AssertUnwindSafe(|| {
+                self.find_best_move(position, max_depth, time_limit_ms)
+            })) {
+                Ok(best_move) => best_move,
+                Err(_) => {
+                    *position = root_position;
+                    self.recover_from_search_failure(position);
+                    fallback_move
+                }
+            };
         }
 
         let shared_tt = match &self.transposition_table {
@@ -1028,7 +1066,6 @@ where
 
         let evaluator = self.evaluator.clone();
         let generation = self.search_generation;
-        let root_position = position.clone();
         let emit_info = self.emit_info;
 
         thread::scope(|scope| {
@@ -1041,29 +1078,55 @@ where
                 handles.push(scope.spawn(move || {
                     let mut worker = ShogiAI::new_with_shared_tt(evaluator, table, generation);
                     worker.set_emit_info(false);
-                    worker.set_stop_signal(Some(stop_signal));
-                    let best_move = worker.find_best_move_with_root_offset(
-                        &mut worker_position,
-                        max_depth,
-                        time_limit_ms,
-                        worker_id,
-                        false,
-                    );
-                    (best_move, worker)
+                    worker.set_stop_signal(Some(stop_signal.clone()));
+                    // A failed helper must stop the primary search instead of stranding USI.
+                    let worker_result = catch_unwind(AssertUnwindSafe(|| {
+                        worker.find_best_move_with_root_offset(
+                            &mut worker_position,
+                            max_depth,
+                            time_limit_ms,
+                            worker_id,
+                            false,
+                        )
+                    }));
+                    match worker_result {
+                        Ok(best_move) => Ok((best_move, worker)),
+                        Err(_) => {
+                            stop_signal.store(true, Ordering::Relaxed);
+                            Err(())
+                        }
+                    }
                 }));
             }
 
             self.set_emit_info(emit_info);
-            let main_move =
-                self.find_best_move_with_root_offset(position, max_depth, time_limit_ms, 0, true);
+            // Keep the root position recoverable even if an internal invariant fires.
+            let main_result = catch_unwind(AssertUnwindSafe(|| {
+                self.find_best_move_with_root_offset(position, max_depth, time_limit_ms, 0, true)
+            }));
             stop_signal.store(true, Ordering::Relaxed);
 
+            let mut worker_failed = false;
             for handle in handles {
-                let (_worker_move, worker) =
-                    handle.join().expect("parallel search worker panicked");
-                self.absorb_statistics(&worker);
+                match handle.join() {
+                    Ok(Ok((_worker_move, worker))) => self.absorb_statistics(&worker),
+                    Ok(Err(())) | Err(_) => worker_failed = true,
+                }
             }
-            main_move
+
+            if worker_failed {
+                self.transposition_table.clear();
+                self.last_search_failed = true;
+            }
+
+            match main_result {
+                Ok(main_move) => main_move,
+                Err(_) => {
+                    *position = root_position;
+                    self.recover_from_search_failure(position);
+                    fallback_move
+                }
+            }
         })
     }
 }
@@ -1092,6 +1155,8 @@ mod tests {
         B*3g 4d5e 5f5e 5d5e 1f1e 1d1e 1i1e S*1g 2h2g 1g1h 2g2h 4c4d \
         2h1h 4d4e 4f4e P*4f 4g5f 5e5f 5g5f G*2g S*8b 8a8b S*7a 2g1h \
         7a8b R*3i 5i6h 4f4g+ 3f3e";
+    const V253_NO_BESTMOVE_POSITION: &str =
+        "+B4+R1n1/6+S1k/4+B1spp/plp3p2/1N5P1/P1P1S1P1+r/2G1PPN2/1p2KG3/L1G4+s1 w G2L5Pnp 116";
 
     #[derive(Clone, Copy)]
     struct ZeroEvaluator;
@@ -1099,6 +1164,15 @@ mod tests {
     impl Evaluator for ZeroEvaluator {
         fn evaluate(&self, _position: &Position) -> f32 {
             0.0
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct PanicEvaluator;
+
+    impl Evaluator for PanicEvaluator {
+        fn evaluate(&self, _position: &Position) -> f32 {
+            panic!("injected evaluator failure");
         }
     }
 
@@ -1207,6 +1281,23 @@ mod tests {
     }
 
     #[test]
+    fn parallel_search_recovers_from_worker_and_main_panics() {
+        let mut position = Position::default();
+        let original_sfen = position.to_sfen_owned();
+        let legal_moves = position.legal_moves();
+        let mut ai = ShogiAI::<_, 256>::new(PanicEvaluator);
+        ai.set_emit_info(false);
+
+        let best_move = ai
+            .find_best_move_parallel(&mut position, 2, None, 4)
+            .expect("panic recovery should return a legal fallback");
+
+        assert!(legal_moves.contains(&best_move));
+        assert!(ai.last_search_failed());
+        assert_eq!(original_sfen, position.to_sfen_owned());
+    }
+
+    #[test]
     fn v252_incident_parallel_search_keeps_the_mating_move() {
         let position =
             position_from_sfen_or_usi(V252_INCIDENT_POSITION).expect("valid incident position");
@@ -1229,6 +1320,25 @@ mod tests {
                 parallel.find_best_move_parallel(&mut parallel_position, 3, None, 4);
             assert_eq!(single_move, parallel_move);
             assert_eq!(original_sfen, parallel_position.to_sfen_owned());
+        }
+    }
+
+    #[test]
+    fn v253_no_bestmove_position_returns_legal_move_with_four_threads() {
+        let mut position =
+            position_from_sfen_or_usi(V253_NO_BESTMOVE_POSITION).expect("valid incident position");
+        let original_sfen = position.to_sfen_owned();
+        let legal_moves = position.legal_moves();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_emit_info(false);
+
+        for _ in 0..8 {
+            let best_move = ai
+                .find_best_move_parallel(&mut position, 4, None, 4)
+                .expect("incident position has a legal move");
+            assert!(legal_moves.contains(&best_move));
+            assert!(!ai.last_search_failed());
+            assert_eq!(original_sfen, position.to_sfen_owned());
         }
     }
 
