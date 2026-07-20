@@ -1727,7 +1727,7 @@ Phaseの着手・完了時に以下へ追記する。
 | 3 Format consolidation | 完了 | `f1ecb8b` | `5941250` | HalfKP/HKST codecを単一定義化、golden byte一致、paired性能差+0.12% |
 | 4 Search/USI separation | 完了 | `edf04b0` | `edf04b0` | typed outcome/observer、generation job、single bestmove emitter、性能差+0.38% |
 | 5 Repetition correctness | 完了 | `8a86417` | `7cc7413` | 完全履歴と王手区間による公式裁定、教師意味論v3、paired性能差+1.69% |
-| 6 Data/Training | 未着手 |  |  |  |
+| 6 Data/Training | 完了 | `be5897c` | `fd2c5cd` | 規約一本化、content split v2、全stage manifest、bounded-memory trainer、resume完全一致 |
 | 7 Repository/Documents | 未着手 |  |  |  |
 | 8 Performance/Cutover | 未着手 |  |  |  |
 
@@ -1908,3 +1908,53 @@ Phase 4はlocal gateについて完了した。
 
 既存の教師shardは入力由来情報を欠くため自動変換せず、新しい規則で再生成する。
 リポジトリ内に生成済み教師artifactは追跡していない。Phase 5は完了した。
+
+### 2026-07-21 Phase 6実施結果
+
+- Phase 5の`refactor/phase5-repetition`を保存し、stacked branch
+  `refactor/phase6-data-training`を作成した。
+- `be5897c`: CSAの色・駒・着手変換、終局理由、勝者、rate metadata、phase境界、
+  CSA file収集を`training_data`へ集約した。`dataset_build`、`csa_policy_dump`、
+  `csa_rate_stats`、`kpp_learn`、search teacherが同じ規約を参照する。
+  phase policy v1はopening 40 ply以下、middlegame 41--90 ply、endgame 91 ply以上である。
+- split policy v2はCSA内容のSHA-256をgame IDとし、domain separator、seed、game IDの
+  SHA-256からtrain/valid/testを決める。file pathをsplit keyとrecord sourceから除き、
+  同一内容の重複CSAを一件へまとめた。rename、root directory変更、列挙順によって
+  splitが変わらない。dataset manifestはpolicy version、全入力ID、出力hash、件数を持つ。
+- `9f46bdb`: trainerの件数確認をHKST manifest参照へ変更し、全record decodeを廃止した。
+  trainは既定25,000 record、validation/testは既定4,096 recordのchunkで処理するため、
+  peak memoryはdataset総量に比例しない。既存の25,000行shardは一chunkとなるため、
+  従来と同じseedのshuffle順を維持する。
+- `dab2531`: active featureごとに64要素hidden gradientを複製せず、一局面につき
+  black/white各一組とfeature index列を保持する形へ変更した。dense/sparse batch
+  accumulatorはclearしてcapacityを再利用する。AdaGradとschedule-freeのcheckpointは
+  optimizer全状態をround-trip testで検証し、state commit fileへ各構成fileの
+  SHA-256とrun fingerprintを記録する。旧checkpointは明示opt-inなしには再開しない。
+- `a5c1f40`: teacher生成はRayon workerごとに`TeacherSession`を一度だけ作る。
+  各候補の前にTT、move ordering、killer、履歴、評価context、統計を完全resetする。
+  fresh session版`dab2531`と再利用版を8局面、depth 1/2、58候補で比較し、HKST SHA-256は
+  両方とも`643ebb63...39d22b`で完全一致した。
+- `a587663`、`dc4259b`、`bf397bd`: dataset、JSONL shard、teacher、trainerの各stageへ
+  manifestを追加した。revision/dirty、rustc、target、入力・model・engine・出力のhashと
+  件数、feature profile、limit、jobs/threads、seed、policy/semantics version、optimizer、
+  hyperparameter、parent manifest hashを該当stageで記録する。stage再利用はdirectory名や
+  `.complete`ではなく、入力と設定から得たfingerprint、および全出力hashの一致時だけ行う。
+  `train_halfkp64_large.sh`から`.complete`とshell `split`を除き、manifest付き
+  `jsonl_shard`へ移行した。HKST本体とmanifestは一時fileから確定する。
+- `7d927c1`: 2 epoch連続実行と1 epoch + resumeのmodel hashを比較したところ、最初の
+  characterizationではprocessごとにランダムな`HashMap`走査順がgradient normの加算順を
+  変え、1 ULP程度の差を生むことを検出した。sparse feature index順の決定的加算へ修正後、
+  両modelは`ef70ee56...6ef7ae`でbyte完全一致し、validation scoreも完全一致した。
+  test setはbest model確定後だけ読み、checkpoint選択へ混入しない。
+- HalfKP-64、2 record、train/eval chunk 1のtrainer smokeで最大RSSは`83,256 KiB`、
+  elapsedは`0.27 s`だった。この値はrelease model自体を含む小規模測定であり、絶対的な
+  大規模運用上限ではないが、入力件数に依存する全保持経路がないことを確認する測定である。
+- 最終状態でHalfKP-32/64 library各45件、search trainer 6件、USI transcript 6件、
+  `shogi_lib` 33件、HalfKP-64 workspace release test、all-target check、Clippy ratchet、
+  format checkが成功した。search fingerprintは完全一致した。
+- Phase 5完了revision `e7cffe0`とPhase 6 `fd2c5cd`を別binaryで5回ずつ交互測定した。
+  control中央値`6578.11 ms`、candidate中央値`6685.45 ms`、差は`+1.632%`で、
+  全決定的カウンタは一致し3%の停止基準内だった。
+
+大規模生成物はGitへ追跡せず、smoke fixtureでmanifest chain、hash検証、stale拒否を確認した。
+実データのfull runでも同じbinaryとmanifest契約を使用する。Phase 6は完了した。

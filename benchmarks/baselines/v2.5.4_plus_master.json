@@ -404,5 +404,105 @@
         "The teacher-manifest commit does not affect the search runtime."
       ]
     }
+  },
+  "phase6_data_training_validation": {
+    "implementation_revision": "fd2c5cd",
+    "training_conventions": {
+      "module": "src/training_data.rs",
+      "phase_policy_version": 1,
+      "phase_boundaries": {
+        "opening_max_ply": 40,
+        "middlegame_max_ply": 90
+      },
+      "split_policy_version": 2,
+      "game_id": "SHA-256 of CSA content",
+      "split_key": "SHA-256(split-v2 domain, seed, game content ID)",
+      "duplicate_content_removed": true,
+      "path_independent": true
+    },
+    "manifests": {
+      "dataset_build": "stage fingerprint plus input/output SHA-256 and record counts",
+      "jsonl_shard": "parent fingerprint plus input/output SHA-256 and record counts",
+      "halfkp_search_teacher": "teacher semantics, engine/model/input/output hashes, limits, jobs and seeds",
+      "halfkp_search_train": "dataset/model/binary hashes, hyperparameters, metrics and output hash",
+      "checkpoint": "run fingerprint and per-file SHA-256",
+      "stale_reuse_policy": "reuse only when stage fingerprint and output hashes match"
+    },
+    "teacher_session_equivalence": {
+      "control_revision": "dab2531",
+      "candidate_revision": "fd2c5cd",
+      "positions": 8,
+      "selection_depth": 1,
+      "teacher_depth": 2,
+      "jobs": 1,
+      "seed": 4242,
+      "records": 8,
+      "candidates": 58,
+      "control_sha256": "643ebb63a1bd4cfd82bf6f79ae8ef122086ed2dda72e22ca4c1e63b25739d22b",
+      "candidate_sha256": "643ebb63a1bd4cfd82bf6f79ae8ef122086ed2dda72e22ca4c1e63b25739d22b",
+      "result": "exact match"
+    },
+    "streaming_trainer": {
+      "manifest_record_count_without_decode": true,
+      "training_chunk_default_records": 25000,
+      "evaluation_chunk_default_records": 4096,
+      "validation_and_test_streamed": true,
+      "per_feature_hidden_gradient_copies_removed": true,
+      "batch_accumulator_reused": true,
+      "sparse_norm_reduction_order": "sorted feature index",
+      "smoke_peak_rss_kb": 83256,
+      "smoke_records": 2,
+      "smoke_elapsed_seconds": 0.27
+    },
+    "checkpoint_equivalence": {
+      "optimizer_round_trip_tests": [
+        "AdaGrad",
+        "schedule-free"
+      ],
+      "comparison": "uninterrupted 2 epochs versus 1 epoch plus resume",
+      "threads": 1,
+      "records": 2,
+      "continuous_sha256": "ef70ee5671e2c58abe3ad659b1426ba70521845df15318e769dbccfd646ef7ae",
+      "resumed_sha256": "ef70ee5671e2c58abe3ad659b1426ba70521845df15318e769dbccfd646ef7ae",
+      "best_validation_score": 0.07553754894733429,
+      "result": "exact match"
+    },
+    "tests": {
+      "halfkp64_library_tests": 45,
+      "halfkp32_library_tests": 45,
+      "halfkp_search_train_tests": 6,
+      "usi_transcript_tests": 6,
+      "shogi_lib_tests": 33,
+      "halfkp64_workspace_release": "pass",
+      "halfkp64_all_targets_check": "pass",
+      "clippy_ratchet": "pass",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match"
+    },
+    "paired_performance_check": {
+      "control_revision": "e7cffe0",
+      "candidate_revision": "fd2c5cd",
+      "method": "five alternating runs using separately built binaries",
+      "control_timing_runs_ms": [
+        6554.20,
+        6578.11,
+        6622.15,
+        6645.70,
+        6391.98
+      ],
+      "candidate_timing_runs_ms": [
+        6598.09,
+        6635.71,
+        6687.40,
+        6685.45,
+        6862.18
+      ],
+      "control_median_elapsed_ms": 6578.11,
+      "candidate_median_elapsed_ms": 6685.45,
+      "candidate_delta_percent": 1.6318,
+      "deterministic_counters_match": true,
+      "gate_percent": 3.0,
+      "result": "pass"
+    }
   }
 }
