@@ -16,6 +16,15 @@ pub struct HalfKpHeader {
     pub target_scale: f32,
 }
 
+#[derive(Debug, Clone)]
+pub struct HalfKpFlatModel {
+    pub header: HalfKpHeader,
+    pub feature_emb: Vec<f32>,
+    pub hidden_b: [f32; HALFKP_HIDDEN],
+    pub out_w: [f32; HALFKP_HIDDEN * 2 + 1],
+    pub out_b: f32,
+}
+
 impl HalfKpHeader {
     pub fn current(target_scale: f32) -> Result<Self> {
         let header = Self { target_scale };
@@ -79,6 +88,78 @@ impl HalfKpHeader {
             return Err(anyhow!("invalid HalfKP header"));
         }
         Ok(())
+    }
+}
+
+impl HalfKpFlatModel {
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let header = HalfKpHeader::decode(bytes)?;
+        let expected_len = Self::encoded_len()?;
+        if bytes.len() != expected_len {
+            return Err(anyhow!(
+                "invalid HalfKP model length: got {}, expected {expected_len}",
+                bytes.len()
+            ));
+        }
+        let mut values = bytes[HALFKP_HEADER_LEN..]
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        let feature_emb = values
+            .by_ref()
+            .take(HALFKP_INPUTS * HALFKP_HIDDEN)
+            .collect();
+        let hidden_b = std::array::from_fn(|_| {
+            values
+                .next()
+                .expect("validated HalfKP model contains hidden bias")
+        });
+        let out_w = std::array::from_fn(|_| {
+            values
+                .next()
+                .expect("validated HalfKP model contains output weights")
+        });
+        let out_b = values
+            .next()
+            .expect("validated HalfKP model contains output bias");
+        debug_assert!(values.next().is_none());
+        Ok(Self {
+            header,
+            feature_emb,
+            hidden_b,
+            out_w,
+            out_b,
+        })
+    }
+
+    pub fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+        if self.feature_emb.len() != HALFKP_INPUTS * HALFKP_HIDDEN {
+            return Err(anyhow!("invalid HalfKP feature tensor length"));
+        }
+        self.header.write_to(writer)?;
+        for &value in &self.feature_emb {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        for &value in &self.hidden_b {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        for &value in &self.out_w {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        writer.write_all(&self.out_b.to_le_bytes())?;
+        Ok(())
+    }
+
+    pub fn encoded_len() -> Result<usize> {
+        let float_count = HALFKP_INPUTS
+            .checked_mul(HALFKP_HIDDEN)
+            .and_then(|count| count.checked_add(HALFKP_HIDDEN))
+            .and_then(|count| count.checked_add(HALFKP_HIDDEN * 2 + 1))
+            .and_then(|count| count.checked_add(1))
+            .ok_or_else(|| anyhow!("HalfKP model length overflow"))?;
+        float_count
+            .checked_mul(std::mem::size_of::<f32>())
+            .and_then(|length| length.checked_add(HALFKP_HEADER_LEN))
+            .ok_or_else(|| anyhow!("HalfKP model byte length overflow"))
     }
 }
 

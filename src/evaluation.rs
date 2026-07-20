@@ -10,7 +10,7 @@ mod kernels;
 mod sparse;
 mod tiny_nnue;
 
-pub use codec::{HalfKpHeader, HALFKP_HEADER_LEN};
+pub use codec::{HalfKpFlatModel, HalfKpHeader, HALFKP_HEADER_LEN};
 pub use constants::*;
 pub use debug::{
     generate_sfen, index_to_kpp_info, is_promoted_piece_kind, piece_kind_to_sfen_char_base, KppInfo,
@@ -237,6 +237,12 @@ mod tests {
         }
         file.write_all(&0.0f32.to_le_bytes()).unwrap();
         drop(file);
+
+        let legacy_bytes = std::fs::read(&path).expect("read legacy fixture");
+        let flat = HalfKpFlatModel::decode(&legacy_bytes).expect("decode flat fixture");
+        let mut encoded = Vec::new();
+        flat.write_to(&mut encoded).expect("encode flat fixture");
+        assert_eq!(legacy_bytes, encoded);
 
         let model = HalfKpModel::load(&path).expect("load HalfKP model");
         let position = shogi_lib::Position::default();
