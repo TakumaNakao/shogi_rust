@@ -1,11 +1,12 @@
 mod codec;
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use shogi_core::Color;
 use shogi_lib::Position;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::evaluation::extract_halfkp_features_for;
 
@@ -13,6 +14,34 @@ pub const CANDIDATE_SEARCH_BEST: u8 = 1;
 pub const CANDIDATE_GAME_MOVE: u8 = 2;
 pub const CANDIDATE_RANDOM: u8 = 4;
 pub const CANDIDATE_TACTICAL: u8 = 8;
+pub const SEARCH_TEACHER_SEMANTICS_VERSION: u32 = 3;
+pub const SEARCH_TEACHER_SEMANTICS_ID: &str = "jsa-complete-check-interval-v1";
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SearchTeacherManifest {
+    pub schema_version: u32,
+    pub format: String,
+    pub teacher_semantics_version: u32,
+    pub teacher_semantics_id: String,
+    pub records: u64,
+}
+
+pub fn search_teacher_manifest_path(dataset: &Path) -> PathBuf {
+    let mut path = dataset.as_os_str().to_os_string();
+    path.push(".manifest.json");
+    PathBuf::from(path)
+}
+
+pub fn read_search_teacher_manifest(dataset: &Path) -> Result<Option<SearchTeacherManifest>> {
+    let path = search_teacher_manifest_path(dataset);
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(
+            serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?,
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct PackedHalfKpPosition {
@@ -67,6 +96,7 @@ pub struct SearchTeacherRecord {
 
 pub struct SearchTeacherWriter {
     writer: BufWriter<File>,
+    dataset_path: PathBuf,
     records: u64,
 }
 
@@ -80,7 +110,11 @@ impl SearchTeacherWriter {
             File::create(path).with_context(|| format!("create {}", path.display()))?,
         );
         codec::write_header(&mut writer)?;
-        Ok(Self { writer, records: 0 })
+        Ok(Self {
+            writer,
+            dataset_path: path.to_path_buf(),
+            records: 0,
+        })
     }
 
     pub fn write_record(&mut self, record: &SearchTeacherRecord) -> Result<()> {
@@ -91,6 +125,16 @@ impl SearchTeacherWriter {
 
     pub fn finish(mut self) -> Result<u64> {
         self.writer.flush()?;
+        let manifest = SearchTeacherManifest {
+            schema_version: 1,
+            format: "HKST0002".to_string(),
+            teacher_semantics_version: SEARCH_TEACHER_SEMANTICS_VERSION,
+            teacher_semantics_id: SEARCH_TEACHER_SEMANTICS_ID.to_string(),
+            records: self.records,
+        };
+        let path = search_teacher_manifest_path(&self.dataset_path);
+        let bytes = serde_json::to_vec_pretty(&manifest)?;
+        std::fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
         Ok(self.records)
     }
 }
@@ -220,6 +264,17 @@ mod tests {
         let mut writer = SearchTeacherWriter::create(&path).expect("create dataset");
         writer.write_record(&record).expect("write record");
         assert_eq!(1, writer.finish().expect("finish dataset"));
+        let manifest = read_search_teacher_manifest(&path)
+            .expect("read manifest")
+            .expect("manifest exists");
+        assert_eq!(1, manifest.schema_version);
+        assert_eq!("HKST0002", manifest.format);
+        assert_eq!(
+            SEARCH_TEACHER_SEMANTICS_VERSION,
+            manifest.teacher_semantics_version
+        );
+        assert_eq!(SEARCH_TEACHER_SEMANTICS_ID, manifest.teacher_semantics_id);
+        assert_eq!(1, manifest.records);
 
         let mut reader = SearchTeacherReader::open(&path).expect("open dataset");
         let decoded = reader
@@ -236,6 +291,7 @@ mod tests {
             decoded.candidates[0].score_cp
         );
         assert!(reader.read_record().expect("read eof").is_none());
+        std::fs::remove_file(search_teacher_manifest_path(&path)).expect("remove manifest");
         std::fs::remove_file(path).expect("remove dataset");
     }
 
@@ -284,6 +340,16 @@ mod tests {
             .expect("write golden record");
         assert_eq!(1, writer.finish().expect("finish golden output"));
         let actual = std::fs::read(&output_path).expect("read written golden dataset");
+        let manifest = read_search_teacher_manifest(&output_path)
+            .expect("read golden manifest")
+            .expect("golden manifest exists");
+        assert_eq!(
+            SEARCH_TEACHER_SEMANTICS_VERSION,
+            manifest.teacher_semantics_version
+        );
+        assert_eq!(1, manifest.records);
+        std::fs::remove_file(search_teacher_manifest_path(&output_path))
+            .expect("remove golden manifest");
         std::fs::remove_file(output_path).expect("remove golden output");
         assert_eq!(golden, actual);
     }

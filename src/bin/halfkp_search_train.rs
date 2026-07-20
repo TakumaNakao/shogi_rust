@@ -7,7 +7,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use shogi_ai::evaluation::{HalfKpFlatModel, HalfKpHeader, HALFKP_HIDDEN, HALFKP_INPUTS};
 use shogi_ai::halfkp_training::{
-    PackedHalfKpPosition, SearchTeacherReader, SearchTeacherRecord, CANDIDATE_GAME_MOVE,
+    read_search_teacher_manifest, PackedHalfKpPosition, SearchTeacherReader, SearchTeacherRecord,
+    CANDIDATE_GAME_MOVE, SEARCH_TEACHER_SEMANTICS_ID, SEARCH_TEACHER_SEMANTICS_VERSION,
 };
 use shogi_core::Color;
 use std::collections::HashMap;
@@ -92,6 +93,9 @@ struct Args {
     max_train_records: Option<usize>,
     #[arg(long)]
     max_valid_records: Option<usize>,
+    /// Permit HKST0002 inputs created before teacher-semantics manifests.
+    #[arg(long, default_value_t = false)]
+    allow_legacy_teacher_semantics: bool,
     #[arg(long)]
     log: Option<PathBuf>,
 }
@@ -320,12 +324,20 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    let mut valid = read_datasets(&args.valid, args.max_valid_records)?;
-    let test = read_datasets(&args.test, None)?;
+    let mut valid = read_datasets(
+        &args.valid,
+        args.max_valid_records,
+        args.allow_legacy_teacher_semantics,
+    )?;
+    let test = read_datasets(&args.test, None, args.allow_legacy_teacher_semantics)?;
     if valid.is_empty() {
         return Err(anyhow!("train and valid datasets must not be empty"));
     }
-    let train_records = count_datasets(&args.train, args.max_train_records)?;
+    let train_records = count_datasets(
+        &args.train,
+        args.max_train_records,
+        args.allow_legacy_teacher_semantics,
+    )?;
     if train_records == 0 {
         return Err(anyhow!("train and valid datasets must not be empty"));
     }
@@ -391,7 +403,7 @@ fn main() -> Result<()> {
             if remaining == Some(0) {
                 break;
             }
-            let mut shard = read_dataset(path, remaining)?;
+            let mut shard = read_dataset(path, remaining, args.allow_legacy_teacher_semantics)?;
             shard.shuffle(&mut ChaCha8Rng::seed_from_u64(
                 args.seed ^ epoch as u64 ^ shard_index as u64,
             ));
@@ -521,7 +533,12 @@ fn validate_args(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn read_dataset(path: &Path, limit: Option<usize>) -> Result<Vec<SearchTeacherRecord>> {
+fn read_dataset(
+    path: &Path,
+    limit: Option<usize>,
+    allow_legacy_teacher_semantics: bool,
+) -> Result<Vec<SearchTeacherRecord>> {
+    validate_teacher_semantics(path, allow_legacy_teacher_semantics)?;
     let mut reader = SearchTeacherReader::open(path)?;
     let mut records = Vec::new();
     while limit.is_none_or(|limit| records.len() < limit) {
@@ -533,26 +550,67 @@ fn read_dataset(path: &Path, limit: Option<usize>) -> Result<Vec<SearchTeacherRe
     Ok(records)
 }
 
-fn read_datasets(paths: &[PathBuf], limit: Option<usize>) -> Result<Vec<SearchTeacherRecord>> {
+fn validate_teacher_semantics(path: &Path, allow_legacy_teacher_semantics: bool) -> Result<()> {
+    let Some(manifest) = read_search_teacher_manifest(path)? else {
+        return if allow_legacy_teacher_semantics {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "{} has no teacher-semantics manifest; regenerate it or pass \
+                 --allow-legacy-teacher-semantics explicitly",
+                path.display()
+            ))
+        };
+    };
+    if manifest.format != "HKST0002"
+        || manifest.teacher_semantics_version != SEARCH_TEACHER_SEMANTICS_VERSION
+        || manifest.teacher_semantics_id != SEARCH_TEACHER_SEMANTICS_ID
+    {
+        return Err(anyhow!(
+            "{} uses unsupported teacher semantics {} ({}) for {}; expected {} ({})",
+            path.display(),
+            manifest.teacher_semantics_version,
+            manifest.teacher_semantics_id,
+            manifest.format,
+            SEARCH_TEACHER_SEMANTICS_VERSION,
+            SEARCH_TEACHER_SEMANTICS_ID
+        ));
+    }
+    Ok(())
+}
+
+fn read_datasets(
+    paths: &[PathBuf],
+    limit: Option<usize>,
+    allow_legacy_teacher_semantics: bool,
+) -> Result<Vec<SearchTeacherRecord>> {
     let mut records = Vec::new();
     for path in paths {
         let remaining = limit.map(|limit| limit.saturating_sub(records.len()));
         if remaining == Some(0) {
             break;
         }
-        records.extend(read_dataset(path, remaining)?);
+        records.extend(read_dataset(
+            path,
+            remaining,
+            allow_legacy_teacher_semantics,
+        )?);
     }
     Ok(records)
 }
 
-fn count_datasets(paths: &[PathBuf], limit: Option<usize>) -> Result<usize> {
+fn count_datasets(
+    paths: &[PathBuf],
+    limit: Option<usize>,
+    allow_legacy_teacher_semantics: bool,
+) -> Result<usize> {
     let mut count = 0;
     for path in paths {
         let remaining = limit.map(|limit| limit.saturating_sub(count));
         if remaining == Some(0) {
             break;
         }
-        count += read_dataset(path, remaining)?.len();
+        count += read_dataset(path, remaining, allow_legacy_teacher_semantics)?.len();
     }
     Ok(count)
 }
@@ -1358,8 +1416,44 @@ fn softplus(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shogi_ai::halfkp_training::{search_teacher_manifest_path, SearchTeacherManifest};
     use shogi_ai::position_hash::PositionHasher;
     use shogi_lib::Position;
+
+    #[test]
+    fn rejects_manifest_with_incompatible_teacher_semantics() {
+        let path = std::env::temp_dir().join(format!(
+            "halfkp-search-train-semantics-{}.hkst",
+            std::process::id()
+        ));
+        let manifest_path = search_teacher_manifest_path(&path);
+        let manifest = SearchTeacherManifest {
+            schema_version: 1,
+            format: "HKST0002".to_string(),
+            teacher_semantics_version: SEARCH_TEACHER_SEMANTICS_VERSION - 1,
+            teacher_semantics_id: "legacy-truncated-history".to_string(),
+            records: 0,
+        };
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("serialize manifest"),
+        )
+        .expect("write manifest");
+
+        let error = validate_teacher_semantics(&path, false).expect_err("reject old semantics");
+        assert!(error.to_string().contains("unsupported teacher semantics"));
+        std::fs::remove_file(manifest_path).expect("remove manifest");
+    }
+
+    #[test]
+    fn legacy_teacher_requires_explicit_opt_in() {
+        let path = Path::new("legacy-without-manifest.hkst");
+        let error = validate_teacher_semantics(path, false).expect_err("reject implicit legacy");
+        assert!(error
+            .to_string()
+            .contains("--allow-legacy-teacher-semantics"));
+        validate_teacher_semantics(path, true).expect("explicit legacy opt-in");
+    }
 
     #[test]
     fn value_gradient_matches_finite_difference() {
