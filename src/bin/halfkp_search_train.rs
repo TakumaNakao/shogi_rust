@@ -5,9 +5,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use shogi_ai::evaluation::{
-    HALFKP_HIDDEN, HALFKP_INPUTS, HALFKP_KING_BUCKETS, HALFKP_PIECE_STATES,
-};
+use shogi_ai::evaluation::{HalfKpHeader, HALFKP_HEADER_LEN, HALFKP_HIDDEN, HALFKP_INPUTS};
 use shogi_ai::halfkp_training::{
     PackedHalfKpPosition, SearchTeacherReader, SearchTeacherRecord, CANDIDATE_GAME_MOVE,
 };
@@ -17,12 +15,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = if cfg!(feature = "halfkp64") {
-    b"HKP00064"
-} else {
-    b"HKP00001"
-};
-const VERSION: u32 = 1;
 const TARGET_SCALE: f32 = 1000.0;
 
 #[derive(Parser, Debug)]
@@ -235,26 +227,14 @@ impl Weights {
     fn load(path: &Path) -> Result<Self> {
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let expected_floats = HALFKP_INPUTS * HALFKP_HIDDEN + HALFKP_HIDDEN + HALFKP_HIDDEN * 2 + 2;
-        if bytes.len() != 32 + expected_floats * 4 || &bytes[..8] != MAGIC {
+        if bytes.len() != HALFKP_HEADER_LEN + expected_floats * 4 {
             return Err(anyhow!("invalid HalfKP initial weights"));
         }
-        let u32_at = |offset: usize| {
-            u32::from_le_bytes(
-                bytes[offset..offset + 4]
-                    .try_into()
-                    .expect("four-byte model header"),
-            )
-        };
-        if u32_at(8) != VERSION
-            || u32_at(12) as usize != HALFKP_HIDDEN
-            || u32_at(16) as usize != HALFKP_INPUTS
-            || u32_at(20) as usize != HALFKP_KING_BUCKETS
-            || u32_at(24) as usize != HALFKP_PIECE_STATES
-            || f32::from_le_bytes(bytes[28..32].try_into().unwrap()) != TARGET_SCALE
-        {
+        let header = HalfKpHeader::decode(&bytes)?;
+        if header.target_scale != TARGET_SCALE {
             return Err(anyhow!("incompatible HalfKP model header"));
         }
-        let mut offset = 32;
+        let mut offset = HALFKP_HEADER_LEN;
         let mut next = || {
             let value = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
             offset += 4;
@@ -281,13 +261,7 @@ impl Weights {
         }
         let temporary = path.with_extension("tmp");
         let mut writer = BufWriter::new(File::create(&temporary)?);
-        writer.write_all(MAGIC)?;
-        writer.write_all(&VERSION.to_le_bytes())?;
-        writer.write_all(&(HALFKP_HIDDEN as u32).to_le_bytes())?;
-        writer.write_all(&(HALFKP_INPUTS as u32).to_le_bytes())?;
-        writer.write_all(&(HALFKP_KING_BUCKETS as u32).to_le_bytes())?;
-        writer.write_all(&(HALFKP_PIECE_STATES as u32).to_le_bytes())?;
-        writer.write_all(&TARGET_SCALE.to_le_bytes())?;
+        HalfKpHeader::current(TARGET_SCALE)?.write_to(&mut writer)?;
         for &value in &self.feature_emb {
             writer.write_all(&value.to_le_bytes())?;
         }
