@@ -9,6 +9,8 @@
    v2.5.4以降も保存すべき探索、USI、HalfKP、教師データの契約。
 3. [`toolchain_policy.md`](toolchain_policy.md)
    Rust stable、MSRV宣言条件、Clippy warning ratchet、release再現性の運用方針。
+4. [`binaries.md`](binaries.md)
+   production、training、benchmark、research binaryの完全なinventoryとbuild feature。
 
 ## 現行実装
 
@@ -20,7 +22,13 @@
 - [`position_hash.md`](position_hash.md): position hash
 - [`move_ordering.md`](move_ordering.md): 手順順序
 - [`utils.md`](utils.md): 共通utility
-- [`binaries.md`](binaries.md): binary説明。現状は網羅されておらず、計画のPhase 7で更新する。
+- [`binaries.md`](binaries.md): binary inventoryと安定性区分
+- [`artifact_policy.md`](artifact_policy.md): fixture、dataset、run、reportの配置とmanifest規約
+
+## Architecture decision records
+
+- [`adr/0001-explicit-binary-targets.md`](adr/0001-explicit-binary-targets.md)
+- [`adr/0002-artifact-layout.md`](adr/0002-artifact-layout.md)
 
 ## HalfKP・学習
 
@@ -36,7 +44,7 @@
 ## 調査記録
 
 - [`v2.5.2_parallel_mate_bug_investigation.md`](v2.5.2_parallel_mate_bug_investigation.md)
-- `../report/`: 性能、棋力、学習実験の個別レポート。accepted/rejectedを含む索引整備はリファクタリング計画のPhase 7で実施する。
+- [`../report/README.md`](../report/README.md): 性能、棋力、学習実験reportのmetadataと検索方法
 
 ## 文書の扱い
 

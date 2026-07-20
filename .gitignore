@@ -1,4 +1,7 @@
 csa_files/
+data/raw/
+data/derived/
+runs/
 data/wdoor/
 data/mmto/
 data/bonanza_pairwise_runs/
