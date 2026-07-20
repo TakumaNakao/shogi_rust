@@ -12,6 +12,7 @@ halfkp64 = []
 [profile.release]
 lto = "thin"
 codegen-units = 1
+panic = "unwind"
 
 [dependencies]
 shogi_core = { version = "0.1.5" }
