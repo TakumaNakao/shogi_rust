@@ -1720,7 +1720,7 @@ Phaseの着手・完了時に以下へ追記する。
 
 | Phase | 状態 | 開始revision | 完了revision | 結果・参照 |
 |---|---|---|---|---|
-| 0 Baseline | 進行中（PR 001-002完了） | `9926430` |  | [`benchmarks/baselines/`](../benchmarks/baselines/)、fingerprint exact match、性能差+1.81% |
+| 0 Baseline | 完了 | `9926430` | `5aa5250` | [`benchmarks/baselines/`](../benchmarks/baselines/)、fingerprint/format fixture、性能差+1.81% |
 | 1 Workspace/CI | 未着手 |  |  |  |
 | 2 Module split | 未着手 |  |  |  |
 | 3 Format consolidation | 未着手 |  |  |  |
@@ -1735,8 +1735,11 @@ Phaseの着手・完了時に以下へ追記する。
 - `b72a717`: 本計画書と文書索引を追加。
 - `9926430`: 外部HalfKP性能基準manifestと固定7局面を追加。
 - `96c59e5`: Threads=1の決定的search fingerprint gateを追加。
+- `a5becf4`: HalfKP-32/64 v1 headerとHKST v2のgolden fixture、破損入力testを追加。
+- `5aa5250`: revision、toolchain、CPU、artifact hash、commandを取得するmetadata toolを追加。
 - fingerprintを2回実行し、bestmove、root score bit、PV、node/qsearch/aspiration統計の完全一致を確認。
 - HalfKP性能基準と同一条件で3回再測定し、全決定的カウンタの一致を確認。
 - 実行時間中央値は`6086.42 ms`から`6196.43 ms`で、差は`+1.81%`。3%の停止基準内。
+- HalfKP-64とHalfKP-32のlibrary test各35件、`shogi_lib` 33件、trainer 1件、HalfKP-64 all-target checkが成功。
 
-Phase 0の残作業はHalfKP/HKST format fixture、破損入力fixture、benchmark metadataの自動取得である。
+Phase 0は完了。次はPhase 1のCargo workspace化を、profileと性能を変えない独立PRとして開始する。

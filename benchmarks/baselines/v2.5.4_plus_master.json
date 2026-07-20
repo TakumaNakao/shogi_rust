@@ -109,6 +109,21 @@
         "This recheck validates the root score/PV observation fields and fingerprint harness.",
         "Timing has normal local noise; deterministic search counters are the hard equivalence gate."
       ]
+    },
+    "completion": {
+      "implementation_revision": "5aa5250",
+      "halfkp64_library_tests": 35,
+      "halfkp32_library_tests": 35,
+      "shogi_lib_tests": 33,
+      "trainer_tests": 1,
+      "halfkp64_all_targets_check": "pass",
+      "format_fixtures": [
+        "tests/fixtures/halfkp/header_v1_halfkp32.hex",
+        "tests/fixtures/halfkp/header_v1_halfkp64.hex",
+        "tests/fixtures/teacher/hkst_v2_halfkp32.hex",
+        "tests/fixtures/teacher/hkst_v2_halfkp64.hex"
+      ],
+      "metadata_tool": "tools/capture_benchmark_metadata.sh"
     }
   }
 }
