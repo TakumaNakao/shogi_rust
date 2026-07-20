@@ -22,6 +22,7 @@
 ```bash
 RUST_FONTCONFIG_DLOPEN=1 cargo run --release --features halfkp64 \
   --bin search_fingerprint -- \
+  --depth 3 \
   --expected benchmarks/baselines/search_fingerprint_v2.5.4_plus_master.json
 ```
 

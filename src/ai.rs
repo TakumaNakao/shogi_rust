@@ -233,6 +233,8 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     stop_signal: Option<Arc<AtomicBool>>,
     eval_context: Option<Box<dyn Any + Send>>,
     last_completed_depth: u8,
+    last_root_score: Option<f32>,
+    last_pv: Vec<Move>,
     last_search_failed: bool,
 }
 
@@ -264,6 +266,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             stop_signal: None,
             eval_context: None,
             last_completed_depth: 0,
+            last_root_score: None,
+            last_pv: Vec::new(),
             last_search_failed: false,
         }
     }
@@ -312,6 +316,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.sennichite_detector.clear();
         self.transposition_table.clear();
         self.clear_killer_moves();
+        self.last_root_score = None;
+        self.last_pv.clear();
         self.last_search_failed = false;
     }
 
@@ -383,6 +389,16 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.last_completed_depth
     }
 
+    /// Returns the raw root score from the last fully completed iteration.
+    pub fn last_root_score(&self) -> Option<f32> {
+        self.last_root_score
+    }
+
+    /// Returns the principal variation from the last fully completed iteration.
+    pub fn last_pv(&self) -> &[Move] {
+        &self.last_pv
+    }
+
     pub fn last_search_failed(&self) -> bool {
         self.last_search_failed
     }
@@ -397,6 +413,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.time_limit = None;
         self.next_time_check_nodes = 0;
         self.last_completed_depth = 0;
+        self.last_root_score = None;
+        self.last_pv.clear();
         self.last_search_failed = true;
     }
 
@@ -848,6 +866,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.aspiration_fail_highs = 0;
         self.aspiration_researches = 0;
         self.last_completed_depth = 0;
+        self.last_root_score = None;
+        self.last_pv.clear();
 
         let moves = position.legal_moves();
         if moves.is_empty() {
@@ -1028,6 +1048,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
                 // 評価値は手番視点に変換する
                 let score_cp = usi_display_score_cp(best_eval_for_depth);
+                self.last_root_score = Some(best_eval_for_depth);
+                self.last_pv = best_pv_for_depth;
 
                 if self.emit_info {
                     println!(
@@ -1369,6 +1391,24 @@ mod tests {
             legacy.last_completed_depth(),
             parallel.last_completed_depth()
         );
+        assert_eq!(legacy.last_root_score(), parallel.last_root_score());
+        assert_eq!(legacy.last_pv(), parallel.last_pv());
+    }
+
+    #[test]
+    fn completed_search_exposes_root_score_and_pv() {
+        let mut position = Position::default();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_emit_info(false);
+        ai.sennichite_detector.record_position(&position);
+
+        let best_move = ai
+            .find_best_move(&mut position, 2, None)
+            .expect("start position has a legal move");
+
+        assert_eq!(2, ai.last_completed_depth());
+        assert_eq!(Some(0.0), ai.last_root_score());
+        assert_eq!(Some(best_move), ai.last_pv().first().copied());
     }
 
     #[test]
