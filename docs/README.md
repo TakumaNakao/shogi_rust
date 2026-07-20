@@ -24,6 +24,7 @@
 - [`utils.md`](utils.md): 共通utility
 - [`binaries.md`](binaries.md): binary inventoryと安定性区分
 - [`artifact_policy.md`](artifact_policy.md): fixture、dataset、run、reportの配置とmanifest規約
+- [`release_acceptance.md`](release_acceptance.md): hosted CI、Windows process、ShogiHomeの最終確認
 
 ## Architecture decision records
 

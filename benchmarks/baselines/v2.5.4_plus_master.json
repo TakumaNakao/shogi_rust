@@ -584,5 +584,115 @@
       "gate_percent": 3.0,
       "result": "pass"
     }
+  },
+  "phase8_performance_cutover_validation": {
+    "implementation_revision": "b6416e0",
+    "accepted_changes": [
+      {
+        "revision": "0368306",
+        "change": "replace Any/downcast incremental evaluator state with EvaluationContext enum",
+        "search_fingerprint": "exact match",
+        "control_median_elapsed_ms": 6604.66,
+        "candidate_median_elapsed_ms": 6558.25,
+        "candidate_delta_percent": -0.7027
+      },
+      {
+        "revisions": [
+          "cb9c198",
+          "3349145",
+          "b6416e0"
+        ],
+        "change": "move supported training and benchmark implementations behind library run entry points and enforce thin CLI wrappers",
+        "production_binary_changed": false
+      }
+    ],
+    "rejected_changes": [
+      {
+        "change": "reuse move-ordering check flags during move application",
+        "control_median_elapsed_ms": 6507.39,
+        "candidate_median_elapsed_ms": 6535.22,
+        "candidate_delta_percent": 0.4277,
+        "result": "reverted",
+        "report": "report/2026-07-21_UTC_precomputed-check-flag-reuse-rejected.md"
+      }
+    ],
+    "final_release_candidate": {
+      "profile": "release ThinLTO, codegen-units=1, halfkp64",
+      "linux_binary": "target/release/usi_engine",
+      "linux_binary_bytes": 989472,
+      "linux_binary_sha256": "1705c3d88acd16b522b6e6e53d98d726a332086d020a526fe7c9611cbd17edc4",
+      "weight_sha256": "91784d6f03f70580468a1509f968cbaaf598fbce084c22a739cb870344fb7c00",
+      "positions_sha256": "22950f42a2d65292fa689a8c84e3af7dc160c571e9aa559699b0beaf1bc9adce",
+      "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+      "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+      "linux_usi_smoke": "usiok, readyok, bestmove 1g1f",
+      "windows_msvc_release_check": "pass",
+      "windows_runtime_and_shogihome": "external acceptance pending"
+    },
+    "tests": {
+      "halfkp64_library_tests": 51,
+      "halfkp32_library_tests": 51,
+      "halfkp_search_train_tests_in_library": 6,
+      "usi_transcript_tests": 6,
+      "shogi_lib_tests": 33,
+      "workspace_release_all_features": "pass",
+      "all_target_all_feature_check": "pass",
+      "binary_inventory_and_thin_entry_check": "pass",
+      "clippy_ratchet": "pass",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match",
+      "checkpoint_resume": "exact match test pass",
+      "format_golden_fixtures": "pass"
+    },
+    "final_paired_performance_check": {
+      "control_revision": "fe79a50",
+      "candidate_revision": "b6416e0",
+      "method": "seven alternating runs using separately built binaries",
+      "control_sorted_timing_runs_ms": [
+        6343.70,
+        6356.38,
+        6531.87,
+        6606.62,
+        6624.84,
+        6631.22,
+        6631.40
+      ],
+      "candidate_sorted_timing_runs_ms": [
+        6212.38,
+        6271.06,
+        6468.60,
+        6479.09,
+        6499.80,
+        6503.83,
+        6522.27
+      ],
+      "control_median_elapsed_ms": 6606.62,
+      "candidate_median_elapsed_ms": 6479.09,
+      "candidate_delta_percent": -1.9303,
+      "deterministic_counter_digest": "d460ad244b6b219e84ca7f4be1f332acdcf193ca63cf8165781998c909469ff1",
+      "deterministic_counters_match": true,
+      "gate_percent": 3.0,
+      "result": "pass"
+    },
+    "paired_game_smoke": {
+      "control_revision": "fe79a50",
+      "candidate_revision": "b6416e0",
+      "games": 20,
+      "time_limit_ms": 20,
+      "depth_cap": 8,
+      "max_plies": 120,
+      "threads_per_engine": 1,
+      "jobs": 2,
+      "seed": 20260721,
+      "candidate_wins": 7,
+      "control_wins": 6,
+      "draws": 7,
+      "candidate_total_score_percent": 52.5,
+      "total_score_95_percent_ci": [
+        34.87,
+        70.13
+      ],
+      "interpretation": "cutover smoke only; no statistically significant strength claim"
+    }
   }
 }

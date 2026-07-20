@@ -1646,53 +1646,54 @@ target/release/search_profile \
 
 ### 構造
 
-- [ ] workspaceとlockfileが一つ。
-- [ ] production、training、benchmark、researchの境界がCargo上で明確。
-- [ ] search coreがUSI/stdoutへ依存しない。
-- [ ] HalfKP/HKST format定義が一つ。
-- [ ] phase、result、splitの定義が一つ。
-- [ ] supported binaryの`main`が薄い。
-- [ ] productionからresearch codeへ逆依存しない。
+- [x] workspaceとlockfileが一つ。
+- [x] production、training、benchmark、researchの境界がCargo上で明確。
+- [x] search coreがUSI/stdoutへ依存しない。
+- [x] HalfKP/HKST format定義が一つ。
+- [x] phase、result、splitの定義が一つ。
+- [x] supported binaryの`main`が薄い。
+- [x] productionからresearch codeへ逆依存しない。
 
 ### 正しさ
 
-- [ ] 非終端`go`が全経路で合法bestmoveを一つ返す。
-- [ ] full USI historyがsearchへ渡る。
-- [ ] 千日手と連続王手が正しく区別される。
-- [ ] search、benchmark、teacherが同じ裁定を使う。
-- [ ] checked qsearch、TT mate normalization、worker 0 ownershipがtestされる。
+- [x] 非終端`go`が全経路で合法bestmoveを一つ返す。
+- [x] full USI historyがsearchへ渡る。
+- [x] 千日手と連続王手が正しく区別される。
+- [x] search、benchmark、teacherが同じ裁定を使う。
+- [x] checked qsearch、TT mate normalization、worker 0 ownershipがtestされる。
 
 ### 評価と形式
 
-- [ ] HalfKP-32/64 mismatchを明確に拒否する。
-- [ ] runtime/trainer/toolがshared codecを使う。
-- [ ] incremental/full refreshとportable/AVX2が許容誤差内。
-- [ ] リリース済みweightをversionなしで壊していない。
+- [x] HalfKP-32/64 mismatchを明確に拒否する。
+- [x] runtime/trainer/toolがshared codecを使う。
+- [x] incremental/full refreshとportable/AVX2が許容誤差内。
+- [x] リリース済みweightをversionなしで壊していない。
 
 ### 学習
 
-- [ ] dataset、teacher、trainingの全stageにmanifestがある。
-- [ ] splitがpath移動で変わらない。
-- [ ] stale artifactを自動再利用しない。
-- [ ] trainer memoryがdataset全量に比例しない。
-- [ ] checkpoint resumeが次epochを再現する。
-- [ ] validationとtestの役割が分離される。
+- [x] dataset、teacher、trainingの全stageにmanifestがある。
+- [x] splitがpath移動で変わらない。
+- [x] stale artifactを自動再利用しない。
+- [x] trainer memoryがdataset全量に比例しない。
+- [x] checkpoint resumeが次epochを再現する。
+- [x] validationとtestの役割が分離される。
 
 ### 性能と棋力
 
-- [ ] mechanical変更はexact fingerprintを維持。
-- [ ] dedicated benchmarkで未説明の3%以上の中央値低下がない。
-- [ ] 意味変更は差分と理由が記録される。
-- [ ] 探索・評価変更はpaired gamesまたはSPRTを通る。
-- [ ] Linux/Windows release candidateがShogiHomeで起動する。
+- [x] mechanical変更はexact fingerprintを維持。
+- [x] dedicated benchmarkで未説明の3%以上の中央値低下がない。
+- [x] 意味変更は差分と理由が記録される。
+- [x] 探索・評価変更はpaired gamesまたはSPRTを通る。
+- [ ] Linux/Windows release candidateがShogiHomeで起動する（Linux USI smokeとWindows MSVC
+  build checkは成功。Windows実機/ShogiHome acceptanceは外部確認待ち）。
 
 ### 保守性
 
-- [ ] READMEから本書と文書索引へ到達できる。
-- [ ] binary inventoryが実装と一致する。
-- [ ] reportに採否と後継が記録される。
-- [ ] generated artifactとtracked fixtureの境界が明確。
-- [ ] 新しい開発者が本書から次の未完了PRを判断できる。
+- [x] READMEから本書と文書索引へ到達できる。
+- [x] binary inventoryが実装と一致する。
+- [x] reportに採否と後継が記録される。
+- [x] generated artifactとtracked fixtureの境界が明確。
+- [x] 新しい開発者が本書から次の未完了PRを判断できる。
 
 ---
 
@@ -1703,8 +1704,10 @@ target/release/search_profile \
 1. `shogi_lib`を`shogi_position`へrenameするか。
 2. production `usi_engine`を独立packageにする時点。
 3. HalfKP-64をworkspace defaultにするか、production appだけで強制するか。
-4. evaluator typed contextをenum、generic、session objectのどれにするか。
-5. 生成物rootを`data/derived`、`artifacts`、`runs`のどれへ統一するか。
+4. ~~evaluator typed contextをenum、generic、session objectのどれにするか。~~
+   Phase 8で`EvaluationContext` enumに決定した。
+5. ~~生成物rootを`data/derived`、`artifacts`、`runs`のどれへ統一するか。~~
+   ADR 0002で入力を`data/raw`、派生物を`data/derived`、runを`runs`に決定した。
 6. dedicated performance runnerをローカル固定機とself-hosted CIのどちらにするか。
 7. release用SPRTのElo境界と最大局数。
 8. teacher candidate flagを現行意味で文書化するか、schemaを更新するか。
@@ -1729,7 +1732,7 @@ Phaseの着手・完了時に以下へ追記する。
 | 5 Repetition correctness | 完了 | `8a86417` | `7cc7413` | 完全履歴と王手区間による公式裁定、教師意味論v3、paired性能差+1.69% |
 | 6 Data/Training | 完了 | `be5897c` | `fd2c5cd` | 規約一本化、content split v2、全stage manifest、bounded-memory trainer、resume完全一致 |
 | 7 Repository/Documents | 完了 | `7f8251d` | `4d267e4` | 57 targetを明示分類、production依存分離、README/文書索引/ADR/artifact・report policy、paired性能差-0.77% |
-| 8 Performance/Cutover | 未着手 |  |  |  |
+| 8 Performance/Cutover | local gate完了 | `0368306` | `b6416e0` | typed評価context、supported CLI/library分離、fingerprint一致、paired性能差-1.93%、20局smoke 7-6-7。Windows実機/ShogiHome acceptance待ち |
 
 ### 2026-07-20 Phase 0途中経過
 
@@ -1991,3 +1994,45 @@ Phase 4はlocal gateについて完了した。
   一致し3%の停止基準内だった。target/dependency整理による探索性能低下はない。
 
 Phase 7は完了した。
+
+### 2026-07-21 Phase 8実施結果
+
+- Phase 7の`refactor/phase7-repository-docs`を保存し、stacked branch
+  `refactor/phase8-performance-cutover`を作成した。
+- hostの`perf_event_paranoid=4`によりhardware profilerは利用できなかったため、既存の
+  search countersと固定`search_profile` corpusをcostの根拠にした。qsearchは全nodeの
+  `92.82%`、生成した手のdiscard率は`88.04%`だったが、直接生成は過去の不採用実験と
+  semantics/order riskがあるため、このcutoverでは再実装しなかった。
+- `0368306`: evaluatorのincremental stateを`Box<dyn Any>`からtyped
+  `EvaluationContext::HalfKp`へ変更した。heap box、各evaluate/make/undo時のdowncastを除き、
+  context型の追加箇所をcompilerが検証する。fixed fingerprintは完全一致し、7回交互測定で
+  control中央値`6604.66 ms`、candidate中央値`6558.25 ms`、差`-0.703%`だったため採用した。
+- move orderingで計算済みのcheck flagを`do_move`へ渡す候補をcharacterization test付きで
+  実装した。fingerprintと全counterは一致したが、7回交互測定の中央値が`6507.39 ms`から
+  `6535.22 ms`へ`+0.428%`悪化した。tuple拡大とAPI costに見合う改善がないため実装をrevertし、
+  [`report/2026-07-21_UTC_precomputed-check-flag-reuse-rejected.md`](../report/2026-07-21_UTC_precomputed-check-flag-reuse-rejected.md)
+  に仮説、測定、結論を残した。
+- `cb9c198`、`3349145`: supported training 15 targetとbenchmark/profile 8 targetの実装を
+  `src/training_tools/`、`src/benchmark_tools/`のlibrary entryへ移した。旧CLI path/nameは
+  3行のcompatibility entryとして維持した。`b6416e0`でproductionを含むsupported entryが
+  thin dispatchのままであることをinventory CIへ追加した。research targetは互換保証外として
+  opt-in binaryに隔離した。
+- 最終の全feature workspace release testでHalfKP-64 library 51件（trainer 6件を含む）、
+  USI transcript 6件、`shogi_lib` 33件、全57 targetが成功した。all-target/all-feature check、
+  HalfKP-32 library、Windows MSVC release check、Clippy ratchet、format、inventory、golden format、
+  resume testが成功し、search fingerprintは完全一致した。
+- Phase 7完了revision`fe79a50`と最終candidate`b6416e0`を別binaryで7回ずつ交互測定した。
+  control中央値`6606.62 ms`、candidate中央値`6479.09 ms`、差`-1.930%`で、全counterのdigestは
+  両方`d460ad24...9469ff1`だった。性能低下はなく、同じ探索意味で中央値が改善した。
+- 同一HalfKP weight、20 ms、depth上限8、Threads=1、20局のside-swap対局smokeはcandidate
+  7勝、control 6勝、7分、score率`52.5%`だった。95% CIは`34.87--70.13%`であり、棋力向上を
+  主張する局数ではないが、cutover時の対局/USI lifecycle退行は検出されなかった。
+- Linux release candidateは`usiok`、`readyok`、`bestmove 1g1f`を返した。HalfKP-64 production
+  binaryは`989,472 bytes`、SHA-256
+  `1705c3d88acd16b522b6e6e53d98d726a332086d020a526fe7c9611cbd17edc4`である。
+  Windows MSVC targetのrelease checkは成功したが、このLinux hostではWindows binaryの実行と
+  ShogiHome GUI登録はできないため、これだけを外部release acceptance項目として残す。
+
+Phase 8のlocal gateは完了した。以降の必須作業は、hosted Linux/Windows CIの実行、Windows実機での
+USI process起動、ShogiHome登録確認である。これらはcode変更ではなくrelease acceptanceであり、
+失敗した場合だけ本branchへ修正を積む。

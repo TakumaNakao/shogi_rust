@@ -16,6 +16,10 @@ production targetとし、他を`training-tools`、`benchmark-tools`、`research
 opt-inにする。既存target名は維持し、物理file移動は行わない。分類は
 [`../binaries.md`](../binaries.md)を正本とする。
 
+Phase 8 cutoverでsupported trainingとbenchmarkの実装を`src/training_tools/`と
+`src/benchmark_tools/`へ移し、既存`src/bin` pathはthin compatibility entryとして維持した。
+research targetはCLI/APIが安定していないため、引き続き単体binaryとして隔離する。
+
 ## Consequences
 
 通常の`cargo build --release`はengineだけをbuildし、training/research固有dependencyも

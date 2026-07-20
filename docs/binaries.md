@@ -4,6 +4,10 @@
 既存のCLI名は変更していない。分類featureはtargetの用途と安定性を表し、評価方式の
 `halfkp64` featureとは独立して組み合わせる。
 
+production、supported training、benchmarkの`src/bin`は数行の互換entryだけを持つ。
+実装は`usi_shogi`、`src/training_tools/`、`src/benchmark_tools/`のlibrary APIに置き、
+testからCLI processを介さず利用できる。research targetは実験速度を優先し、この制約の対象外とする。
+
 | 分類 | Cargo feature | 安定性 | 通常のbuild |
 |---|---|---|---|
 | production | 不要 | USIとweight formatの互換性を維持 | 含む |
