@@ -13,6 +13,14 @@ use std::time::{Duration, Instant};
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(5);
 const TERMINAL_SFEN: &str = "4k4/3GRG3/9/9/9/9/9/9/4K4 w - 1";
+const FORCED_MATE_POSITION: &str = "startpos moves \
+    7g7f 8c8d 2g2f 4a3b 2f2e 8d8e 8h7g 3c3d 7i6h 2b7g+ 6h7g 3a2b \
+    3i4h 2b3c 6i7h 7a7b 4g4f 5a4b 4h4g 9c9d 9g9f 6c6d 3g3f 1c1d \
+    1g1f 7c7d 2i3g 8a7c 6g6f 7b6c 4g5f 6a6b 2h2i 6c5d 4i4h 8b8a \
+    3g4e 3c4d 2e2d 2c2d 2i2d P*2c 2d2h B*1c P*2d 1c2d 4h4g 2a1c \
+    B*3g 4d5e 5f5e 5d5e 1f1e 1d1e 1i1e S*1g 2h2g 1g1h 2g2h 4c4d \
+    2h1h 4d4e 4f4e P*4f 4g5f 5e5f 5g5f G*2g S*8b 8a8b S*7a 2g1h \
+    7a8b R*3i 5i6h 4f4g+ 3f3e";
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 struct TinyWeight {
@@ -275,6 +283,75 @@ fn usi_immediate_stop_returns_one_legal_fallback_and_quits_cleanly() {
     engine.send("stop");
     let (bestmove, lines) = engine.expect_bestmove();
     assert_legal_startpos_move(&bestmove);
+    assert_eq!(
+        1,
+        lines
+            .iter()
+            .filter(|line| line.starts_with("bestmove "))
+            .count()
+    );
+    engine.quit();
+}
+
+#[test]
+fn usi_stop_before_and_during_search_each_return_one_legal_move() {
+    let weight = TinyWeight::create();
+    let mut engine = EngineProcess::spawn();
+    engine.handshake();
+    engine.configure_evaluator(&weight);
+
+    engine.send("stop");
+    engine.send("position startpos");
+    engine.send("go depth 1");
+    let (bestmove, lines) = engine.expect_bestmove();
+    assert_legal_startpos_move(&bestmove);
+    assert_eq!(
+        1,
+        lines
+            .iter()
+            .filter(|line| line.starts_with("bestmove "))
+            .count()
+    );
+
+    engine.send("go infinite");
+    let progress = engine.read_until("info depth ");
+    assert!(progress.iter().any(|line| line.starts_with("info depth ")));
+    engine.send("stop");
+    let (bestmove, lines) = engine.expect_bestmove();
+    assert_legal_startpos_move(&bestmove);
+    assert_eq!(
+        1,
+        lines
+            .iter()
+            .filter(|line| line.starts_with("bestmove "))
+            .count()
+    );
+
+    engine.send("usinewgame");
+    engine.send("go depth 1");
+    let (bestmove, lines) = engine.expect_bestmove();
+    assert_legal_startpos_move(&bestmove);
+    assert_eq!(
+        1,
+        lines
+            .iter()
+            .filter(|line| line.starts_with("bestmove "))
+            .count()
+    );
+    engine.quit();
+}
+
+#[test]
+fn usi_forced_mate_keeps_the_known_mating_move() {
+    let weight = TinyWeight::create();
+    let mut engine = EngineProcess::spawn();
+    engine.handshake();
+    engine.configure_evaluator(&weight);
+
+    engine.send(&format!("position {FORCED_MATE_POSITION}"));
+    engine.send("go depth 3");
+    let (bestmove, lines) = engine.expect_bestmove();
+    assert_eq!("S*5g", bestmove);
     assert_eq!(
         1,
         lines
