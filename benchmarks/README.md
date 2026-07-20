@@ -42,3 +42,21 @@ hosted CIでは時間をhard gateにしない。
 4. warm-up後に7回測定する。初期baselineの3回値は履歴として維持する。
 5. 決定的カウンタとelapsed timeを分離して保存する。
 6. 変更理由と対応するPRまたはADRを記録する。
+
+環境とartifact metadataは次のように取得できる。
+
+```bash
+tools/capture_benchmark_metadata.sh \
+  binary=target/release/search_profile \
+  weight=policy_weights_halfkp64_kpp_distilled_v2.5.0.binary \
+  positions=taya36.sfen \
+  -- target/release/search_profile \
+     --halfkp-weights policy_weights_halfkp64_kpp_distilled_v2.5.0.binary \
+     --positions taya36.sfen \
+     --samples 16 \
+     --depth 5 \
+     --seed 9501 \
+     --threads 1
+```
+
+このtoolはcommandを実行せず、JSONをstdoutへ出力する。Git revision、dirty flag、toolchain、OS、CPU、各fileのsizeとSHA-256、実行予定commandを一度に記録する。
