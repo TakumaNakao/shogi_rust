@@ -15,7 +15,7 @@ pub use constants::*;
 pub use debug::{
     generate_sfen, index_to_kpp_info, is_promoted_piece_kind, piece_kind_to_sfen_char_base, KppInfo,
 };
-pub use evaluator::Evaluator;
+pub use evaluator::{EvaluationContext, Evaluator};
 pub use facade::{EngineEvaluator, HybridNnueEvaluator, SparseModelEvaluator};
 pub use features::{
     extract_halfkp_features_for, extract_kpp_features, extract_kpp_features_and_material,

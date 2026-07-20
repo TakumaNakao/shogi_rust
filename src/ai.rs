@@ -8,7 +8,7 @@ mod transposition;
 
 use self::score::*;
 use self::transposition::*;
-use crate::evaluation::Evaluator;
+use crate::evaluation::{EvaluationContext, Evaluator};
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{GameHistory, SennichiteStatus};
@@ -21,7 +21,6 @@ pub use outcome::{
 pub use parallel::resolve_search_threads;
 use shogi_core::Move;
 use shogi_lib::Position;
-use std::any::Any;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,7 +64,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     observer: Option<SharedSearchObserver>,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
-    eval_context: Option<Box<dyn Any + Send>>,
+    eval_context: Option<EvaluationContext>,
     last_completed_depth: u8,
     last_root_score: Option<f32>,
     last_pv: Vec<Move>,
@@ -123,24 +122,24 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     fn evaluate_position(&self, position: &Position) -> f32 {
         self.eval_context
-            .as_deref()
+            .as_ref()
             .and_then(|ctx| self.evaluator.evaluate_context(position, ctx))
             .unwrap_or_else(|| self.evaluator.evaluate(position))
     }
 
     fn make_move(&mut self, position: &mut Position, mv: Move) {
-        if let Some(ctx) = self.eval_context.as_deref_mut() {
+        if let Some(ctx) = self.eval_context.as_mut() {
             self.evaluator.prepare_context_move(ctx, position, mv);
         }
         position.do_move(mv);
-        if let Some(ctx) = self.eval_context.as_deref_mut() {
+        if let Some(ctx) = self.eval_context.as_mut() {
             self.evaluator.commit_context_move(ctx, position);
         }
     }
 
     fn undo_move(&mut self, position: &mut Position, mv: Move) {
         position.undo_move(mv);
-        if let Some(ctx) = self.eval_context.as_deref_mut() {
+        if let Some(ctx) = self.eval_context.as_mut() {
             self.evaluator.undo_context_move(ctx);
         }
     }

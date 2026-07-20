@@ -1,8 +1,7 @@
-use super::{Evaluator, HalfKpModel, HalfKpSearchContext, SparseModel, TinyNnueModel};
+use super::{EvaluationContext, Evaluator, HalfKpModel, SparseModel, TinyNnueModel};
 use anyhow::{anyhow, Result};
 use shogi_core::Move;
 use shogi_lib::Position;
-use std::any::Any;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -105,45 +104,39 @@ impl Evaluator for EngineEvaluator {
         }
     }
 
-    fn begin_context(&self, position: &Position) -> Option<Box<dyn Any + Send>> {
+    fn begin_context(&self, position: &Position) -> Option<EvaluationContext> {
         match self {
             Self::HalfKp(model) => model
                 .begin_search_context(position)
-                .map(|ctx| Box::new(ctx) as Box<dyn Any + Send>),
+                .map(EvaluationContext::HalfKp),
             _ => None,
         }
     }
 
-    fn evaluate_context(&self, position: &Position, context: &(dyn Any + Send)) -> Option<f32> {
-        match self {
-            Self::HalfKp(model) => context
-                .downcast_ref::<HalfKpSearchContext>()
-                .map(|ctx| model.evaluate_search_context(position, ctx)),
+    fn evaluate_context(&self, position: &Position, context: &EvaluationContext) -> Option<f32> {
+        match (self, context) {
+            (Self::HalfKp(model), EvaluationContext::HalfKp(ctx)) => {
+                Some(model.evaluate_search_context(position, ctx))
+            }
             _ => None,
         }
     }
 
-    fn commit_context_move(&self, context: &mut (dyn Any + Send), position: &Position) {
-        if let Self::HalfKp(model) = self {
-            if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
-                model.commit_search_context_move(ctx, position);
-            }
+    fn commit_context_move(&self, context: &mut EvaluationContext, position: &Position) {
+        if let (Self::HalfKp(model), EvaluationContext::HalfKp(ctx)) = (self, context) {
+            model.commit_search_context_move(ctx, position);
         }
     }
 
-    fn prepare_context_move(&self, context: &mut (dyn Any + Send), position: &Position, mv: Move) {
-        if let Self::HalfKp(model) = self {
-            if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
-                model.prepare_search_context(ctx, position, mv);
-            }
+    fn prepare_context_move(&self, context: &mut EvaluationContext, position: &Position, mv: Move) {
+        if let (Self::HalfKp(model), EvaluationContext::HalfKp(ctx)) = (self, context) {
+            model.prepare_search_context(ctx, position, mv);
         }
     }
 
-    fn undo_context_move(&self, context: &mut (dyn Any + Send)) {
-        if let Self::HalfKp(model) = self {
-            if let Some(ctx) = context.downcast_mut::<HalfKpSearchContext>() {
-                model.undo_search_context(ctx);
-            }
+    fn undo_context_move(&self, context: &mut EvaluationContext) {
+        if let (Self::HalfKp(model), EvaluationContext::HalfKp(ctx)) = (self, context) {
+            model.undo_search_context(ctx);
         }
     }
 }
