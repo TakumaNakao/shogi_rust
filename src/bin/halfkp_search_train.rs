@@ -806,6 +806,10 @@ fn training_fingerprint(args: &Args) -> Result<String> {
         "schema_version": 1,
         "stage": "halfkp_search_train",
         "target": format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+        "engine_binary_sha256": std::env::current_exe()
+            .ok()
+            .map(|path| sha256_file(&path))
+            .transpose()?,
         "feature_profile": if cfg!(feature = "halfkp64") { "halfkp64" } else { "halfkp32" },
         "teacher_semantics_version": SEARCH_TEACHER_SEMANTICS_VERSION,
         "teacher_semantics_id": SEARCH_TEACHER_SEMANTICS_ID,
@@ -834,6 +838,9 @@ fn training_fingerprint(args: &Args) -> Result<String> {
             "max_pairs_per_record": args.max_pairs_per_record,
             "gradient_clip_norm": args.gradient_clip_norm,
             "output_limit": args.output_limit,
+            "early_stop_patience": args.early_stop_patience,
+            "min_valid_improvement": args.min_valid_improvement,
+            "threads": args.threads,
             "schedule_free_beta1": args.schedule_free_beta1,
             "schedule_free_beta2": args.schedule_free_beta2,
             "schedule_free_warmup_steps": args.schedule_free_warmup_steps,
@@ -843,6 +850,7 @@ fn training_fingerprint(args: &Args) -> Result<String> {
             "max_valid_records": args.max_valid_records,
             "train_chunk_records": args.train_chunk_records,
             "eval_chunk_records": args.eval_chunk_records,
+            "allow_legacy_teacher_semantics": args.allow_legacy_teacher_semantics,
         },
     });
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
