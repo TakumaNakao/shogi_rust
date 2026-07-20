@@ -1725,7 +1725,7 @@ Phaseの着手・完了時に以下へ追記する。
 | 1 Workspace/CI | 進行中（local gate整備済み） | `52cbd84` |  | 単一lockfile、USI process test、warning ratchet、workspace全test成功、性能差は原始基準比+1.21% |
 | 2 Module split | 完了 | `a71cc3b` | `4da6f3e` | search/evaluation責務をprivate moduleへ分離、fingerprint一致、原始性能差+1.18% |
 | 3 Format consolidation | 完了 | `f1ecb8b` | `5941250` | HalfKP/HKST codecを単一定義化、golden byte一致、paired性能差+0.12% |
-| 4 Search/USI separation | 未着手 |  |  |  |
+| 4 Search/USI separation | 完了 | `edf04b0` | `edf04b0` | typed outcome/observer、generation job、single bestmove emitter、性能差+0.38% |
 | 5 Repetition correctness | 未着手 |  |  |  |
 | 6 Data/Training | 未着手 |  |  |  |
 | 7 Repository/Documents | 未着手 |  |  |  |
@@ -1845,3 +1845,26 @@ Phase 2は完了した。
   全決定的カウンタは両binaryで一致し、3%の停止基準内である。
 
 Phase 3は完了した。
+
+### 2026-07-20 Phase 4実施結果
+
+- Phase 3の`refactor/phase3-format-codec`を保存し、stacked branch
+  `refactor/phase4-search-api`を作成。
+- `edf04b0`: engine側へ`SearchLimits`、`SearchInfo`、`SearchStats`、`RootResult`、
+  `SearchOutcome`、`SearchObserver`を追加。既存`find_best_move*`は互換wrapperとして残した。
+- iterative deepeningから`println!`、stdout flush、USI score変換、move文字列化を除去し、
+  raw score、elapsed、nodes、PVをobserver eventで通知するようにした。
+- serial/parallel searchはtyped outcomeを返すAPIを共有し、worker 0 ownership、
+  helper worker、shared TT、fallback、Threads解決規則は維持した。
+- USI側へgeneration付き`SearchJob`を追加。新しい`go`、`stop`、`usinewgame`、`quit`は
+  active jobをcancelしてjoinし、未回収threadとoverlapするsearchを残さない。
+- 最終応答は`emit_search_response`一箇所へ集約。job thread内外のpanic recovery、
+  evaluator未設定、thread spawn失敗も一つの`bestmove`へ収束する。
+- search fingerprint、HalfKP-64 library 35件、USI transcript 6件、
+  all-target check、Clippy ratchet、format checkが成功した。transcriptへ連続する二つの
+  `go`が直列に各一件の合法`bestmove`を返し、active search中の`quit`がcleanに終了する
+  caseを追加した。Windows process shutdownはremote CI未実行のため未確認。
+- 性能基準を7回測定し、全決定的カウンタが一致した。中央値は`6182.05 ms`で、
+  Phase 2の安定基準`6158.48 ms`比`+0.383%`、3%の停止基準内だった。
+
+Phase 4はlocal gateについて完了した。

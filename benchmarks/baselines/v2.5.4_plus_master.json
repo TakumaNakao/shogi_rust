@@ -280,5 +280,48 @@
         "The same-session Phase 2 control reproduced the slowdown, so the alternating paired comparison is the regression decision."
       ]
     }
+  },
+  "phase4_search_api_validation": {
+    "implementation_revision": "edf04b0",
+    "search_api": [
+      "SearchLimits",
+      "SearchInfo",
+      "SearchStats",
+      "RootResult",
+      "SearchOutcome",
+      "SearchObserver"
+    ],
+    "usi_lifecycle": {
+      "generation_owned_search_job": true,
+      "cancel_and_join_on_replacement": true,
+      "cancel_and_join_on_quit": true,
+      "single_bestmove_emitter": "emit_search_response",
+      "overlapping_searches": false
+    },
+    "tests": {
+      "halfkp64_library_tests": 35,
+      "usi_transcript_tests": 6,
+      "halfkp64_all_targets_check": "pass",
+      "clippy_ratchet": "pass",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match",
+      "windows_process_shutdown": "remote CI not run locally"
+    },
+    "performance_recheck": {
+      "deterministic_counters_match": true,
+      "timing_runs_ms": [
+        6182.05,
+        6161.58,
+        6207.24,
+        6135.01,
+        6313.73,
+        6391.25,
+        6173.26
+      ],
+      "median_elapsed_ms": 6182.05,
+      "delta_vs_phase2_percent": 0.3827,
+      "gate_percent": 3.0,
+      "result": "pass"
+    }
   }
 }
