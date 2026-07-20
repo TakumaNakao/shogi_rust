@@ -1721,7 +1721,7 @@ Phaseの着手・完了時に以下へ追記する。
 | Phase | 状態 | 開始revision | 完了revision | 結果・参照 |
 |---|---|---|---|---|
 | 0 Baseline | 完了 | `9926430` | `5aa5250` | [`benchmarks/baselines/`](../benchmarks/baselines/)、fingerprint/format fixture、性能差+1.81% |
-| 1 Workspace/CI | 未着手 |  |  |  |
+| 1 Workspace/CI | 進行中（workspace/CI完了） | `52cbd84` |  | 単一lockfile、workspace全test成功、性能差は原始基準比+1.21% |
 | 2 Module split | 未着手 |  |  |  |
 | 3 Format consolidation | 未着手 |  |  |  |
 | 4 Search/USI separation | 未着手 |  |  |  |
@@ -1742,4 +1742,16 @@ Phaseの着手・完了時に以下へ追記する。
 - 実行時間中央値は`6086.42 ms`から`6196.43 ms`で、差は`+1.81%`。3%の停止基準内。
 - HalfKP-64とHalfKP-32のlibrary test各35件、`shogi_lib` 33件、trainer 1件、HalfKP-64 all-target checkが成功。
 
-Phase 0は完了。次はPhase 1のCargo workspace化を、profileと性能を変えない独立PRとして開始する。
+Phase 0は完了した。
+
+### 2026-07-20 Phase 1途中経過
+
+- Phase 0の`refactor/phase0-baseline`を保存し、stacked branch `refactor/phase1-workspace`を作成。
+- `52cbd84`: root packageと`shogi_lib`をresolver 2のworkspaceへ統合。
+- root `Cargo.lock`へ一本化し、`shogi_lib/Cargo.lock`と無効になるmember側profileを削除。
+- `cargo test --workspace --release --features halfkp64`で、root library 35件、trainer 1件、`shogi_lib` 33件、全binary test targetが成功。
+- search fingerprintは完全一致。
+- HalfKP探索の全決定的カウンタは一致。実行時間中央値は`6160.15 ms`で、Phase 0再測定比`-0.59%`、原始基準比`+1.21%`。
+- `8233f65`: Linux/WindowsのPR CIを追加。HalfKP-32 library、HalfKP-64 workspace、all-target、clippy baseline、fingerprintを検証対象化。
+
+Phase 1の残作業はUSI transcript test、warning ratchet、toolchain/MSRV方針の確定である。

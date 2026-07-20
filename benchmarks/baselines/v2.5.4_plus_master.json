@@ -125,5 +125,42 @@
       ],
       "metadata_tool": "tools/capture_benchmark_metadata.sh"
     }
+  },
+  "phase1_workspace_validation": {
+    "implementation_revision": "52cbd84",
+    "workspace_members": [
+      "shogi_ai",
+      "shogi_lib"
+    ],
+    "lockfiles": [
+      "Cargo.lock"
+    ],
+    "tests": {
+      "command": "cargo test --workspace --release --features halfkp64",
+      "shogi_ai_library": 35,
+      "halfkp_search_train": 1,
+      "shogi_lib_library": 33,
+      "all_binary_test_targets_built": true,
+      "result": "pass"
+    },
+    "search_fingerprint": "exact match",
+    "performance_recheck": {
+      "deterministic_counters_match": true,
+      "timing_runs_ms": [
+        6146.32,
+        6191.16,
+        6160.15
+      ],
+      "median_elapsed_ms": 6160.15,
+      "delta_vs_original_baseline_percent": 1.2114,
+      "delta_vs_phase0_recheck_percent": -0.5855,
+      "gate_percent": 3.0,
+      "result": "pass"
+    },
+    "ci_revision": "8233f65",
+    "ci_jobs": [
+      "Linux workspace",
+      "Windows workspace"
+    ]
   }
 }
