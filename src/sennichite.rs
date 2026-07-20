@@ -115,20 +115,29 @@ impl GameHistory {
     }
 
     fn adjudicate_key(&self, target_key: u64, side_to_move: Color) -> SennichiteStatus {
-        let occurrences = self
+        let mut occurrence_count = 0;
+        let mut start = None;
+        let Some(end) = self
             .entries
             .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| {
-                (entry.key == target_key && entry.side_to_move == side_to_move).then_some(index)
-            })
-            .collect::<Vec<_>>();
-        if occurrences.len() < 4 {
+            .rposition(|entry| entry.key == target_key && entry.side_to_move == side_to_move)
+        else {
             return SennichiteStatus::None;
+        };
+        for index in (0..=end).rev().step_by(2) {
+            let entry = &self.entries[index];
+            debug_assert_eq!(entry.side_to_move, side_to_move);
+            if entry.key == target_key {
+                occurrence_count += 1;
+                if occurrence_count == 4 {
+                    start = Some(index);
+                    break;
+                }
+            }
         }
-
-        let start = occurrences[occurrences.len() - 4];
-        let end = *occurrences.last().expect("four occurrences exist");
+        let Some(start) = start else {
+            return SennichiteStatus::None;
+        };
         let interval = &self.entries[start + 1..=end];
         let black_checks = all_moves_gave_check(interval, Color::Black);
         let white_checks = all_moves_gave_check(interval, Color::White);
@@ -327,13 +336,34 @@ mod tests {
     #[test]
     fn undo_restores_the_previous_adjudication() {
         let mut history = GameHistory::new();
-        let position = Position::default();
-        for _ in 0..4 {
-            history.record_position(&position);
+        let repeated_key = 17;
+        history.entries.push(HistoryEntry {
+            key: repeated_key,
+            side_to_move: Color::Black,
+            moved_by: None,
+            gave_check: false,
+        });
+        for cycle in 0..3 {
+            push(&mut history, 100 + cycle, Color::White, Color::Black, false);
+            push(&mut history, 200 + cycle, Color::Black, Color::White, false);
+            push(&mut history, 300 + cycle, Color::White, Color::Black, false);
+            push(
+                &mut history,
+                repeated_key,
+                Color::Black,
+                Color::White,
+                false,
+            );
         }
-        assert_eq!(SennichiteStatus::Draw, history.adjudicate(&position));
+        assert_eq!(
+            SennichiteStatus::Draw,
+            history.adjudicate_key(repeated_key, Color::Black)
+        );
         history.unrecord_last_position();
-        assert_eq!(SennichiteStatus::None, history.adjudicate(&position));
+        assert_eq!(
+            SennichiteStatus::None,
+            history.adjudicate_key(repeated_key, Color::Black)
+        );
     }
 
     #[test]
