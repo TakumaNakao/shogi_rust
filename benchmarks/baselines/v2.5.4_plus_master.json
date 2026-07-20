@@ -162,5 +162,59 @@
       "Linux workspace",
       "Windows workspace"
     ]
+  },
+  "phase2_module_split_validation": {
+    "implementation_revision": "4da6f3e",
+    "modules": {
+      "ai": [
+        "score",
+        "transposition",
+        "qsearch",
+        "alpha_beta",
+        "iterative",
+        "parallel"
+      ],
+      "evaluation": [
+        "codec",
+        "constants",
+        "debug",
+        "evaluator",
+        "facade",
+        "features",
+        "halfkp",
+        "kernels",
+        "sparse",
+        "tiny_nnue"
+      ]
+    },
+    "tests": {
+      "command": "cargo test --workspace --release --features halfkp64",
+      "shogi_ai_library": 35,
+      "halfkp_search_train": 1,
+      "usi_transcript": 5,
+      "shogi_lib_library": 33,
+      "all_binary_test_targets_built": true,
+      "result": "pass"
+    },
+    "search_fingerprint": "exact match",
+    "clippy_ratchet": "pass",
+    "cargo_fmt_check": "pass",
+    "performance_recheck": {
+      "deterministic_counters_match": true,
+      "timing_runs_ms": [
+        6150.15,
+        6158.48,
+        6202.85,
+        6208.15,
+        6141.89,
+        6153.19,
+        6252.83
+      ],
+      "median_elapsed_ms": 6158.48,
+      "delta_vs_original_baseline_percent": 1.184,
+      "delta_vs_phase1_percent": -0.0271,
+      "gate_percent": 3.0,
+      "result": "pass"
+    }
   }
 }
