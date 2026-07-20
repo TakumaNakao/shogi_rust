@@ -6,7 +6,8 @@ use shogi_ai::ai::{resolve_search_threads, SearchLimits, ShogiAI};
 use shogi_ai::evaluation::{
     Evaluator, HalfKpModel, HalfKpSearchContext, HybridNnueEvaluator, SparseModel, TinyNnueModel,
 };
-use shogi_ai::utils::position_from_sfen_or_usi;
+use shogi_ai::sennichite::GameHistory;
+use shogi_ai::utils::position_and_history_from_sfen_or_usi;
 use shogi_core::Move;
 use shogi_lib::Position;
 use std::any::Any;
@@ -126,11 +127,11 @@ fn load_model(path: &Path) -> Result<SparseModel> {
     Ok(model)
 }
 
-fn load_positions(path: &Path) -> Result<Vec<Position>> {
+fn load_positions(path: &Path) -> Result<Vec<(Position, GameHistory)>> {
     let content = fs::read_to_string(path)?;
     let positions: Vec<_> = content
         .lines()
-        .filter_map(position_from_sfen_or_usi)
+        .filter_map(position_and_history_from_sfen_or_usi)
         .collect();
 
     if positions.is_empty() {
@@ -142,7 +143,7 @@ fn load_positions(path: &Path) -> Result<Vec<Position>> {
 
 fn run_profile<E, F>(
     args: &Args,
-    positions: &[Position],
+    positions: &[(Position, GameHistory)],
     model_name: &str,
     mut make_evaluator: F,
 ) -> Result<()>
@@ -167,11 +168,11 @@ where
     let start = Instant::now();
 
     for i in 0..args.samples {
-        let mut position = positions[i % positions.len()].clone();
+        let (mut position, history) = positions[i % positions.len()].clone();
         let evaluator = make_evaluator();
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
         ai.set_emit_info(false);
-        ai.sennichite_detector.record_position(&position);
+        ai.sennichite_detector = history;
         ai.search_parallel(
             &mut position,
             SearchLimits::from_millis(args.depth, args.time_limit_ms),

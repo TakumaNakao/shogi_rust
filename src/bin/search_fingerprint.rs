@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use shogi_ai::ai::{SearchLimits, ShogiAI};
 use shogi_ai::evaluation::Evaluator;
 use shogi_ai::position_hash::PositionHasher;
-use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
+use shogi_ai::utils::{format_move_usi, position_and_history_from_sfen_or_usi};
 use shogi_lib::Position;
 use std::fs;
 use std::path::PathBuf;
@@ -157,7 +157,7 @@ fn generate_fingerprint(fixtures: FixtureFile, depth: u8) -> Result<FingerprintO
     let mut totals = SearchCounters::default();
 
     for fixture in fixtures.cases {
-        let mut position = position_from_sfen_or_usi(&fixture.position)
+        let (mut position, history) = position_and_history_from_sfen_or_usi(&fixture.position)
             .ok_or_else(|| anyhow!("invalid position in fixture {}", fixture.id))?;
         let original_sfen = position.to_sfen_owned();
         let position_key = PositionHasher::calculate_hash(&position);
@@ -174,7 +174,7 @@ fn generate_fingerprint(fixtures: FixtureFile, depth: u8) -> Result<FingerprintO
 
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(HashEvaluator);
         ai.set_emit_info(false);
-        ai.sennichite_detector.record_position(&position);
+        ai.sennichite_detector = history;
         let outcome = ai.search_parallel(&mut position, SearchLimits::from_millis(depth, None), 1);
         let best_move = outcome.best_move();
         let restored_sfen = position.to_sfen_owned();

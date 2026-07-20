@@ -11,7 +11,7 @@ use self::transposition::*;
 use crate::evaluation::Evaluator;
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
-use crate::sennichite::{SennichiteDetector, SennichiteStatus};
+use crate::sennichite::{GameHistory, SennichiteStatus};
 use crate::utils::get_piece_value;
 use arrayvec::ArrayVec;
 pub use outcome::{
@@ -44,7 +44,7 @@ type LegalMoves = ArrayVec<Move, 593>;
 pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     move_ordering: MoveOrdering,
     pub evaluator: E,
-    pub sennichite_detector: SennichiteDetector<HISTORY_CAPACITY>,
+    pub sennichite_detector: GameHistory,
     transposition_table: TranspositionTable,
     killer_moves: [[Option<Move>; 2]; MAX_DEPTH],
     start_time: Option<Instant>,
@@ -77,7 +77,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         ShogiAI {
             move_ordering: MoveOrdering::new(),
             evaluator,
-            sennichite_detector: SennichiteDetector::new(),
+            sennichite_detector: GameHistory::new(),
             transposition_table: TranspositionTable::Local(HashMap::new()),
             killer_moves: [[None; 2]; MAX_DEPTH],
             start_time: None,
@@ -361,8 +361,21 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     pub fn is_sennichite_internal(&self, position: &Position) -> SennichiteStatus {
-        self.sennichite_detector
-            .check_sennichite_assuming_alternating_history(position)
+        self.sennichite_detector.adjudicate(position)
+    }
+
+    fn sennichite_score(&self, position: &Position) -> Option<f32> {
+        match self.is_sennichite_internal(position) {
+            SennichiteStatus::None => None,
+            SennichiteStatus::Draw => Some(0.0),
+            SennichiteStatus::PerpetualCheckLoss { loser } => {
+                Some(if loser == position.side_to_move() {
+                    -REPETITION_WIN_SCORE
+                } else {
+                    REPETITION_WIN_SCORE
+                })
+            }
+        }
     }
 }
 
@@ -534,6 +547,42 @@ mod tests {
         assert_eq!(ai.search_stats(), outcome.stats);
         assert_eq!(Some(0.0), outcome.root.as_ref().and_then(|root| root.score));
         assert!(!outcome.failed);
+    }
+
+    #[test]
+    fn subtree_history_detects_fourth_occurrence_and_restores_on_undo() {
+        let mut position =
+            position_from_sfen_or_usi("4k4/9/9/9/9/9/9/9/4K4 b - 1").expect("valid position");
+        let cycle = ["5i6i", "5a6a", "6i5i", "6a5a"]
+            .map(|text| parse_usi_move_for_color(text, position.side_to_move()));
+        let cycle = cycle.map(|mv| mv.expect("valid cycle move"));
+        let mut history = GameHistory::new();
+        history.record_initial_position(&position);
+        for _ in 0..2 {
+            for mv in cycle {
+                let moved_by = position.side_to_move();
+                position.do_move(mv);
+                history.record_position_after_move(&position, moved_by);
+            }
+        }
+        assert_eq!(3, history.get_position_count(&position));
+
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.sennichite_detector = history;
+        for mv in cycle {
+            let moved_by = position.side_to_move();
+            ai.make_move(&mut position, mv);
+            ai.sennichite_detector
+                .record_position_after_move(&position, moved_by);
+        }
+        assert_eq!(Some(0.0), ai.sennichite_score(&position));
+
+        for mv in cycle.into_iter().rev() {
+            ai.sennichite_detector.unrecord_last_position();
+            ai.undo_move(&mut position, mv);
+        }
+        assert_eq!(3, ai.sennichite_detector.get_position_count(&position));
+        assert_eq!(None, ai.sennichite_score(&position));
     }
 
     #[test]

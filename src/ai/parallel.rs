@@ -90,6 +90,7 @@ where
         let evaluator = self.evaluator.clone();
         let generation = self.search_generation;
         let observer = self.observer.clone();
+        let game_history = self.sennichite_detector.clone();
 
         let parallel_result = catch_unwind(AssertUnwindSafe(|| {
             thread::scope(|scope| {
@@ -100,12 +101,14 @@ where
                     let evaluator = evaluator.clone();
                     let table = shared_tt.clone();
                     let worker_stop_signal = stop_signal.clone();
+                    let worker_history = game_history.clone();
                     let mut worker_position = root_position.clone();
                     match thread::Builder::new()
                         .stack_size(SEARCH_THREAD_STACK_BYTES)
                         .spawn_scoped(scope, move || {
                             let mut worker =
                                 ShogiAI::new_with_shared_tt(evaluator, table, generation);
+                            worker.sennichite_detector = worker_history;
                             worker.set_emit_info(false);
                             worker.set_stop_signal(Some(worker_stop_signal.clone()));
                             let worker_result = catch_unwind(AssertUnwindSafe(|| {

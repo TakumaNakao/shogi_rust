@@ -317,9 +317,10 @@ fn play_game(
             });
         }
 
+        let moved_by = position.side_to_move();
         position.do_move(mv);
         moves.push(bestmove);
-        detector.record_position(&position);
+        detector.record_position_after_move(&position, moved_by);
 
         match detector.check_sennichite(&position) {
             SennichiteStatus::Draw => {
@@ -329,9 +330,10 @@ fn play_game(
                     moves,
                 });
             }
-            SennichiteStatus::PerpetualCheckLoss => {
+            SennichiteStatus::PerpetualCheckLoss { loser } => {
+                let loser_is_new = (loser == Color::Black) == new_is_black;
                 return Ok(PlayedGame {
-                    result: if new_to_move {
+                    result: if loser_is_new {
                         GameResult::BaselineWin
                     } else {
                         GameResult::NewWin

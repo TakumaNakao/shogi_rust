@@ -121,27 +121,21 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                     break;
                 }
 
+                let moved_by = position.side_to_move();
                 self.make_move(position, mv);
-                self.sennichite_detector.record_position(position);
-                let sennichite_status = self.is_sennichite_internal(position);
-                let eval_result = match sennichite_status {
-                    SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                    SennichiteStatus::PerpetualCheckLoss => {
-                        Some((REPETITION_WIN_SCORE, Vec::new()))
-                    }
-                    SennichiteStatus::None => {
-                        if current_best_move_for_depth.is_some() && alpha.is_finite() {
-                            match self.search_root_child(position, depth - 1, -alpha - 1.0, -alpha)
-                            {
-                                Some((score, _)) if -score > alpha => {
-                                    self.search_root_child(position, depth - 1, -beta, -alpha)
-                                }
-                                narrow_result => narrow_result,
-                            }
-                        } else {
+                self.sennichite_detector
+                    .record_position_after_move(position, moved_by);
+                let eval_result = if let Some(score) = self.sennichite_score(position) {
+                    Some((score, Vec::new()))
+                } else if current_best_move_for_depth.is_some() && alpha.is_finite() {
+                    match self.search_root_child(position, depth - 1, -alpha - 1.0, -alpha) {
+                        Some((score, _)) if -score > alpha => {
                             self.search_root_child(position, depth - 1, -beta, -alpha)
                         }
+                        narrow_result => narrow_result,
                     }
+                } else {
+                    self.search_root_child(position, depth - 1, -beta, -alpha)
                 };
                 self.sennichite_detector.unrecord_last_position();
                 self.undo_move(position, mv);
@@ -189,17 +183,14 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                         break;
                     }
 
+                    let moved_by = position.side_to_move();
                     self.make_move(position, mv);
-                    self.sennichite_detector.record_position(position);
-                    let sennichite_status = self.is_sennichite_internal(position);
-                    let eval_result = match sennichite_status {
-                        SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                        SennichiteStatus::PerpetualCheckLoss => {
-                            Some((REPETITION_WIN_SCORE, Vec::new()))
-                        }
-                        SennichiteStatus::None => {
-                            self.search_root_child(position, depth - 1, -beta, -alpha)
-                        }
+                    self.sennichite_detector
+                        .record_position_after_move(position, moved_by);
+                    let eval_result = if let Some(score) = self.sennichite_score(position) {
+                        Some((score, Vec::new()))
+                    } else {
+                        self.search_root_child(position, depth - 1, -beta, -alpha)
                     };
                     self.sennichite_detector.unrecord_last_position();
                     self.undo_move(position, mv);

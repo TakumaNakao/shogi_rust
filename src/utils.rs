@@ -1,3 +1,4 @@
+use crate::sennichite::GameHistory;
 use plotters::prelude::*;
 use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use shogi_lib::Position;
@@ -192,28 +193,41 @@ pub fn parse_usi_move_for_color(s: &str, color: Color) -> Option<Move> {
 }
 
 pub fn position_from_sfen_or_usi(line: &str) -> Option<Position> {
+    position_and_history_from_sfen_or_usi(line).map(|(position, _)| position)
+}
+
+pub fn position_and_history_from_sfen_or_usi(line: &str) -> Option<(Position, GameHistory)> {
     let line = line.trim();
     if line.is_empty() {
         return None;
     }
 
-    if line == "startpos" || line.starts_with("startpos moves ") {
-        let mut position = Position::default();
-        if let Some(moves_part) = line.strip_prefix("startpos moves ") {
-            for token in moves_part.split_whitespace() {
-                let mv = parse_usi_move_for_color(token, position.side_to_move())?;
-                if !position.legal_moves().contains(&mv) {
-                    return None;
-                }
-                position.do_move(mv);
-            }
-        }
-        return Some(position);
-    }
+    let tokens = line.split_whitespace().collect::<Vec<_>>();
+    let moves_index = tokens.iter().position(|token| *token == "moves");
+    let base_end = moves_index.unwrap_or(tokens.len());
+    let mut position = if tokens.first() == Some(&"startpos") {
+        Position::default()
+    } else {
+        let sfen_start = usize::from(tokens.first() == Some(&"sfen"));
+        let sfen = tokens.get(sfen_start..base_end)?.join(" ");
+        let partial_pos = shogi_core::PartialPosition::from_usi(&format!("sfen {sfen}")).ok()?;
+        Position::new(partial_pos)
+    };
+    let mut history = GameHistory::new();
+    history.record_initial_position(&position);
 
-    let sfen = line.strip_prefix("sfen ").unwrap_or(line);
-    let partial_pos = shogi_core::PartialPosition::from_usi(&format!("sfen {}", sfen)).ok()?;
-    Some(Position::new(partial_pos))
+    if let Some(moves_index) = moves_index {
+        for token in &tokens[moves_index + 1..] {
+            let moved_by = position.side_to_move();
+            let mv = parse_usi_move_for_color(token, moved_by)?;
+            if !position.legal_moves().contains(&mv) {
+                return None;
+            }
+            position.do_move(mv);
+            history.record_position_after_move(&position, moved_by);
+        }
+    }
+    Some((position, history))
 }
 
 pub fn parse_square(s: &str) -> Option<Square> {

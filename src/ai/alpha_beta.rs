@@ -106,35 +106,34 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         let mut node_type = NodeType::UpperBound;
 
         for (mv, _) in sorted_moves {
+            let moved_by = position.side_to_move();
             self.make_move(position, mv);
-            self.sennichite_detector.record_position(position);
-            let sennichite_status = self.is_sennichite_internal(position);
-            let search_result = match sennichite_status {
-                SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((REPETITION_WIN_SCORE, Vec::new())),
-                SennichiteStatus::None => {
-                    let mut child_depth = depth - 1;
-                    let mut child_extension_budget = check_evasion_extension_budget;
-                    let mut child_precomputed_moves = None;
-                    if depth == 1 && check_evasion_extension_budget > 0 && position.in_check() {
-                        let child_moves = position.legal_moves();
-                        if child_moves.len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES {
-                            child_depth = 1;
-                            child_extension_budget -= 1;
-                            self.check_evasion_extensions += 1;
-                        }
-                        child_precomputed_moves = Some(child_moves);
+            self.sennichite_detector
+                .record_position_after_move(position, moved_by);
+            let search_result = if let Some(score) = self.sennichite_score(position) {
+                Some((score, Vec::new()))
+            } else {
+                let mut child_depth = depth - 1;
+                let mut child_extension_budget = check_evasion_extension_budget;
+                let mut child_precomputed_moves = None;
+                if depth == 1 && check_evasion_extension_budget > 0 && position.in_check() {
+                    let child_moves = position.legal_moves();
+                    if child_moves.len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES {
+                        child_depth = 1;
+                        child_extension_budget -= 1;
+                        self.check_evasion_extensions += 1;
                     }
-                    self.alpha_beta_search_internal(
-                        position,
-                        child_depth,
-                        -beta,
-                        -alpha,
-                        child_extension_budget,
-                        ply_from_root.saturating_add(1),
-                        child_precomputed_moves,
-                    )
+                    child_precomputed_moves = Some(child_moves);
                 }
+                self.alpha_beta_search_internal(
+                    position,
+                    child_depth,
+                    -beta,
+                    -alpha,
+                    child_extension_budget,
+                    ply_from_root.saturating_add(1),
+                    child_precomputed_moves,
+                )
             };
             self.sennichite_detector.unrecord_last_position();
             self.undo_move(position, mv);

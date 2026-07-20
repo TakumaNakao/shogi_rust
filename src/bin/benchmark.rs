@@ -198,10 +198,15 @@ fn play_game(
         };
 
         moves.push(format_move_usi(best_move));
+        let moved_by = position.side_to_move();
         position.do_move(best_move);
         history.push(position.clone());
-        new_ai.sennichite_detector.record_position(&position);
-        baseline_ai.sennichite_detector.record_position(&position);
+        new_ai
+            .sennichite_detector
+            .record_position_after_move(&position, moved_by);
+        baseline_ai
+            .sennichite_detector
+            .record_position_after_move(&position, moved_by);
 
         match new_ai.is_sennichite_internal(&position) {
             SennichiteStatus::Draw => {
@@ -210,9 +215,10 @@ fn play_game(
                     moves,
                 };
             }
-            SennichiteStatus::PerpetualCheckLoss => {
+            SennichiteStatus::PerpetualCheckLoss { loser } => {
+                let loser_is_new = (loser == Color::Black) == new_is_black;
                 return PlayedGame {
-                    result: if new_to_move {
+                    result: if loser_is_new {
                         GameResult::BaselineWin
                     } else {
                         GameResult::NewWin

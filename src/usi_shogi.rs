@@ -1,6 +1,7 @@
 use crate::ai::{SearchInfo, SearchLimits, SearchObserver, ShogiAI};
 use crate::evaluation::{EngineEvaluator, HybridNnueEvaluator};
-use shogi_core::{Color, Move, Piece};
+use crate::sennichite::GameHistory;
+use shogi_core::{Color, Move};
 use shogi_lib::Position;
 use std::io::{self, BufRead, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -10,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::utils::{format_move_usi, parse_usi_move, position_from_sfen_or_usi};
+use crate::utils::{format_move_usi, position_and_history_from_sfen_or_usi};
 
 // --- USI Engine Logic ---
 
@@ -100,6 +101,7 @@ impl SearchJob {
 
 struct UsiEngine {
     position: Position,
+    game_history: GameHistory,
     search_job: Option<SearchJob>,
     next_search_generation: u64,
     eval_file_path: Option<PathBuf>,
@@ -114,8 +116,12 @@ struct UsiEngine {
 
 impl UsiEngine {
     fn new() -> Self {
+        let position = Position::default();
+        let mut game_history = GameHistory::new();
+        game_history.record_initial_position(&position);
         UsiEngine {
-            position: Position::default(),
+            position,
+            game_history,
             search_job: None,
             next_search_generation: 1,
             eval_file_path: None,
@@ -202,7 +208,8 @@ impl UsiEngine {
         match evaluator_result {
             Ok(evaluator) => {
                 let evaluator_name = evaluator.name();
-                let new_ai = ShogiAI::new(Arc::new(evaluator));
+                let mut new_ai = ShogiAI::new(Arc::new(evaluator));
+                new_ai.sennichite_detector = self.game_history.clone();
                 *self
                     .ai
                     .lock()
@@ -294,6 +301,8 @@ impl UsiEngine {
     fn handle_usinewgame(&mut self) {
         self.handle_stop();
         self.position = Position::default();
+        self.game_history.clear();
+        self.game_history.record_initial_position(&self.position);
         if let Some(ai_instance) = self
             .ai
             .lock()
@@ -305,31 +314,10 @@ impl UsiEngine {
     }
 
     fn handle_position(&mut self, tokens: &[&str]) {
-        self.position = if tokens.get(1) == Some(&"sfen") {
-            let moves_idx = tokens
-                .iter()
-                .position(|&s| s == "moves")
-                .unwrap_or(tokens.len());
-            let sfen = tokens[2..moves_idx].join(" ");
-            position_from_sfen_or_usi(&sfen).unwrap_or_else(Position::default)
-        } else {
-            Position::default()
-        };
-
-        if let Some(moves_idx) = tokens.iter().position(|&s| s == "moves") {
-            for move_str in &tokens[moves_idx + 1..] {
-                if let Some(mut mv) = parse_usi_move(move_str) {
-                    if let Move::Drop { piece, to } = mv {
-                        let colored_piece =
-                            Piece::new(piece.piece_kind(), self.position.side_to_move());
-                        mv = Move::Drop {
-                            piece: colored_piece,
-                            to,
-                        };
-                    }
-                    self.position.do_move(mv);
-                }
-            }
+        let specification = tokens.get(1..).unwrap_or_default().join(" ");
+        if let Some((position, history)) = position_and_history_from_sfen_or_usi(&specification) {
+            self.position = position;
+            self.game_history = history;
         }
     }
 
@@ -428,6 +416,7 @@ impl UsiEngine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_mut()
         {
+            ai_instance.sennichite_detector = self.game_history.clone();
             ai_instance.decay_history();
         }
 
@@ -549,6 +538,7 @@ pub fn run_usi() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sennichite::SennichiteStatus;
 
     #[test]
     fn usi_display_score_keeps_small_values() {
@@ -568,5 +558,22 @@ mod tests {
         assert_eq!(-four_thousand, usi_display_score_cp(-4000.0));
         assert_eq!(USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::INFINITY));
         assert_eq!(-USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::NEG_INFINITY));
+    }
+
+    #[test]
+    fn position_command_preserves_the_complete_move_history() {
+        let mut engine = UsiEngine::new();
+        let command = "position sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1 moves \
+            5i6i 5a6a 6i5i 6a5a \
+            5i6i 5a6a 6i5i 6a5a";
+        let tokens = command.split_whitespace().collect::<Vec<_>>();
+        engine.handle_position(&tokens);
+
+        assert_eq!(9, engine.game_history.len());
+        assert_eq!(3, engine.game_history.get_position_count(&engine.position));
+        assert_eq!(
+            SennichiteStatus::None,
+            engine.game_history.adjudicate(&engine.position)
+        );
     }
 }

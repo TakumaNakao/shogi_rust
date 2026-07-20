@@ -98,30 +98,27 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
 
             self.quiescence_moves_searched += 1;
+            let moved_by = position.side_to_move();
             self.make_move(position, mv);
-            self.sennichite_detector.record_position(position);
-            let sennichite_status = self.is_sennichite_internal(position);
-            let score_result = match sennichite_status {
-                SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((REPETITION_WIN_SCORE, Vec::new())),
-                SennichiteStatus::None => {
-                    if quiescence_ply >= MAX_QUIESCENCE_PLY {
-                        if position.in_check() && !position.has_legal_evasion() {
-                            Some((mate_loss_score(ply_from_root.saturating_add(1)), Vec::new()))
-                        } else {
-                            Some((self.evaluate_position(position), Vec::new()))
-                        }
-                    } else {
-                        self.quiescence_search_internal(
-                            position,
-                            -beta,
-                            -alpha,
-                            ply_from_root.saturating_add(1),
-                            quiescence_ply.saturating_add(1),
-                            None,
-                        )
-                    }
+            self.sennichite_detector
+                .record_position_after_move(position, moved_by);
+            let score_result = if let Some(score) = self.sennichite_score(position) {
+                Some((score, Vec::new()))
+            } else if quiescence_ply >= MAX_QUIESCENCE_PLY {
+                if position.in_check() && !position.has_legal_evasion() {
+                    Some((mate_loss_score(ply_from_root.saturating_add(1)), Vec::new()))
+                } else {
+                    Some((self.evaluate_position(position), Vec::new()))
                 }
+            } else {
+                self.quiescence_search_internal(
+                    position,
+                    -beta,
+                    -alpha,
+                    ply_from_root.saturating_add(1),
+                    quiescence_ply.saturating_add(1),
+                    None,
+                )
             };
             self.sennichite_detector.unrecord_last_position();
             self.undo_move(position, mv);
