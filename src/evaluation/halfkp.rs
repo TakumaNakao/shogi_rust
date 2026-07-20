@@ -1,10 +1,6 @@
-use super::codec::{
-    feature_rows_from_flat, read_f32_array, read_f32_le, read_f32_vec, HalfKpFeatureRow,
-    HalfKpHeader, HALFKP_HEADER_LEN, HALFKP_MAGIC,
-};
+use super::codec::{feature_rows_from_flat, HalfKpFeatureRow, HalfKpFlatModel, HALFKP_MAGIC};
 use super::constants::{
-    piece_kind_value, unpromoted_kind, HALFKP_HIDDEN, HALFKP_INPUTS, HALFKP_KING_BUCKETS,
-    HALFKP_PIECE_STATES,
+    piece_kind_value, unpromoted_kind, HALFKP_HIDDEN, HALFKP_KING_BUCKETS, HALFKP_PIECE_STATES,
 };
 use super::features::{
     extract_halfkp_features_fixed, extract_halfkp_features_for, halfkp_piece_state, HalfKpFeatures,
@@ -13,11 +9,9 @@ use super::features::{
 use super::kernels::halfkp_avx2_available;
 #[cfg(target_arch = "x86_64")]
 use super::kernels::{accumulate_rows_avx2, apply_feature_rows_avx2};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use shogi_lib::Position;
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -64,25 +58,14 @@ impl HalfKpModel {
     pub const MAGIC: &'static [u8; 8] = HALFKP_MAGIC;
 
     pub fn load(path: &Path) -> Result<Self> {
-        let mut file = File::open(path)?;
-        let mut header_bytes = [0u8; HALFKP_HEADER_LEN];
-        file.read_exact(&mut header_bytes)?;
-        let header = HalfKpHeader::decode(&header_bytes)?;
-        let feature_emb =
-            feature_rows_from_flat(read_f32_vec(&mut file, HALFKP_INPUTS * HALFKP_HIDDEN)?)?;
-        let hidden_b = read_f32_array::<HALFKP_HIDDEN>(&mut file)?;
-        let out_w = read_f32_array::<{ HALFKP_HIDDEN * 2 + 1 }>(&mut file)?;
-        let out_b = read_f32_le(&mut file)?;
-        let mut trailing = [0u8; 1];
-        if file.read(&mut trailing)? != 0 {
-            return Err(anyhow!("trailing bytes in HalfKP file"));
-        }
+        let flat = HalfKpFlatModel::decode(&std::fs::read(path)?)?;
+        let feature_emb = feature_rows_from_flat(flat.feature_emb)?;
         Ok(Self {
-            target_scale: header.target_scale,
+            target_scale: flat.header.target_scale,
             feature_emb,
-            hidden_b,
-            out_w,
-            out_b,
+            hidden_b: flat.hidden_b,
+            out_w: flat.out_w,
+            out_b: flat.out_b,
             use_avx2: halfkp_avx2_available(),
         })
     }

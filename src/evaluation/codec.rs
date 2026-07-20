@@ -96,6 +96,9 @@ impl HalfKpFlatModel {
         let header = HalfKpHeader::decode(bytes)?;
         let expected_len = Self::encoded_len()?;
         if bytes.len() != expected_len {
+            if bytes.len() > expected_len {
+                return Err(anyhow!("trailing bytes in HalfKP file"));
+            }
             return Err(anyhow!(
                 "invalid HalfKP model length: got {}, expected {expected_len}",
                 bytes.len()
@@ -132,20 +135,38 @@ impl HalfKpFlatModel {
     }
 
     pub fn write_to(&self, writer: &mut impl Write) -> Result<()> {
-        if self.feature_emb.len() != HALFKP_INPUTS * HALFKP_HIDDEN {
+        Self::write_parts(
+            writer,
+            self.header,
+            &self.feature_emb,
+            &self.hidden_b,
+            &self.out_w,
+            self.out_b,
+        )
+    }
+
+    pub fn write_parts(
+        writer: &mut impl Write,
+        header: HalfKpHeader,
+        feature_emb: &[f32],
+        hidden_b: &[f32; HALFKP_HIDDEN],
+        out_w: &[f32; HALFKP_HIDDEN * 2 + 1],
+        out_b: f32,
+    ) -> Result<()> {
+        if feature_emb.len() != HALFKP_INPUTS * HALFKP_HIDDEN {
             return Err(anyhow!("invalid HalfKP feature tensor length"));
         }
-        self.header.write_to(writer)?;
-        for &value in &self.feature_emb {
+        header.write_to(writer)?;
+        for &value in feature_emb {
             writer.write_all(&value.to_le_bytes())?;
         }
-        for &value in &self.hidden_b {
+        for &value in hidden_b {
             writer.write_all(&value.to_le_bytes())?;
         }
-        for &value in &self.out_w {
+        for &value in out_w {
             writer.write_all(&value.to_le_bytes())?;
         }
-        writer.write_all(&self.out_b.to_le_bytes())?;
+        writer.write_all(&out_b.to_le_bytes())?;
         Ok(())
     }
 

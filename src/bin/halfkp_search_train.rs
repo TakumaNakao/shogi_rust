@@ -5,7 +5,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use shogi_ai::evaluation::{HalfKpHeader, HALFKP_HEADER_LEN, HALFKP_HIDDEN, HALFKP_INPUTS};
+use shogi_ai::evaluation::{HalfKpFlatModel, HalfKpHeader, HALFKP_HIDDEN, HALFKP_INPUTS};
 use shogi_ai::halfkp_training::{
     PackedHalfKpPosition, SearchTeacherReader, SearchTeacherRecord, CANDIDATE_GAME_MOVE,
 };
@@ -226,32 +226,15 @@ struct TrainOptions {
 impl Weights {
     fn load(path: &Path) -> Result<Self> {
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-        let expected_floats = HALFKP_INPUTS * HALFKP_HIDDEN + HALFKP_HIDDEN + HALFKP_HIDDEN * 2 + 2;
-        if bytes.len() != HALFKP_HEADER_LEN + expected_floats * 4 {
-            return Err(anyhow!("invalid HalfKP initial weights"));
-        }
-        let header = HalfKpHeader::decode(&bytes)?;
-        if header.target_scale != TARGET_SCALE {
+        let flat = HalfKpFlatModel::decode(&bytes)?;
+        if flat.header.target_scale != TARGET_SCALE {
             return Err(anyhow!("incompatible HalfKP model header"));
         }
-        let mut offset = HALFKP_HEADER_LEN;
-        let mut next = || {
-            let value = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-            offset += 4;
-            value
-        };
-        let mut feature_emb = vec![0.0; HALFKP_INPUTS * HALFKP_HIDDEN];
-        for value in &mut feature_emb {
-            *value = next();
-        }
-        let hidden_b = std::array::from_fn(|_| next());
-        let out_w = std::array::from_fn(|_| next());
-        let out_b = next();
         Ok(Self {
-            feature_emb,
-            hidden_b,
-            out_w,
-            out_b,
+            feature_emb: flat.feature_emb,
+            hidden_b: flat.hidden_b,
+            out_w: flat.out_w,
+            out_b: flat.out_b,
         })
     }
 
@@ -261,17 +244,14 @@ impl Weights {
         }
         let temporary = path.with_extension("tmp");
         let mut writer = BufWriter::new(File::create(&temporary)?);
-        HalfKpHeader::current(TARGET_SCALE)?.write_to(&mut writer)?;
-        for &value in &self.feature_emb {
-            writer.write_all(&value.to_le_bytes())?;
-        }
-        for &value in &self.hidden_b {
-            writer.write_all(&value.to_le_bytes())?;
-        }
-        for &value in &self.out_w {
-            writer.write_all(&value.to_le_bytes())?;
-        }
-        writer.write_all(&self.out_b.to_le_bytes())?;
+        HalfKpFlatModel::write_parts(
+            &mut writer,
+            HalfKpHeader::current(TARGET_SCALE)?,
+            &self.feature_emb,
+            &self.hidden_b,
+            &self.out_w,
+            self.out_b,
+        )?;
         writer.flush()?;
         drop(writer);
         fs::rename(temporary, path)?;

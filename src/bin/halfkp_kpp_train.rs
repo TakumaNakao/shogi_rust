@@ -5,7 +5,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use serde::Deserialize;
-use shogi_ai::evaluation::{HalfKpHeader, HALFKP_HEADER_LEN, HALFKP_HIDDEN, HALFKP_INPUTS};
+use shogi_ai::evaluation::{HalfKpFlatModel, HalfKpHeader, HALFKP_HIDDEN, HALFKP_INPUTS};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -154,31 +154,12 @@ impl Weights {
     fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("read initial HalfKP weights {}", path.display()))?;
-        if bytes.len() < HALFKP_HEADER_LEN {
-            return Err(anyhow!("invalid HalfKP weight file"));
-        }
-        HalfKpHeader::decode(&bytes)?;
-        let count = HALFKP_INPUTS * HALFKP_HIDDEN + HALFKP_HIDDEN + HALFKP_HIDDEN * 2 + 2;
-        if bytes.len() != HALFKP_HEADER_LEN + count * 4 {
-            return Err(anyhow!("invalid HalfKP weight length"));
-        }
-        let mut offset = HALFKP_HEADER_LEN;
-        let mut next = || {
-            let value = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-            offset += 4;
-            value
-        };
-        let mut feature_emb = vec![0.0; HALFKP_INPUTS * HALFKP_HIDDEN];
-        for value in &mut feature_emb {
-            *value = next();
-        }
-        let hidden_b = std::array::from_fn(|_| next());
-        let out_w = std::array::from_fn(|_| next());
+        let flat = HalfKpFlatModel::decode(&bytes)?;
         Ok(Self {
-            feature_emb,
-            hidden_b,
-            out_w,
-            out_b: next(),
+            feature_emb: flat.feature_emb,
+            hidden_b: flat.hidden_b,
+            out_w: flat.out_w,
+            out_b: flat.out_b,
         })
     }
 
@@ -683,17 +664,14 @@ fn save(weights: &Weights, path: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let mut writer = BufWriter::new(File::create(path)?);
-    HalfKpHeader::current(TARGET_SCALE)?.write_to(&mut writer)?;
-    for value in &weights.feature_emb {
-        writer.write_all(&value.to_le_bytes())?;
-    }
-    for value in weights.hidden_b {
-        writer.write_all(&value.to_le_bytes())?;
-    }
-    for value in weights.out_w {
-        writer.write_all(&value.to_le_bytes())?;
-    }
-    writer.write_all(&weights.out_b.to_le_bytes())?;
+    HalfKpFlatModel::write_parts(
+        &mut writer,
+        HalfKpHeader::current(TARGET_SCALE)?,
+        &weights.feature_emb,
+        &weights.hidden_b,
+        &weights.out_w,
+        weights.out_b,
+    )?;
     writer.flush()?;
     Ok(())
 }
