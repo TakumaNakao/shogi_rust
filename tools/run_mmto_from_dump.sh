@@ -178,7 +178,7 @@ with open(output_path, "w", encoding="utf-8") as out:
 print(f"score_positions={len(seen)}")
 PY
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features training-tools,benchmark-tools,research-tools \
   --bin rank_stats \
   --bin mmto_tree_train \
   --bin mmto_score_gate \

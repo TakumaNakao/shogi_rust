@@ -128,7 +128,7 @@ echo "LOSS=listwise-leaf feature=$LISTWISE_FEATURE_SOURCE replay_weight=$REPLAY_
 echo "POLICY_ANCHOR_WEIGHTS=$POLICY_ANCHOR_WEIGHTS POLICY_ANCHOR_WEIGHT=$POLICY_ANCHOR_WEIGHT POLICY_ANCHOR_MARGIN_WEIGHT=$POLICY_ANCHOR_MARGIN_WEIGHT"
 echo "STREAM_TRAIN=$STREAM_TRAIN eval_max=$STREAM_TRAIN_EVAL_MAX_SAMPLES"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features training-tools,benchmark-tools,research-tools \
   --bin mmto_tree_dump \
   --bin mmto_tree_train \
   --bin mmto_score_gate \

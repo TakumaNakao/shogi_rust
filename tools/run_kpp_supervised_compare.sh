@@ -64,7 +64,7 @@ echo "YEARS=$YEARS"
 echo "BASELINE_WEIGHTS=$BASELINE_WEIGHTS"
 echo "SCRATCH_MATERIAL_COEFF=$SCRATCH_MATERIAL_COEFF"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin kpp_learn
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features training-tools --bin kpp_learn
 
 run_one() {
   local kind="$1"

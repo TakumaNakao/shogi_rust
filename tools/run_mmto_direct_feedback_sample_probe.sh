@@ -51,7 +51,7 @@ mkdir -p "$RUN_DIR"
   wc -l "$POSITIONS"
 } | tee "$RUN_DIR/config.txt"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin mmto_rerank_gate
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features research-tools --bin mmto_rerank_gate
 
 summary_path="$RUN_DIR/summary.tsv"
 printf "max_positions\tstatus\tseconds\tsamples\thard_positions\tteacher_candidate_diff\tdelta_gt0\tdelta_ge1\tdelta_ge10\tcandidate_mean\tcandidate_p95\tbaseline_mean\tbaseline_p95\tjson_bytes\n" \

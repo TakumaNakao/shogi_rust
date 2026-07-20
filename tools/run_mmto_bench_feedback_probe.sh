@@ -85,7 +85,7 @@ echo "FEEDBACK_START_WEIGHTS=$FEEDBACK_START_WEIGHTS FEEDBACK_MAX_POSITIONS=$FEE
 echo "FEEDBACK_RERANK_MAX_POSITIONS=$FEEDBACK_RERANK_MAX_POSITIONS"
 echo "FEEDBACK_BEST_GUARD_MAX/BAD100=$FEEDBACK_BEST_GUARD_MAX_REGRET_INCREASE_CP/$FEEDBACK_BEST_GUARD_BAD100_INCREASE"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features training-tools,benchmark-tools,research-tools \
   --bin usi_engine \
   --bin usi_benchmark \
   --bin record_analyze \

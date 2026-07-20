@@ -47,7 +47,7 @@ RESUME=1 ./scripts/train_halfkp64_kpp.sh
 
 ```bash
 RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features halfkp64 --bin usi_engine
-RUST_FONTCONFIG_DLOPEN=1 cargo run --release --features halfkp64 --bin search_profile -- \
+RUST_FONTCONFIG_DLOPEN=1 cargo run --release --features halfkp64,benchmark-tools --bin search_profile -- \
   --halfkp-weights data/policy_weights_halfkp64_kpp_distilled.binary \
   --positions taya36.sfen --samples 32 --depth 10 --time-limit-ms 1000
 ```

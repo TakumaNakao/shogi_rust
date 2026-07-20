@@ -32,7 +32,7 @@ done
 mkdir -p "$OUT_DIR"
 
 echo "[1/4] Building HalfKP-64 teacher generator and trainer"
-cargo build --release --features halfkp64 \
+cargo build --release --features halfkp64,training-tools \
   --bin halfkp_search_teacher --bin halfkp_search_train
 
 generate_teacher_data() {

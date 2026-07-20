@@ -32,7 +32,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - name: Build
-        run: cargo build --release --features halfkp64 --target ${{ matrix.target }} --bin usi_engine --bin kpp_learn --bin kpp_self_learn
+        run: cargo build --release --features halfkp64,training-tools --target ${{ matrix.target }} --bin usi_engine --bin kpp_learn --bin kpp_self_learn
       - name: Rename artifacts (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |

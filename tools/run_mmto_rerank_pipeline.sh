@@ -99,7 +99,7 @@ if (( FREE_KB < MIN_FREE_KB )); then
   exit 1
 fi
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features training-tools,benchmark-tools,research-tools \
   --bin mmto_tree_dump \
   --bin rank_stats \
   --bin mmto_tree_train \

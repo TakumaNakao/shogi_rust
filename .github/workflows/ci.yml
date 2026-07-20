@@ -29,19 +29,21 @@ jobs:
           components: rustfmt, clippy
       - name: Formatting
         run: cargo fmt --all -- --check
+      - name: Binary inventory
+        run: python3 tools/check_binary_inventory.py
       - name: HalfKP-32 library tests
-        run: cargo test --release -p shogi_ai --lib
+        run: cargo test --release -p shogi_ai --lib --features training-tools
       - name: HalfKP-64 workspace tests
-        run: cargo test --workspace --release --features halfkp64
-      - name: HalfKP-64 all-target check
-        run: cargo check --workspace --all-targets --features halfkp64
+        run: cargo test --workspace --release --features halfkp64,training-tools
+      - name: All tool categories check
+        run: cargo check --workspace --all-targets --all-features
       - name: Production clippy ratchet
         run: tools/check_clippy_ratchet.sh
       - name: Existing clippy baseline
-        run: cargo clippy --workspace --all-targets --features halfkp64
+        run: cargo clippy --workspace --all-targets --all-features
       - name: Deterministic search fingerprint
         run: |
-          cargo build --release --features halfkp64 --bin search_fingerprint
+          cargo build --release --features halfkp64,benchmark-tools --bin search_fingerprint
           target/release/search_fingerprint \
             --depth 3 \
             --expected benchmarks/baselines/search_fingerprint_v2.5.4_plus_master.json
@@ -54,11 +56,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: HalfKP-64 workspace tests
-        run: cargo test --workspace --release --features halfkp64
+        run: cargo test --workspace --release --features halfkp64,training-tools
       - name: Deterministic search fingerprint
         shell: pwsh
         run: |
-          cargo build --release --features halfkp64 --bin search_fingerprint
+          cargo build --release --features halfkp64,benchmark-tools --bin search_fingerprint
           target/release/search_fingerprint.exe `
             --depth 3 `
             --expected benchmarks/baselines/search_fingerprint_v2.5.4_plus_master.json

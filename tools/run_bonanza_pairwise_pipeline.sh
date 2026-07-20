@@ -54,7 +54,7 @@ echo "INPUTS=$INPUTS"
 echo "MAX_RECORDS=$MAX_RECORDS VALID_PERCENT=$VALID_PERCENT MIN_PLY=$MIN_PLY MAX_PLY=${MAX_PLY:-none} MIN_PLAYER_RATE=${MIN_PLAYER_RATE:-none}"
 echo "OPTIMIZER=$OPTIMIZER LEARNING_RATE=$LEARNING_RATE"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin csa_policy_dump --bin bonanza_pairwise_train
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features training-tools --bin csa_policy_dump --bin bonanza_pairwise_train
 
 read -r -a input_list <<< "$INPUTS"
 if [[ ${#input_list[@]} -eq 0 || -z "${input_list[0]}" ]]; then

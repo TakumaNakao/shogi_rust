@@ -36,7 +36,7 @@ echo "GUARD_OUTPUT=$GUARD_OUTPUT GUARD_PERCENT=$GUARD_PERCENT SEED=$SEED"
 echo "INPUT_JSONS=${#JSONS[@]}"
 echo "MIN_REGRET_DELTA_CP=$MIN_REGRET_DELTA_CP MIN_CANDIDATE_REGRET_CP=$MIN_CANDIDATE_REGRET_CP LIMIT=$LIMIT"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin rerank_feedback_collect
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features research-tools --bin rerank_feedback_collect
 
 collect_args=()
 for path in "${JSONS[@]}"; do

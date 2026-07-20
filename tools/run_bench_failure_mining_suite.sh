@@ -54,7 +54,7 @@ echo "TAIL_PLIES=$TAIL_PLIES TIMED_DEPTH=$TIMED_DEPTH TEACHER_DEPTH=$TEACHER_DEP
 echo "BAD_REGRET_CP=$BAD_REGRET_CP ROOT_RESCUE=$ROOT_RESCUE_GOOD_REGRET_CP/$ROOT_RESCUE_MIN_IMPROVEMENT_CP"
 echo "FEEDBACK_REGRET_RANGE=$FEEDBACK_MIN_TIMED_REGRET_CP..$FEEDBACK_MAX_TIMED_REGRET_CP"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features training-tools,benchmark-tools,research-tools \
   --bin bench_failure_miner \
   --bin bench_failure_feedback
 

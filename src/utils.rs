@@ -1,4 +1,5 @@
 use crate::sennichite::GameHistory;
+#[cfg(feature = "research-tools")]
 use plotters::prelude::*;
 use shogi_core::{Color, Move, Piece, PieceKind, Square};
 use shogi_lib::Position;
@@ -96,6 +97,7 @@ pub fn piece_value(piece: Piece) -> i32 {
     get_piece_value(piece.piece_kind())
 }
 
+#[cfg(feature = "research-tools")]
 pub fn draw_evaluation_graph(
     sente_data: &[(usize, f32)],
     gote_data: &[(usize, f32)],

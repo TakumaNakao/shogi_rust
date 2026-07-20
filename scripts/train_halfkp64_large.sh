@@ -105,7 +105,7 @@ if [[ "$PROFILE" == "full" && "$available_kib" -lt 15728640 ]]; then
 fi
 
 echo "[build] Compiling dataset, teacher, trainer, and gate binaries"
-cargo build --release --features halfkp64 \
+cargo build --release --features halfkp64,training-tools,benchmark-tools \
   --bin dataset_build --bin halfkp_search_teacher --bin halfkp_search_train \
   --bin jsonl_shard --bin usi_engine --bin usi_benchmark
 
