@@ -34,6 +34,14 @@ USI (Universal Shogi Interface) プロトコルに対応した思考エンジン
 
 ## 開発者向け情報
 
+### 設計・リファクタリング
+
+コードベース全体の目標アーキテクチャ、段階的な作業手順、性能・棋力の非退行ゲートは
+[`docs/refactoring_plan_v2.5.4.md`](docs/refactoring_plan_v2.5.4.md)にまとめています。
+大規模な変更へ着手する前に、保存すべき既存契約を記録した
+[`docs/refactoring_handoff_v2.5.4.md`](docs/refactoring_handoff_v2.5.4.md)とあわせて確認してください。
+開発文書全体の索引は[`docs/README.md`](docs/README.md)です。
+
 ### ビルド方法
 
 ```bash
