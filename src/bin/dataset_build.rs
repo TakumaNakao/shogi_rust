@@ -5,13 +5,15 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
 use shogi_ai::training_data::{
-    collect_csa_files, csa_color, game_content_id, parse_csa_metadata, parse_csa_move, sha256_file,
-    split_for_game_content, CsaMetadata, DatasetSplit as Split, TrainingPhase as Phase,
-    PHASE_POLICY_VERSION, SPLIT_POLICY_VERSION,
+    capture_run_environment, collect_csa_files, csa_color, game_content_id, parse_csa_metadata,
+    parse_csa_move, sha256_file, sha256_hex, split_for_game_content, CsaMetadata,
+    DatasetSplit as Split, RunEnvironment, TrainingPhase as Phase, PHASE_POLICY_VERSION,
+    SPLIT_POLICY_VERSION,
 };
 use shogi_ai::utils::format_move_usi;
 use shogi_core::Color;
 use shogi_lib::Position;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -25,6 +27,8 @@ struct Args {
     input: Vec<PathBuf>,
     #[arg(long)]
     output_dir: PathBuf,
+    #[arg(long, default_value_t = false)]
+    reuse_if_matches: bool,
     #[arg(long, default_value_t = 9601)]
     seed: u64,
     #[arg(long, default_value_t = false)]
@@ -115,6 +119,7 @@ struct DatasetStats {
     games_seen: usize,
     games_used: usize,
     games_skipped_parse: usize,
+    games_duplicate_content: usize,
     games_filtered: usize,
     records_written: usize,
     records_filtered: usize,
@@ -128,6 +133,8 @@ struct DatasetStats {
 struct DatasetManifest {
     schema_version: u32,
     schema: &'static str,
+    stage_fingerprint: String,
+    environment: RunEnvironment,
     created_unix_secs: u64,
     git_rev: Option<String>,
     command: Vec<String>,
@@ -176,6 +183,12 @@ struct OutputFileManifest {
     path: String,
     sha256: String,
     records: usize,
+}
+
+struct GameSource {
+    path: PathBuf,
+    game_id: String,
+    bytes: u64,
 }
 
 struct Writers {
@@ -365,7 +378,6 @@ fn increment_split_records(stats: &mut DatasetStats, split: Split) {
 
 fn process_game(
     game_index: usize,
-    path: &Path,
     bytes: &[u8],
     game_id: &str,
     split: Split,
@@ -420,7 +432,7 @@ fn process_game(
             let is_winner_move = metadata.winner.map(|winner| winner == move_color);
             let out = DatasetRecord {
                 schema: "rank_value_dataset_v2_position",
-                source: path.to_string_lossy().to_string(),
+                source: format!("sha256:{game_id}"),
                 game_index,
                 game_key: game_key.clone(),
                 split: split_text(split),
@@ -521,6 +533,72 @@ fn unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn dataset_stage_fingerprint(args: &Args, sources: &[GameSource]) -> Result<String> {
+    let inputs = sources
+        .iter()
+        .map(|source| (&source.game_id, source.bytes))
+        .collect::<Vec<_>>();
+    let value = serde_json::json!({
+        "schema_version": 1,
+        "stage": "dataset_build",
+        "inputs": inputs,
+        "seed": args.seed,
+        "phase_policy_version": PHASE_POLICY_VERSION,
+        "split_policy_version": SPLIT_POLICY_VERSION,
+        "configuration": {
+            "shuffle_games": args.shuffle_games,
+            "valid_percent": args.valid_percent,
+            "test_percent": args.test_percent,
+            "max_games": args.max_games,
+            "max_records": args.max_records,
+            "target_opening_records": args.target_opening_records,
+            "target_middle_records": args.target_middle_records,
+            "target_late_records": args.target_late_records,
+            "require_targets": args.require_targets,
+            "target_minimum_percent": args.target_minimum_percent,
+            "max_records_per_game": args.max_records_per_game,
+            "phase_records_per_game": args.phase_records_per_game,
+            "sample_every": args.sample_every,
+            "min_ply": args.min_ply,
+            "max_ply": args.max_ply,
+            "min_player_rate": args.min_player_rate,
+            "min_opponent_rate": args.min_opponent_rate,
+            "known_result_only": args.known_result_only,
+            "winner_only": args.winner_only,
+            "decisive_only": args.decisive_only,
+            "exclude_loser_after_ply": args.exclude_loser_after_ply,
+            "min_legal_moves": args.min_legal_moves,
+            "exclude_in_check": args.exclude_in_check,
+        }
+    });
+    Ok(sha256_hex(&serde_json::to_vec(&value)?))
+}
+
+fn reusable_output(output_dir: &Path, expected_fingerprint: &str) -> Result<bool> {
+    let manifest_path = output_dir.join("manifest.json");
+    let value: serde_json::Value = match fs::read(&manifest_path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    if value["stage_fingerprint"].as_str() != Some(expected_fingerprint) {
+        return Ok(false);
+    }
+    let Some(outputs) = value["output_files"].as_array() else {
+        return Ok(false);
+    };
+    for output in outputs {
+        let (Some(path), Some(expected)) = (output["path"].as_str(), output["sha256"].as_str())
+        else {
+            return Ok(false);
+        };
+        if sha256_file(&output_dir.join(path))? != expected {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     if args.valid_percent + args.test_percent > 100 {
@@ -541,16 +619,48 @@ fn main() -> Result<()> {
             "--phase-records-per-game requires three comma-separated values"
         ));
     }
-    let mut files = collect_csa_files(&args.input)?;
+    let files = collect_csa_files(&args.input)?;
+    let mut stats = DatasetStats::default();
+    let mut sources_by_id = BTreeMap::new();
+    for path in files {
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                stats.games_skipped_parse += 1;
+                continue;
+            }
+        };
+        let game_id = game_content_id(&bytes);
+        let source = GameSource {
+            path,
+            game_id: game_id.clone(),
+            bytes: bytes.len() as u64,
+        };
+        if sources_by_id.insert(game_id, source).is_some() {
+            stats.games_duplicate_content += 1;
+        }
+    }
+    let mut sources = sources_by_id.into_values().collect::<Vec<_>>();
+    let stage_fingerprint = dataset_stage_fingerprint(&args, &sources)?;
+    if args.reuse_if_matches && reusable_output(&args.output_dir, &stage_fingerprint)? {
+        println!("reused output_dir={}", args.output_dir.display());
+        return Ok(());
+    }
     if args.shuffle_games {
         let mut rng = ChaCha8Rng::seed_from_u64(args.seed);
-        files.shuffle(&mut rng);
+        sources.shuffle(&mut rng);
     }
+    let input_files = sources
+        .iter()
+        .map(|source| InputFileManifest {
+            path: source.path.to_string_lossy().to_string(),
+            sha256: source.game_id.clone(),
+            bytes: source.bytes,
+        })
+        .collect();
     let mut writers = create_writers(&args.output_dir)?;
-    let mut stats = DatasetStats::default();
-    let mut input_files = Vec::new();
 
-    for (game_index, path) in files.iter().enumerate() {
+    for (game_index, source) in sources.iter().enumerate() {
         if all_phase_targets_reached(&args, &stats) {
             break;
         }
@@ -567,26 +677,23 @@ fn main() -> Result<()> {
             break;
         }
         stats.games_seen += 1;
-        let bytes = match fs::read(path) {
+        let bytes = match fs::read(&source.path) {
             Ok(bytes) => bytes,
             Err(_) => {
                 stats.games_skipped_parse += 1;
                 continue;
             }
         };
-        let game_id = game_content_id(&bytes);
-        input_files.push(InputFileManifest {
-            path: path.to_string_lossy().to_string(),
-            sha256: game_id.clone(),
-            bytes: bytes.len() as u64,
-        });
-        let split =
-            split_for_game_content(&game_id, args.seed, args.valid_percent, args.test_percent);
+        let split = split_for_game_content(
+            &source.game_id,
+            args.seed,
+            args.valid_percent,
+            args.test_percent,
+        );
         match process_game(
             game_index,
-            path,
             &bytes,
-            &game_id,
+            &source.game_id,
             split,
             &args,
             &mut writers,
@@ -620,6 +727,8 @@ fn main() -> Result<()> {
     let manifest = DatasetManifest {
         schema_version: 3,
         schema: "rank_value_dataset_v3_manifest",
+        stage_fingerprint,
+        environment: capture_run_environment(),
         created_unix_secs: unix_secs(),
         git_rev: git_rev(),
         command: std::env::args().collect(),
@@ -670,6 +779,10 @@ fn main() -> Result<()> {
     println!(
         "games skipped parse: {}",
         manifest.stats.games_skipped_parse
+    );
+    println!(
+        "games duplicate content: {}",
+        manifest.stats.games_duplicate_content
     );
     println!("games filtered: {}", manifest.stats.games_filtered);
     println!("records written: {}", manifest.stats.records_written);
