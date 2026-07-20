@@ -2,6 +2,7 @@
 mod codec;
 mod constants;
 mod debug;
+mod evaluator;
 mod features;
 mod kernels;
 
@@ -15,6 +16,7 @@ use constants::{piece_kind_value, unpromoted_kind, BOARD_SQUARES};
 pub use debug::{
     generate_sfen, index_to_kpp_info, is_promoted_piece_kind, piece_kind_to_sfen_char_base, KppInfo,
 };
+pub use evaluator::Evaluator;
 use features::{
     extract_halfkp_features_fixed, halfkp_piece_state, piece_to_id, HalfKpFixedFeatures,
 };
@@ -35,7 +37,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct TinyNnueModel {
@@ -93,70 +94,6 @@ struct HalfKpPendingMove {
     moved: Option<Piece>,
     captured: Option<Piece>,
     hand_index: usize,
-}
-
-// --- Evaluator Trait ---
-pub trait Evaluator {
-    fn evaluate(&self, position: &shogi_lib::Position) -> f32;
-    fn begin_context(&self, _position: &shogi_lib::Position) -> Option<Box<dyn Any + Send>> {
-        None
-    }
-    fn evaluate_context(
-        &self,
-        _position: &shogi_lib::Position,
-        _context: &(dyn Any + Send),
-    ) -> Option<f32> {
-        None
-    }
-    fn prepare_context_move(
-        &self,
-        _context: &mut (dyn Any + Send),
-        _position: &shogi_lib::Position,
-        _mv: Move,
-    ) {
-    }
-    fn commit_context_move(
-        &self,
-        _context: &mut (dyn Any + Send),
-        _position: &shogi_lib::Position,
-    ) {
-    }
-    fn undo_context_move(&self, _context: &mut (dyn Any + Send)) {}
-}
-
-impl<T: Evaluator + ?Sized> Evaluator for Arc<T> {
-    fn evaluate(&self, position: &shogi_lib::Position) -> f32 {
-        (**self).evaluate(position)
-    }
-
-    fn begin_context(&self, position: &shogi_lib::Position) -> Option<Box<dyn Any + Send>> {
-        (**self).begin_context(position)
-    }
-
-    fn evaluate_context(
-        &self,
-        position: &shogi_lib::Position,
-        context: &(dyn Any + Send),
-    ) -> Option<f32> {
-        (**self).evaluate_context(position, context)
-    }
-
-    fn prepare_context_move(
-        &self,
-        context: &mut (dyn Any + Send),
-        position: &shogi_lib::Position,
-        mv: Move,
-    ) {
-        (**self).prepare_context_move(context, position, mv);
-    }
-
-    fn commit_context_move(&self, context: &mut (dyn Any + Send), position: &shogi_lib::Position) {
-        (**self).commit_context_move(context, position);
-    }
-
-    fn undo_context_move(&self, context: &mut (dyn Any + Send)) {
-        (**self).undo_context_move(context);
-    }
 }
 
 impl TinyNnueModel {
