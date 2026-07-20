@@ -13,11 +13,30 @@ use shogi_lib::Position;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PHASE_POLICY_VERSION: u32 = 1;
 pub const SPLIT_POLICY_VERSION: u32 = 2;
 pub const OPENING_MAX_PLY: usize = 40;
 pub const MIDDLEGAME_MAX_PLY: usize = 90;
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ArtifactMetadata {
+    pub path: String,
+    pub sha256: String,
+    pub bytes: u64,
+    pub records: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RunEnvironment {
+    pub created_at: String,
+    pub git_revision: Option<String>,
+    pub git_dirty: Option<bool>,
+    pub rustc_version: Option<String>,
+    pub target: String,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -261,6 +280,62 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+pub fn artifact_metadata(path: &Path, records: Option<u64>) -> Result<ArtifactMetadata> {
+    Ok(ArtifactMetadata {
+        path: path.to_string_lossy().to_string(),
+        sha256: sha256_file(path)?,
+        bytes: std::fs::metadata(path)?.len(),
+        records,
+    })
+}
+
+pub fn line_artifact_metadata(path: &Path) -> Result<ArtifactMetadata> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut bytes = 0_u64;
+    let mut newlines = 0_u64;
+    let mut last = None;
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buffer[..read];
+        hasher.update(chunk);
+        bytes += read as u64;
+        newlines += chunk.iter().filter(|&&byte| byte == b'\n').count() as u64;
+        last = chunk.last().copied();
+    }
+    let records = newlines + u64::from(last.is_some_and(|byte| byte != b'\n'));
+    Ok(ArtifactMetadata {
+        path: path.to_string_lossy().to_string(),
+        sha256: format!("{:x}", hasher.finalize()),
+        bytes,
+        records: Some(records),
+    })
+}
+
+pub fn capture_run_environment() -> RunEnvironment {
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let git_revision = command_output("git", &["rev-parse", "HEAD"]);
+    let git_dirty = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=normal"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| !output.stdout.is_empty());
+    RunEnvironment {
+        created_at: format!("unix:{created_at}"),
+        git_revision,
+        git_dirty,
+        rustc_version: command_output("rustc", &["--version"]),
+        target: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+    }
+}
+
 pub fn game_content_id(bytes: &[u8]) -> String {
     sha256_hex(bytes)
 }
@@ -296,6 +371,14 @@ fn parse_rate_line(line: &str, prefix: &str) -> Option<i32> {
 fn is_csa_file(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("csa"))
+}
+
+fn command_output(command: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(command).args(args).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 #[cfg(test)]

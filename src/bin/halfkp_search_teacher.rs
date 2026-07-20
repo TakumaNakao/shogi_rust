@@ -7,11 +7,15 @@ use serde::Deserialize;
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::EngineEvaluator;
 use shogi_ai::halfkp_training::{
-    PackedHalfKpPosition, SearchTeacherCandidate, SearchTeacherRecord, SearchTeacherWriter,
-    CANDIDATE_GAME_MOVE, CANDIDATE_RANDOM, CANDIDATE_SEARCH_BEST, CANDIDATE_TACTICAL,
+    read_search_teacher_manifest, PackedHalfKpPosition, SearchTeacherCandidate,
+    SearchTeacherProvenance, SearchTeacherRecord, SearchTeacherWriter, CANDIDATE_GAME_MOVE,
+    CANDIDATE_RANDOM, CANDIDATE_SEARCH_BEST, CANDIDATE_TACTICAL,
 };
 use shogi_ai::position_hash::PositionHasher;
-use shogi_ai::training_data::TrainingPhase;
+use shogi_ai::training_data::{
+    artifact_metadata, capture_run_environment, line_artifact_metadata, sha256_file, TrainingPhase,
+    PHASE_POLICY_VERSION, SPLIT_POLICY_VERSION,
+};
 use shogi_ai::utils::{parse_usi_move_for_color, position_from_sfen_or_usi};
 use shogi_core::{Color, Move};
 use shogi_lib::Position;
@@ -32,7 +36,11 @@ struct Args {
     #[arg(long, required = true)]
     input: Vec<PathBuf>,
     #[arg(long)]
+    parent_manifest: Vec<PathBuf>,
+    #[arg(long)]
     output: PathBuf,
+    #[arg(long, default_value_t = false)]
+    reuse_if_matches: bool,
     #[arg(long, default_value_t = 2)]
     selection_depth: u8,
     #[arg(long, default_value_t = 4)]
@@ -170,7 +178,58 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    let engine_binary = std::env::current_exe()
+        .ok()
+        .and_then(|path| artifact_metadata(&path, None).ok());
+    let provenance = SearchTeacherProvenance {
+        environment: Some(capture_run_environment()),
+        inputs: args
+            .input
+            .iter()
+            .map(|path| line_artifact_metadata(path))
+            .collect::<Result<Vec<_>>>()?,
+        model: Some(artifact_metadata(&args.weights, None)?),
+        engine_binary,
+        feature_profile: if cfg!(feature = "halfkp64") {
+            "halfkp64"
+        } else {
+            "halfkp32"
+        }
+        .to_string(),
+        search_limits: serde_json::json!({
+            "selection_depth": args.selection_depth,
+            "teacher_depth": args.teacher_depth,
+            "candidate_top": args.candidate_top,
+            "tactical_candidate_limit": args.tactical_candidate_limit,
+            "hard_teacher_depth": args.hard_teacher_depth,
+            "hard_percent": args.hard_percent,
+            "hard_score_gap_cp": args.hard_score_gap_cp,
+            "hard_in_check": args.hard_in_check,
+            "hard_endgame": args.hard_endgame,
+            "randomize_max_plies": args.randomize_max_plies,
+            "exclude_in_check": args.exclude_in_check,
+        }),
+        jobs: Some(
+            pool.as_ref()
+                .map_or_else(rayon::current_num_threads, |pool| {
+                    pool.current_num_threads()
+                }),
+        ),
+        random_seeds: vec![args.seed],
+        phase_policy_version: Some(PHASE_POLICY_VERSION),
+        split_policy_version: Some(SPLIT_POLICY_VERSION),
+        parent_manifest_sha256: args
+            .parent_manifest
+            .iter()
+            .map(|path| sha256_file(path))
+            .collect::<Result<Vec<_>>>()?,
+    };
+    if args.reuse_if_matches && reusable_output(&args.output, &provenance)? {
+        println!("reused output={}", args.output.display());
+        return Ok(());
+    }
     let mut writer = SearchTeacherWriter::create(&args.output)?;
+    writer.set_provenance(provenance);
     let mut stats = Stats::default();
     let mut seen = HashSet::new();
     let mut chunk = Vec::with_capacity(args.chunk_size);
@@ -231,6 +290,21 @@ fn main() -> Result<()> {
         stats.randomized_records
     );
     Ok(())
+}
+
+fn reusable_output(path: &std::path::Path, provenance: &SearchTeacherProvenance) -> Result<bool> {
+    let Some(manifest) = read_search_teacher_manifest(path)? else {
+        return Ok(false);
+    };
+    let Some(output) = manifest.output else {
+        return Ok(false);
+    };
+    Ok(
+        manifest.stage_fingerprint == provenance.stage_fingerprint()?
+            && manifest.teacher_semantics_version
+                == shogi_ai::halfkp_training::SEARCH_TEACHER_SEMANTICS_VERSION
+            && output.sha256 == sha256_file(path)?,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -9,6 +9,7 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use crate::evaluation::extract_halfkp_features_for;
+use crate::training_data::{artifact_metadata, sha256_hex, ArtifactMetadata, RunEnvironment};
 
 pub const CANDIDATE_SEARCH_BEST: u8 = 1;
 pub const CANDIDATE_GAME_MOVE: u8 = 2;
@@ -17,13 +18,83 @@ pub const CANDIDATE_TACTICAL: u8 = 8;
 pub const SEARCH_TEACHER_SEMANTICS_VERSION: u32 = 3;
 pub const SEARCH_TEACHER_SEMANTICS_ID: &str = "jsa-complete-check-interval-v1";
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct SearchTeacherManifest {
     pub schema_version: u32,
+    #[serde(default)]
+    pub stage: String,
     pub format: String,
     pub teacher_semantics_version: u32,
     pub teacher_semantics_id: String,
     pub records: u64,
+    #[serde(default)]
+    pub stage_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<RunEnvironment>,
+    #[serde(default)]
+    pub inputs: Vec<ArtifactMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ArtifactMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_binary: Option<ArtifactMetadata>,
+    #[serde(default)]
+    pub feature_profile: String,
+    #[serde(default)]
+    pub search_limits: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jobs: Option<usize>,
+    #[serde(default)]
+    pub random_seeds: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_policy_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_policy_version: Option<u32>,
+    #[serde(default)]
+    pub parent_manifest_sha256: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<ArtifactMetadata>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SearchTeacherProvenance {
+    pub environment: Option<RunEnvironment>,
+    pub inputs: Vec<ArtifactMetadata>,
+    pub model: Option<ArtifactMetadata>,
+    pub engine_binary: Option<ArtifactMetadata>,
+    pub feature_profile: String,
+    pub search_limits: serde_json::Value,
+    pub jobs: Option<usize>,
+    pub random_seeds: Vec<u64>,
+    pub phase_policy_version: Option<u32>,
+    pub split_policy_version: Option<u32>,
+    pub parent_manifest_sha256: Vec<String>,
+}
+
+impl SearchTeacherProvenance {
+    pub fn stage_fingerprint(&self) -> Result<String> {
+        let input_content = self
+            .inputs
+            .iter()
+            .map(|artifact| (&artifact.sha256, artifact.records))
+            .collect::<Vec<_>>();
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "stage": "halfkp_search_teacher",
+            "inputs": input_content,
+            "model_sha256": self.model.as_ref().map(|artifact| &artifact.sha256),
+            "engine_binary_sha256": self.engine_binary.as_ref().map(|artifact| &artifact.sha256),
+            "feature_profile": self.feature_profile,
+            "search_limits": self.search_limits,
+            "jobs": self.jobs,
+            "random_seeds": self.random_seeds,
+            "phase_policy_version": self.phase_policy_version,
+            "split_policy_version": self.split_policy_version,
+            "teacher_semantics_version": SEARCH_TEACHER_SEMANTICS_VERSION,
+            "teacher_semantics_id": SEARCH_TEACHER_SEMANTICS_ID,
+            "parent_manifest_sha256": self.parent_manifest_sha256,
+        });
+        Ok(sha256_hex(&serde_json::to_vec(&value)?))
+    }
 }
 
 pub fn search_teacher_manifest_path(dataset: &Path) -> PathBuf {
@@ -97,7 +168,9 @@ pub struct SearchTeacherRecord {
 pub struct SearchTeacherWriter {
     writer: BufWriter<File>,
     dataset_path: PathBuf,
+    temporary_path: PathBuf,
     records: u64,
+    provenance: SearchTeacherProvenance,
 }
 
 impl SearchTeacherWriter {
@@ -106,15 +179,23 @@ impl SearchTeacherWriter {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
+        let temporary_path = append_suffix(path, ".tmp");
         let mut writer = BufWriter::new(
-            File::create(path).with_context(|| format!("create {}", path.display()))?,
+            File::create(&temporary_path)
+                .with_context(|| format!("create {}", temporary_path.display()))?,
         );
         codec::write_header(&mut writer)?;
         Ok(Self {
             writer,
             dataset_path: path.to_path_buf(),
+            temporary_path,
             records: 0,
+            provenance: SearchTeacherProvenance::default(),
         })
+    }
+
+    pub fn set_provenance(&mut self, provenance: SearchTeacherProvenance) {
+        self.provenance = provenance;
     }
 
     pub fn write_record(&mut self, record: &SearchTeacherRecord) -> Result<()> {
@@ -125,17 +206,73 @@ impl SearchTeacherWriter {
 
     pub fn finish(mut self) -> Result<u64> {
         self.writer.flush()?;
+        self.writer.get_ref().sync_all()?;
+        let records = self.records;
+        let dataset_path = self.dataset_path;
+        let temporary_path = self.temporary_path;
+        let provenance = self.provenance;
+        drop(self.writer);
+        replace_file(&temporary_path, &dataset_path)?;
+        let output = artifact_metadata(&dataset_path, Some(records))?;
+        let stage_fingerprint = provenance.stage_fingerprint()?;
         let manifest = SearchTeacherManifest {
-            schema_version: 1,
+            schema_version: 2,
+            stage: "halfkp_search_teacher".to_string(),
             format: "HKST0002".to_string(),
             teacher_semantics_version: SEARCH_TEACHER_SEMANTICS_VERSION,
             teacher_semantics_id: SEARCH_TEACHER_SEMANTICS_ID.to_string(),
-            records: self.records,
+            records,
+            stage_fingerprint,
+            environment: provenance.environment,
+            inputs: provenance.inputs,
+            model: provenance.model,
+            engine_binary: provenance.engine_binary,
+            feature_profile: provenance.feature_profile,
+            search_limits: provenance.search_limits,
+            jobs: provenance.jobs,
+            random_seeds: provenance.random_seeds,
+            phase_policy_version: provenance.phase_policy_version,
+            split_policy_version: provenance.split_policy_version,
+            parent_manifest_sha256: provenance.parent_manifest_sha256,
+            output: Some(output),
         };
-        let path = search_teacher_manifest_path(&self.dataset_path);
+        let path = search_teacher_manifest_path(&dataset_path);
+        let temporary_manifest = append_suffix(&path, ".tmp");
         let bytes = serde_json::to_vec_pretty(&manifest)?;
-        std::fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
-        Ok(self.records)
+        std::fs::write(&temporary_manifest, bytes)
+            .with_context(|| format!("write {}", temporary_manifest.display()))?;
+        replace_file(&temporary_manifest, &path)?;
+        Ok(records)
+    }
+}
+
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+    match std::fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if destination.exists()
+                && matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                ) =>
+        {
+            std::fs::remove_file(destination)?;
+            std::fs::rename(source, destination)?;
+            Ok(())
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "replace {} with {}",
+                destination.display(),
+                source.display()
+            )
+        }),
     }
 }
 
@@ -267,7 +404,7 @@ mod tests {
         let manifest = read_search_teacher_manifest(&path)
             .expect("read manifest")
             .expect("manifest exists");
-        assert_eq!(1, manifest.schema_version);
+        assert_eq!(2, manifest.schema_version);
         assert_eq!("HKST0002", manifest.format);
         assert_eq!(
             SEARCH_TEACHER_SEMANTICS_VERSION,
