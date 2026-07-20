@@ -93,6 +93,10 @@ struct Args {
     max_train_records: Option<usize>,
     #[arg(long)]
     max_valid_records: Option<usize>,
+    #[arg(long, default_value_t = 25_000)]
+    train_chunk_records: usize,
+    #[arg(long, default_value_t = 4_096)]
+    eval_chunk_records: usize,
     /// Permit HKST0002 inputs created before teacher-semantics manifests.
     #[arg(long, default_value_t = false)]
     allow_legacy_teacher_semantics: bool,
@@ -324,13 +328,13 @@ fn main() -> Result<()> {
     } else {
         None
     };
-    let mut valid = read_datasets(
+    let valid_records = count_datasets(
         &args.valid,
         args.max_valid_records,
         args.allow_legacy_teacher_semantics,
     )?;
-    let test = read_datasets(&args.test, None, args.allow_legacy_teacher_semantics)?;
-    if valid.is_empty() {
+    let test_records = count_datasets(&args.test, None, args.allow_legacy_teacher_semantics)?;
+    if valid_records == 0 {
         return Err(anyhow!("train and valid datasets must not be empty"));
     }
     let train_records = count_datasets(
@@ -345,13 +349,18 @@ fn main() -> Result<()> {
         "datasets train_shards={} train_records={} valid={} test={} model_parameters={}",
         args.train.len(),
         train_records,
-        valid.len(),
-        test.len(),
+        valid_records,
+        test_records,
         HALFKP_INPUTS * HALFKP_HIDDEN + HALFKP_HIDDEN * 3 + 2
     );
     let mut kappa_cp = args.kappa_cp;
     if args.fit_kappa {
-        kappa_cp = fit_kappa(&valid);
+        kappa_cp = fit_kappa_datasets(
+            &args.valid,
+            args.max_valid_records,
+            args.eval_chunk_records,
+            args.allow_legacy_teacher_semantics,
+        )?;
         println!("fitted_kappa_cp={kappa_cp:.1}");
     }
     let base_options = TrainOptions {
@@ -374,9 +383,15 @@ fn main() -> Result<()> {
         initialize_training(&args)?;
     let mut log = create_log(args.log.as_deref())?;
     options.search_mix = args.search_mix_end.unwrap_or(args.search_mix);
-    valid.shuffle(&mut ChaCha8Rng::seed_from_u64(args.seed ^ 0x0056_414c_4944));
     let initial_weights = evaluation_weights(&weights, &optimizer, args.schedule_free_beta1);
-    let initial = evaluate(&initial_weights, &valid, &options);
+    let initial = evaluate_datasets(
+        &initial_weights,
+        &args.valid,
+        args.max_valid_records,
+        args.eval_chunk_records,
+        args.allow_legacy_teacher_semantics,
+        &options,
+    )?;
     print_metrics("initial_valid", 0, &initial);
     if start_epoch == 0 {
         best = validation_score(&initial);
@@ -403,32 +418,42 @@ fn main() -> Result<()> {
             if remaining == Some(0) {
                 break;
             }
-            let mut shard = read_dataset(path, remaining, args.allow_legacy_teacher_semantics)?;
-            shard.shuffle(&mut ChaCha8Rng::seed_from_u64(
-                args.seed ^ epoch as u64 ^ shard_index as u64,
-            ));
-            for batch in shard.chunks(args.batch_size) {
-                let compute = || {
-                    batch
-                        .par_iter()
-                        .map(|record| compute_record_gradient(&weights, record, &options))
-                        .collect::<Vec<_>>()
-                };
-                let gradients = pool
-                    .as_ref()
-                    .map_or_else(compute, |pool| pool.install(compute));
-                let (value_loss, rank_loss, pairs) =
-                    apply_batch(&mut weights, &mut optimizer, &gradients, &args);
-                epoch_value_loss += value_loss;
-                epoch_rank_loss += rank_loss;
-                epoch_pairs += pairs;
-            }
-            seen += shard.len();
+            let mut chunk_index = 0_u64;
+            let shard_records = visit_dataset_chunks(
+                path,
+                remaining,
+                args.train_chunk_records,
+                args.allow_legacy_teacher_semantics,
+                |chunk| {
+                    chunk.shuffle(&mut ChaCha8Rng::seed_from_u64(
+                        args.seed ^ epoch as u64 ^ shard_index as u64 ^ chunk_index.rotate_left(32),
+                    ));
+                    chunk_index += 1;
+                    for batch in chunk.chunks(args.batch_size) {
+                        let compute = || {
+                            batch
+                                .par_iter()
+                                .map(|record| compute_record_gradient(&weights, record, &options))
+                                .collect::<Vec<_>>()
+                        };
+                        let gradients = pool
+                            .as_ref()
+                            .map_or_else(compute, |pool| pool.install(compute));
+                        let (value_loss, rank_loss, pairs) =
+                            apply_batch(&mut weights, &mut optimizer, &gradients, &args);
+                        epoch_value_loss += value_loss;
+                        epoch_rank_loss += rank_loss;
+                        epoch_pairs += pairs;
+                    }
+                    Ok(())
+                },
+            )?;
+            seen += shard_records;
             println!(
                 "epoch={epoch} shard={}/{} records={} total={seen}",
                 shard_index + 1,
                 shard_order.len(),
-                shard.len()
+                shard_records
             );
         }
         let eval_weights = evaluation_weights(&weights, &optimizer, args.schedule_free_beta1);
@@ -441,12 +466,26 @@ fn main() -> Result<()> {
             state.average.add_to_average(&eval_weights, state.count);
         }
         options.search_mix = args.search_mix_end.unwrap_or(args.search_mix);
-        let valid_metrics = evaluate(&eval_weights, &valid, &options);
+        let valid_metrics = evaluate_datasets(
+            &eval_weights,
+            &args.valid,
+            args.max_valid_records,
+            args.eval_chunk_records,
+            args.allow_legacy_teacher_semantics,
+            &options,
+        )?;
         print_metrics("valid", epoch, &valid_metrics);
         let mut score = validation_score(&valid_metrics);
         let mut selected = &eval_weights;
         if let Some(state) = &swa {
-            let swa_metrics = evaluate(&state.average, &valid, &options);
+            let swa_metrics = evaluate_datasets(
+                &state.average,
+                &args.valid,
+                args.max_valid_records,
+                args.eval_chunk_records,
+                args.allow_legacy_teacher_semantics,
+                &options,
+            )?;
             print_metrics("swa_valid", epoch, &swa_metrics);
             let swa_score = validation_score(&swa_metrics);
             if swa_score < score {
@@ -496,9 +535,16 @@ fn main() -> Result<()> {
             break;
         }
     }
-    if !test.is_empty() {
+    if test_records > 0 {
         let final_weights = Weights::load(&args.output)?;
-        let test_metrics = evaluate(&final_weights, &test, &options);
+        let test_metrics = evaluate_datasets(
+            &final_weights,
+            &args.test,
+            None,
+            args.eval_chunk_records,
+            args.allow_legacy_teacher_semantics,
+            &options,
+        )?;
         print_metrics("final_test", args.epochs, &test_metrics);
     }
     Ok(())
@@ -522,6 +568,8 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.output_limit <= 0.0
         || args.early_stop_patience == 0
         || args.max_pairs_per_record == 0
+        || args.train_chunk_records == 0
+        || args.eval_chunk_records == 0
         || !(0.0..1.0).contains(&args.schedule_free_beta1)
         || !(0.0..1.0).contains(&args.schedule_free_beta2)
     {
@@ -533,27 +581,57 @@ fn validate_args(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn read_dataset(
+fn visit_dataset_chunks(
     path: &Path,
     limit: Option<usize>,
+    chunk_records: usize,
     allow_legacy_teacher_semantics: bool,
-) -> Result<Vec<SearchTeacherRecord>> {
-    validate_teacher_semantics(path, allow_legacy_teacher_semantics)?;
+    mut visit: impl FnMut(&mut [SearchTeacherRecord]) -> Result<()>,
+) -> Result<usize> {
+    let manifest = validate_teacher_semantics(path, allow_legacy_teacher_semantics)?;
     let mut reader = SearchTeacherReader::open(path)?;
-    let mut records = Vec::new();
-    while limit.is_none_or(|limit| records.len() < limit) {
-        let Some(record) = reader.read_record()? else {
+    let mut total = 0;
+    loop {
+        let remaining = limit.map(|limit| limit.saturating_sub(total));
+        if remaining == Some(0) {
             break;
         };
-        records.push(record);
+        let capacity = remaining.map_or(chunk_records, |remaining| remaining.min(chunk_records));
+        let mut chunk = Vec::with_capacity(capacity);
+        while chunk.len() < capacity {
+            let Some(record) = reader.read_record()? else {
+                break;
+            };
+            chunk.push(record);
+        }
+        if chunk.is_empty() {
+            break;
+        }
+        total += chunk.len();
+        visit(&mut chunk)?;
     }
-    Ok(records)
+    if limit.is_none() {
+        if let Some(manifest) = manifest {
+            if total as u64 != manifest.records {
+                return Err(anyhow!(
+                    "{} manifest declares {} records but the dataset contains {}",
+                    path.display(),
+                    manifest.records,
+                    total
+                ));
+            }
+        }
+    }
+    Ok(total)
 }
 
-fn validate_teacher_semantics(path: &Path, allow_legacy_teacher_semantics: bool) -> Result<()> {
+fn validate_teacher_semantics(
+    path: &Path,
+    allow_legacy_teacher_semantics: bool,
+) -> Result<Option<shogi_ai::halfkp_training::SearchTeacherManifest>> {
     let Some(manifest) = read_search_teacher_manifest(path)? else {
         return if allow_legacy_teacher_semantics {
-            Ok(())
+            Ok(None)
         } else {
             Err(anyhow!(
                 "{} has no teacher-semantics manifest; regenerate it or pass \
@@ -576,27 +654,7 @@ fn validate_teacher_semantics(path: &Path, allow_legacy_teacher_semantics: bool)
             SEARCH_TEACHER_SEMANTICS_ID
         ));
     }
-    Ok(())
-}
-
-fn read_datasets(
-    paths: &[PathBuf],
-    limit: Option<usize>,
-    allow_legacy_teacher_semantics: bool,
-) -> Result<Vec<SearchTeacherRecord>> {
-    let mut records = Vec::new();
-    for path in paths {
-        let remaining = limit.map(|limit| limit.saturating_sub(records.len()));
-        if remaining == Some(0) {
-            break;
-        }
-        records.extend(read_dataset(
-            path,
-            remaining,
-            allow_legacy_teacher_semantics,
-        )?);
-    }
-    Ok(records)
+    Ok(Some(manifest))
 }
 
 fn count_datasets(
@@ -610,7 +668,13 @@ fn count_datasets(
         if remaining == Some(0) {
             break;
         }
-        count += read_dataset(path, remaining, allow_legacy_teacher_semantics)?.len();
+        if let Some(manifest) = validate_teacher_semantics(path, allow_legacy_teacher_semantics)? {
+            count += remaining.map_or(manifest.records as usize, |remaining| {
+                remaining.min(manifest.records as usize)
+            });
+        } else {
+            count += visit_dataset_chunks(path, remaining, 4_096, true, |_| Ok(()))?;
+        }
     }
     Ok(count)
 }
@@ -772,23 +836,43 @@ fn save_checkpoint(
     Ok(())
 }
 
-fn fit_kappa(records: &[SearchTeacherRecord]) -> f32 {
-    (100..=1500)
-        .step_by(25)
-        .map(|kappa| {
-            let loss = records
-                .iter()
-                .filter_map(|record| {
-                    record.result.map(|result| {
-                        let prediction = sigmoid(record.root_search_score_cp / kappa as f32);
-                        (prediction - result).powi(2) as f64
-                    })
-                })
-                .sum::<f64>();
-            (kappa, loss)
-        })
+fn fit_kappa_datasets(
+    paths: &[PathBuf],
+    limit: Option<usize>,
+    chunk_records: usize,
+    allow_legacy_teacher_semantics: bool,
+) -> Result<f32> {
+    let kappas = (100..=1500).step_by(25).collect::<Vec<_>>();
+    let mut losses = vec![0.0_f64; kappas.len()];
+    let mut seen = 0;
+    for path in paths {
+        let remaining = limit.map(|limit| limit.saturating_sub(seen));
+        if remaining == Some(0) {
+            break;
+        }
+        seen += visit_dataset_chunks(
+            path,
+            remaining,
+            chunk_records,
+            allow_legacy_teacher_semantics,
+            |chunk| {
+                for record in chunk {
+                    if let Some(result) = record.result {
+                        for (index, &kappa) in kappas.iter().enumerate() {
+                            let prediction = sigmoid(record.root_search_score_cp / kappa as f32);
+                            losses[index] += (prediction - result).powi(2) as f64;
+                        }
+                    }
+                }
+                Ok(())
+            },
+        )?;
+    }
+    Ok(kappas
+        .into_iter()
+        .zip(losses)
         .min_by(|lhs, rhs| lhs.1.total_cmp(&rhs.1))
-        .map_or(600.0, |(kappa, _)| kappa as f32)
+        .map_or(600.0, |(kappa, _)| kappa as f32))
 }
 
 fn compute_record_gradient(
@@ -1258,6 +1342,38 @@ fn evaluate(weights: &Weights, records: &[SearchTeacherRecord], options: &TrainO
         .reduce(Metrics::default, merge_metrics)
 }
 
+fn evaluate_datasets(
+    weights: &Weights,
+    paths: &[PathBuf],
+    limit: Option<usize>,
+    chunk_records: usize,
+    allow_legacy_teacher_semantics: bool,
+    options: &TrainOptions,
+) -> Result<Metrics> {
+    let mut metrics = Metrics::default();
+    let mut seen = 0;
+    for path in paths {
+        let remaining = limit.map(|limit| limit.saturating_sub(seen));
+        if remaining == Some(0) {
+            break;
+        }
+        seen += visit_dataset_chunks(
+            path,
+            remaining,
+            chunk_records,
+            allow_legacy_teacher_semantics,
+            |chunk| {
+                metrics = merge_metrics(
+                    std::mem::take(&mut metrics),
+                    evaluate(weights, chunk, options),
+                );
+                Ok(())
+            },
+        )?;
+    }
+    Ok(metrics)
+}
+
 fn evaluate_record(
     weights: &Weights,
     record: &SearchTeacherRecord,
@@ -1417,6 +1533,7 @@ fn softplus(value: f32) -> f32 {
 mod tests {
     use super::*;
     use shogi_ai::halfkp_training::{search_teacher_manifest_path, SearchTeacherManifest};
+    use shogi_ai::halfkp_training::{SearchTeacherCandidate, SearchTeacherWriter};
     use shogi_ai::position_hash::PositionHasher;
     use shogi_lib::Position;
 
@@ -1453,6 +1570,65 @@ mod tests {
             .to_string()
             .contains("--allow-legacy-teacher-semantics"));
         validate_teacher_semantics(path, true).expect("explicit legacy opt-in");
+    }
+
+    #[test]
+    fn dataset_reader_is_chunk_bounded_and_checks_manifest_count() {
+        let position = Position::default();
+        let packed = PackedHalfKpPosition::from_position(&position).expect("start position");
+        let path = std::env::temp_dir().join(format!(
+            "halfkp-search-train-chunks-{}.hkst",
+            std::process::id()
+        ));
+        let mut writer = SearchTeacherWriter::create(&path).expect("create dataset");
+        for position_hash in 1..=5 {
+            writer
+                .write_record(&SearchTeacherRecord {
+                    position_hash,
+                    ply: position_hash as u16,
+                    phase: 0,
+                    teacher_depth: 1,
+                    result: None,
+                    root_search_score_cp: 0.0,
+                    sample_weight: 1.0,
+                    root: packed.clone(),
+                    candidates: vec![SearchTeacherCandidate {
+                        flags: 0,
+                        score_cp: 0.0,
+                        child: packed.clone(),
+                    }],
+                })
+                .expect("write record");
+        }
+        writer.finish().expect("finish dataset");
+
+        assert_eq!(
+            5,
+            count_datasets(std::slice::from_ref(&path), None, false).expect("count manifest")
+        );
+        let mut chunk_sizes = Vec::new();
+        let records = visit_dataset_chunks(&path, None, 2, false, |chunk| {
+            chunk_sizes.push(chunk.len());
+            Ok(())
+        })
+        .expect("visit chunks");
+        assert_eq!(5, records);
+        assert_eq!(vec![2, 2, 1], chunk_sizes);
+
+        let manifest_path = search_teacher_manifest_path(&path);
+        let mut manifest = read_search_teacher_manifest(&path)
+            .expect("read manifest")
+            .expect("manifest");
+        manifest.records = 6;
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("serialize manifest"),
+        )
+        .expect("rewrite manifest");
+        assert!(visit_dataset_chunks(&path, None, 2, false, |_| Ok(())).is_err());
+
+        std::fs::remove_file(manifest_path).expect("remove manifest");
+        std::fs::remove_file(path).expect("remove dataset");
     }
 
     #[test]
