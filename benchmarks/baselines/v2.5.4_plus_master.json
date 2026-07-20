@@ -504,5 +504,85 @@
       "gate_percent": 3.0,
       "result": "pass"
     }
+  },
+  "phase7_repository_validation": {
+    "implementation_revision": "4d267e4",
+    "binary_inventory": {
+      "autobins": false,
+      "explicit_targets": 57,
+      "production_default": [
+        "usi_engine"
+      ],
+      "opt_in_features": [
+        "training-tools",
+        "benchmark-tools",
+        "research-tools"
+      ],
+      "legacy_cli_names_changed": false,
+      "deprecated_shims_required": false,
+      "inventory_check": "pass"
+    },
+    "production_dependency_isolation": {
+      "excluded_without_tool_features": [
+        "csa",
+        "glob",
+        "plotters",
+        "sha2"
+      ],
+      "unused_direct_dependencies_removed": [
+        "circular-buffer",
+        "flate2",
+        "indicatif",
+        "libc",
+        "ndarray"
+      ]
+    },
+    "repository_policy": {
+      "binary_inventory": "docs/binaries.md",
+      "artifact_policy": "docs/artifact_policy.md",
+      "report_metadata": "report/README.md",
+      "architecture_decisions": [
+        "docs/adr/0001-explicit-binary-targets.md",
+        "docs/adr/0002-artifact-layout.md"
+      ]
+    },
+    "tests": {
+      "halfkp64_library_tests": 45,
+      "halfkp_search_train_tests": 6,
+      "usi_transcript_tests": 6,
+      "shogi_lib_tests": 33,
+      "workspace_release_all_features": "pass",
+      "all_target_all_feature_check": "pass",
+      "clippy_ratchet": "pass",
+      "all_feature_clippy_visibility": "pass with existing warnings",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match",
+      "shell_syntax": "pass"
+    },
+    "paired_performance_check": {
+      "control_revision": "cd0f422",
+      "candidate_revision": "4d267e4",
+      "method": "five alternating runs using separately built binaries",
+      "control_timing_runs_ms": [
+        6559.24,
+        6679.41,
+        6718.57,
+        6733.16,
+        6671.97
+      ],
+      "candidate_timing_runs_ms": [
+        6600.98,
+        6657.33,
+        6688.17,
+        6436.04,
+        6628.10
+      ],
+      "control_median_elapsed_ms": 6679.41,
+      "candidate_median_elapsed_ms": 6628.10,
+      "candidate_delta_percent": -0.7682,
+      "deterministic_counters_match": true,
+      "gate_percent": 3.0,
+      "result": "pass"
+    }
   }
 }

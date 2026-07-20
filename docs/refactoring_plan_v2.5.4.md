@@ -1728,7 +1728,7 @@ Phaseの着手・完了時に以下へ追記する。
 | 4 Search/USI separation | 完了 | `edf04b0` | `edf04b0` | typed outcome/observer、generation job、single bestmove emitter、性能差+0.38% |
 | 5 Repetition correctness | 完了 | `8a86417` | `7cc7413` | 完全履歴と王手区間による公式裁定、教師意味論v3、paired性能差+1.69% |
 | 6 Data/Training | 完了 | `be5897c` | `fd2c5cd` | 規約一本化、content split v2、全stage manifest、bounded-memory trainer、resume完全一致 |
-| 7 Repository/Documents | 未着手 |  |  |  |
+| 7 Repository/Documents | 完了 | `7f8251d` | `4d267e4` | 57 targetを明示分類、production依存分離、README/文書索引/ADR/artifact・report policy、paired性能差-0.77% |
 | 8 Performance/Cutover | 未着手 |  |  |  |
 
 ### 2026-07-20 Phase 0途中経過
@@ -1958,3 +1958,36 @@ Phase 4はlocal gateについて完了した。
 
 大規模生成物はGitへ追跡せず、smoke fixtureでmanifest chain、hash検証、stale拒否を確認した。
 実データのfull runでも同じbinaryとmanifest契約を使用する。Phase 6は完了した。
+
+### 2026-07-21 Phase 7実施結果
+
+- Phase 6の`refactor/phase6-data-training`を保存し、stacked branch
+  `refactor/phase7-repository-docs`を作成した。
+- `7f8251d`: `autobins = false`へ移行し、57個のbinary targetをCargoへ明示した。
+  `usi_engine`だけをdefault production targetとし、supported training、benchmark/profile、
+  researchをそれぞれ`training-tools`、`benchmark-tools`、`research-tools`でopt-inにした。
+  target名は変更していないため旧CLI名のshimは不要である。将来の改名時は最低1 releaseの
+  thin shimを維持する契約をinventoryへ記録した。
+- source fileの一括移動は既存scriptと外部運用への影響が大きいため行わず、Cargo manifestの
+  target groupを実行境界の正本とした。repository内の全script、CI、release workflowへ
+  対応featureを追加し、`tools/check_binary_inventory.py`で`src/bin`、Cargo、文書の不一致を
+  CI失敗にする。
+- production buildからtraining専用moduleを除外し、`csa`、`glob`、`plotters`、`sha2`を
+  optional dependencyにした。未使用だった`circular-buffer`、`flate2`、`indicatif`、`libc`、
+  `ndarray`の直接依存を削除した。default dependency graphにtool専用dependencyが存在しない
+  ことと、`cargo build --release`がproduction engineだけを対象とすることを確認した。
+- `4d267e4`: READMEを利用者向けのShogiHome、production build、test、training、開発文書への
+  入口へ縮小した。`docs/README.md`を索引として更新し、全binary inventory、artifact配置、
+  report metadata、重要な採否判断をADR 0001/0002へ記録した。
+- 新規artifactの標準配置を`tests/fixtures/`、`benchmarks/baselines/`、`data/raw/`、
+  `data/derived/`、`runs/`、`report/`に定義した。既存`data/` pathはscript互換のため一括移動せず、
+  新規runから段階移行する。生成物の同一性はpath/mtimeではなくmanifestとcontent hashで判定する。
+- 全featureのworkspace release testが成功し、HalfKP-64 library 45件、search trainer 6件、
+  USI transcript 6件、`shogi_lib` 33件を含む57 targetをbuild/testした。all-target check、
+  production Clippy ratchet、全feature Clippy可視化、format、shell syntax、inventory checkが成功した。
+  search fingerprintは完全一致した。
+- Phase 6完了revision `cd0f422`とPhase 7 `4d267e4`を別binaryで5回ずつ交互測定した。
+  control中央値`6679.41 ms`、candidate中央値`6628.10 ms`、差は`-0.768%`で、全決定的counterは
+  一致し3%の停止基準内だった。target/dependency整理による探索性能低下はない。
+
+Phase 7は完了した。
