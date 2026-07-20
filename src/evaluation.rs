@@ -5,9 +5,12 @@ mod features;
 use anyhow::{anyhow, Result};
 pub use constants::*;
 use constants::{piece_kind_value, unpromoted_kind, BOARD_SQUARES};
-use features::{board_kind_to_index, hand_kind_to_offset, piece_to_id};
+use features::{
+    extract_halfkp_features_fixed, halfkp_piece_state, piece_to_id, HalfKpFixedFeatures,
+};
 pub use features::{
-    extract_kpp_features, extract_kpp_features_and_material, extract_nnue_features, NnueFeatures,
+    extract_halfkp_features_for, extract_kpp_features, extract_kpp_features_and_material,
+    extract_nnue_features, HalfKpFeatures, NnueFeatures,
 };
 use rand::prelude::*;
 use rand_distr::Distribution;
@@ -36,28 +39,12 @@ pub struct TinyNnueModel {
     out_b: f32,
 }
 
-#[derive(Debug, Clone)]
-pub struct HalfKpFeatures {
-    pub king_bucket: usize,
-    pub features: Vec<usize>,
-    pub material: f32,
-}
-
 /// One aligned feature-transformer row.  Keeping the hidden width in the
 /// type lets release builds eliminate per-element bounds checks and makes the
 /// row suitable for portable SIMD or the AVX2 backend.
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy)]
 struct HalfKpFeatureRow([f32; HALFKP_HIDDEN]);
-
-#[derive(Debug, Clone, Copy)]
-struct HalfKpFixedFeatures {
-    king_bucket: usize,
-    mirror: bool,
-    features: [usize; 64],
-    len: usize,
-    material: f32,
-}
 
 #[derive(Debug, Clone)]
 pub struct HalfKpModel {
@@ -224,153 +211,6 @@ impl<T: Evaluator + ?Sized> Evaluator for Arc<T> {
     fn undo_context_move(&self, context: &mut (dyn Any + Send)) {
         (**self).undo_context_move(context);
     }
-}
-
-fn halfkp_oriented_square(sq: Square, perspective: Color, mirror: bool) -> Square {
-    let oriented = if perspective == Color::Black {
-        sq
-    } else {
-        sq.flip()
-    };
-    if mirror {
-        Square::new(10 - oriented.file(), oriented.rank()).expect("mirrored square is valid")
-    } else {
-        oriented
-    }
-}
-
-fn halfkp_piece_state(
-    piece: Piece,
-    square: Option<Square>,
-    hand_index: usize,
-    perspective: Color,
-    mirror: bool,
-) -> Option<usize> {
-    let normalized_color = if piece.color() == perspective {
-        Color::Black
-    } else {
-        Color::White
-    };
-    let color_offset = if normalized_color == Color::Black {
-        0
-    } else {
-        1
-    };
-    if let Some(square) = square {
-        let square = halfkp_oriented_square(square, perspective, mirror);
-        let kind_index = board_kind_to_index(piece.piece_kind())?;
-        Some(
-            color_offset * NUM_BOARD_PIECE_KINDS * NUM_SQUARES
-                + kind_index * NUM_SQUARES
-                + (square.index() - 1) as usize,
-        )
-    } else {
-        let kind_offset = hand_kind_to_offset(piece.piece_kind())?;
-        Some(
-            NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2
-                + color_offset * NUM_HAND_PIECE_SLOTS_PER_PLAYER
-                + kind_offset
-                + hand_index,
-        )
-    }
-}
-
-/// Extract one perspective of the compact HalfKP representation.
-///
-/// The returned feature ids include the king bucket, so they can be summed
-/// directly into a feature-transformer accumulator.
-fn extract_halfkp_features_fixed(
-    pos: &shogi_lib::Position,
-    perspective: Color,
-) -> Option<HalfKpFixedFeatures> {
-    let mut own_king = None;
-    let mut material = 0.0;
-    for &sq in BOARD_SQUARES.iter() {
-        if let Some(piece) = pos.piece_at(sq) {
-            let value = piece_kind_value(piece.piece_kind());
-            material += if piece.color() == perspective {
-                value
-            } else {
-                -value
-            };
-            if piece.piece_kind() == PieceKind::King && piece.color() == perspective {
-                own_king = Some(sq);
-            }
-        }
-    }
-    let own_king = own_king?;
-    let oriented_king = if perspective == Color::Black {
-        own_king
-    } else {
-        own_king.flip()
-    };
-    let mirror = oriented_king.file() > 5;
-    let oriented_king = halfkp_oriented_square(own_king, perspective, mirror);
-    let king_bucket = (oriented_king.file() as usize - 1) * 9 + (oriented_king.rank() as usize - 1);
-
-    let mut features = [0usize; 64];
-    let mut len = 0;
-    for &sq in BOARD_SQUARES.iter() {
-        if let Some(piece) = pos.piece_at(sq) {
-            if piece.piece_kind() == PieceKind::King && piece.color() == perspective {
-                continue;
-            }
-            if let Some(state) = halfkp_piece_state(piece, Some(sq), 0, perspective, mirror) {
-                features[len] = king_bucket * HALFKP_PIECE_STATES + state;
-                len += 1;
-            }
-        }
-    }
-    for color in [Color::Black, Color::White] {
-        for kind in ALL_HAND_PIECES {
-            let count = pos.hand(color).count(kind).unwrap_or(0);
-            let value = piece_kind_value(kind);
-            material += if color == perspective {
-                count as f32 * value
-            } else {
-                -(count as f32 * value)
-            };
-            for hand_index in 0..count {
-                if let Some(state) = halfkp_piece_state(
-                    Piece::new(kind, color),
-                    None,
-                    hand_index as usize,
-                    perspective,
-                    mirror,
-                ) {
-                    features[len] = king_bucket * HALFKP_PIECE_STATES + state;
-                    len += 1;
-                }
-            }
-        }
-    }
-    features[..len].sort_unstable();
-    let mut unique = 0;
-    for i in 0..len {
-        if unique == 0 || features[i] != features[unique - 1] {
-            features[unique] = features[i];
-            unique += 1;
-        }
-    }
-    Some(HalfKpFixedFeatures {
-        king_bucket,
-        mirror,
-        features,
-        len: unique,
-        material,
-    })
-}
-
-pub fn extract_halfkp_features_for(
-    pos: &shogi_lib::Position,
-    perspective: Color,
-) -> Option<HalfKpFeatures> {
-    let fixed = extract_halfkp_features_fixed(pos, perspective)?;
-    Some(HalfKpFeatures {
-        king_bucket: fixed.king_bucket,
-        features: fixed.features[..fixed.len].to_vec(),
-        material: fixed.material,
-    })
 }
 
 fn read_u32_le(file: &mut File) -> Result<u32> {
