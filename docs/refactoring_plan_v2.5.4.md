@@ -1723,7 +1723,7 @@ Phaseの着手・完了時に以下へ追記する。
 |---|---|---|---|---|
 | 0 Baseline | 完了 | `9926430` | `5aa5250` | [`benchmarks/baselines/`](../benchmarks/baselines/)、fingerprint/format fixture、性能差+1.81% |
 | 1 Workspace/CI | 進行中（local gate整備済み） | `52cbd84` |  | 単一lockfile、USI process test、warning ratchet、workspace全test成功、性能差は原始基準比+1.21% |
-| 2 Module split | 未着手 |  |  |  |
+| 2 Module split | 進行中 | `a71cc3b` |  | score/TT、評価constantsをprivate moduleへ分離、fingerprint一致 |
 | 3 Format consolidation | 未着手 |  |  |  |
 | 4 Search/USI separation | 未着手 |  |  |  |
 | 5 Repetition correctness | 未着手 |  |  |  |
@@ -1774,3 +1774,14 @@ Phase 0は完了した。
 Phase 1の残作業は、remote CIでLinux/Windows jobを実行して結果を記録することである。
 worker panic注入やoverlapする`go`の所有権検証など、内部へのfault injectionまたは
 search所有権の変更が必要なcaseは、Phase 4のSearch/USI分離と同時に実装する。
+
+### 2026-07-20 Phase 2途中経過
+
+- stacked branch `refactor/phase2-module-split`を作成。
+- `a71cc3b`: mate score変換、USI表示score、履歴依存score判定を`ai/score.rs`へ、
+  local/shared transposition tableとreplacement policyを`ai/transposition.rs`へ移動。
+- `7676115`: piece value、KPP/NNUE/HalfKPの公開次元定数、盤上square tableを
+  `evaluation/constants.rs`へ移動。既存の`evaluation::*`公開pathはre-exportで維持。
+- 各移動後にHalfKP-64 library test 35件とsearch fingerprintの完全一致を確認。
+  評価constants移動後はHalfKP-32 library test 35件も成功。
+- algorithm、定数値、TT shard数、replacement順、RNG、公開APIは変更していない。
