@@ -361,3 +361,36 @@ fn usi_forced_mate_keeps_the_known_mating_move() {
     );
     engine.quit();
 }
+
+#[test]
+fn usi_replaces_search_jobs_serially_and_joins_on_quit() {
+    let weight = TinyWeight::create();
+    let mut engine = EngineProcess::spawn();
+    engine.handshake();
+    engine.configure_evaluator(&weight);
+    engine.send("position startpos");
+
+    engine.send("go infinite");
+    engine.send("go depth 1");
+    let (first, first_lines) = engine.expect_bestmove();
+    assert_legal_startpos_move(&first);
+    assert_eq!(
+        1,
+        first_lines
+            .iter()
+            .filter(|line| line.starts_with("bestmove "))
+            .count()
+    );
+    let (second, second_lines) = engine.expect_bestmove();
+    assert_legal_startpos_move(&second);
+    assert_eq!(
+        1,
+        second_lines
+            .iter()
+            .filter(|line| line.starts_with("bestmove "))
+            .count()
+    );
+
+    engine.send("go infinite");
+    engine.quit();
+}

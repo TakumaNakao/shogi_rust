@@ -1,16 +1,30 @@
 use super::*;
-use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
+    pub fn search(&mut self, position: &mut Position, limits: SearchLimits) -> SearchOutcome {
+        self.last_search_failed = false;
+        let best_move = self.find_best_move_with_root_offset(
+            position,
+            limits.max_depth,
+            limits.time_limit_ms(),
+            0,
+            true,
+        );
+        self.search_outcome(best_move)
+    }
+
     pub fn find_best_move(
         &mut self,
         position: &mut Position,
         max_depth: u8,
         time_limit_ms: Option<u64>,
     ) -> Option<Move> {
-        self.last_search_failed = false;
-        self.find_best_move_with_root_offset(position, max_depth, time_limit_ms, 0, true)
+        self.search(
+            position,
+            SearchLimits::from_millis(max_depth, time_limit_ms),
+        )
+        .best_move()
     }
 
     pub(super) fn find_best_move_with_root_offset(
@@ -223,21 +237,17 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 }
 
                 let elapsed_time = self.start_time.unwrap().elapsed().as_millis();
-                let pv_string = best_pv_for_depth
-                    .iter()
-                    .map(|m| format_move_usi(*m))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let score_cp = usi_display_score_cp(best_eval_for_depth);
                 self.last_root_score = Some(best_eval_for_depth);
                 self.last_pv = best_pv_for_depth;
 
-                if self.emit_info {
-                    println!(
-                        "info depth {} score cp {} time {} nodes {} pv {}",
-                        depth, score_cp, elapsed_time, self.nodes_searched, pv_string
-                    );
-                    let _ = io::stdout().flush();
+                if let Some(observer) = self.observer.clone() {
+                    observer.on_info(&SearchInfo {
+                        depth,
+                        root_score: best_eval_for_depth,
+                        elapsed: Duration::from_millis(elapsed_time.min(u64::MAX as u128) as u64),
+                        stats: self.search_stats(),
+                        pv: self.last_pv.clone(),
+                    });
                 }
 
                 if depth == max_depth {

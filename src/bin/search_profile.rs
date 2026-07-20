@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use shogi_ai::ai::{resolve_search_threads, ShogiAI};
+use shogi_ai::ai::{resolve_search_threads, SearchLimits, ShogiAI};
 use shogi_ai::evaluation::{
     Evaluator, HalfKpModel, HalfKpSearchContext, HybridNnueEvaluator, SparseModel, TinyNnueModel,
 };
@@ -172,10 +172,9 @@ where
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
         ai.set_emit_info(false);
         ai.sennichite_detector.record_position(&position);
-        ai.find_best_move_parallel(
+        ai.search_parallel(
             &mut position,
-            args.depth,
-            args.time_limit_ms,
+            SearchLimits::from_millis(args.depth, args.time_limit_ms),
             resolved_threads,
         );
         total_nodes += ai.nodes_searched();

@@ -3,7 +3,7 @@ use clap::Parser;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
-use shogi_ai::ai::ShogiAI;
+use shogi_ai::ai::{SearchLimits, ShogiAI};
 use shogi_ai::evaluation::{Evaluator, SparseModel};
 use shogi_ai::sennichite::SennichiteStatus;
 use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
@@ -112,7 +112,11 @@ fn choose_move_stateless(
     }
 
     if let Some(time_limit_ms) = time_limit_ms {
-        ai.find_best_move(position, depth, Some(time_limit_ms))
+        ai.search(
+            position,
+            SearchLimits::from_millis(depth, Some(time_limit_ms)),
+        )
+        .best_move()
     } else {
         ai.alpha_beta_search(position, depth, -f32::INFINITY, f32::INFINITY)
             .and_then(|(_, pv)| pv.first().copied())
@@ -169,7 +173,12 @@ fn play_game(
 
             current_ai.decay_history();
             if let Some(time_limit_ms) = time_limit_ms {
-                current_ai.find_best_move(&mut position, depth, Some(time_limit_ms))
+                current_ai
+                    .search(
+                        &mut position,
+                        SearchLimits::from_millis(depth, Some(time_limit_ms)),
+                    )
+                    .best_move()
             } else {
                 current_ai
                     .alpha_beta_search(&mut position, depth, -f32::INFINITY, f32::INFINITY)

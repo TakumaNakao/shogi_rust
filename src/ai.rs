@@ -1,5 +1,6 @@
 mod alpha_beta;
 mod iterative;
+mod outcome;
 mod parallel;
 mod qsearch;
 mod score;
@@ -11,8 +12,12 @@ use crate::evaluation::Evaluator;
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
 use crate::sennichite::{SennichiteDetector, SennichiteStatus};
-use crate::utils::{format_move_usi, get_piece_value};
+use crate::utils::get_piece_value;
 use arrayvec::ArrayVec;
+pub use outcome::{
+    RootResult, SearchInfo, SearchLimits, SearchObserver, SearchOutcome, SearchStats,
+    SharedSearchObserver,
+};
 pub use parallel::resolve_search_threads;
 use shogi_core::Move;
 use shogi_lib::Position;
@@ -57,7 +62,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     aspiration_fail_lows: u64,
     aspiration_fail_highs: u64,
     aspiration_researches: u64,
-    emit_info: bool,
+    observer: Option<SharedSearchObserver>,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
     eval_context: Option<Box<dyn Any + Send>>,
@@ -90,7 +95,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             aspiration_fail_lows: 0,
             aspiration_fail_highs: 0,
             aspiration_researches: 0,
-            emit_info: true,
+            observer: None,
             search_generation: 0,
             stop_signal: None,
             eval_context: None,
@@ -159,7 +164,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     pub fn set_emit_info(&mut self, emit_info: bool) {
-        self.emit_info = emit_info;
+        if !emit_info {
+            self.observer = None;
+        }
+    }
+
+    pub fn set_search_observer(&mut self, observer: Option<SharedSearchObserver>) {
+        self.observer = observer;
     }
 
     pub fn set_stop_signal(&mut self, stop_signal: Option<Arc<AtomicBool>>) {
@@ -230,6 +241,36 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     pub fn last_search_failed(&self) -> bool {
         self.last_search_failed
+    }
+
+    pub fn search_stats(&self) -> SearchStats {
+        SearchStats {
+            nodes: self.nodes_searched,
+            quiescence_nodes: self.quiescence_nodes_searched,
+            quiescence_moves_considered: self.quiescence_moves_considered,
+            quiescence_moves_generated: self.quiescence_moves_generated,
+            quiescence_moves_discarded: self.quiescence_moves_discarded,
+            quiescence_moves_searched: self.quiescence_moves_searched,
+            quiescence_see_skips: self.quiescence_see_skips,
+            quiescence_terminal_mates: self.quiescence_terminal_mates,
+            check_evasion_extensions: self.check_evasion_extensions,
+            aspiration_fail_lows: self.aspiration_fail_lows,
+            aspiration_fail_highs: self.aspiration_fail_highs,
+            aspiration_researches: self.aspiration_researches,
+        }
+    }
+
+    fn search_outcome(&self, best_move: Option<Move>) -> SearchOutcome {
+        SearchOutcome {
+            root: best_move.map(|best_move| RootResult {
+                best_move,
+                score: self.last_root_score,
+                completed_depth: self.last_completed_depth,
+                pv: self.last_pv.clone(),
+            }),
+            stats: self.search_stats(),
+            failed: self.last_search_failed,
+        }
     }
 
     pub fn recover_from_search_failure(&mut self, position: &Position) {
@@ -378,26 +419,6 @@ mod tests {
     }
 
     #[test]
-    fn usi_display_score_keeps_small_values() {
-        assert_eq!(0, usi_display_score_cp(0.0));
-        assert_eq!(500, usi_display_score_cp(500.0));
-        assert_eq!(-500, usi_display_score_cp(-500.0));
-        assert_eq!(1000, usi_display_score_cp(1000.0));
-    }
-
-    #[test]
-    fn usi_display_score_soft_limits_large_values() {
-        let two_thousand = usi_display_score_cp(2000.0);
-        let four_thousand = usi_display_score_cp(4000.0);
-        assert!(two_thousand > 1000);
-        assert!(four_thousand > two_thousand);
-        assert!(four_thousand < USI_SCORE_CP_LIMIT);
-        assert_eq!(-four_thousand, usi_display_score_cp(-4000.0));
-        assert_eq!(USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::INFINITY));
-        assert_eq!(-USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::NEG_INFINITY));
-    }
-
-    #[test]
     fn mate_scores_round_trip_through_tt_at_different_ply() {
         let win_at_ply_seven = MATE_SCORE - 7.0;
         let loss_at_ply_nine = -MATE_SCORE + 9.0;
@@ -494,16 +515,25 @@ mod tests {
     fn completed_search_exposes_root_score_and_pv() {
         let mut position = Position::default();
         let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
-        ai.set_emit_info(false);
         ai.sennichite_detector.record_position(&position);
+        let observed_depths = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observer_depths = observed_depths.clone();
+        ai.set_search_observer(Some(Arc::new(move |info: &SearchInfo| {
+            observer_depths.lock().unwrap().push(info.depth);
+        })));
 
-        let best_move = ai
-            .find_best_move(&mut position, 2, None)
+        let outcome = ai.search(&mut position, SearchLimits::from_millis(2, None));
+        let best_move = outcome
+            .best_move()
             .expect("start position has a legal move");
 
         assert_eq!(2, ai.last_completed_depth());
         assert_eq!(Some(0.0), ai.last_root_score());
         assert_eq!(Some(best_move), ai.last_pv().first().copied());
+        assert_eq!(vec![1, 2], *observed_depths.lock().unwrap());
+        assert_eq!(ai.search_stats(), outcome.stats);
+        assert_eq!(Some(0.0), outcome.root.as_ref().and_then(|root| root.score));
+        assert!(!outcome.failed);
     }
 
     #[test]

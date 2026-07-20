@@ -12,7 +12,37 @@ impl<E, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY>
 where
     E: Evaluator + Clone + Send + Sync + 'static,
 {
+    pub fn search_parallel(
+        &mut self,
+        position: &mut Position,
+        limits: SearchLimits,
+        threads: usize,
+    ) -> SearchOutcome {
+        let best_move = self.find_best_move_parallel_internal(
+            position,
+            limits.max_depth,
+            limits.time_limit_ms(),
+            threads,
+        );
+        self.search_outcome(best_move)
+    }
+
     pub fn find_best_move_parallel(
+        &mut self,
+        position: &mut Position,
+        max_depth: u8,
+        time_limit_ms: Option<u64>,
+        threads: usize,
+    ) -> Option<Move> {
+        self.search_parallel(
+            position,
+            SearchLimits::from_millis(max_depth, time_limit_ms),
+            threads,
+        )
+        .best_move()
+    }
+
+    fn find_best_move_parallel_internal(
         &mut self,
         position: &mut Position,
         max_depth: u8,
@@ -59,7 +89,7 @@ where
 
         let evaluator = self.evaluator.clone();
         let generation = self.search_generation;
-        let emit_info = self.emit_info;
+        let observer = self.observer.clone();
 
         let parallel_result = catch_unwind(AssertUnwindSafe(|| {
             thread::scope(|scope| {
@@ -104,7 +134,7 @@ where
                     }
                 }
 
-                self.set_emit_info(emit_info);
+                self.set_search_observer(observer);
                 let main_result = catch_unwind(AssertUnwindSafe(|| {
                     self.find_best_move_with_root_offset(
                         position,

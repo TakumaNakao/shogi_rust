@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use shogi_ai::ai::ShogiAI;
+use shogi_ai::ai::{SearchLimits, ShogiAI};
 use shogi_ai::evaluation::Evaluator;
 use shogi_ai::position_hash::PositionHasher;
 use shogi_ai::utils::{format_move_usi, position_from_sfen_or_usi};
@@ -175,7 +175,8 @@ fn generate_fingerprint(fixtures: FixtureFile, depth: u8) -> Result<FingerprintO
         let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(HashEvaluator);
         ai.set_emit_info(false);
         ai.sennichite_detector.record_position(&position);
-        let best_move = ai.find_best_move_parallel(&mut position, depth, None, 1);
+        let outcome = ai.search_parallel(&mut position, SearchLimits::from_millis(depth, None), 1);
+        let best_move = outcome.best_move();
         let restored_sfen = position.to_sfen_owned();
         let position_restored = restored_sfen == original_sfen;
         if !position_restored {
