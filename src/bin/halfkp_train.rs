@@ -110,17 +110,6 @@ impl Weights {
         })
     }
 
-    fn accumulate(&self, features: &[usize]) -> [f32; HALFKP_HIDDEN] {
-        let mut hidden = self.hidden_b;
-        for &feature in features {
-            let start = feature * HALFKP_HIDDEN;
-            for h in 0..HALFKP_HIDDEN {
-                hidden[h] += self.feature_emb[start + h];
-            }
-        }
-        hidden
-    }
-
     fn score(
         &self,
         black_features: &[usize],
@@ -129,19 +118,24 @@ impl Weights {
         white_material: f32,
         side: Color,
     ) -> (f32, [f32; HALFKP_HIDDEN], [f32; HALFKP_HIDDEN], f32) {
-        let black = self.accumulate(black_features);
-        let white = self.accumulate(white_features);
-        let (stm, nstm, material) = if side == Color::Black {
-            (&black, &white, black_material)
-        } else {
-            (&white, &black, white_material)
-        };
-        let mut raw = self.out_b + material / 1000.0 * self.out_w[HALFKP_HIDDEN * 2];
-        for h in 0..HALFKP_HIDDEN {
-            raw += stm[h].clamp(0.0, 1.0) * self.out_w[h];
-            raw += nstm[h].clamp(0.0, 1.0) * self.out_w[HALFKP_HIDDEN + h];
-        }
-        (raw * TARGET_SCALE, black, white, material)
+        let forward = HalfKpFlatModel::forward_parts(
+            &self.feature_emb,
+            &self.hidden_b,
+            &self.out_w,
+            self.out_b,
+            black_features.iter().copied(),
+            white_features.iter().copied(),
+            black_material,
+            white_material,
+            side == Color::Black,
+            TARGET_SCALE,
+        );
+        (
+            forward.raw * TARGET_SCALE,
+            forward.black,
+            forward.white,
+            forward.material,
+        )
     }
 }
 

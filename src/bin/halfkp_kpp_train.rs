@@ -163,35 +163,29 @@ impl Weights {
         })
     }
 
-    fn accum(&self, features: &[usize]) -> [f32; HALFKP_HIDDEN] {
-        let mut hidden = self.hidden_b;
-        for &feature in features {
-            if feature >= HALFKP_INPUTS {
-                continue;
-            }
-            let start = feature * HALFKP_HIDDEN;
-            for h in 0..HALFKP_HIDDEN {
-                hidden[h] += self.feature_emb[start + h];
-            }
-        }
-        hidden
-    }
-
     fn raw_score(&self, record: &Record) -> ([f32; HALFKP_HIDDEN], [f32; HALFKP_HIDDEN], f32) {
-        let black = self.accum(&record.features_black);
-        let white = self.accum(&record.features_white);
         let black_side = record.side_to_move == "black";
-        let (stm, nstm, material) = if black_side {
-            (&black, &white, record.material_black)
-        } else {
-            (&white, &black, record.material_white)
-        };
-        let mut raw = self.out_b + material / 1000.0 * self.out_w[HALFKP_HIDDEN * 2];
-        for h in 0..HALFKP_HIDDEN {
-            raw += stm[h].clamp(0.0, 1.0) * self.out_w[h];
-            raw += nstm[h].clamp(0.0, 1.0) * self.out_w[HALFKP_HIDDEN + h];
-        }
-        (black, white, raw)
+        let forward = HalfKpFlatModel::forward_parts(
+            &self.feature_emb,
+            &self.hidden_b,
+            &self.out_w,
+            self.out_b,
+            record
+                .features_black
+                .iter()
+                .copied()
+                .filter(|&feature| feature < HALFKP_INPUTS),
+            record
+                .features_white
+                .iter()
+                .copied()
+                .filter(|&feature| feature < HALFKP_INPUTS),
+            record.material_black,
+            record.material_white,
+            black_side,
+            TARGET_SCALE,
+        );
+        (forward.black, forward.white, forward.raw)
     }
 
     fn zero_accum(&self) -> Accum {

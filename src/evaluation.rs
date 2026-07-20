@@ -10,7 +10,7 @@ mod kernels;
 mod sparse;
 mod tiny_nnue;
 
-pub use codec::{HalfKpFlatModel, HalfKpHeader, HALFKP_HEADER_LEN};
+pub use codec::{HalfKpFlatForward, HalfKpFlatModel, HalfKpHeader, HALFKP_HEADER_LEN};
 pub use constants::*;
 pub use debug::{
     generate_sfen, index_to_kpp_info, is_promoted_piece_kind, piece_kind_to_sfen_char_base, KppInfo,

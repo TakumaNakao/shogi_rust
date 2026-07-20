@@ -282,30 +282,29 @@ impl Weights {
     }
 
     fn forward(&self, position: &PackedHalfKpPosition) -> Forward {
-        let black = self.accumulate(&position.features_black);
-        let white = self.accumulate(&position.features_white);
-        let (stm, nstm, material) = if position.side_to_move == Color::Black {
-            (&black, &white, position.material_black)
-        } else {
-            (&white, &black, position.material_white)
-        };
-        let mut raw = self.out_b + material / TARGET_SCALE * self.out_w[HALFKP_HIDDEN * 2];
-        for h in 0..HALFKP_HIDDEN {
-            raw += stm[h].clamp(0.0, 1.0) * self.out_w[h];
-            raw += nstm[h].clamp(0.0, 1.0) * self.out_w[HALFKP_HIDDEN + h];
+        let forward = HalfKpFlatModel::forward_parts(
+            &self.feature_emb,
+            &self.hidden_b,
+            &self.out_w,
+            self.out_b,
+            position
+                .features_black
+                .iter()
+                .map(|&feature| feature as usize),
+            position
+                .features_white
+                .iter()
+                .map(|&feature| feature as usize),
+            position.material_black,
+            position.material_white,
+            position.side_to_move == Color::Black,
+            TARGET_SCALE,
+        );
+        Forward {
+            black: forward.black,
+            white: forward.white,
+            raw: forward.raw,
         }
-        Forward { black, white, raw }
-    }
-
-    fn accumulate(&self, features: &[u32]) -> [f32; HALFKP_HIDDEN] {
-        let mut hidden = self.hidden_b;
-        for &feature in features {
-            let start = feature as usize * HALFKP_HIDDEN;
-            for (h, value) in hidden.iter_mut().enumerate() {
-                *value += self.feature_emb[start + h];
-            }
-        }
-        hidden
     }
 }
 

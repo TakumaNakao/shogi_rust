@@ -25,6 +25,14 @@ pub struct HalfKpFlatModel {
     pub out_b: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct HalfKpFlatForward {
+    pub black: [f32; HALFKP_HIDDEN],
+    pub white: [f32; HALFKP_HIDDEN],
+    pub raw: f32,
+    pub material: f32,
+}
+
 impl HalfKpHeader {
     pub fn current(target_scale: f32) -> Result<Self> {
         let header = Self { target_scale };
@@ -182,6 +190,53 @@ impl HalfKpFlatModel {
             .and_then(|length| length.checked_add(HALFKP_HEADER_LEN))
             .ok_or_else(|| anyhow!("HalfKP model byte length overflow"))
     }
+
+    pub fn forward_parts(
+        feature_emb: &[f32],
+        hidden_b: &[f32; HALFKP_HIDDEN],
+        out_w: &[f32; HALFKP_HIDDEN * 2 + 1],
+        out_b: f32,
+        black_features: impl IntoIterator<Item = usize>,
+        white_features: impl IntoIterator<Item = usize>,
+        black_material: f32,
+        white_material: f32,
+        black_to_move: bool,
+        target_scale: f32,
+    ) -> HalfKpFlatForward {
+        let black = accumulate_flat(feature_emb, hidden_b, black_features);
+        let white = accumulate_flat(feature_emb, hidden_b, white_features);
+        let (stm, nstm, material) = if black_to_move {
+            (&black, &white, black_material)
+        } else {
+            (&white, &black, white_material)
+        };
+        let mut raw = out_b + material / target_scale * out_w[HALFKP_HIDDEN * 2];
+        for h in 0..HALFKP_HIDDEN {
+            raw += stm[h].clamp(0.0, 1.0) * out_w[h];
+            raw += nstm[h].clamp(0.0, 1.0) * out_w[HALFKP_HIDDEN + h];
+        }
+        HalfKpFlatForward {
+            black,
+            white,
+            raw,
+            material,
+        }
+    }
+}
+
+fn accumulate_flat(
+    feature_emb: &[f32],
+    hidden_b: &[f32; HALFKP_HIDDEN],
+    features: impl IntoIterator<Item = usize>,
+) -> [f32; HALFKP_HIDDEN] {
+    let mut hidden = *hidden_b;
+    for feature in features {
+        let start = feature * HALFKP_HIDDEN;
+        for h in 0..HALFKP_HIDDEN {
+            hidden[h] += feature_emb[start + h];
+        }
+    }
+    hidden
 }
 
 /// One aligned feature-transformer row. Keeping the hidden width in the type
