@@ -2160,6 +2160,35 @@ pub fn generate_sfen(
 mod tests {
     use super::*;
 
+    fn decode_hex_fixture(contents: &str) -> Vec<u8> {
+        contents
+            .split_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).expect("valid fixture byte"))
+            .collect()
+    }
+
+    fn write_test_bytes(label: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "shogi-ai-{label}-{}-{}.bin",
+            std::process::id(),
+            HALFKP_HIDDEN
+        ));
+        std::fs::write(&path, bytes).expect("write test fixture");
+        path
+    }
+
+    fn assert_halfkp_load_error(label: &str, bytes: &[u8], expected: Option<&str>) {
+        let path = write_test_bytes(label, bytes);
+        let error = HalfKpModel::load(&path).expect_err("damaged HalfKP file must be rejected");
+        std::fs::remove_file(path).ok();
+        if let Some(expected) = expected {
+            assert!(
+                error.to_string().contains(expected),
+                "expected error containing {expected:?}, got {error:#}"
+            );
+        }
+    }
+
     fn test_feature_rows<F>(mut value: F) -> Box<[HalfKpFeatureRow]>
     where
         F: FnMut(usize) -> f32,
@@ -2240,6 +2269,75 @@ mod tests {
     }
 
     #[test]
+    fn halfkp_v1_header_matches_golden_fixture_and_rejects_damage() {
+        let fixture = if cfg!(feature = "halfkp64") {
+            include_str!("../tests/fixtures/halfkp/header_v1_halfkp64.hex")
+        } else {
+            include_str!("../tests/fixtures/halfkp/header_v1_halfkp32.hex")
+        };
+        let golden = decode_hex_fixture(fixture);
+        let mut expected = Vec::with_capacity(32);
+        expected.extend_from_slice(HalfKpModel::MAGIC);
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        expected.extend_from_slice(&(HALFKP_HIDDEN as u32).to_le_bytes());
+        expected.extend_from_slice(&(HALFKP_INPUTS as u32).to_le_bytes());
+        expected.extend_from_slice(&(HALFKP_KING_BUCKETS as u32).to_le_bytes());
+        expected.extend_from_slice(&(HALFKP_PIECE_STATES as u32).to_le_bytes());
+        expected.extend_from_slice(&1000.0f32.to_le_bytes());
+        assert_eq!(32, golden.len());
+        assert_eq!(expected, golden);
+
+        assert_halfkp_load_error("halfkp-header-only", &golden, None);
+        for &length in &[0, 7, 8, 11, 12, 27, 31] {
+            assert_halfkp_load_error(
+                &format!("halfkp-truncated-header-{length}"),
+                &golden[..length],
+                None,
+            );
+        }
+
+        let mut invalid_magic = golden.clone();
+        invalid_magic[0] ^= 0xff;
+        assert_halfkp_load_error(
+            "halfkp-invalid-magic",
+            &invalid_magic,
+            Some("invalid HalfKP magic"),
+        );
+
+        let mut invalid_version = golden.clone();
+        invalid_version[8..12].copy_from_slice(&2u32.to_le_bytes());
+        assert_halfkp_load_error(
+            "halfkp-invalid-version",
+            &invalid_version,
+            Some("invalid HalfKP header"),
+        );
+
+        let mut invalid_hidden = golden.clone();
+        invalid_hidden[12..16].copy_from_slice(&0u32.to_le_bytes());
+        assert_halfkp_load_error(
+            "halfkp-invalid-hidden",
+            &invalid_hidden,
+            Some("invalid HalfKP header"),
+        );
+
+        let mut invalid_inputs = golden.clone();
+        invalid_inputs[16..20].copy_from_slice(&0u32.to_le_bytes());
+        assert_halfkp_load_error(
+            "halfkp-invalid-inputs",
+            &invalid_inputs,
+            Some("invalid HalfKP header"),
+        );
+
+        let mut invalid_scale = golden;
+        invalid_scale[28..32].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert_halfkp_load_error(
+            "halfkp-invalid-scale",
+            &invalid_scale,
+            Some("invalid HalfKP header"),
+        );
+    }
+
+    #[test]
     fn halfkp_model_loads_binary_and_evaluates() {
         let path = std::env::temp_dir().join(format!(
             "halfkp_model_loads_binary_and_evaluates_{}.bin",
@@ -2279,6 +2377,24 @@ mod tests {
             .accumulator_for_position(&position, Color::White)
             .expect("white accumulator");
         let accumulated_score = model.evaluate_accumulators(&position, &black, &white);
+
+        let mut trailing_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("reopen HalfKP model");
+        trailing_file
+            .write_all(&[0xff])
+            .expect("append trailing byte");
+        drop(trailing_file);
+        let trailing_error =
+            HalfKpModel::load(&path).expect_err("trailing model byte must be rejected");
+        assert!(
+            trailing_error
+                .to_string()
+                .contains("trailing bytes in HalfKP file"),
+            "unexpected error: {trailing_error:#}"
+        );
+
         std::fs::remove_file(&path).ok();
         assert_eq!(model.feature_emb.len(), HALFKP_INPUTS);
         assert_eq!(score, 0.0);

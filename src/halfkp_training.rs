@@ -337,6 +337,66 @@ mod tests {
     use super::*;
     use crate::position_hash::PositionHasher;
 
+    fn decode_hex_fixture(contents: &str) -> Vec<u8> {
+        contents
+            .split_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).expect("valid fixture byte"))
+            .collect()
+    }
+
+    fn golden_teacher_bytes() -> Vec<u8> {
+        let fixture = if cfg!(feature = "halfkp64") {
+            include_str!("../tests/fixtures/teacher/hkst_v2_halfkp64.hex")
+        } else {
+            include_str!("../tests/fixtures/teacher/hkst_v2_halfkp32.hex")
+        };
+        decode_hex_fixture(fixture)
+    }
+
+    fn teacher_fixture_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "shogi-ai-{label}-{}-{}.hkst",
+            std::process::id(),
+            HALFKP_HIDDEN
+        ))
+    }
+
+    fn write_teacher_fixture(label: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = teacher_fixture_path(label);
+        std::fs::write(&path, bytes).expect("write teacher fixture");
+        path
+    }
+
+    fn golden_teacher_record() -> SearchTeacherRecord {
+        SearchTeacherRecord {
+            position_hash: 0x0123_4567_89ab_cdef,
+            ply: 12,
+            phase: 1,
+            teacher_depth: 4,
+            result: Some(0.5),
+            root_search_score_cp: 42.25,
+            sample_weight: 0.75,
+            root: PackedHalfKpPosition {
+                side_to_move: Color::Black,
+                features_black: vec![0],
+                features_white: vec![(HALFKP_INPUTS - 1) as u32],
+                material_black: 100.0,
+                material_white: -100.0,
+            },
+            candidates: vec![SearchTeacherCandidate {
+                flags: CANDIDATE_SEARCH_BEST | CANDIDATE_GAME_MOVE,
+                score_cp: 37.5,
+                child: PackedHalfKpPosition {
+                    side_to_move: Color::White,
+                    features_black: vec![1],
+                    features_white: vec![2],
+                    material_black: 50.0,
+                    material_white: -50.0,
+                },
+            }],
+        }
+    }
+
     #[test]
     fn packed_position_extracts_valid_halfkp_features() {
         let position = Position::default();
@@ -396,5 +456,131 @@ mod tests {
         );
         assert!(reader.read_record().expect("read eof").is_none());
         std::fs::remove_file(path).expect("remove dataset");
+    }
+
+    #[test]
+    fn teacher_v2_reader_and_writer_match_golden_fixture() {
+        let golden = golden_teacher_bytes();
+        assert_eq!(94, golden.len());
+
+        let fixture_path = write_teacher_fixture("teacher-v2-golden-read", &golden);
+        let mut reader = SearchTeacherReader::open(&fixture_path).expect("open golden dataset");
+        let decoded = reader
+            .read_record()
+            .expect("read golden record")
+            .expect("golden record exists");
+        assert_eq!(0x0123_4567_89ab_cdef, decoded.position_hash);
+        assert_eq!(12, decoded.ply);
+        assert_eq!(1, decoded.phase);
+        assert_eq!(4, decoded.teacher_depth);
+        assert_eq!(Some(0.5), decoded.result);
+        assert_eq!(42.25, decoded.root_search_score_cp);
+        assert_eq!(0.75, decoded.sample_weight);
+        assert_eq!(Color::Black, decoded.root.side_to_move);
+        assert_eq!(vec![0], decoded.root.features_black);
+        assert_eq!(
+            vec![(HALFKP_INPUTS - 1) as u32],
+            decoded.root.features_white
+        );
+        assert_eq!(100.0, decoded.root.material_black);
+        assert_eq!(-100.0, decoded.root.material_white);
+        assert_eq!(1, decoded.candidates.len());
+        assert_eq!(
+            CANDIDATE_SEARCH_BEST | CANDIDATE_GAME_MOVE,
+            decoded.candidates[0].flags
+        );
+        assert_eq!(37.5, decoded.candidates[0].score_cp);
+        assert_eq!(Color::White, decoded.candidates[0].child.side_to_move);
+        assert_eq!(vec![1], decoded.candidates[0].child.features_black);
+        assert_eq!(vec![2], decoded.candidates[0].child.features_white);
+        assert!(reader.read_record().expect("read golden eof").is_none());
+        std::fs::remove_file(fixture_path).expect("remove golden fixture copy");
+
+        let output_path = teacher_fixture_path("teacher-v2-golden-write");
+        let mut writer = SearchTeacherWriter::create(&output_path).expect("create output dataset");
+        writer
+            .write_record(&golden_teacher_record())
+            .expect("write golden record");
+        assert_eq!(1, writer.finish().expect("finish golden output"));
+        let actual = std::fs::read(&output_path).expect("read written golden dataset");
+        std::fs::remove_file(output_path).expect("remove golden output");
+        assert_eq!(golden, actual);
+    }
+
+    #[test]
+    fn teacher_v2_rejects_truncated_and_corrupt_data() {
+        let golden = golden_teacher_bytes();
+
+        for &length in &[0, 7, 8, 11, 12, 19] {
+            let path = write_teacher_fixture(
+                &format!("teacher-v2-truncated-header-{length}"),
+                &golden[..length],
+            );
+            assert!(
+                SearchTeacherReader::open(&path).is_err(),
+                "header length {length} must be rejected"
+            );
+            std::fs::remove_file(path).ok();
+        }
+
+        for &length in &[21, 23, 32, 45, 65, 93] {
+            let path = write_teacher_fixture(
+                &format!("teacher-v2-truncated-record-{length}"),
+                &golden[..length],
+            );
+            let mut reader = SearchTeacherReader::open(&path).expect("complete header");
+            assert!(
+                reader.read_record().is_err(),
+                "record length {length} must be rejected"
+            );
+            std::fs::remove_file(path).ok();
+        }
+
+        let mut invalid_magic = golden.clone();
+        invalid_magic[0] ^= 0xff;
+        let path = write_teacher_fixture("teacher-v2-invalid-magic", &invalid_magic);
+        assert!(SearchTeacherReader::open(&path).is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut invalid_version = golden.clone();
+        invalid_version[8..12].copy_from_slice(&3u32.to_le_bytes());
+        let path = write_teacher_fixture("teacher-v2-invalid-version", &invalid_version);
+        assert!(SearchTeacherReader::open(&path).is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut invalid_record_magic = golden.clone();
+        invalid_record_magic[20] ^= 0xff;
+        let path = write_teacher_fixture("teacher-v2-invalid-record-magic", &invalid_record_magic);
+        let mut reader = SearchTeacherReader::open(&path).expect("valid header");
+        assert!(reader.read_record().is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut invalid_result = golden.clone();
+        invalid_result[35] = 3;
+        let path = write_teacher_fixture("teacher-v2-invalid-result", &invalid_result);
+        let mut reader = SearchTeacherReader::open(&path).expect("valid header");
+        assert!(reader.read_record().is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut zero_candidates = golden.clone();
+        zero_candidates[36] = 0;
+        let path = write_teacher_fixture("teacher-v2-zero-candidates", &zero_candidates);
+        let mut reader = SearchTeacherReader::open(&path).expect("valid header");
+        assert!(reader.read_record().is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut invalid_side = golden.clone();
+        invalid_side[46] = 2;
+        let path = write_teacher_fixture("teacher-v2-invalid-side", &invalid_side);
+        let mut reader = SearchTeacherReader::open(&path).expect("valid header");
+        assert!(reader.read_record().is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut invalid_feature = golden;
+        invalid_feature[58..62].copy_from_slice(&(HALFKP_INPUTS as u32).to_le_bytes());
+        let path = write_teacher_fixture("teacher-v2-invalid-feature", &invalid_feature);
+        let mut reader = SearchTeacherReader::open(&path).expect("valid header");
+        assert!(reader.read_record().is_err());
+        std::fs::remove_file(path).ok();
     }
 }
