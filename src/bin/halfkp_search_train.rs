@@ -10,8 +10,9 @@ use shogi_ai::halfkp_training::{
     read_search_teacher_manifest, PackedHalfKpPosition, SearchTeacherReader, SearchTeacherRecord,
     CANDIDATE_GAME_MOVE, SEARCH_TEACHER_SEMANTICS_ID, SEARCH_TEACHER_SEMANTICS_VERSION,
 };
+use shogi_ai::training_data::{sha256_file, sha256_hex};
 use shogi_core::Color;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -85,6 +86,8 @@ struct Args {
     checkpoint_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     resume: bool,
+    #[arg(long, default_value_t = false)]
+    allow_legacy_checkpoint: bool,
     #[arg(long, default_value_t = 4)]
     swa_start_epoch: usize,
     #[arg(long, default_value_t = false)]
@@ -139,6 +142,12 @@ struct SwaState {
 
 #[derive(Serialize, Deserialize)]
 struct CheckpointMeta {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
+    run_fingerprint: String,
+    #[serde(default)]
+    file_sha256: BTreeMap<String, String>,
     completed_epoch: usize,
     best_score: f64,
     stale_epochs: usize,
@@ -173,10 +182,23 @@ struct Forward {
 
 struct RecordGradient {
     dense: DenseGradient,
-    features: Vec<(usize, [f32; HALFKP_HIDDEN])>,
+    positions: Vec<PositionGradient>,
     value_loss: f64,
     rank_loss: f64,
     pairs: usize,
+}
+
+struct PositionGradient {
+    features_black: Vec<usize>,
+    features_white: Vec<usize>,
+    black_hidden: [f32; HALFKP_HIDDEN],
+    white_hidden: [f32; HALFKP_HIDDEN],
+}
+
+#[derive(Default)]
+struct BatchAccumulator {
+    dense: DenseGradient,
+    sparse: HashMap<usize, [f32; HALFKP_HIDDEN]>,
 }
 
 #[derive(Clone)]
@@ -379,8 +401,9 @@ fn main() -> Result<()> {
         kappa_cp,
         ..base_options
     };
+    let run_fingerprint = training_fingerprint(&args)?;
     let (mut weights, mut optimizer, mut swa, start_epoch, mut best, mut stale) =
-        initialize_training(&args)?;
+        initialize_training(&args, &run_fingerprint)?;
     let mut log = create_log(args.log.as_deref())?;
     options.search_mix = args.search_mix_end.unwrap_or(args.search_mix);
     let initial_weights = evaluation_weights(&weights, &optimizer, args.schedule_free_beta1);
@@ -401,6 +424,7 @@ fn main() -> Result<()> {
             args.output.display()
         );
     }
+    let mut batch_accumulator = BatchAccumulator::default();
     for epoch in start_epoch + 1..=args.epochs {
         options.search_mix = epoch_search_mix(&args, epoch);
         let mut shard_order = args.train.clone();
@@ -439,8 +463,13 @@ fn main() -> Result<()> {
                         let gradients = pool
                             .as_ref()
                             .map_or_else(compute, |pool| pool.install(compute));
-                        let (value_loss, rank_loss, pairs) =
-                            apply_batch(&mut weights, &mut optimizer, &gradients, &args);
+                        let (value_loss, rank_loss, pairs) = apply_batch(
+                            &mut weights,
+                            &mut optimizer,
+                            &gradients,
+                            &mut batch_accumulator,
+                            &args,
+                        );
                         epoch_value_loss += value_loss;
                         epoch_rank_loss += rank_loss;
                         epoch_pairs += pairs;
@@ -524,6 +553,7 @@ fn main() -> Result<()> {
         }
         save_checkpoint(
             &args,
+            &run_fingerprint,
             &weights,
             &mut optimizer,
             swa.as_ref(),
@@ -706,8 +736,70 @@ fn epoch_search_mix(args: &Args, epoch: usize) -> f32 {
     args.search_mix + (end - args.search_mix) * progress
 }
 
+fn training_fingerprint(args: &Args) -> Result<String> {
+    fn datasets(paths: &[PathBuf]) -> Result<Vec<serde_json::Value>> {
+        paths
+            .iter()
+            .map(|path| {
+                let manifest_path =
+                    shogi_ai::halfkp_training::search_teacher_manifest_path(path);
+                Ok(serde_json::json!({
+                    "dataset_sha256": sha256_file(path)?,
+                    "manifest_sha256": manifest_path.exists().then(|| sha256_file(&manifest_path)).transpose()?,
+                }))
+            })
+            .collect()
+    }
+
+    let value = serde_json::json!({
+        "schema_version": 1,
+        "stage": "halfkp_search_train",
+        "target": format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+        "feature_profile": if cfg!(feature = "halfkp64") { "halfkp64" } else { "halfkp32" },
+        "teacher_semantics_version": SEARCH_TEACHER_SEMANTICS_VERSION,
+        "teacher_semantics_id": SEARCH_TEACHER_SEMANTICS_ID,
+        "inputs": {
+            "train": datasets(&args.train)?,
+            "valid": datasets(&args.valid)?,
+            "test": datasets(&args.test)?,
+            "init_sha256": sha256_file(&args.init)?,
+        },
+        "random_seed": args.seed,
+        "optimizer": args.optimizer,
+        "hyperparameters": {
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate,
+            "output_learning_rate": args.output_learning_rate,
+            "kappa_cp": args.kappa_cp,
+            "search_mix": args.search_mix,
+            "search_mix_end": args.search_mix_end,
+            "loss_power": args.loss_power,
+            "rank_weight": args.rank_weight,
+            "game_rank_weight": args.game_rank_weight,
+            "rank_margin_cp": args.rank_margin_cp,
+            "rank_temperature_cp": args.rank_temperature_cp,
+            "min_rank_gap_cp": args.min_rank_gap_cp,
+            "game_regret_cap_cp": args.game_regret_cap_cp,
+            "max_pairs_per_record": args.max_pairs_per_record,
+            "gradient_clip_norm": args.gradient_clip_norm,
+            "output_limit": args.output_limit,
+            "schedule_free_beta1": args.schedule_free_beta1,
+            "schedule_free_beta2": args.schedule_free_beta2,
+            "schedule_free_warmup_steps": args.schedule_free_warmup_steps,
+            "swa_start_epoch": args.swa_start_epoch,
+            "fit_kappa": args.fit_kappa,
+            "max_train_records": args.max_train_records,
+            "max_valid_records": args.max_valid_records,
+            "train_chunk_records": args.train_chunk_records,
+            "eval_chunk_records": args.eval_chunk_records,
+        },
+    });
+    Ok(sha256_hex(&serde_json::to_vec(&value)?))
+}
+
 fn initialize_training(
     args: &Args,
+    run_fingerprint: &str,
 ) -> Result<(Weights, OptimizerState, Option<SwaState>, usize, f64, usize)> {
     if args.resume {
         let directory = args
@@ -716,6 +808,31 @@ fn initialize_training(
             .expect("validated checkpoint dir");
         let meta: CheckpointMeta =
             serde_json::from_reader(BufReader::new(File::open(directory.join("state.json"))?))?;
+        if meta.schema_version != 2 || meta.run_fingerprint.is_empty() {
+            if !args.allow_legacy_checkpoint {
+                return Err(anyhow!(
+                    "checkpoint has no verifiable run fingerprint; pass \
+                     --allow-legacy-checkpoint explicitly"
+                ));
+            }
+        } else {
+            if meta.run_fingerprint != run_fingerprint {
+                return Err(anyhow!(
+                    "checkpoint fingerprint does not match datasets or training configuration"
+                ));
+            }
+            for (name, expected) in &meta.file_sha256 {
+                let path = directory.join(name);
+                let actual = sha256_file(&path)
+                    .with_context(|| format!("verify checkpoint {}", path.display()))?;
+                if &actual != expected {
+                    return Err(anyhow!(
+                        "checkpoint file hash mismatch for {}",
+                        path.display()
+                    ));
+                }
+            }
+        }
         if meta.optimizer != args.optimizer {
             return Err(anyhow!("checkpoint optimizer does not match --optimizer"));
         }
@@ -781,6 +898,7 @@ fn initialize_training(
 
 fn save_checkpoint(
     args: &Args,
+    run_fingerprint: &str,
     weights: &Weights,
     optimizer: &mut OptimizerState,
     swa: Option<&SwaState>,
@@ -819,7 +937,28 @@ fn save_checkpoint(
     if let Some(state) = swa {
         state.average.save(&directory.join("swa.binary"))?;
     }
+    let mut file_sha256 = BTreeMap::new();
+    let mut checkpoint_files = vec!["current.binary"];
+    match optimizer {
+        OptimizerState::Adagrad(_) => checkpoint_files.push("adagrad.binary"),
+        OptimizerState::ScheduleFree(_) => {
+            checkpoint_files.extend([
+                "schedule_z.binary",
+                "schedule_variance.binary",
+                "schedule_last.bin",
+            ]);
+        }
+    }
+    if swa.is_some() {
+        checkpoint_files.push("swa.binary");
+    }
+    for name in checkpoint_files {
+        file_sha256.insert(name.to_string(), sha256_file(&directory.join(name))?);
+    }
     let meta = CheckpointMeta {
+        schema_version: 2,
+        run_fingerprint: run_fingerprint.to_string(),
+        file_sha256,
         completed_epoch: epoch,
         best_score,
         stale_epochs,
@@ -882,7 +1021,7 @@ fn compute_record_gradient(
 ) -> RecordGradient {
     let mut gradient = RecordGradient {
         dense: DenseGradient::default(),
-        features: Vec::new(),
+        positions: Vec::new(),
         value_loss: 0.0,
         rank_loss: 0.0,
         pairs: 0,
@@ -1052,28 +1191,33 @@ fn add_position_gradient(
     for h in 0..HALFKP_HIDDEN {
         gradient.dense.hidden_b[h] += black_hidden[h] + white_hidden[h];
     }
-    gradient.features.extend(
-        position
+    gradient.positions.push(PositionGradient {
+        features_black: position
             .features_black
             .iter()
-            .map(|&feature| (feature as usize, black_hidden)),
-    );
-    gradient.features.extend(
-        position
+            .map(|&feature| feature as usize)
+            .collect(),
+        features_white: position
             .features_white
             .iter()
-            .map(|&feature| (feature as usize, white_hidden)),
-    );
+            .map(|&feature| feature as usize)
+            .collect(),
+        black_hidden,
+        white_hidden,
+    });
 }
 
 fn apply_batch(
     weights: &mut Weights,
     optimizer: &mut OptimizerState,
     records: &[RecordGradient],
+    accumulator: &mut BatchAccumulator,
     args: &Args,
 ) -> (f64, f64, usize) {
-    let mut dense = DenseGradient::default();
-    let mut sparse: HashMap<usize, [f32; HALFKP_HIDDEN]> = HashMap::new();
+    accumulator.dense = DenseGradient::default();
+    accumulator.sparse.clear();
+    let dense = &mut accumulator.dense;
+    let sparse = &mut accumulator.sparse;
     let mut value_loss = 0.0;
     let mut rank_loss = 0.0;
     let mut pairs = 0;
@@ -1088,10 +1232,22 @@ fn apply_batch(
         for index in 0..dense.out_w.len() {
             dense.out_w[index] += record.dense.out_w[index];
         }
-        for &(feature, values) in &record.features {
-            let row = sparse.entry(feature).or_insert([0.0; HALFKP_HIDDEN]);
-            for h in 0..HALFKP_HIDDEN {
-                row[h] += values[h];
+        for position in &record.positions {
+            for (&feature, values) in position
+                .features_black
+                .iter()
+                .map(|feature| (feature, &position.black_hidden))
+                .chain(
+                    position
+                        .features_white
+                        .iter()
+                        .map(|feature| (feature, &position.white_hidden)),
+                )
+            {
+                let row = sparse.entry(feature).or_insert([0.0; HALFKP_HIDDEN]);
+                for h in 0..HALFKP_HIDDEN {
+                    row[h] += values[h];
+                }
             }
         }
     }
@@ -1124,9 +1280,9 @@ fn apply_batch(
         }
     }
     match optimizer {
-        OptimizerState::Adagrad(state) => apply_adagrad(weights, state, &dense, &sparse, args),
+        OptimizerState::Adagrad(state) => apply_adagrad(weights, state, dense, sparse, args),
         OptimizerState::ScheduleFree(state) => {
-            apply_schedule_free(weights, state, &dense, &sparse, args)
+            apply_schedule_free(weights, state, dense, sparse, args)
         }
     }
     (value_loss, rank_loss, pairs)
@@ -1629,6 +1785,188 @@ mod tests {
 
         std::fs::remove_file(manifest_path).expect("remove manifest");
         std::fs::remove_file(path).expect("remove dataset");
+    }
+
+    #[test]
+    fn adagrad_checkpoint_resume_matches_uninterrupted_updates() {
+        let directory =
+            std::env::temp_dir().join(format!("halfkp-search-train-resume-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("create checkpoint directory");
+        let args = Args::try_parse_from([
+            "halfkp_search_train",
+            "--train",
+            "train.hkst",
+            "--valid",
+            "valid.hkst",
+            "--init",
+            "init.binary",
+            "--output",
+            "output.binary",
+            "--checkpoint-dir",
+            directory.to_str().expect("UTF-8 path"),
+            "--resume",
+        ])
+        .expect("parse args");
+        let position = Position::default();
+        let packed = PackedHalfKpPosition::from_position(&position).expect("start position");
+        let record = SearchTeacherRecord {
+            position_hash: PositionHasher::calculate_hash(&position),
+            ply: 0,
+            phase: 0,
+            teacher_depth: 1,
+            result: None,
+            root_search_score_cp: 50.0,
+            sample_weight: 1.0,
+            root: packed.clone(),
+            candidates: vec![SearchTeacherCandidate {
+                flags: 0,
+                score_cp: 0.0,
+                child: packed,
+            }],
+        };
+        let options = TrainOptions {
+            kappa_cp: 600.0,
+            search_mix: 1.0,
+            loss_power: 2.0,
+            rank_weight: 0.0,
+            game_rank_weight: 0.0,
+            rank_margin_cp: 20.0,
+            rank_temperature_cp: 100.0,
+            min_rank_gap_cp: 15.0,
+            game_regret_cap_cp: 150.0,
+            max_pairs_per_record: 4,
+        };
+        let initial = Weights {
+            feature_emb: vec![0.0; HALFKP_INPUTS * HALFKP_HIDDEN],
+            hidden_b: [0.5; HALFKP_HIDDEN],
+            out_w: [0.01; HALFKP_HIDDEN * 2 + 1],
+            out_b: 0.0,
+        };
+        let mut uninterrupted = initial.clone();
+        let mut uninterrupted_optimizer = OptimizerState::Adagrad(Box::new(initial.zeros_like()));
+        let mut uninterrupted_accumulator = BatchAccumulator::default();
+        let first = vec![compute_record_gradient(&uninterrupted, &record, &options)];
+        apply_batch(
+            &mut uninterrupted,
+            &mut uninterrupted_optimizer,
+            &first,
+            &mut uninterrupted_accumulator,
+            &args,
+        );
+
+        let fingerprint = "checkpoint-round-trip-test";
+        save_checkpoint(
+            &args,
+            fingerprint,
+            &uninterrupted,
+            &mut uninterrupted_optimizer,
+            None,
+            1,
+            0.25,
+            0,
+        )
+        .expect("save checkpoint");
+        let (mut resumed, mut resumed_optimizer, _, epoch, _, _) =
+            initialize_training(&args, fingerprint).expect("resume checkpoint");
+        assert_eq!(1, epoch);
+
+        let second_uninterrupted = vec![compute_record_gradient(&uninterrupted, &record, &options)];
+        apply_batch(
+            &mut uninterrupted,
+            &mut uninterrupted_optimizer,
+            &second_uninterrupted,
+            &mut uninterrupted_accumulator,
+            &args,
+        );
+        let second_resumed = vec![compute_record_gradient(&resumed, &record, &options)];
+        let mut resumed_accumulator = BatchAccumulator::default();
+        apply_batch(
+            &mut resumed,
+            &mut resumed_optimizer,
+            &second_resumed,
+            &mut resumed_accumulator,
+            &args,
+        );
+        assert_eq!(uninterrupted.feature_emb, resumed.feature_emb);
+        assert_eq!(uninterrupted.hidden_b, resumed.hidden_b);
+        assert_eq!(uninterrupted.out_w, resumed.out_w);
+        assert_eq!(uninterrupted.out_b, resumed.out_b);
+
+        std::fs::remove_dir_all(directory).expect("remove checkpoint directory");
+    }
+
+    #[test]
+    fn schedule_free_checkpoint_round_trips_optimizer_state() {
+        let directory = std::env::temp_dir().join(format!(
+            "halfkp-search-train-schedule-resume-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("create checkpoint directory");
+        let args = Args::try_parse_from([
+            "halfkp_search_train",
+            "--train",
+            "train.hkst",
+            "--valid",
+            "valid.hkst",
+            "--init",
+            "init.binary",
+            "--output",
+            "output.binary",
+            "--checkpoint-dir",
+            directory.to_str().expect("UTF-8 path"),
+            "--optimizer",
+            "schedule-free",
+            "--schedule-free-warmup-steps",
+            "1",
+            "--resume",
+        ])
+        .expect("parse args");
+        let initial = Weights {
+            feature_emb: vec![0.0; HALFKP_INPUTS * HALFKP_HIDDEN],
+            hidden_b: [0.5; HALFKP_HIDDEN],
+            out_w: [0.01; HALFKP_HIDDEN * 2 + 1],
+            out_b: 0.0,
+        };
+        let weights = initial.clone();
+        let mut optimizer = OptimizerState::ScheduleFree(Box::new(ScheduleFreeState {
+            z: initial.clone(),
+            variance: initial.zeros_like(),
+            last_weight_sum: vec![0.0; HALFKP_INPUTS],
+            step: 7,
+            weight_sum: 3.25,
+            lr_max: 0.004,
+        }));
+        let fingerprint = "schedule-free-round-trip-test";
+        save_checkpoint(
+            &args,
+            fingerprint,
+            &weights,
+            &mut optimizer,
+            None,
+            2,
+            0.5,
+            1,
+        )
+        .expect("save checkpoint");
+        let (loaded_weights, loaded_optimizer, _, epoch, best, stale) =
+            initialize_training(&args, fingerprint).expect("resume checkpoint");
+        assert_eq!(weights.feature_emb, loaded_weights.feature_emb);
+        assert_eq!(2, epoch);
+        assert_eq!(0.5, best);
+        assert_eq!(1, stale);
+        let (OptimizerState::ScheduleFree(expected), OptimizerState::ScheduleFree(actual)) =
+            (&optimizer, &loaded_optimizer)
+        else {
+            panic!("schedule-free state");
+        };
+        assert_eq!(expected.step, actual.step);
+        assert_eq!(expected.weight_sum, actual.weight_sum);
+        assert_eq!(expected.lr_max, actual.lr_max);
+        assert_eq!(expected.last_weight_sum, actual.last_weight_sum);
+        assert_eq!(expected.z.feature_emb, actual.z.feature_emb);
+        assert_eq!(expected.variance.feature_emb, actual.variance.feature_emb);
+
+        std::fs::remove_dir_all(directory).expect("remove checkpoint directory");
     }
 
     #[test]
