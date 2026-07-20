@@ -1,6 +1,8 @@
 extern crate self as shogi_ai;
 
 pub mod ai;
+#[cfg(feature = "benchmark-tools")]
+pub mod benchmark_tools;
 pub mod evaluation;
 #[cfg(feature = "training-tools")]
 pub mod halfkp_training;
