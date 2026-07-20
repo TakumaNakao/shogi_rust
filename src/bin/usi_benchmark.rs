@@ -10,7 +10,7 @@ use shogi_ai::utils::{parse_usi_move, position_from_sfen_or_usi};
 use shogi_core::{Color, Move, Piece};
 use shogi_lib::Position;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -469,6 +469,17 @@ fn main() -> Result<()> {
     let play_one = |game_index: usize| -> Result<(usize, bool, String, PlayedGame)> {
         let start_sfen = positions[(game_index / 2) % positions.len()].clone();
         let new_is_black = game_index % 2 == 0;
+        {
+            let mut stdout = io::stdout().lock();
+            writeln!(
+                stdout,
+                "game {:>3}/{:>3}: started (new as {})",
+                game_index + 1,
+                args.games,
+                if new_is_black { "black" } else { "white" }
+            )?;
+            stdout.flush()?;
+        }
         let mut new_engine = EngineProcess::start(
             &args.new_engine,
             &args.new_weights,
@@ -495,6 +506,22 @@ fn main() -> Result<()> {
             new_is_black,
             args.max_plies,
         )?;
+        if let Some(record_dir) = &args.record_dir {
+            write_game_record(record_dir, game_index, new_is_black, &start_sfen, &result)?;
+        }
+        {
+            let mut stdout = io::stdout().lock();
+            writeln!(
+                stdout,
+                "game {:>3}/{:>3}: {:?} by {:?} (new as {})",
+                game_index + 1,
+                args.games,
+                result.result,
+                result.reason,
+                if new_is_black { "black" } else { "white" }
+            )?;
+            stdout.flush()?;
+        }
         Ok((game_index, new_is_black, start_sfen, result))
     };
 
@@ -512,25 +539,12 @@ fn main() -> Result<()> {
             })?
     };
     results.sort_by_key(|(game_index, _, _, _)| *game_index);
-
-    for (game_index, new_is_black, start_sfen, game) in results {
+    for (_, _, _, game) in results {
         match game.result {
             GameResult::NewWin => new_wins += 1,
             GameResult::BaselineWin => baseline_wins += 1,
             GameResult::Draw => draws += 1,
         }
-
-        if let Some(record_dir) = &args.record_dir {
-            write_game_record(record_dir, game_index, new_is_black, &start_sfen, &game)?;
-        }
-
-        println!(
-            "game {:>3}: {:?} by {:?} (new as {})",
-            game_index + 1,
-            game.result,
-            game.reason,
-            if new_is_black { "black" } else { "white" }
-        );
     }
 
     let decisive_games = new_wins + baseline_wins;
