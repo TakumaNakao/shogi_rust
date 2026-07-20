@@ -672,6 +672,7 @@ fn visit_dataset_chunks(
     let manifest = validate_teacher_semantics(path, allow_legacy_teacher_semantics)?;
     let mut reader = SearchTeacherReader::open(path)?;
     let mut total = 0;
+    let mut reached_eof = false;
     loop {
         let remaining = limit.map(|limit| limit.saturating_sub(total));
         if remaining == Some(0) {
@@ -681,6 +682,7 @@ fn visit_dataset_chunks(
         let mut chunk = Vec::with_capacity(capacity);
         while chunk.len() < capacity {
             let Some(record) = reader.read_record()? else {
+                reached_eof = true;
                 break;
             };
             chunk.push(record);
@@ -691,7 +693,7 @@ fn visit_dataset_chunks(
         total += chunk.len();
         visit(&mut chunk)?;
     }
-    if limit.is_none() {
+    if limit.is_none() || reached_eof {
         if let Some(manifest) = manifest {
             if total as u64 != manifest.records {
                 return Err(anyhow!(
