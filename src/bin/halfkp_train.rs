@@ -2,8 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use serde::Deserialize;
 use shogi_ai::evaluation::{
-    extract_halfkp_features_for, HALFKP_HIDDEN, HALFKP_INPUTS, HALFKP_KING_BUCKETS,
-    HALFKP_PIECE_STATES,
+    extract_halfkp_features_for, HalfKpHeader, HALFKP_HEADER_LEN, HALFKP_HIDDEN, HALFKP_INPUTS,
 };
 use shogi_ai::utils::position_from_sfen_or_usi;
 use shogi_core::Color;
@@ -11,8 +10,6 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"HKP00001";
-const VERSION: u32 = 1;
 const TARGET_SCALE: f32 = 1000.0;
 
 #[derive(Parser, Debug)]
@@ -104,36 +101,19 @@ impl Weights {
     fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("read initial weights {}", path.display()))?;
-        let header_len = 32usize;
-        if bytes.len() < header_len || &bytes[..8] != MAGIC {
+        if bytes.len() < HALFKP_HEADER_LEN {
             return Err(anyhow!("invalid HalfKP initial weight file"));
         }
-        let read_u32 = |offset: usize| -> Result<u32> {
-            let end = offset + 4;
-            let bytes: [u8; 4] = bytes
-                .get(offset..end)
-                .ok_or_else(|| anyhow!("truncated HalfKP header"))?
-                .try_into()
-                .expect("four-byte slice");
-            Ok(u32::from_le_bytes(bytes))
-        };
-        if read_u32(8)? != VERSION
-            || read_u32(12)? as usize != HALFKP_HIDDEN
-            || read_u32(16)? as usize != HALFKP_INPUTS
-            || read_u32(20)? as usize != HALFKP_KING_BUCKETS
-            || read_u32(24)? as usize != HALFKP_PIECE_STATES
-        {
-            return Err(anyhow!("incompatible HalfKP initial weight header"));
-        }
+        HalfKpHeader::decode(&bytes)?;
         let float_count = HALFKP_INPUTS * HALFKP_HIDDEN + HALFKP_HIDDEN + HALFKP_HIDDEN * 2 + 2;
-        if bytes.len() != header_len + float_count * 4 {
+        if bytes.len() != HALFKP_HEADER_LEN + float_count * 4 {
             return Err(anyhow!(
                 "invalid HalfKP initial weight length: got {}, expected {}",
                 bytes.len(),
-                header_len + float_count * 4
+                HALFKP_HEADER_LEN + float_count * 4
             ));
         }
-        let mut offset = header_len;
+        let mut offset = HALFKP_HEADER_LEN;
         let mut next_f32 = || {
             let value = f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
             offset += 4;
@@ -145,10 +125,6 @@ impl Weights {
         }
         let hidden_b = std::array::from_fn(|_| next_f32());
         let out_w = std::array::from_fn(|_| next_f32());
-        let target_scale = f32::from_le_bytes(bytes[28..32].try_into().unwrap());
-        if !target_scale.is_finite() || target_scale <= 0.0 {
-            return Err(anyhow!("invalid HalfKP target scale"));
-        }
         let out_b = next_f32();
         Ok(Self {
             feature_emb,
@@ -453,13 +429,7 @@ fn save_weights(weights: &Weights, path: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let mut writer = BufWriter::new(File::create(path)?);
-    writer.write_all(MAGIC)?;
-    writer.write_all(&VERSION.to_le_bytes())?;
-    writer.write_all(&(HALFKP_HIDDEN as u32).to_le_bytes())?;
-    writer.write_all(&(HALFKP_INPUTS as u32).to_le_bytes())?;
-    writer.write_all(&(HALFKP_KING_BUCKETS as u32).to_le_bytes())?;
-    writer.write_all(&(HALFKP_PIECE_STATES as u32).to_le_bytes())?;
-    write_f32(&mut writer, TARGET_SCALE)?;
+    HalfKpHeader::current(TARGET_SCALE)?.write_to(&mut writer)?;
     for &value in &weights.feature_emb {
         write_f32(&mut writer, value)?;
     }
