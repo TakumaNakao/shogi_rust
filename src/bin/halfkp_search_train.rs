@@ -1445,7 +1445,12 @@ fn apply_batch(
         norm_squared += *value * *value;
     }
     dense.out_b *= scale;
-    for row in sparse.values_mut() {
+    // HashMap iteration order is process-random. The norm feeds a shared clip
+    // factor, so accumulate rows in feature order to make resume bit-exact.
+    let mut sparse_features = sparse.keys().copied().collect::<Vec<_>>();
+    sparse_features.sort_unstable();
+    for feature in &sparse_features {
+        let row = sparse.get_mut(feature).expect("collected sparse feature");
         for value in row {
             *value *= scale;
             norm_squared += *value * *value;
@@ -1461,7 +1466,8 @@ fn apply_batch(
     for value in dense.hidden_b.iter_mut().chain(dense.out_w.iter_mut()) {
         *value *= clip;
     }
-    for row in sparse.values_mut() {
+    for feature in &sparse_features {
+        let row = sparse.get_mut(feature).expect("collected sparse feature");
         for value in row {
             *value *= clip;
         }
