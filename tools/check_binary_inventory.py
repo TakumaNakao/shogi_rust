@@ -19,7 +19,8 @@ def main() -> int:
         )
     )
     package = next(package for package in metadata["packages"] if package["name"] == "shogi_ai")
-    targets = {target["name"] for target in package["targets"] if "bin" in target["kind"]}
+    binary_targets = [target for target in package["targets"] if "bin" in target["kind"]]
+    targets = {target["name"] for target in binary_targets}
 
     source_targets = {path.stem for path in (ROOT / "src" / "bin").glob("*.rs")}
     source_targets.add("kpp_learn")
@@ -32,6 +33,23 @@ def main() -> int:
         errors.append(f"source-only targets: {sorted(source_targets - targets)}")
     if undocumented:
         errors.append(f"targets missing from docs/binaries.md: {undocumented}")
+    thick_supported_entries = []
+    for target in binary_targets:
+        if "research-tools" in target.get("required-features", []):
+            continue
+        source = pathlib.Path(target["src_path"])
+        significant_lines = [line for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+        dispatch = "\n".join(significant_lines)
+        is_dispatch = "::run()" in dispatch or (
+            target["name"] == "usi_engine" and "::run_usi()" in dispatch
+        )
+        if len(significant_lines) > 5 or not is_dispatch:
+            thick_supported_entries.append(target["name"])
+    if thick_supported_entries:
+        errors.append(
+            "supported binary entries must only parse/dispatch to library run(): "
+            f"{sorted(thick_supported_entries)}"
+        )
 
     if errors:
         print("binary inventory mismatch", file=sys.stderr)
