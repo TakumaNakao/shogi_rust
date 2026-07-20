@@ -1,3 +1,8 @@
+mod score;
+mod transposition;
+
+use self::score::*;
+use self::transposition::*;
 use crate::evaluation::Evaluator;
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
@@ -11,14 +16,11 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_DEPTH: usize = 64;
-const TRANSPOSITION_TABLE_MAX_ENTRIES: usize = 1_000_000;
-const SHARED_TT_SHARDS: usize = 4096;
-const SHARED_TT_ENTRIES_PER_SHARD: usize = TRANSPOSITION_TABLE_MAX_ENTRIES / SHARED_TT_SHARDS + 1;
 const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
@@ -27,11 +29,6 @@ const SEARCH_THREAD_STACK_BYTES: usize = 4 * 1024 * 1024;
 // Checked qsearch nodes must examine every evasion, so cap checking sequences explicitly.
 const MAX_QUIESCENCE_PLY: u8 = 8;
 const TIME_CHECK_NODE_INTERVAL: u64 = 1024;
-const USI_SCORE_CP_LIMIT: i32 = 2_000;
-const USI_SCORE_CP_SOFT_START: i32 = 1_000;
-const MATE_SCORE: f32 = 1_000_000.0;
-const MATE_THRESHOLD: f32 = MATE_SCORE - 1_000.0;
-const REPETITION_WIN_SCORE: f32 = 500_000.0;
 type LegalMoves = ArrayVec<Move, 593>;
 
 struct StopOnDrop(Arc<AtomicBool>);
@@ -39,170 +36,6 @@ struct StopOnDrop(Arc<AtomicBool>);
 impl Drop for StopOnDrop {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Relaxed);
-    }
-}
-
-#[inline]
-fn mate_loss_score(ply_from_root: u16) -> f32 {
-    -MATE_SCORE + f32::from(ply_from_root)
-}
-
-#[inline]
-fn score_to_tt(score: f32, ply_from_root: u16) -> f32 {
-    if score >= MATE_THRESHOLD {
-        score + f32::from(ply_from_root)
-    } else if score <= -MATE_THRESHOLD {
-        score - f32::from(ply_from_root)
-    } else {
-        score
-    }
-}
-
-#[inline]
-fn score_from_tt(score: f32, ply_from_root: u16) -> f32 {
-    if score >= MATE_THRESHOLD {
-        score - f32::from(ply_from_root)
-    } else if score <= -MATE_THRESHOLD {
-        score + f32::from(ply_from_root)
-    } else {
-        score
-    }
-}
-
-#[inline]
-fn is_history_dependent_score(score: f32) -> bool {
-    score == 0.0 || (score.abs() >= REPETITION_WIN_SCORE - 1.0 && score.abs() < MATE_THRESHOLD)
-}
-
-fn usi_display_score_cp(score: f32) -> i32 {
-    if !score.is_finite() {
-        return if score.is_sign_negative() {
-            -USI_SCORE_CP_LIMIT
-        } else {
-            USI_SCORE_CP_LIMIT
-        };
-    }
-
-    let sign = if score < 0.0 { -1 } else { 1 };
-    let abs_score = score.abs();
-    let soft_start = USI_SCORE_CP_SOFT_START as f32;
-    let limit = USI_SCORE_CP_LIMIT as f32;
-    let displayed = if abs_score <= soft_start {
-        abs_score
-    } else {
-        let tail = limit - soft_start;
-        soft_start + tail * (1.0 - (-(abs_score - soft_start) / tail).exp())
-    };
-
-    sign * (displayed.round() as i32).min(USI_SCORE_CP_LIMIT)
-}
-
-/// トランスポジションテーブルに格納する評価値の種類
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum NodeType {
-    Exact,
-    LowerBound,
-    UpperBound,
-}
-
-/// トランスポジションテーブルのエントリ
-#[derive(Clone, Copy, Debug)]
-struct TranspositionEntry {
-    score: f32,
-    depth: u8,
-    node_type: NodeType,
-    best_move: Option<Move>,
-    generation: u32,
-}
-
-struct SharedTranspositionTable {
-    shards: Box<[RwLock<HashMap<u64, TranspositionEntry>>]>,
-}
-
-impl SharedTranspositionTable {
-    fn new() -> Self {
-        let shards = (0..SHARED_TT_SHARDS)
-            .map(|_| RwLock::new(HashMap::with_capacity(SHARED_TT_ENTRIES_PER_SHARD)))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        Self { shards }
-    }
-
-    #[inline]
-    fn shard_index(hash: u64) -> usize {
-        (hash as usize) & (SHARED_TT_SHARDS - 1)
-    }
-
-    fn get(&self, hash: u64) -> Option<TranspositionEntry> {
-        let shard = self.shards[Self::shard_index(hash)]
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        shard.get(&hash).copied()
-    }
-
-    fn insert(&self, hash: u64, entry: TranspositionEntry) {
-        let mut shard = self.shards[Self::shard_index(hash)]
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !shard.contains_key(&hash) && shard.len() >= SHARED_TT_ENTRIES_PER_SHARD {
-            let replacement = shard
-                .iter()
-                .take(8)
-                .min_by_key(|(_, candidate)| {
-                    (candidate.generation == entry.generation, candidate.depth)
-                })
-                .map(|(&key, _)| key);
-            if let Some(key) = replacement {
-                shard.remove(&key);
-            }
-        }
-        shard.insert(hash, entry);
-    }
-
-    fn clear(&self) {
-        for shard in &self.shards {
-            shard
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clear();
-        }
-    }
-}
-
-enum TranspositionTable {
-    Local(HashMap<u64, TranspositionEntry>),
-    Shared(Arc<SharedTranspositionTable>),
-}
-
-impl TranspositionTable {
-    fn get(&self, hash: u64) -> Option<TranspositionEntry> {
-        match self {
-            Self::Local(table) => table.get(&hash).copied(),
-            Self::Shared(table) => table.get(hash),
-        }
-    }
-
-    fn insert(&mut self, hash: u64, entry: TranspositionEntry) {
-        match self {
-            Self::Local(table) => {
-                table.insert(hash, entry);
-            }
-            Self::Shared(table) => table.insert(hash, entry),
-        }
-    }
-
-    fn clear(&mut self) {
-        match self {
-            Self::Local(table) => table.clear(),
-            Self::Shared(table) => table.clear(),
-        }
-    }
-
-    fn local_len(&self) -> Option<usize> {
-        match self {
-            Self::Local(table) => Some(table.len()),
-            Self::Shared(_) => None,
-        }
     }
 }
 
