@@ -18,6 +18,7 @@ const ENGINE_NAME: &str = "Shogi AI";
 const ENGINE_AUTHOR: &str = "Gemini";
 const HISTORY_CAPACITY: usize = 256;
 const OVERWRITE_VALUE: f32 = 0.0;
+const SEARCH_THREAD_STACK_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 struct SearchLimits {
@@ -25,9 +26,18 @@ struct SearchLimits {
     time_limit_ms: Option<u64>,
 }
 
+fn print_bestmove(best_move: Option<Move>) {
+    if let Some(best_move) = best_move {
+        println!("bestmove {}", format_move_usi(best_move));
+    } else {
+        println!("bestmove resign");
+    }
+    let _ = io::stdout().flush();
+}
+
 struct UsiEngine {
     position: Position,
-    stop_signal: Arc<AtomicBool>,
+    stop_signal: Option<Arc<AtomicBool>>,
     eval_file_path: Option<PathBuf>,
     residual_eval_file_path: Option<PathBuf>,
     residual_scale: f32,
@@ -42,7 +52,7 @@ impl UsiEngine {
     fn new() -> Self {
         UsiEngine {
             position: Position::default(),
-            stop_signal: Arc::new(AtomicBool::new(false)),
+            stop_signal: None,
             eval_file_path: None,
             residual_eval_file_path: None,
             residual_scale: 1.0,
@@ -72,7 +82,10 @@ impl UsiEngine {
                     "position" => self.handle_position(&tokens),
                     "go" => self.handle_go(&tokens),
                     "stop" => self.handle_stop(),
-                    "quit" => break,
+                    "quit" => {
+                        self.handle_stop();
+                        break;
+                    }
                     _ => {}
                 }
             }
@@ -124,7 +137,10 @@ impl UsiEngine {
             Ok(evaluator) => {
                 let evaluator_name = evaluator.name();
                 let new_ai = ShogiAI::new(Arc::new(evaluator));
-                *self.ai.lock().unwrap() = Some(new_ai);
+                *self
+                    .ai
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(new_ai);
                 if let Some(residual_path) = &self.residual_eval_file_path {
                     eprintln!(
                         "info string Loaded {} evaluation files in {} ms: base={} residual={} residual_scale={}",
@@ -210,8 +226,14 @@ impl UsiEngine {
     }
 
     fn handle_usinewgame(&mut self) {
+        self.handle_stop();
         self.position = Position::default();
-        if let Some(ai_instance) = self.ai.lock().unwrap().as_mut() {
+        if let Some(ai_instance) = self
+            .ai
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_mut()
+        {
             ai_instance.clear();
         }
     }
@@ -316,65 +338,117 @@ impl UsiEngine {
     }
 
     fn handle_go(&mut self, tokens: &[&str]) {
-        if self.ai.lock().unwrap().is_none() {
+        if let Some(active_search) = &self.stop_signal {
+            active_search.store(true, Ordering::Relaxed);
+        }
+
+        if self
+            .ai
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none()
+        {
             println!("info string Error: Evaluation file is not set. Use 'setoption name EvalFile value <path>'");
+            print_bestmove(None);
             return;
         }
 
         // 思考開始前に履歴を減衰させる
-        if let Some(ai_instance) = self.ai.lock().unwrap().as_mut() {
+        if let Some(ai_instance) = self
+            .ai
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_mut()
+        {
             ai_instance.decay_history();
         }
 
-        self.stop_signal.store(false, Ordering::Relaxed);
-
         let limits = self.parse_go_limits(tokens);
         let mut position = self.position.clone();
-        let stop_signal = self.stop_signal.clone();
+        let stop_signal = Arc::new(AtomicBool::new(false));
+        self.stop_signal = Some(stop_signal.clone());
         let ai = self.ai.clone();
         let threads = self.threads;
+        let spawn_fallback = position.legal_moves().first().copied();
+        let recovery_position = position.clone();
 
-        thread::spawn(move || {
-            let mut ai_lock = ai.lock().unwrap();
-            if let Some(thinking_ai) = ai_lock.as_mut() {
-                let root_position = position.clone();
-                let fallback_move = position.legal_moves().first().copied();
-                thinking_ai.set_stop_signal(Some(stop_signal.clone()));
-                thinking_ai.set_emit_info(true);
-                let search_result = catch_unwind(AssertUnwindSafe(|| {
-                    thinking_ai.find_best_move_parallel(
-                        &mut position,
-                        limits.max_depth,
-                        limits.time_limit_ms,
-                        threads,
-                    )
+        let spawn_result = thread::Builder::new()
+            .name("usi-search".to_string())
+            .stack_size(SEARCH_THREAD_STACK_BYTES)
+            .spawn(move || {
+                let response = catch_unwind(AssertUnwindSafe(|| {
+                    let mut ai_lock = ai.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let Some(thinking_ai) = ai_lock.as_mut() else {
+                        return (
+                            spawn_fallback,
+                            Some("Internal search error; evaluation is unavailable"),
+                        );
+                    };
+
+                    thinking_ai.set_stop_signal(Some(stop_signal.clone()));
+                    thinking_ai.set_emit_info(true);
+                    let search_result = catch_unwind(AssertUnwindSafe(|| {
+                        thinking_ai.find_best_move_parallel(
+                            &mut position,
+                            limits.max_depth,
+                            limits.time_limit_ms,
+                            threads,
+                        )
+                    }));
+                    let best_move = match search_result {
+                        Ok(best_move) => best_move,
+                        Err(_) => {
+                            stop_signal.store(true, Ordering::Relaxed);
+                            position = recovery_position.clone();
+                            thinking_ai.recover_from_search_failure(&position);
+                            spawn_fallback
+                        }
+                    };
+                    let message = thinking_ai
+                        .last_search_failed()
+                        .then_some("Internal search error; returning a legal fallback move");
+                    thinking_ai.set_stop_signal(None);
+                    (best_move, message)
                 }));
-                let best_move = match search_result {
-                    Ok(best_move) => best_move,
+
+                let (best_move, message) = match response {
+                    Ok(response) => response,
                     Err(_) => {
                         stop_signal.store(true, Ordering::Relaxed);
-                        position = root_position;
-                        thinking_ai.recover_from_search_failure(&position);
-                        fallback_move
+                        // State repair must not be able to suppress the protocol response.
+                        let _ = catch_unwind(AssertUnwindSafe(|| {
+                            let mut ai_lock =
+                                ai.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                            if let Some(thinking_ai) = ai_lock.as_mut() {
+                                thinking_ai.recover_from_search_failure(&recovery_position);
+                                thinking_ai.set_stop_signal(None);
+                            }
+                        }));
+                        (
+                            spawn_fallback,
+                            Some("Internal search thread failure; returning a legal fallback move"),
+                        )
                     }
                 };
-                if thinking_ai.last_search_failed() {
-                    println!("info string Internal search error; returning a legal fallback move");
+                if let Some(message) = message {
+                    println!("info string {}", message);
                 }
-                thinking_ai.set_stop_signal(None);
-                if let Some(best_move) = best_move {
-                    println!("bestmove {}", format_move_usi(best_move));
-                    let _ = io::stdout().flush();
-                } else {
-                    println!("bestmove resign");
-                    let _ = io::stdout().flush();
-                }
+                print_bestmove(best_move);
+            });
+
+        if let Err(error) = spawn_result {
+            if let Some(stop_signal) = &self.stop_signal {
+                stop_signal.store(true, Ordering::Relaxed);
             }
-        });
+            println!("info string Failed to start search thread: {}", error);
+            print_bestmove(spawn_fallback);
+        }
     }
 
     fn handle_stop(&self) {
-        self.stop_signal.store(true, Ordering::Relaxed);
+        if let Some(stop_signal) = &self.stop_signal {
+            stop_signal.store(true, Ordering::Relaxed);
+        }
     }
 }
 

@@ -23,6 +23,9 @@ const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
 const CHECK_EVASION_EXTENSION_MAX_REPLIES: usize = 3;
+const SEARCH_THREAD_STACK_BYTES: usize = 4 * 1024 * 1024;
+// Checked qsearch nodes must examine every evasion, so cap checking sequences explicitly.
+const MAX_QUIESCENCE_PLY: u8 = 8;
 const TIME_CHECK_NODE_INTERVAL: u64 = 1024;
 const USI_SCORE_CP_LIMIT: i32 = 2_000;
 const USI_SCORE_CP_SOFT_START: i32 = 1_000;
@@ -30,6 +33,14 @@ const MATE_SCORE: f32 = 1_000_000.0;
 const MATE_THRESHOLD: f32 = MATE_SCORE - 1_000.0;
 const REPETITION_WIN_SCORE: f32 = 500_000.0;
 type LegalMoves = ArrayVec<Move, 593>;
+
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
 
 #[inline]
 fn mate_loss_score(ply_from_root: u16) -> f32 {
@@ -467,7 +478,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         alpha: f32,
         beta: f32,
     ) -> Option<(f32, Vec<Move>)> {
-        self.quiescence_search_internal(position, alpha, beta, 0, None)
+        self.quiescence_search_internal(position, alpha, beta, 0, 0, None)
     }
 
     fn filter_quiescence_moves_from_legal(
@@ -491,6 +502,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         mut alpha: f32,
         beta: f32,
         ply_from_root: u16,
+        quiescence_ply: u8,
         precomputed_moves: Option<LegalMoves>,
     ) -> Option<(f32, Vec<Move>)> {
         assert!(
@@ -503,33 +515,42 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.nodes_searched += 1;
         self.quiescence_nodes_searched += 1;
 
-        if position.in_check() {
-            let has_evasion = precomputed_moves
-                .as_ref()
-                .map(|moves| !moves.is_empty())
-                .unwrap_or_else(|| position.has_legal_evasion());
-            if !has_evasion {
-                self.quiescence_terminal_mates += 1;
-                return Some((mate_loss_score(ply_from_root), Vec::new()));
+        let in_check = position.in_check();
+        let stand_pat_score = if in_check {
+            None
+        } else {
+            let score = self.evaluate_position(position);
+            if score >= beta {
+                return Some((beta, Vec::new()));
             }
-        }
-
-        let stand_pat_score = self.evaluate_position(position);
-        if stand_pat_score >= beta {
-            return Some((beta, Vec::new()));
-        }
-        alpha = alpha.max(stand_pat_score);
-
-        let (moves, generated_moves) = precomputed_moves
-            .map(|moves| Self::filter_quiescence_moves_from_legal(position, moves))
-            .unwrap_or_else(|| position.legal_quiescence_moves_with_generated_count());
+            alpha = alpha.max(score);
+            Some(score)
+        };
+        let (moves, generated_moves) = if in_check {
+            let moves = precomputed_moves.unwrap_or_else(|| position.legal_moves());
+            let generated = moves.len();
+            (moves, generated)
+        } else {
+            precomputed_moves
+                .map(|moves| Self::filter_quiescence_moves_from_legal(position, moves))
+                .unwrap_or_else(|| position.legal_quiescence_moves_with_generated_count())
+        };
 
         self.quiescence_moves_generated += generated_moves as u64;
         self.quiescence_moves_discarded += (generated_moves - moves.len()) as u64;
         if moves.is_empty() {
-            return Some((stand_pat_score, Vec::new()));
+            if in_check {
+                self.quiescence_terminal_mates += 1;
+                return Some((mate_loss_score(ply_from_root), Vec::new()));
+            }
+            return Some((
+                stand_pat_score.expect("non-check position has stand-pat"),
+                Vec::new(),
+            ));
         }
         self.quiescence_moves_considered += moves.len() as u64;
+
+        let mut best_score = stand_pat_score.unwrap_or(-f32::INFINITY);
 
         let mut scored_moves: Vec<(Move, i32)> = moves
             .iter()
@@ -542,9 +563,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             .collect();
         scored_moves.sort_unstable_by_key(|a| -a.1);
 
-        let mut best_score = stand_pat_score;
         for (mv, _) in scored_moves {
-            if self.see(position, mv) < 0 {
+            if !in_check && self.see(position, mv) < 0 {
                 self.quiescence_see_skips += 1;
                 continue;
             }
@@ -556,13 +576,24 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             let score_result = match sennichite_status {
                 SennichiteStatus::Draw => Some((0.0, Vec::new())),
                 SennichiteStatus::PerpetualCheckLoss => Some((REPETITION_WIN_SCORE, Vec::new())),
-                SennichiteStatus::None => self.quiescence_search_internal(
-                    position,
-                    -beta,
-                    -alpha,
-                    ply_from_root.saturating_add(1),
-                    None,
-                ),
+                SennichiteStatus::None => {
+                    if quiescence_ply >= MAX_QUIESCENCE_PLY {
+                        if position.in_check() && !position.has_legal_evasion() {
+                            Some((mate_loss_score(ply_from_root.saturating_add(1)), Vec::new()))
+                        } else {
+                            Some((self.evaluate_position(position), Vec::new()))
+                        }
+                    } else {
+                        self.quiescence_search_internal(
+                            position,
+                            -beta,
+                            -alpha,
+                            ply_from_root.saturating_add(1),
+                            quiescence_ply.saturating_add(1),
+                            None,
+                        )
+                    }
+                }
             };
             self.sennichite_detector.unrecord_last_position();
             self.undo_move(position, mv);
@@ -629,6 +660,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
                 alpha,
                 beta,
                 ply_from_root,
+                0,
                 precomputed_moves,
             );
         }
@@ -1057,77 +1089,111 @@ where
                 table
             }
         };
+        let owns_stop_signal = self.stop_signal.is_none();
         let stop_signal = self
             .stop_signal
             .clone()
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-        stop_signal.store(false, Ordering::Relaxed);
-        self.stop_signal = Some(stop_signal.clone());
+        if owns_stop_signal {
+            self.stop_signal = Some(stop_signal.clone());
+        }
 
         let evaluator = self.evaluator.clone();
         let generation = self.search_generation;
         let emit_info = self.emit_info;
 
-        thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(threads - 1);
-            for worker_id in 1..threads {
-                let evaluator = evaluator.clone();
-                let table = shared_tt.clone();
-                let stop_signal = stop_signal.clone();
-                let mut worker_position = root_position.clone();
-                handles.push(scope.spawn(move || {
-                    let mut worker = ShogiAI::new_with_shared_tt(evaluator, table, generation);
-                    worker.set_emit_info(false);
-                    worker.set_stop_signal(Some(stop_signal.clone()));
-                    // A failed helper must stop the primary search instead of stranding USI.
-                    let worker_result = catch_unwind(AssertUnwindSafe(|| {
-                        worker.find_best_move_with_root_offset(
-                            &mut worker_position,
-                            max_depth,
-                            time_limit_ms,
-                            worker_id,
-                            false,
-                        )
-                    }));
-                    match worker_result {
-                        Ok(best_move) => Ok((best_move, worker)),
+        let parallel_result = catch_unwind(AssertUnwindSafe(|| {
+            thread::scope(|scope| {
+                let _stop_on_drop = StopOnDrop(stop_signal.clone());
+                let mut handles = Vec::with_capacity(threads - 1);
+                let mut worker_failed = false;
+                for worker_id in 1..threads {
+                    let evaluator = evaluator.clone();
+                    let table = shared_tt.clone();
+                    let worker_stop_signal = stop_signal.clone();
+                    let mut worker_position = root_position.clone();
+                    match thread::Builder::new()
+                        .stack_size(SEARCH_THREAD_STACK_BYTES)
+                        .spawn_scoped(scope, move || {
+                            let mut worker =
+                                ShogiAI::new_with_shared_tt(evaluator, table, generation);
+                            worker.set_emit_info(false);
+                            worker.set_stop_signal(Some(worker_stop_signal.clone()));
+                            // A failed helper must stop the primary search instead of stranding USI.
+                            let worker_result = catch_unwind(AssertUnwindSafe(|| {
+                                worker.find_best_move_with_root_offset(
+                                    &mut worker_position,
+                                    max_depth,
+                                    time_limit_ms,
+                                    worker_id,
+                                    false,
+                                )
+                            }));
+                            match worker_result {
+                                Ok(best_move) => Ok((best_move, worker)),
+                                Err(_) => {
+                                    worker_stop_signal.store(true, Ordering::Relaxed);
+                                    Err(())
+                                }
+                            }
+                        }) {
+                        Ok(handle) => handles.push(handle),
                         Err(_) => {
+                            worker_failed = true;
                             stop_signal.store(true, Ordering::Relaxed);
-                            Err(())
+                            break;
                         }
                     }
+                }
+
+                self.set_emit_info(emit_info);
+                // Keep the root position recoverable even if an internal invariant fires.
+                let main_result = catch_unwind(AssertUnwindSafe(|| {
+                    self.find_best_move_with_root_offset(
+                        position,
+                        max_depth,
+                        time_limit_ms,
+                        0,
+                        true,
+                    )
                 }));
-            }
+                stop_signal.store(true, Ordering::Relaxed);
 
-            self.set_emit_info(emit_info);
-            // Keep the root position recoverable even if an internal invariant fires.
-            let main_result = catch_unwind(AssertUnwindSafe(|| {
-                self.find_best_move_with_root_offset(position, max_depth, time_limit_ms, 0, true)
-            }));
-            stop_signal.store(true, Ordering::Relaxed);
-
-            let mut worker_failed = false;
-            for handle in handles {
-                match handle.join() {
-                    Ok(Ok((_worker_move, worker))) => self.absorb_statistics(&worker),
-                    Ok(Err(())) | Err(_) => worker_failed = true,
+                for handle in handles {
+                    match handle.join() {
+                        Ok(Ok((_worker_move, worker))) => self.absorb_statistics(&worker),
+                        Ok(Err(())) | Err(_) => worker_failed = true,
+                    }
                 }
-            }
 
-            if worker_failed {
-                self.transposition_table.clear();
-                self.last_search_failed = true;
-            }
-
-            match main_result {
-                Ok(main_move) => main_move,
-                Err(_) => {
-                    *position = root_position;
-                    self.recover_from_search_failure(position);
-                    fallback_move
+                if worker_failed {
+                    self.transposition_table.clear();
+                    self.last_search_failed = true;
                 }
+
+                match main_result {
+                    Ok(main_move) => main_move,
+                    Err(_) => {
+                        *position = root_position.clone();
+                        self.recover_from_search_failure(position);
+                        fallback_move
+                    }
+                }
+            })
+        }));
+
+        if owns_stop_signal {
+            self.stop_signal = None;
+        }
+
+        match parallel_result {
+            Ok(best_move) => best_move,
+            Err(_) => {
+                *position = root_position;
+                self.recover_from_search_failure(position);
+                fallback_move
             }
-        })
+        }
     }
 }
 
@@ -1164,6 +1230,24 @@ mod tests {
     impl Evaluator for ZeroEvaluator {
         fn evaluate(&self, _position: &Position) -> f32 {
             0.0
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct HighEvaluator;
+
+    impl Evaluator for HighEvaluator {
+        fn evaluate(&self, _position: &Position) -> f32 {
+            1_000.0
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct HashEvaluator;
+
+    impl Evaluator for HashEvaluator {
+        fn evaluate(&self, position: &Position) -> f32 {
+            (PositionHasher::calculate_hash(position) % 2_001) as f32 - 1_000.0
         }
     }
 
@@ -1227,6 +1311,30 @@ mod tests {
         ai.sennichite_detector.record_position(&position);
 
         assert!(ai.find_best_move(&mut position, 5, None).is_some());
+    }
+
+    #[test]
+    fn quiescence_searches_all_quiet_evasions_without_stand_pat() {
+        let mut position = position_from_sfen_or_usi("4k4/9/9/9/9/9/9/9/K3R4 w - 1")
+            .expect("valid checked position");
+        let legal_evasions = position.legal_moves();
+        assert!(position.in_check());
+        assert!(!legal_evasions.is_empty());
+        assert!(position.legal_quiescence_moves().is_empty());
+
+        let mut ai = ShogiAI::<_, 256>::new(HighEvaluator);
+        ai.set_emit_info(false);
+        let result = ai
+            .quiescence_search(&mut position, -1.0, 1.0)
+            .expect("quiescence search should complete");
+
+        assert_eq!(-1.0, result.0);
+        assert_eq!(
+            legal_evasions.len() as u64,
+            ai.quiescence_moves_considered()
+        );
+        assert_eq!(legal_evasions.len() as u64, ai.quiescence_moves_searched());
+        assert_eq!(0, ai.quiescence_terminal_mates());
     }
 
     #[test]
@@ -1298,6 +1406,24 @@ mod tests {
     }
 
     #[test]
+    fn parallel_search_preserves_stop_requested_before_start() {
+        let mut position = Position::default();
+        let legal_moves = position.legal_moves();
+        let stop_signal = Arc::new(AtomicBool::new(true));
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.set_emit_info(false);
+        ai.set_stop_signal(Some(stop_signal.clone()));
+
+        let best_move = ai
+            .find_best_move_parallel(&mut position, 64, None, 4)
+            .expect("pre-stopped search should return its legal fallback");
+
+        assert!(legal_moves.contains(&best_move));
+        assert_eq!(0, ai.last_completed_depth());
+        assert!(stop_signal.load(Ordering::Relaxed));
+    }
+
+    #[test]
     fn v252_incident_parallel_search_keeps_the_mating_move() {
         let position =
             position_from_sfen_or_usi(V252_INCIDENT_POSITION).expect("valid incident position");
@@ -1339,6 +1465,34 @@ mod tests {
             assert!(legal_moves.contains(&best_move));
             assert!(!ai.last_search_failed());
             assert_eq!(original_sfen, position.to_sfen_owned());
+        }
+    }
+
+    #[test]
+    fn four_thread_search_stress_keeps_windows_and_positions_valid() {
+        for (index, sfen) in include_str!("../converted_records2016_10818.sfen")
+            .lines()
+            .step_by(419)
+            .take(24)
+            .enumerate()
+        {
+            let mut position =
+                position_from_sfen_or_usi(sfen).expect("record position should be valid");
+            let original_sfen = position.to_sfen_owned();
+            let legal_moves = position.legal_moves();
+            if legal_moves.is_empty() {
+                continue;
+            }
+
+            let mut ai = ShogiAI::<_, 256>::new(HashEvaluator);
+            ai.set_emit_info(false);
+            let best_move = ai
+                .find_best_move_parallel(&mut position, 8, Some(25), 4)
+                .unwrap_or_else(|| panic!("sample {index} should return a legal move"));
+
+            assert!(legal_moves.contains(&best_move), "sample {index}");
+            assert!(!ai.last_search_failed(), "sample {index}");
+            assert_eq!(original_sfen, position.to_sfen_owned(), "sample {index}");
         }
     }
 
