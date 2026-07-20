@@ -1053,6 +1053,7 @@ dependencies = [
  "once_cell",
  "rand",
  "shogi_core",
+ "shogi_usi_parser",
 ]
 
 [[package]]

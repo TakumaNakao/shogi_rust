@@ -3,6 +3,11 @@ name = "shogi_ai"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["shogi_lib"]
+default-members = ["."]
+resolver = "2"
+
 [features]
 default = []
 halfkp64 = []

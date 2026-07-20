@@ -17,9 +17,3 @@ cfg-if = "1.0.0"
 
 [dev-dependencies]
 shogi_usi_parser = "0.1.0"
-
-[profile.release]
-lto = true
-
-[profile.bench]
-lto = true
