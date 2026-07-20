@@ -216,5 +216,69 @@
       "gate_percent": 3.0,
       "result": "pass"
     }
+  },
+  "phase3_format_codec_validation": {
+    "implementation_revision": "5941250",
+    "halfkp": {
+      "header_definition": "src/evaluation/codec.rs",
+      "flat_tensor_codec_shared_by": [
+        "runtime",
+        "halfkp_search_train",
+        "halfkp_train",
+        "halfkp_kpp_train"
+      ],
+      "magic_definition_count": 1,
+      "version_definition_count": 1,
+      "golden_halfkp32": "exact bytes",
+      "golden_halfkp64": "exact bytes",
+      "legacy_writer_round_trip": "exact bytes",
+      "runtime_aligned_score": "exact"
+    },
+    "hkst_v2": {
+      "codec_definition": "src/halfkp_training/codec.rs",
+      "golden_halfkp32": "exact bytes",
+      "golden_halfkp64": "exact bytes",
+      "candidate_order_and_flags": "exact",
+      "corrupt_and_truncated_inputs": "rejected"
+    },
+    "tests": {
+      "workspace_command": "cargo test --workspace --release --features halfkp64",
+      "workspace_result": "pass",
+      "final_halfkp64_library_tests": 35,
+      "final_trainer_tests": 1,
+      "halfkp64_all_targets_check": "pass",
+      "clippy_ratchet": "pass",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match"
+    },
+    "paired_performance_check": {
+      "control_revision": "89245bd",
+      "candidate_revision": "5941250",
+      "method": "five alternating runs using separately built binaries",
+      "control_timing_runs_ms": [
+        6085.00,
+        6271.55,
+        6275.83,
+        6289.11,
+        6303.08
+      ],
+      "candidate_timing_runs_ms": [
+        6253.51,
+        6283.06,
+        6365.92,
+        6230.73,
+        6343.17
+      ],
+      "control_median_elapsed_ms": 6275.83,
+      "candidate_median_elapsed_ms": 6283.06,
+      "candidate_delta_percent": 0.1152,
+      "deterministic_counters_match": true,
+      "gate_percent": 3.0,
+      "result": "pass",
+      "notes": [
+        "An initial unpaired absolute recheck exceeded the gate because the host had drifted slower.",
+        "The same-session Phase 2 control reproduced the slowdown, so the alternating paired comparison is the regression decision."
+      ]
+    }
   }
 }
