@@ -77,5 +77,38 @@
       "Timing is valid only for comparisons on a stable equivalent machine.",
       "The input file name is historical; the file contains 1956 lines, while this command samples 16."
     ]
+  },
+  "phase0_validation": {
+    "revision": "96c59e5820774b5685a7e93cbecbe766064f7693",
+    "search_fingerprint": {
+      "command": [
+        "target/release/search_fingerprint",
+        "--depth",
+        "3",
+        "--expected",
+        "benchmarks/baselines/search_fingerprint_v2.5.4_plus_master.json"
+      ],
+      "repeat_count": 2,
+      "result": "exact match",
+      "observed_elapsed_seconds_approx": 1.83,
+      "observed_max_rss_kb": 3584
+    },
+    "performance_recheck": {
+      "command": "same as search_profile.command",
+      "deterministic_counters_match": true,
+      "timing_runs_ms": [
+        6166.22,
+        6203.21,
+        6196.43
+      ],
+      "median_elapsed_ms": 6196.43,
+      "baseline_delta_percent": 1.8075,
+      "gate_percent": 3.0,
+      "result": "pass",
+      "notes": [
+        "This recheck validates the root score/PV observation fields and fingerprint harness.",
+        "Timing has normal local noise; deterministic search counters are the hard equivalence gate."
+      ]
+    }
   }
 }

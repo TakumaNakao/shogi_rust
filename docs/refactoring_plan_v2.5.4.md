@@ -1720,7 +1720,7 @@ Phaseの着手・完了時に以下へ追記する。
 
 | Phase | 状態 | 開始revision | 完了revision | 結果・参照 |
 |---|---|---|---|---|
-| 0 Baseline | 未着手 |  |  |  |
+| 0 Baseline | 進行中（PR 001-002完了） | `9926430` |  | [`benchmarks/baselines/`](../benchmarks/baselines/)、fingerprint exact match、性能差+1.81% |
 | 1 Workspace/CI | 未着手 |  |  |  |
 | 2 Module split | 未着手 |  |  |  |
 | 3 Format consolidation | 未着手 |  |  |  |
@@ -1730,4 +1730,13 @@ Phaseの着手・完了時に以下へ追記する。
 | 7 Repository/Documents | 未着手 |  |  |  |
 | 8 Performance/Cutover | 未着手 |  |  |  |
 
-最初の実装作業はPhase 0のbaseline manifestとsearch fingerprint harnessから開始する。
+### 2026-07-20 Phase 0途中経過
+
+- `b72a717`: 本計画書と文書索引を追加。
+- `9926430`: 外部HalfKP性能基準manifestと固定7局面を追加。
+- `96c59e5`: Threads=1の決定的search fingerprint gateを追加。
+- fingerprintを2回実行し、bestmove、root score bit、PV、node/qsearch/aspiration統計の完全一致を確認。
+- HalfKP性能基準と同一条件で3回再測定し、全決定的カウンタの一致を確認。
+- 実行時間中央値は`6086.42 ms`から`6196.43 ms`で、差は`+1.81%`。3%の停止基準内。
+
+Phase 0の残作業はHalfKP/HKST format fixture、破損入力fixture、benchmark metadataの自動取得である。
