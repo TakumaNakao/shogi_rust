@@ -1759,7 +1759,7 @@ Phase 0は完了した。
   `go infinite`直後の`stop`、`quit`を対象とし、各`go`の`bestmove`が一件であることを確認。
 - transcript testは15秒の応答timeout、5秒の終了timeout、失敗時のprocess killを持ち、
   外部weightへ依存せずtest内で生成したTiny NNUE fixtureを使用する。
-- transcript test 3件を3回反復して全件成功。続けてHalfKP-64 workspace全testと
+- 初期transcript test 3件を3回反復して全件成功。続けてHalfKP-64 workspace全testと
   search fingerprintの完全一致を確認。
 - `d96dbd6`: production library用Clippy ratchetを追加。`shogi_lib`はwarningゼロ、
   `shogi_ai` libraryは既存lint classだけを明示的に隔離し、新しいclassのwarningを失敗させる。
@@ -1767,8 +1767,10 @@ Phase 0は完了した。
   [`toolchain_policy.md`](toolchain_policy.md)へ記録。未検証のMSRV値は宣言しない。
 - warning解消に伴うZobrist初期化のiterator化後、`shogi_lib` 33件とsearch fingerprintが成功。
   RNG呼出順とposition hashは維持された。
+- `e5ff34e`: transcriptを5件へ拡張。既知の強制詰みで`S*5g`を維持し、
+  stop-before-start、`info depth`受信後のsearch中stop、`usinewgame`後の再探索を追加した。
+- 拡張後の5件を3回反復し、全件成功。各runは約3.2秒で完了した。
 
-Phase 1の残作業は、remote CIでLinux/Windows jobを実行して結果を記録することと、
-forced mate、search中stop、stop-before-start、worker panic、連続`go`など残りの
-USI lifecycle fixtureを安全に追加することである。内部へのfault injectionやsearch所有権の
-変更が必要なcaseは、Phase 4のSearch/USI分離と同時に実装する。
+Phase 1の残作業は、remote CIでLinux/Windows jobを実行して結果を記録することである。
+worker panic注入やoverlapする`go`の所有権検証など、内部へのfault injectionまたは
+search所有権の変更が必要なcaseは、Phase 4のSearch/USI分離と同時に実装する。
