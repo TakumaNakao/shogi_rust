@@ -39,8 +39,14 @@ struct Args {
     target_middle_records: usize,
     #[arg(long, default_value_t = 0)]
     target_late_records: usize,
+    #[arg(long, default_value_t = false)]
+    require_targets: bool,
+    #[arg(long, default_value_t = 100)]
+    target_minimum_percent: u8,
     #[arg(long)]
     max_records_per_game: Option<usize>,
+    #[arg(long, value_delimiter = ',', num_args = 3)]
+    phase_records_per_game: Option<Vec<usize>>,
     #[arg(long, default_value_t = 1)]
     sample_every: usize,
     #[arg(long, default_value_t = 0)]
@@ -49,6 +55,10 @@ struct Args {
     max_ply: Option<usize>,
     #[arg(long)]
     min_player_rate: Option<i32>,
+    #[arg(long)]
+    min_opponent_rate: Option<i32>,
+    #[arg(long, default_value_t = false)]
+    known_result_only: bool,
     #[arg(long, default_value_t = false)]
     winner_only: bool,
     #[arg(long, default_value_t = false)]
@@ -141,11 +151,16 @@ struct DatasetManifest {
     target_opening_records: usize,
     target_middle_records: usize,
     target_late_records: usize,
+    require_targets: bool,
+    target_minimum_percent: u8,
     max_records_per_game: Option<usize>,
+    phase_records_per_game: Option<Vec<usize>>,
     sample_every: usize,
     min_ply: usize,
     max_ply: Option<usize>,
     min_player_rate: Option<i32>,
+    min_opponent_rate: Option<i32>,
+    known_result_only: bool,
     winner_only: bool,
     decisive_only: bool,
     exclude_loser_after_ply: Option<usize>,
@@ -283,6 +298,17 @@ fn all_phase_targets_reached(args: &Args, stats: &DatasetStats) -> bool {
         .all(|phase| {
             let target = phase_target(args, phase);
             target == 0 || phase_count(stats, phase) >= target
+        })
+}
+
+fn phase_targets_meet_minimum(args: &Args, stats: &DatasetStats) -> bool {
+    [Phase::Opening, Phase::Middle, Phase::Late]
+        .into_iter()
+        .all(|phase| {
+            let target = phase_target(args, phase);
+            target == 0
+                || phase_count(stats, phase) * 100
+                    >= target * usize::from(args.target_minimum_percent)
         })
 }
 
@@ -445,6 +471,9 @@ fn should_include_move(
     if args.decisive_only && metadata.winner.is_none() {
         return false;
     }
+    if args.known_result_only && !metadata.result_known {
+        return false;
+    }
     if args.winner_only && metadata.winner != Some(color) {
         return false;
     }
@@ -454,7 +483,12 @@ fn should_include_move(
         return false;
     }
     if let Some(min_rate) = args.min_player_rate {
-        if !player_rate(metadata, color).is_some_and(|rate| rate >= min_rate) {
+        if player_rate(metadata, color).is_none_or(|rate| rate < min_rate) {
+            return false;
+        }
+    }
+    if let Some(min_rate) = args.min_opponent_rate {
+        if player_rate(metadata, color.flip()).is_none_or(|rate| rate < min_rate) {
             return false;
         }
     }
@@ -519,26 +553,11 @@ fn process_game(
     }
 
     let mut position = Position::default();
-    let mut written = 0usize;
     let mut eligible_seen = 0usize;
     let game_key = format!("{:016x}", stable_hash(args.seed, &path.to_string_lossy()));
+    let mut candidates = Vec::<(Phase, String)>::new();
 
     for (ply_index, csa_move) in record.moves.iter().enumerate() {
-        if all_phase_targets_reached(args, stats) {
-            break;
-        }
-        if args
-            .max_records
-            .is_some_and(|limit| stats.records_written >= limit)
-        {
-            break;
-        }
-        if args
-            .max_records_per_game
-            .is_some_and(|limit| written >= limit)
-        {
-            break;
-        }
         let ply = ply_index + 1;
         if args.max_ply.is_some_and(|max_ply| ply > max_ply) {
             break;
@@ -564,16 +583,11 @@ fn process_game(
             in_check,
         ) {
             eligible_seen += 1;
-            if (eligible_seen - 1) % args.sample_every != 0 {
+            if !(eligible_seen - 1).is_multiple_of(args.sample_every) {
                 position.do_move(mv);
                 continue;
             }
             let phase = phase_for_ply(ply);
-            if phase_target_reached(args, stats, phase) {
-                stats.records_filtered += 1;
-                position.do_move(mv);
-                continue;
-            }
             let opponent = move_color.flip();
             let is_winner_move = metadata.winner.map(|winner| winner == move_color);
             let out = DatasetRecord {
@@ -597,17 +611,68 @@ fn process_game(
                 teacher_move: format_move_usi(mv),
             };
             let line = serde_json::to_string(&out)?;
-            write_record(writers, split, &line)?;
-            increment_split_records(stats, split);
-            increment_phase_count(stats, phase);
-            stats.records_written += 1;
-            written += 1;
+            candidates.push((phase, line));
         } else if ply >= args.min_ply {
             stats.records_filtered += 1;
         }
         position.do_move(mv);
     }
+
+    let candidate_count = candidates.len();
+    let mut selected = select_game_records(candidates, args, &game_key);
+    stats.records_filtered += candidate_count.saturating_sub(selected.len());
+    let mut written = 0usize;
+    for (phase, line) in selected.drain(..) {
+        if all_phase_targets_reached(args, stats)
+            || args
+                .max_records
+                .is_some_and(|limit| stats.records_written >= limit)
+        {
+            break;
+        }
+        if phase_target_reached(args, stats, phase) {
+            stats.records_filtered += 1;
+            continue;
+        }
+        write_record(writers, split, &line)?;
+        increment_split_records(stats, split);
+        increment_phase_count(stats, phase);
+        stats.records_written += 1;
+        written += 1;
+    }
     Ok(written)
+}
+
+fn select_game_records(
+    candidates: Vec<(Phase, String)>,
+    args: &Args,
+    game_key: &str,
+) -> Vec<(Phase, String)> {
+    let mut rng = ChaCha8Rng::seed_from_u64(stable_hash(args.seed, game_key));
+    if let Some(caps) = args.phase_records_per_game.as_deref() {
+        let mut phases = [Vec::new(), Vec::new(), Vec::new()];
+        for candidate in candidates {
+            let index = match candidate.0 {
+                Phase::Opening => 0,
+                Phase::Middle => 1,
+                Phase::Late => 2,
+            };
+            phases[index].push(candidate);
+        }
+        let mut selected = Vec::new();
+        for (records, &cap) in phases.iter_mut().zip(caps) {
+            records.shuffle(&mut rng);
+            selected.extend(records.drain(..records.len().min(cap)));
+        }
+        selected.shuffle(&mut rng);
+        return selected;
+    }
+    let mut selected = candidates;
+    selected.shuffle(&mut rng);
+    if let Some(limit) = args.max_records_per_game {
+        selected.truncate(limit);
+    }
+    selected
 }
 
 fn git_rev() -> Option<String> {
@@ -630,13 +695,23 @@ fn unix_secs() -> u64 {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    if args.valid_percent + args.test_percent > 90 {
-        return Err(anyhow!(
-            "--valid-percent + --test-percent must be <= 90 to leave training data"
-        ));
+    if args.valid_percent + args.test_percent > 100 {
+        return Err(anyhow!("--valid-percent + --test-percent must be <= 100"));
     }
     if args.sample_every == 0 {
         return Err(anyhow!("--sample-every must be greater than zero"));
+    }
+    if !(1..=100).contains(&args.target_minimum_percent) {
+        return Err(anyhow!("--target-minimum-percent must be in 1..=100"));
+    }
+    if args
+        .phase_records_per_game
+        .as_ref()
+        .is_some_and(|caps| caps.len() != 3 || caps.iter().all(|&cap| cap == 0))
+    {
+        return Err(anyhow!(
+            "--phase-records-per-game requires three comma-separated values"
+        ));
     }
     let mut files = collect_csa_files(&args.input)?;
     if args.shuffle_games {
@@ -695,11 +770,16 @@ fn main() -> Result<()> {
         target_opening_records: args.target_opening_records,
         target_middle_records: args.target_middle_records,
         target_late_records: args.target_late_records,
+        require_targets: args.require_targets,
+        target_minimum_percent: args.target_minimum_percent,
         max_records_per_game: args.max_records_per_game,
+        phase_records_per_game: args.phase_records_per_game.clone(),
         sample_every: args.sample_every,
         min_ply: args.min_ply,
         max_ply: args.max_ply,
         min_player_rate: args.min_player_rate,
+        min_opponent_rate: args.min_opponent_rate,
+        known_result_only: args.known_result_only,
         winner_only: args.winner_only,
         decisive_only: args.decisive_only,
         exclude_loser_after_ply: args.exclude_loser_after_ply,
@@ -739,5 +819,17 @@ fn main() -> Result<()> {
         manifest.stats.test.games, manifest.stats.test.records
     );
 
+    if args.require_targets && !phase_targets_meet_minimum(&args, &manifest.stats) {
+        return Err(anyhow!(
+            "phase targets did not reach {}%: opening={}/{} middle={}/{} late={}/{}",
+            args.target_minimum_percent,
+            manifest.stats.phase.opening,
+            args.target_opening_records,
+            manifest.stats.phase.middle,
+            args.target_middle_records,
+            manifest.stats.phase.late,
+            args.target_late_records
+        ));
+    }
     Ok(())
 }

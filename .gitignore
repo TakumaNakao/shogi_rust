@@ -4,10 +4,14 @@ data/mmto/
 data/bonanza_pairwise_runs/
 data/training/
 data/bench_halfkp64_vs_kpp_*/
+data/bench_halfkp64_learned_vs_v250_*/
 data/halfkp64_kpp_checkpoint/
 data/halfkp64_kpp_training.csv
 data/halfkp_distill_pool_v1/
 data/halfkp_distill_shards_v1/
+data/halfkp_search_learning_v1/
+data/halfkp_search_learning_large_v1/
+data/halfkp_search_learning_smoke/
 data/search_quality/generated_v2/
 data/search_quality/selfplay_v2/
 target/
