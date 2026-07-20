@@ -1,7 +1,86 @@
-use super::{HALFKP_HIDDEN, HALFKP_INPUTS};
+use super::{HALFKP_HIDDEN, HALFKP_INPUTS, HALFKP_KING_BUCKETS, HALFKP_PIECE_STATES};
 use anyhow::{anyhow, Result};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
+
+pub const HALFKP_HEADER_LEN: usize = 32;
+pub const HALFKP_VERSION: u32 = 1;
+pub const HALFKP_MAGIC: &[u8; 8] = if cfg!(feature = "halfkp64") {
+    b"HKP00064"
+} else {
+    b"HKP00001"
+};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HalfKpHeader {
+    pub target_scale: f32,
+}
+
+impl HalfKpHeader {
+    pub fn current(target_scale: f32) -> Result<Self> {
+        let header = Self { target_scale };
+        header.validate()?;
+        Ok(header)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let bytes = bytes
+            .get(..HALFKP_HEADER_LEN)
+            .ok_or_else(|| anyhow!("truncated HalfKP header"))?;
+        if &bytes[..8] != HALFKP_MAGIC {
+            return Err(anyhow!("invalid HalfKP magic"));
+        }
+        let u32_at = |offset: usize| {
+            u32::from_le_bytes(
+                bytes[offset..offset + 4]
+                    .try_into()
+                    .expect("validated HalfKP header width"),
+            )
+        };
+        if u32_at(8) != HALFKP_VERSION
+            || u32_at(12) as usize != HALFKP_HIDDEN
+            || u32_at(16) as usize != HALFKP_INPUTS
+            || u32_at(20) as usize != HALFKP_KING_BUCKETS
+            || u32_at(24) as usize != HALFKP_PIECE_STATES
+        {
+            return Err(anyhow!("invalid HalfKP header"));
+        }
+        let header = Self {
+            target_scale: f32::from_le_bytes(
+                bytes[28..32]
+                    .try_into()
+                    .expect("validated HalfKP header width"),
+            ),
+        };
+        header.validate()?;
+        Ok(header)
+    }
+
+    pub fn encode(self) -> Result<[u8; HALFKP_HEADER_LEN]> {
+        self.validate()?;
+        let mut bytes = [0u8; HALFKP_HEADER_LEN];
+        bytes[..8].copy_from_slice(HALFKP_MAGIC);
+        bytes[8..12].copy_from_slice(&HALFKP_VERSION.to_le_bytes());
+        bytes[12..16].copy_from_slice(&(HALFKP_HIDDEN as u32).to_le_bytes());
+        bytes[16..20].copy_from_slice(&(HALFKP_INPUTS as u32).to_le_bytes());
+        bytes[20..24].copy_from_slice(&(HALFKP_KING_BUCKETS as u32).to_le_bytes());
+        bytes[24..28].copy_from_slice(&(HALFKP_PIECE_STATES as u32).to_le_bytes());
+        bytes[28..32].copy_from_slice(&self.target_scale.to_le_bytes());
+        Ok(bytes)
+    }
+
+    pub fn write_to(self, writer: &mut impl Write) -> Result<()> {
+        writer.write_all(&self.encode()?)?;
+        Ok(())
+    }
+
+    fn validate(self) -> Result<()> {
+        if !self.target_scale.is_finite() || self.target_scale <= 0.0 {
+            return Err(anyhow!("invalid HalfKP header"));
+        }
+        Ok(())
+    }
+}
 
 /// One aligned feature-transformer row. Keeping the hidden width in the type
 /// lets release builds eliminate per-element bounds checks and keeps rows

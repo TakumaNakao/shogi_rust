@@ -10,6 +10,7 @@ mod kernels;
 mod sparse;
 mod tiny_nnue;
 
+pub use codec::{HalfKpHeader, HALFKP_HEADER_LEN};
 pub use constants::*;
 pub use debug::{
     generate_sfen, index_to_kpp_info, is_promoted_piece_kind, piece_kind_to_sfen_char_base, KppInfo,
@@ -149,16 +150,13 @@ mod tests {
             include_str!("../tests/fixtures/halfkp/header_v1_halfkp32.hex")
         };
         let golden = decode_hex_fixture(fixture);
-        let mut expected = Vec::with_capacity(32);
-        expected.extend_from_slice(HalfKpModel::MAGIC);
-        expected.extend_from_slice(&1u32.to_le_bytes());
-        expected.extend_from_slice(&(HALFKP_HIDDEN as u32).to_le_bytes());
-        expected.extend_from_slice(&(HALFKP_INPUTS as u32).to_le_bytes());
-        expected.extend_from_slice(&(HALFKP_KING_BUCKETS as u32).to_le_bytes());
-        expected.extend_from_slice(&(HALFKP_PIECE_STATES as u32).to_le_bytes());
-        expected.extend_from_slice(&1000.0f32.to_le_bytes());
-        assert_eq!(32, golden.len());
-        assert_eq!(expected, golden);
+        let header = HalfKpHeader::current(1000.0).expect("valid current header");
+        assert_eq!(HALFKP_HEADER_LEN, golden.len());
+        assert_eq!(header.encode().expect("encode header"), golden.as_slice());
+        assert_eq!(
+            header,
+            HalfKpHeader::decode(&golden).expect("decode header")
+        );
 
         assert_halfkp_load_error("halfkp-header-only", &golden, None);
         for &length in &[0, 7, 8, 11, 12, 27, 31] {
