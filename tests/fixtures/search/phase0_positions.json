@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "startpos",
+      "position": "startpos",
+      "expect_terminal": false
+    },
+    {
+      "id": "representative_middlegame",
+      "position": "ln1g1k1nl/1r3sg2/p2psp1pp/2p3p2/1p2b4/2PP3P1/PPSG1PP1P/1BG2S1R1/LN1K3NL b Pp 25",
+      "expect_terminal": false
+    },
+    {
+      "id": "checked_quiet_evasions",
+      "position": "4k4/9/9/9/9/9/9/9/K3R4 w - 1",
+      "expect_terminal": false
+    },
+    {
+      "id": "all_losing_root_regression",
+      "position": "l6nl/7+R1/4k4/p1P+bp1n1p/3K1p3/P3P1S1P/ls2BP3/s3G4/9 b R2GS2NL9Pg 131",
+      "expect_terminal": false
+    },
+    {
+      "id": "v252_parallel_mate_regression",
+      "position": "startpos moves 7g7f 8c8d 2g2f 4a3b 2f2e 8d8e 8h7g 3c3d 7i6h 2b7g+ 6h7g 3a2b 3i4h 2b3c 6i7h 7a7b 4g4f 5a4b 4h4g 9c9d 9g9f 6c6d 3g3f 1c1d 1g1f 7c7d 2i3g 8a7c 6g6f 7b6c 4g5f 6a6b 2h2i 6c5d 4i4h 8b8a 3g4e 3c4d 2e2d 2c2d 2i2d P*2c 2d2h B*1c P*2d 1c2d 4h4g 2a1c B*3g 4d5e 5f5e 5d5e 1f1e 1d1e 1i1e S*1g 2h2g 1g1h 2g2h 4c4d 2h1h 4d4e 4f4e P*4f 4g5f 5e5f 5g5f G*2g S*8b 8a8b S*7a 2g1h 7a8b R*3i 5i6h 4f4g+ 3f3e",
+      "expect_terminal": false
+    },
+    {
+      "id": "v253_no_bestmove_regression",
+      "position": "+B4+R1n1/6+S1k/4+B1spp/plp3p2/1N5P1/P1P1S1P1+r/2G1PPN2/1p2KG3/L1G4+s1 w G2L5Pnp 116",
+      "expect_terminal": false
+    },
+    {
+      "id": "drop_and_promotion_rich",
+      "position": "+B5B1l/3s2+R1k/p5lp1/2ppp1p1p/1P5P1/PSPPP1PS1/1K1G3SP/3G3g1/LN6L w RG2N3Pn 110",
+      "expect_terminal": false
+    }
+  ]
+}

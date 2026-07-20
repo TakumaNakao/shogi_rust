@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "baseline_id": "v2.5.4-plus-master",
+  "captured_at": "2026-07-20",
+  "source": {
+    "revision": "5bc22c740389",
+    "describe": "v2.5.4-5-g5bc22c7",
+    "dirty": false
+  },
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu": "AMD Ryzen 7 PRO 4750U",
+    "physical_cores": 8,
+    "logical_cpus": 16,
+    "cpu_features": [
+      "avx2"
+    ],
+    "rustc": "1.95.0",
+    "cargo": "1.95.0",
+    "profile": "release",
+    "features": [
+      "halfkp64"
+    ]
+  },
+  "artifacts": {
+    "weight": {
+      "path_hint": "policy_weights_halfkp64_kpp_distilled_v2.5.0.binary",
+      "sha256": "91784d6f03f70580468a1509f968cbaaf598fbce084c22a739cb870344fb7c00",
+      "tracked": false
+    },
+    "positions": {
+      "path": "taya36.sfen",
+      "sha256": "22950f42a2d65292fa689a8c84e3af7dc160c571e9aa559699b0beaf1bc9adce",
+      "line_count": 1956,
+      "tracked": true
+    }
+  },
+  "search_profile": {
+    "command": [
+      "target/release/search_profile",
+      "--halfkp-weights",
+      "policy_weights_halfkp64_kpp_distilled_v2.5.0.binary",
+      "--positions",
+      "taya36.sfen",
+      "--samples",
+      "16",
+      "--depth",
+      "5",
+      "--seed",
+      "9501",
+      "--threads",
+      "1"
+    ],
+    "resolved_threads": 1,
+    "samples": 16,
+    "depth": 5,
+    "seed": 9501,
+    "deterministic_counters": {
+      "completed_depth_total": 80,
+      "total_nodes": 6208693,
+      "quiescence_nodes": 5763074,
+      "quiescence_moves_generated": 87300534,
+      "quiescence_moves_discarded": 76862168,
+      "quiescence_moves_considered": 10438366,
+      "quiescence_moves_searched": 3134345
+    },
+    "timing_runs_ms": [
+      6075.50,
+      6086.42,
+      6133.18
+    ],
+    "median_elapsed_ms": 6086.42,
+    "median_nodes_per_second_approx": 1020100,
+    "notes": [
+      "This is the first recorded baseline, not evidence of a historical regression.",
+      "Timing is valid only for comparisons on a stable equivalent machine.",
+      "The input file name is historical; the file contains 1956 lines, while this command samples 16."
+    ]
+  }
+}
