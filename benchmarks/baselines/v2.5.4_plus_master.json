@@ -323,5 +323,86 @@
       "gate_percent": 3.0,
       "result": "pass"
     }
+  },
+  "phase5_repetition_validation": {
+    "implementation_revision": "7cc7413",
+    "change_class": "C: correctness",
+    "rule_source": {
+      "organization": "Japan Shogi Association",
+      "url": "https://www.shogi.or.jp/match/taikyoku_rules/",
+      "rule": "four occurrences of the same position with the same side to move; a side continuously checking throughout the repetition interval loses"
+    },
+    "history_model": {
+      "type": "GameHistory",
+      "recorded_per_ply": [
+        "position key",
+        "side to move",
+        "mover",
+        "gave check"
+      ],
+      "bounded_by_legacy_256_ply_capacity": false,
+      "search_do_undo_synchronized": true,
+      "usi_position_history_preserved": true,
+      "adjudication_allocation_free": true
+    },
+    "teacher_semantics": {
+      "version": 3,
+      "id": "jsa-complete-check-interval-v1",
+      "sidecar_suffix": ".manifest.json",
+      "new_datasets_write_manifest": true,
+      "mismatched_or_missing_manifest_rejected_by_default": true,
+      "legacy_opt_in": "--allow-legacy-teacher-semantics"
+    },
+    "tests": {
+      "halfkp64_library_tests": 41,
+      "halfkp32_library_tests": 41,
+      "halfkp_search_train_tests": 3,
+      "usi_transcript_tests": 6,
+      "shogi_lib_tests": 33,
+      "halfkp64_workspace_release": "pass",
+      "halfkp64_all_targets_check": "pass",
+      "clippy_ratchet": "pass",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match",
+      "rule_fixtures": [
+        "ordinary fourfold repetition",
+        "continuous-check loss",
+        "non-check inside repetition interval",
+        "mixed checks",
+        "undo restoration",
+        "history longer than 256 plies",
+        "legal kings-only fourfold cycle",
+        "three preloaded occurrences and subtree fourth occurrence"
+      ]
+    },
+    "paired_performance_check": {
+      "control_revision": "10992f4",
+      "candidate_revision": "88c9e13",
+      "method": "five alternating runs using separately built binaries",
+      "control_timing_runs_ms": [
+        6380.00,
+        6321.24,
+        6382.21,
+        6148.55,
+        6367.12
+      ],
+      "candidate_timing_runs_ms": [
+        6474.86,
+        6524.18,
+        6299.38,
+        6352.31,
+        6481.89
+      ],
+      "control_median_elapsed_ms": 6367.12,
+      "candidate_median_elapsed_ms": 6474.86,
+      "candidate_delta_percent": 1.692,
+      "deterministic_counters_match": true,
+      "gate_percent": 3.0,
+      "result": "pass",
+      "notes": [
+        "The unpaired absolute timing had host drift, so the same-session alternating comparison is the regression decision.",
+        "The teacher-manifest commit does not affect the search runtime."
+      ]
+    }
   }
 }

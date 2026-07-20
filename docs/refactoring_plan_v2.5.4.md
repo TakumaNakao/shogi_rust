@@ -1726,7 +1726,7 @@ Phaseの着手・完了時に以下へ追記する。
 | 2 Module split | 完了 | `a71cc3b` | `4da6f3e` | search/evaluation責務をprivate moduleへ分離、fingerprint一致、原始性能差+1.18% |
 | 3 Format consolidation | 完了 | `f1ecb8b` | `5941250` | HalfKP/HKST codecを単一定義化、golden byte一致、paired性能差+0.12% |
 | 4 Search/USI separation | 完了 | `edf04b0` | `edf04b0` | typed outcome/observer、generation job、single bestmove emitter、性能差+0.38% |
-| 5 Repetition correctness | 未着手 |  |  |  |
+| 5 Repetition correctness | 完了 | `8a86417` | `7cc7413` | 完全履歴と王手区間による公式裁定、教師意味論v3、paired性能差+1.69% |
 | 6 Data/Training | 未着手 |  |  |  |
 | 7 Repository/Documents | 未着手 |  |  |  |
 | 8 Performance/Cutover | 未着手 |  |  |  |
@@ -1868,3 +1868,43 @@ Phase 3は完了した。
   Phase 2の安定基準`6158.48 ms`比`+0.383%`、3%の停止基準内だった。
 
 Phase 4はlocal gateについて完了した。
+
+### 2026-07-21 Phase 5実施結果
+
+- Phase 4の`refactor/phase4-search-api`を保存し、stacked branch
+  `refactor/phase5-repetition`を作成した。
+- 裁定仕様は日本将棋連盟の
+  [対局規定（抄録）](https://www.shogi.or.jp/match/taikyoku_rules/)を一次資料とした。
+  同一局面は盤面、持駒、手番が同じ状態の4回出現、連続王手は反復区間内で片側の
+  全着手が王手である場合に王手側の負け、と定義した。
+- `8a86417`: position keyだけを保持する固定長circular bufferを、各局面のkey、
+  手番、直前の着手側、王手有無を保持する`GameHistory`へ置換した。履歴は
+  256 plyで切り捨てず、USI `position ... moves`の初期局面から全着手を復元する。
+  search、parallel worker、in-process benchmark、USI benchmark、対局、fingerprint、
+  profileが同じ履歴表現を利用する。
+- 通常千日手、一方の連続王手、反復区間途中の非王手、両者の王手混在、undo、
+  256 ply超、合法な盤面遷移による4回反復を規則fixtureにした。USI入力から
+  3回出現済みの履歴を渡し、search subtree内の4回目を裁定してundo後に履歴が
+  復元されることも検証した。
+- `88c9e13`: 裁定時の一時`Vec`を除き、現在局面から同手番の過去entryを逆走して
+  4回目と反復区間を判定するallocation-free実装へ変更した。
+- `7cc7413`: 新規HKST0002へ`.manifest.json` sidecarを必ず書き、
+  `teacher_semantics_version = 3`、
+  `teacher_semantics_id = "jsa-complete-check-interval-v1"`を記録する。
+  trainerはversion、ID、formatの不一致とmanifest欠落を既定で拒否する。
+  manifest導入前の教師データは意味が確定できないため、利用者が
+  `--allow-legacy-teacher-semantics`を明示した場合だけ読み込める。
+  したがって、旧教師データは新意味のdatasetへ暗黙には混在しない。
+- このPhaseは分類Cの規則修正である。既存fingerprint fixtureは反復を含まないため
+  完全一致し、意図した探索差分は上記の規則fixtureで固定した。
+- 最終状態でHalfKP-32/64 library各41件、HalfKP search trainer 3件、
+  USI transcript 6件、`shogi_lib` 33件、HalfKP-64 workspace release testと
+  all-target checkが成功した。Clippy ratchet、format check、search fingerprintも成功した。
+- 初回の非paired絶対性能値はhostの速度変動を含んだため、Phase 4完了revision
+  `10992f4`とPhase 5のallocation-free revision `88c9e13`を同一sessionで5回ずつ
+  交互測定した。Phase 4中央値`6367.12 ms`、Phase 5中央値`6474.86 ms`、
+  差は`+1.692%`で、全決定的カウンタは一致し3%の停止基準内だった。
+  教師manifest変更は探索runtimeへ入らない。
+
+既存の教師shardは入力由来情報を欠くため自動変換せず、新しい規則で再生成する。
+リポジトリ内に生成済み教師artifactは追跡していない。Phase 5は完了した。
