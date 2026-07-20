@@ -1,6 +1,6 @@
 use super::codec::{
-    feature_rows_from_flat, read_f32_array, read_f32_le, read_f32_vec, read_u32_le,
-    HalfKpFeatureRow,
+    feature_rows_from_flat, read_f32_array, read_f32_le, read_f32_vec, HalfKpFeatureRow,
+    HalfKpHeader, HALFKP_HEADER_LEN, HALFKP_MAGIC,
 };
 use super::constants::{
     piece_kind_value, unpromoted_kind, HALFKP_HIDDEN, HALFKP_INPUTS, HALFKP_KING_BUCKETS,
@@ -61,36 +61,15 @@ struct HalfKpPendingMove {
 }
 
 impl HalfKpModel {
-    pub const MAGIC: &'static [u8; 8] = if cfg!(feature = "halfkp64") {
-        b"HKP00064"
-    } else {
-        b"HKP00001"
-    };
+    pub const MAGIC: &'static [u8; 8] = HALFKP_MAGIC;
 
     pub fn load(path: &Path) -> Result<Self> {
         let mut file = File::open(path)?;
-        let mut magic = [0u8; 8];
-        file.read_exact(&mut magic)?;
-        if &magic != Self::MAGIC {
-            return Err(anyhow!("invalid HalfKP magic"));
-        }
-        let version = read_u32_le(&mut file)? as usize;
-        let hidden = read_u32_le(&mut file)? as usize;
-        let inputs = read_u32_le(&mut file)? as usize;
-        let buckets = read_u32_le(&mut file)? as usize;
-        let piece_states = read_u32_le(&mut file)? as usize;
-        let target_scale = read_f32_le(&mut file)?;
-        if version != 1
-            || hidden != HALFKP_HIDDEN
-            || inputs != HALFKP_INPUTS
-            || buckets != HALFKP_KING_BUCKETS
-            || piece_states != HALFKP_PIECE_STATES
-            || !target_scale.is_finite()
-            || target_scale <= 0.0
-        {
-            return Err(anyhow!("invalid HalfKP header"));
-        }
-        let feature_emb = feature_rows_from_flat(read_f32_vec(&mut file, inputs * hidden)?)?;
+        let mut header_bytes = [0u8; HALFKP_HEADER_LEN];
+        file.read_exact(&mut header_bytes)?;
+        let header = HalfKpHeader::decode(&header_bytes)?;
+        let feature_emb =
+            feature_rows_from_flat(read_f32_vec(&mut file, HALFKP_INPUTS * HALFKP_HIDDEN)?)?;
         let hidden_b = read_f32_array::<HALFKP_HIDDEN>(&mut file)?;
         let out_w = read_f32_array::<{ HALFKP_HIDDEN * 2 + 1 }>(&mut file)?;
         let out_b = read_f32_le(&mut file)?;
@@ -99,7 +78,7 @@ impl HalfKpModel {
             return Err(anyhow!("trailing bytes in HalfKP file"));
         }
         Ok(Self {
-            target_scale,
+            target_scale: header.target_scale,
             feature_emb,
             hidden_b,
             out_w,
