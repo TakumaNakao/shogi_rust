@@ -35,6 +35,8 @@ jobs:
         run: cargo test --workspace --release --features halfkp64
       - name: HalfKP-64 all-target check
         run: cargo check --workspace --all-targets --features halfkp64
+      - name: Production clippy ratchet
+        run: tools/check_clippy_ratchet.sh
       - name: Existing clippy baseline
         run: cargo clippy --workspace --all-targets --features halfkp64
       - name: Deterministic search fingerprint

@@ -7,6 +7,8 @@
    目標アーキテクチャ、Phase、PR順、検証ゲート、完了条件を定義する実行計画。
 2. [`refactoring_handoff_v2.5.4.md`](refactoring_handoff_v2.5.4.md)  
    v2.5.4以降も保存すべき探索、USI、HalfKP、教師データの契約。
+3. [`toolchain_policy.md`](toolchain_policy.md)
+   Rust stable、MSRV宣言条件、Clippy warning ratchet、release再現性の運用方針。
 
 ## 現行実装
 

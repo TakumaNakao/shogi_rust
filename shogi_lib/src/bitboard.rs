@@ -225,6 +225,6 @@ mod tests {
     fn to_bb(squares: Vec<Square>) -> Bitboard {
         squares
             .iter()
-            .fold(Bitboard::empty(), |acc, e| (acc | Bitboard::single(*e)))
+            .fold(Bitboard::empty(), |acc, e| acc | Bitboard::single(*e))
     }
 }
