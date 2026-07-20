@@ -106,6 +106,41 @@ struct Processed {
     excluded_check: bool,
 }
 
+struct TeacherSession {
+    ai: ShogiAI<Arc<EngineEvaluator>, HISTORY_CAPACITY>,
+}
+
+impl TeacherSession {
+    fn new(evaluator: Arc<EngineEvaluator>) -> Self {
+        let mut ai = ShogiAI::new(evaluator);
+        ai.set_emit_info(false);
+        Self { ai }
+    }
+
+    fn score_move(
+        &mut self,
+        position: &Position,
+        mv: Move,
+        depth: u8,
+    ) -> Option<(f32, PackedHalfKpPosition)> {
+        let mut child = position.clone();
+        child.do_move(mv);
+        let packed = PackedHalfKpPosition::from_position(&child)?;
+        if child.legal_moves().is_empty() {
+            return Some((SCORE_CLAMP_CP, packed));
+        }
+        self.ai.reset_for_independent_search();
+        self.ai.sennichite_detector.record_initial_position(&child);
+        let (child_score, _) = self.ai.alpha_beta_search(
+            &mut child,
+            depth.saturating_sub(1),
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+        )?;
+        Some((-sanitize_score(child_score), packed))
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     if args.teacher_depth == 0
@@ -211,7 +246,10 @@ fn process_chunk(
     let compute = || {
         chunk
             .par_iter()
-            .map(|(index, line)| process_line(*index, line, args, evaluator.clone()))
+            .map_init(
+                || TeacherSession::new(evaluator.clone()),
+                |session, (index, line)| process_line(*index, line, args, session),
+            )
             .collect::<Vec<_>>()
     };
     let processed = pool.map_or_else(compute, |pool| pool.install(compute));
@@ -244,12 +282,7 @@ fn process_chunk(
     Ok(())
 }
 
-fn process_line(
-    index: usize,
-    line: &str,
-    args: &Args,
-    evaluator: Arc<EngineEvaluator>,
-) -> Processed {
+fn process_line(index: usize, line: &str, args: &Args, session: &mut TeacherSession) -> Processed {
     let Ok(input) = serde_json::from_str::<InputRecord>(line) else {
         return failed(true, false, false, false);
     };
@@ -285,7 +318,8 @@ fn process_line(
     let mut shallow = legal_moves
         .iter()
         .filter_map(|&mv| {
-            score_move(evaluator.clone(), &position, mv, args.selection_depth)
+            session
+                .score_move(&position, mv, args.selection_depth)
                 .map(|(score, _)| (mv, score))
         })
         .collect::<Vec<_>>();
@@ -354,8 +388,7 @@ fn process_line(
     };
     let mut candidates = Vec::with_capacity(selected.len());
     for mv in selected {
-        let Some((score_cp, child)) = score_move(evaluator.clone(), &position, mv, teacher_depth)
-        else {
+        let Some((score_cp, child)) = session.score_move(&position, mv, teacher_depth) else {
             continue;
         };
         let mut flags = 0;
@@ -408,30 +441,6 @@ fn process_line(
         search_failed: false,
         excluded_check: false,
     }
-}
-
-fn score_move(
-    evaluator: Arc<EngineEvaluator>,
-    position: &Position,
-    mv: Move,
-    depth: u8,
-) -> Option<(f32, PackedHalfKpPosition)> {
-    let mut child = position.clone();
-    child.do_move(mv);
-    let packed = PackedHalfKpPosition::from_position(&child)?;
-    if child.legal_moves().is_empty() {
-        return Some((SCORE_CLAMP_CP, packed));
-    }
-    let mut ai = ShogiAI::<_, HISTORY_CAPACITY>::new(evaluator);
-    ai.set_emit_info(false);
-    ai.sennichite_detector.record_position(&child);
-    let (child_score, _) = ai.alpha_beta_search(
-        &mut child,
-        depth.saturating_sub(1),
-        f32::NEG_INFINITY,
-        f32::INFINITY,
-    )?;
-    Some((-sanitize_score(child_score), packed))
 }
 
 fn is_tactical_move(position: &Position, mv: Move) -> bool {

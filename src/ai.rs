@@ -150,9 +150,32 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.sennichite_detector.clear();
         self.transposition_table.clear();
         self.clear_killer_moves();
+        self.eval_context = None;
         self.last_root_score = None;
         self.last_pv.clear();
         self.last_search_failed = false;
+    }
+
+    /// Restores the state that can influence an independent search while
+    /// retaining the evaluator allocation owned by this session.
+    pub fn reset_for_independent_search(&mut self) {
+        self.clear();
+        self.start_time = None;
+        self.time_limit = None;
+        self.next_time_check_nodes = 0;
+        self.nodes_searched = 0;
+        self.quiescence_nodes_searched = 0;
+        self.quiescence_moves_considered = 0;
+        self.quiescence_moves_generated = 0;
+        self.quiescence_moves_discarded = 0;
+        self.quiescence_moves_searched = 0;
+        self.quiescence_see_skips = 0;
+        self.quiescence_terminal_mates = 0;
+        self.check_evasion_extensions = 0;
+        self.aspiration_fail_lows = 0;
+        self.aspiration_fail_highs = 0;
+        self.aspiration_researches = 0;
+        self.last_completed_depth = 0;
     }
 
     fn clear_killer_moves(&mut self) {
@@ -447,6 +470,33 @@ mod tests {
         assert!(is_history_dependent_score(0.0));
         assert!(is_history_dependent_score(REPETITION_WIN_SCORE));
         assert!(is_history_dependent_score(-REPETITION_WIN_SCORE));
+    }
+
+    #[test]
+    fn independent_search_reset_matches_fresh_sessions() {
+        let position = Position::default();
+        let moves = position.legal_moves();
+        let mut reused = ShogiAI::<_, 256>::new(HashEvaluator);
+        reused.set_emit_info(false);
+
+        for &mv in moves.iter().take(4) {
+            let mut child = position.clone();
+            child.do_move(mv);
+            let mut fresh = ShogiAI::<_, 256>::new(HashEvaluator);
+            fresh.set_emit_info(false);
+            fresh.sennichite_detector.record_initial_position(&child);
+            let mut fresh_child = child.clone();
+            let expected = fresh
+                .alpha_beta_search(&mut fresh_child, 2, f32::NEG_INFINITY, f32::INFINITY)
+                .expect("fresh score");
+
+            reused.reset_for_independent_search();
+            reused.sennichite_detector.record_initial_position(&child);
+            let actual = reused
+                .alpha_beta_search(&mut child, 2, f32::NEG_INFINITY, f32::INFINITY)
+                .expect("reused score");
+            assert_eq!(expected, actual);
+        }
     }
 
     #[test]
