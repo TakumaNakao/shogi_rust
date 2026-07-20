@@ -1,5 +1,9 @@
 #![allow(dead_code)]
+mod constants;
+
 use anyhow::{anyhow, Result};
+pub use constants::*;
+use constants::{piece_kind_value, unpromoted_kind, BOARD_SQUARES};
 use rand::prelude::*;
 use rand_distr::Distribution;
 use rayon::prelude::*;
@@ -10,108 +14,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{_mm256_add_ps, _mm256_loadu_ps, _mm256_storeu_ps, _mm256_sub_ps};
-
-// --- Piece Values ---
-const PAWN_VALUE: f32 = 100.0;
-const LANCE_VALUE: f32 = 300.0;
-const KNIGHT_VALUE: f32 = 350.0;
-const SILVER_VALUE: f32 = 500.0;
-const GOLD_VALUE: f32 = 550.0;
-const BISHOP_VALUE: f32 = 800.0;
-const ROOK_VALUE: f32 = 1000.0;
-const PRO_PAWN_VALUE: f32 = 400.0;
-const PRO_LANCE_VALUE: f32 = 400.0;
-const PRO_KNIGHT_VALUE: f32 = 400.0;
-const PRO_SILVER_VALUE: f32 = 550.0;
-const PRO_BISHOP_VALUE: f32 = 1000.0;
-const PRO_ROOK_VALUE: f32 = 1200.0;
-
-fn piece_kind_value(kind: PieceKind) -> f32 {
-    match kind {
-        PieceKind::Pawn => PAWN_VALUE,
-        PieceKind::Lance => LANCE_VALUE,
-        PieceKind::Knight => KNIGHT_VALUE,
-        PieceKind::Silver => SILVER_VALUE,
-        PieceKind::Gold => GOLD_VALUE,
-        PieceKind::Bishop => BISHOP_VALUE,
-        PieceKind::Rook => ROOK_VALUE,
-        PieceKind::ProPawn => PRO_PAWN_VALUE,
-        PieceKind::ProLance => PRO_LANCE_VALUE,
-        PieceKind::ProKnight => PRO_KNIGHT_VALUE,
-        PieceKind::ProSilver => PRO_SILVER_VALUE,
-        PieceKind::ProBishop => PRO_BISHOP_VALUE,
-        PieceKind::ProRook => PRO_ROOK_VALUE,
-        PieceKind::King => 0.0, // King value is effectively infinite
-    }
-}
-
-fn unpromoted_kind(kind: PieceKind) -> PieceKind {
-    match kind {
-        PieceKind::ProPawn => PieceKind::Pawn,
-        PieceKind::ProLance => PieceKind::Lance,
-        PieceKind::ProKnight => PieceKind::Knight,
-        PieceKind::ProSilver => PieceKind::Silver,
-        PieceKind::ProBishop => PieceKind::Bishop,
-        PieceKind::ProRook => PieceKind::Rook,
-        other => other,
-    }
-}
-
-// --- Public Constants for KPP Feature Space ---
-pub const NUM_SQUARES: usize = 81;
-pub const NUM_BOARD_PIECE_KINDS: usize = 14;
-
-pub const MAX_HAND_PAWNS: usize = 18;
-pub const MAX_HAND_LANCES: usize = 4;
-pub const MAX_HAND_KNIGHTS: usize = 4;
-pub const MAX_HAND_SILVERS: usize = 4;
-pub const MAX_HAND_GOLDS: usize = 4;
-pub const MAX_HAND_BISHOPS: usize = 2;
-pub const MAX_HAND_ROOKS: usize = 2;
-
-pub const NUM_HAND_PIECE_SLOTS_PER_PLAYER: usize = MAX_HAND_PAWNS
-    + MAX_HAND_LANCES
-    + MAX_HAND_KNIGHTS
-    + MAX_HAND_SILVERS
-    + MAX_HAND_GOLDS
-    + MAX_HAND_BISHOPS
-    + MAX_HAND_ROOKS;
-
-pub const NUM_PIECE_STATES: usize =
-    (NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2) + (NUM_HAND_PIECE_SLOTS_PER_PLAYER * 2);
-
-pub const NUM_PIECE_PAIRS: usize = NUM_PIECE_STATES * (NUM_PIECE_STATES - 1) / 2;
-
-pub const MAX_FEATURES: usize = NUM_SQUARES * NUM_PIECE_PAIRS;
-
-pub const ALL_HAND_PIECES: [PieceKind; 7] = [
-    PieceKind::Pawn,
-    PieceKind::Lance,
-    PieceKind::Knight,
-    PieceKind::Silver,
-    PieceKind::Gold,
-    PieceKind::Bishop,
-    PieceKind::Rook,
-];
-
-pub const NNUE_NUM_KING_BUCKETS: usize = NUM_SQUARES * NUM_SQUARES;
-pub const NNUE_NUM_BOARD_FEATURES: usize = NUM_BOARD_PIECE_KINDS * NUM_SQUARES * 2;
-pub const NNUE_NUM_HAND_FEATURES: usize = NUM_HAND_PIECE_SLOTS_PER_PLAYER * 2;
-pub const NNUE_NUM_FEATURES: usize = NNUE_NUM_BOARD_FEATURES + NNUE_NUM_HAND_FEATURES;
-
-// Compact HalfKP feature space.  The king file is mirrored so equivalent
-// left/right positions share the same transformer rows.
-pub const HALFKP_KING_BUCKETS: usize = 5 * 9;
-pub const HALFKP_PIECE_STATES: usize = NUM_PIECE_STATES;
-pub const HALFKP_INPUTS: usize = HALFKP_KING_BUCKETS * HALFKP_PIECE_STATES;
-#[cfg(feature = "halfkp64")]
-pub const HALFKP_HIDDEN: usize = 64;
-#[cfg(not(feature = "halfkp64"))]
-pub const HALFKP_HIDDEN: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct NnueFeatures {
@@ -257,10 +163,6 @@ unsafe fn accumulate_rows_avx2(
         unsafe { _mm256_storeu_ps(hidden.as_mut_ptr().add(offset), value) };
     }
 }
-
-static BOARD_SQUARES: LazyLock<[Square; NUM_SQUARES]> = LazyLock::new(|| {
-    std::array::from_fn(|i| Square::from_u8(i as u8 + 1).expect("valid board square"))
-});
 
 // --- Evaluator Trait ---
 pub trait Evaluator {
