@@ -10,7 +10,10 @@ use shogi_ai::halfkp_training::{
     read_search_teacher_manifest, PackedHalfKpPosition, SearchTeacherReader, SearchTeacherRecord,
     CANDIDATE_GAME_MOVE, SEARCH_TEACHER_SEMANTICS_ID, SEARCH_TEACHER_SEMANTICS_VERSION,
 };
-use shogi_ai::training_data::{sha256_file, sha256_hex};
+use shogi_ai::training_data::{
+    artifact_metadata, capture_run_environment, sha256_file, sha256_hex, ArtifactMetadata,
+    RunEnvironment, PHASE_POLICY_VERSION, SPLIT_POLICY_VERSION,
+};
 use shogi_core::Color;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
@@ -156,6 +159,33 @@ struct CheckpointMeta {
     schedule_weight_sum: f64,
     schedule_lr_max: f32,
     swa_count: u64,
+}
+
+#[derive(Serialize)]
+struct TrainingRunManifest {
+    schema_version: u32,
+    stage: &'static str,
+    stage_fingerprint: String,
+    environment: RunEnvironment,
+    command: Vec<String>,
+    inputs: BTreeMap<String, Vec<ArtifactMetadata>>,
+    init_model: ArtifactMetadata,
+    engine_binary: Option<ArtifactMetadata>,
+    feature_profile: &'static str,
+    threads: usize,
+    random_seeds: Vec<u64>,
+    phase_policy_version: u32,
+    split_policy_version: u32,
+    teacher_semantics_version: u32,
+    teacher_semantics_id: &'static str,
+    optimizer: OptimizerKind,
+    hyperparameters: serde_json::Value,
+    completed_epoch: usize,
+    best_validation_score: f64,
+    final_validation: serde_json::Value,
+    final_test: Option<serde_json::Value>,
+    output: ArtifactMetadata,
+    parent_manifest_sha256: Vec<String>,
 }
 
 struct DenseGradient {
@@ -350,6 +380,11 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    let resolved_threads = pool
+        .as_ref()
+        .map_or_else(rayon::current_num_threads, |pool| {
+            pool.current_num_threads()
+        });
     let valid_records = count_datasets(
         &args.valid,
         args.max_valid_records,
@@ -415,6 +450,8 @@ fn main() -> Result<()> {
         args.allow_legacy_teacher_semantics,
         &options,
     )?;
+    let mut final_valid_metrics = initial.clone();
+    let mut completed_epoch = start_epoch;
     print_metrics("initial_valid", 0, &initial);
     if start_epoch == 0 {
         best = validation_score(&initial);
@@ -426,6 +463,7 @@ fn main() -> Result<()> {
     }
     let mut batch_accumulator = BatchAccumulator::default();
     for epoch in start_epoch + 1..=args.epochs {
+        completed_epoch = epoch;
         options.search_mix = epoch_search_mix(&args, epoch);
         let mut shard_order = args.train.clone();
         shard_order.shuffle(&mut ChaCha8Rng::seed_from_u64(
@@ -503,6 +541,7 @@ fn main() -> Result<()> {
             args.allow_legacy_teacher_semantics,
             &options,
         )?;
+        final_valid_metrics = valid_metrics.clone();
         print_metrics("valid", epoch, &valid_metrics);
         let mut score = validation_score(&valid_metrics);
         let mut selected = &eval_weights;
@@ -565,7 +604,7 @@ fn main() -> Result<()> {
             break;
         }
     }
-    if test_records > 0 {
+    let final_test_metrics = if test_records > 0 {
         let final_weights = Weights::load(&args.output)?;
         let test_metrics = evaluate_datasets(
             &final_weights,
@@ -576,7 +615,19 @@ fn main() -> Result<()> {
             &options,
         )?;
         print_metrics("final_test", args.epochs, &test_metrics);
-    }
+        Some(test_metrics)
+    } else {
+        None
+    };
+    write_training_manifest(
+        &args,
+        &run_fingerprint,
+        resolved_threads,
+        completed_epoch,
+        best,
+        &final_valid_metrics,
+        final_test_metrics.as_ref(),
+    )?;
     Ok(())
 }
 
@@ -795,6 +846,134 @@ fn training_fingerprint(args: &Args) -> Result<String> {
         },
     });
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
+}
+
+fn write_training_manifest(
+    args: &Args,
+    run_fingerprint: &str,
+    threads: usize,
+    completed_epoch: usize,
+    best_validation_score: f64,
+    final_validation: &Metrics,
+    final_test: Option<&Metrics>,
+) -> Result<()> {
+    fn dataset_artifacts(paths: &[PathBuf]) -> Result<Vec<ArtifactMetadata>> {
+        paths
+            .iter()
+            .map(|path| {
+                let records = read_search_teacher_manifest(path)?.map(|manifest| manifest.records);
+                artifact_metadata(path, records)
+            })
+            .collect()
+    }
+
+    let mut inputs = BTreeMap::new();
+    inputs.insert("train".to_string(), dataset_artifacts(&args.train)?);
+    inputs.insert("valid".to_string(), dataset_artifacts(&args.valid)?);
+    inputs.insert("test".to_string(), dataset_artifacts(&args.test)?);
+    let parent_manifest_sha256 = args
+        .train
+        .iter()
+        .chain(&args.valid)
+        .chain(&args.test)
+        .map(|path| shogi_ai::halfkp_training::search_teacher_manifest_path(path))
+        .filter(|path| path.exists())
+        .map(|path| sha256_file(&path))
+        .collect::<Result<Vec<_>>>()?;
+    let engine_binary = std::env::current_exe()
+        .ok()
+        .and_then(|path| artifact_metadata(&path, None).ok());
+    let manifest = TrainingRunManifest {
+        schema_version: 1,
+        stage: "halfkp_search_train",
+        stage_fingerprint: run_fingerprint.to_string(),
+        environment: capture_run_environment(),
+        command: std::env::args().collect(),
+        inputs,
+        init_model: artifact_metadata(&args.init, None)?,
+        engine_binary,
+        feature_profile: if cfg!(feature = "halfkp64") {
+            "halfkp64"
+        } else {
+            "halfkp32"
+        },
+        threads,
+        random_seeds: vec![args.seed],
+        phase_policy_version: PHASE_POLICY_VERSION,
+        split_policy_version: SPLIT_POLICY_VERSION,
+        teacher_semantics_version: SEARCH_TEACHER_SEMANTICS_VERSION,
+        teacher_semantics_id: SEARCH_TEACHER_SEMANTICS_ID,
+        optimizer: args.optimizer,
+        hyperparameters: serde_json::json!({
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate,
+            "output_learning_rate": args.output_learning_rate,
+            "kappa_cp": args.kappa_cp,
+            "search_mix": args.search_mix,
+            "search_mix_end": args.search_mix_end,
+            "loss_power": args.loss_power,
+            "rank_weight": args.rank_weight,
+            "game_rank_weight": args.game_rank_weight,
+            "rank_margin_cp": args.rank_margin_cp,
+            "rank_temperature_cp": args.rank_temperature_cp,
+            "min_rank_gap_cp": args.min_rank_gap_cp,
+            "game_regret_cap_cp": args.game_regret_cap_cp,
+            "max_pairs_per_record": args.max_pairs_per_record,
+            "gradient_clip_norm": args.gradient_clip_norm,
+            "output_limit": args.output_limit,
+            "early_stop_patience": args.early_stop_patience,
+            "min_valid_improvement": args.min_valid_improvement,
+            "schedule_free_beta1": args.schedule_free_beta1,
+            "schedule_free_beta2": args.schedule_free_beta2,
+            "schedule_free_warmup_steps": args.schedule_free_warmup_steps,
+            "swa_start_epoch": args.swa_start_epoch,
+            "fit_kappa": args.fit_kappa,
+            "max_train_records": args.max_train_records,
+            "max_valid_records": args.max_valid_records,
+            "train_chunk_records": args.train_chunk_records,
+            "eval_chunk_records": args.eval_chunk_records,
+        }),
+        completed_epoch,
+        best_validation_score,
+        final_validation: metrics_json(final_validation),
+        final_test: final_test.map(metrics_json),
+        output: artifact_metadata(&args.output, None)?,
+        parent_manifest_sha256,
+    };
+    let path = append_path_suffix(&args.output, ".manifest.json");
+    let temporary = append_path_suffix(&path, ".tmp");
+    let mut writer = BufWriter::new(File::create(&temporary)?);
+    serde_json::to_writer_pretty(&mut writer, &manifest)?;
+    writer.flush()?;
+    writer.get_ref().sync_all()?;
+    drop(writer);
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+
+fn metrics_json(metrics: &Metrics) -> serde_json::Value {
+    serde_json::json!({
+        "records": metrics.records,
+        "known_results": metrics.known_results,
+        "value_loss": metrics.value_loss,
+        "search_abs_error": metrics.search_abs_error,
+        "pairs": metrics.pairs,
+        "pair_correct": metrics.pair_correct,
+        "top1_matches": metrics.top1_matches,
+        "game_moves": metrics.game_moves,
+        "game_move_top1": metrics.game_move_top1,
+        "regret_sum": metrics.regret_sum,
+        "log_loss": metrics.log_loss,
+        "phase_records": metrics.phase_records,
+        "phase_brier": metrics.phase_brier,
+    })
+}
+
+fn append_path_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
 }
 
 fn initialize_training(
@@ -1706,6 +1885,7 @@ mod tests {
             teacher_semantics_version: SEARCH_TEACHER_SEMANTICS_VERSION - 1,
             teacher_semantics_id: "legacy-truncated-history".to_string(),
             records: 0,
+            ..SearchTeacherManifest::default()
         };
         std::fs::write(
             &manifest_path,
