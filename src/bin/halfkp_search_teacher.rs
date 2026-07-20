@@ -11,6 +11,7 @@ use shogi_ai::halfkp_training::{
     CANDIDATE_GAME_MOVE, CANDIDATE_RANDOM, CANDIDATE_SEARCH_BEST, CANDIDATE_TACTICAL,
 };
 use shogi_ai::position_hash::PositionHasher;
+use shogi_ai::training_data::TrainingPhase;
 use shogi_ai::utils::{parse_usi_move_for_color, position_from_sfen_or_usi};
 use shogi_core::{Color, Move};
 use shogi_lib::Position;
@@ -474,22 +475,11 @@ fn result_for(input: &InputRecord, side: Color) -> Option<f32> {
 }
 
 fn phase_code(value: &str) -> u8 {
-    match value {
-        "opening" => 0,
-        "middle" | "middlegame" => 1,
-        "late" | "endgame" => 2,
-        _ => 3,
-    }
+    TrainingPhase::parse(value).map_or(3, TrainingPhase::code)
 }
 
 fn phase_for_ply(ply: u16) -> u8 {
-    if ply <= 40 {
-        0
-    } else if ply <= 90 {
-        1
-    } else {
-        2
-    }
+    TrainingPhase::for_ply(usize::from(ply)).code()
 }
 
 fn failed(

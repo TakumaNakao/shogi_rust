@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use clap::Parser;
-use glob::glob;
+use shogi_ai::training_data::collect_csa_files;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -45,32 +45,6 @@ impl PlayerStats {
             self.rate_sum as f64 / self.games as f64
         }
     }
-}
-
-fn collect_csa_files(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for input in inputs {
-        if input.is_dir() {
-            let pattern = input.join("**/*.csa");
-            let pattern = pattern
-                .to_str()
-                .ok_or_else(|| anyhow!("path is not valid UTF-8: {}", input.display()))?;
-            for entry in glob(pattern)? {
-                files.push(entry?);
-            }
-        } else if input
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("csa"))
-        {
-            files.push(input.clone());
-        }
-    }
-    files.sort();
-    files.dedup();
-    if files.is_empty() {
-        return Err(anyhow!("no CSA files found"));
-    }
-    Ok(files)
 }
 
 fn parse_player_name(line: &str, prefix: &str) -> Option<String> {

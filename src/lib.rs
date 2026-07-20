@@ -4,5 +4,6 @@ pub mod halfkp_training;
 pub mod move_ordering;
 pub mod position_hash;
 pub mod sennichite;
+pub mod training_data;
 pub mod usi_shogi;
 pub mod utils;

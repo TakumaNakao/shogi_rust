@@ -1,12 +1,16 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use glob::glob;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
+use shogi_ai::training_data::{
+    collect_csa_files, csa_color, game_content_id, parse_csa_metadata, parse_csa_move, sha256_file,
+    split_for_game_content, CsaMetadata, DatasetSplit as Split, TrainingPhase as Phase,
+    PHASE_POLICY_VERSION, SPLIT_POLICY_VERSION,
+};
 use shogi_ai::utils::format_move_usi;
-use shogi_core::{Color, Move, Piece, PieceKind, Square};
+use shogi_core::Color;
 use shogi_lib::Position;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -71,20 +75,6 @@ struct Args {
     exclude_in_check: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Split {
-    Train,
-    Valid,
-    Test,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Phase {
-    Opening,
-    Middle,
-    Late,
-}
-
 #[derive(Serialize)]
 struct DatasetRecord {
     schema: &'static str,
@@ -136,6 +126,7 @@ struct DatasetStats {
 
 #[derive(Serialize)]
 struct DatasetManifest {
+    schema_version: u32,
     schema: &'static str,
     created_unix_secs: u64,
     git_rev: Option<String>,
@@ -143,6 +134,8 @@ struct DatasetManifest {
     input: Vec<String>,
     output_dir: String,
     seed: u64,
+    phase_policy_version: u32,
+    split_policy_version: u32,
     shuffle_games: bool,
     valid_percent: u8,
     test_percent: u8,
@@ -166,62 +159,29 @@ struct DatasetManifest {
     exclude_loser_after_ply: Option<usize>,
     min_legal_moves: usize,
     exclude_in_check: bool,
+    input_files: Vec<InputFileManifest>,
+    output_files: Vec<OutputFileManifest>,
     stats: DatasetStats,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct CsaMetadata {
-    black_rate: Option<i32>,
-    white_rate: Option<i32>,
-    winner: Option<Color>,
-    result_known: bool,
-    termination: &'static str,
+#[derive(Serialize)]
+struct InputFileManifest {
+    path: String,
+    sha256: String,
+    bytes: u64,
 }
 
-impl Default for CsaMetadata {
-    fn default() -> Self {
-        Self {
-            black_rate: None,
-            white_rate: None,
-            winner: None,
-            result_known: false,
-            termination: "unknown",
-        }
-    }
+#[derive(Serialize)]
+struct OutputFileManifest {
+    path: String,
+    sha256: String,
+    records: usize,
 }
 
 struct Writers {
     train: BufWriter<File>,
     valid: BufWriter<File>,
     test: BufWriter<File>,
-}
-
-fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
-    match csa_piece_type {
-        csa::PieceType::Pawn => PieceKind::Pawn,
-        csa::PieceType::Lance => PieceKind::Lance,
-        csa::PieceType::Knight => PieceKind::Knight,
-        csa::PieceType::Silver => PieceKind::Silver,
-        csa::PieceType::Gold => PieceKind::Gold,
-        csa::PieceType::Bishop => PieceKind::Bishop,
-        csa::PieceType::Rook => PieceKind::Rook,
-        csa::PieceType::King => PieceKind::King,
-        csa::PieceType::ProPawn => PieceKind::ProPawn,
-        csa::PieceType::ProLance => PieceKind::ProLance,
-        csa::PieceType::ProKnight => PieceKind::ProKnight,
-        csa::PieceType::ProSilver => PieceKind::ProSilver,
-        csa::PieceType::Horse => PieceKind::ProBishop,
-        csa::PieceType::Dragon => PieceKind::ProRook,
-        csa::PieceType::All => unreachable!(),
-    }
-}
-
-fn csa_to_shogi_color(color: csa::Color) -> Color {
-    if color == csa::Color::Black {
-        Color::Black
-    } else {
-        Color::White
-    }
 }
 
 fn color_text(color: Color) -> &'static str {
@@ -231,50 +191,35 @@ fn color_text(color: Color) -> &'static str {
     }
 }
 
-const OPENING_MAX_PLY: usize = 40;
-const MIDDLE_MAX_PLY: usize = 90;
-
 fn phase_text(ply: usize) -> &'static str {
-    if ply <= OPENING_MAX_PLY {
-        "opening"
-    } else if ply <= MIDDLE_MAX_PLY {
-        "middlegame"
-    } else {
-        "endgame"
-    }
+    Phase::for_ply(ply).as_str()
 }
 
 fn phase_for_ply(ply: usize) -> Phase {
-    if ply <= OPENING_MAX_PLY {
-        Phase::Opening
-    } else if ply <= MIDDLE_MAX_PLY {
-        Phase::Middle
-    } else {
-        Phase::Late
-    }
+    Phase::for_ply(ply)
 }
 
 fn phase_target(args: &Args, phase: Phase) -> usize {
     match phase {
         Phase::Opening => args.target_opening_records,
-        Phase::Middle => args.target_middle_records,
-        Phase::Late => args.target_late_records,
+        Phase::Middlegame => args.target_middle_records,
+        Phase::Endgame => args.target_late_records,
     }
 }
 
 fn phase_count(stats: &DatasetStats, phase: Phase) -> usize {
     match phase {
         Phase::Opening => stats.phase.opening,
-        Phase::Middle => stats.phase.middle,
-        Phase::Late => stats.phase.late,
+        Phase::Middlegame => stats.phase.middle,
+        Phase::Endgame => stats.phase.late,
     }
 }
 
 fn increment_phase_count(stats: &mut DatasetStats, phase: Phase) {
     match phase {
         Phase::Opening => stats.phase.opening += 1,
-        Phase::Middle => stats.phase.middle += 1,
-        Phase::Late => stats.phase.late += 1,
+        Phase::Middlegame => stats.phase.middle += 1,
+        Phase::Endgame => stats.phase.late += 1,
     }
 }
 
@@ -293,7 +238,7 @@ fn all_phase_targets_reached(args: &Args, stats: &DatasetStats) -> bool {
     if !has_phase_targets(args) {
         return false;
     }
-    [Phase::Opening, Phase::Middle, Phase::Late]
+    [Phase::Opening, Phase::Middlegame, Phase::Endgame]
         .into_iter()
         .all(|phase| {
             let target = phase_target(args, phase);
@@ -302,7 +247,7 @@ fn all_phase_targets_reached(args: &Args, stats: &DatasetStats) -> bool {
 }
 
 fn phase_targets_meet_minimum(args: &Args, stats: &DatasetStats) -> bool {
-    [Phase::Opening, Phase::Middle, Phase::Late]
+    [Phase::Opening, Phase::Middlegame, Phase::Endgame]
         .into_iter()
         .all(|phase| {
             let target = phase_target(args, phase);
@@ -312,111 +257,8 @@ fn phase_targets_meet_minimum(args: &Args, stats: &DatasetStats) -> bool {
         })
 }
 
-fn parse_rate_line(line: &str, prefix: &str) -> Option<i32> {
-    line.strip_prefix(prefix)
-        .and_then(|rest| rest.rsplit(':').next())
-        .and_then(|rate| rate.parse::<f64>().ok())
-        .map(|rate| rate.round() as i32)
-}
-
-fn infer_outcome(record: &csa::GameRecord) -> (Option<Color>, bool, &'static str) {
-    let mut last_mover = None;
-    for move_record in &record.moves {
-        match move_record.action {
-            csa::Action::Move(color, ..) => {
-                last_mover = Some(csa_to_shogi_color(color));
-            }
-            csa::Action::Toryo | csa::Action::TimeUp | csa::Action::IllegalMove => {
-                return (last_mover, last_mover.is_some(), "decisive");
-            }
-            csa::Action::IllegalAction(color) => {
-                return (
-                    Some(csa_to_shogi_color(color).flip()),
-                    true,
-                    "illegal_action",
-                );
-            }
-            csa::Action::Tsumi | csa::Action::Kachi => {
-                return (last_mover, last_mover.is_some(), "decisive");
-            }
-            csa::Action::Sennichite | csa::Action::Jishogi | csa::Action::Hikiwake => {
-                return (None, true, "draw");
-            }
-            csa::Action::Chudan | csa::Action::Matta | csa::Action::Fuzumi | csa::Action::Error => {
-                return (None, false, "unknown");
-            }
-        }
-    }
-    (None, false, "unknown")
-}
-
-fn parse_csa_metadata(text: &str, record: &csa::GameRecord) -> CsaMetadata {
-    let mut metadata = CsaMetadata::default();
-    for line in text.lines() {
-        if let Some(rate) = parse_rate_line(line, "'black_rate:") {
-            metadata.black_rate = Some(rate);
-        } else if let Some(rate) = parse_rate_line(line, "'white_rate:") {
-            metadata.white_rate = Some(rate);
-        }
-    }
-    let (winner, result_known, termination) = infer_outcome(record);
-    metadata.winner = winner;
-    metadata.result_known = result_known;
-    metadata.termination = termination;
-    metadata
-}
-
 fn player_rate(metadata: &CsaMetadata, color: Color) -> Option<i32> {
-    match color {
-        Color::Black => metadata.black_rate,
-        Color::White => metadata.white_rate,
-    }
-}
-
-fn parse_csa_move(position: &Position, action: &csa::Action) -> Option<Move> {
-    let csa::Action::Move(color, from_csa, to_csa, piece_type_after_csa) = action else {
-        return None;
-    };
-    let to = Square::new(to_csa.file, to_csa.rank)?;
-    if from_csa.file == 0 && from_csa.rank == 0 {
-        let piece_kind = csa_to_shogi_piece_kind(*piece_type_after_csa);
-        let piece_color = csa_to_shogi_color(*color);
-        Some(Move::Drop {
-            piece: Piece::new(piece_kind, piece_color),
-            to,
-        })
-    } else {
-        let from = Square::new(from_csa.file, from_csa.rank)?;
-        let piece_before = position.piece_at(from)?;
-        let promote = piece_before.piece_kind() != csa_to_shogi_piece_kind(*piece_type_after_csa);
-        Some(Move::Normal { from, to, promote })
-    }
-}
-
-fn collect_csa_files(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for input in inputs {
-        if input.is_dir() {
-            let pattern = input.join("**/*.csa");
-            let pattern = pattern
-                .to_str()
-                .ok_or_else(|| anyhow!("path is not valid UTF-8: {}", input.display()))?;
-            for entry in glob(pattern)? {
-                files.push(entry?);
-            }
-        } else if input
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("csa"))
-        {
-            files.push(input.clone());
-        }
-    }
-    files.sort();
-    files.dedup();
-    if files.is_empty() {
-        return Err(anyhow!("no CSA files found"));
-    }
-    Ok(files)
+    metadata.player_rate(color)
 }
 
 fn stable_hash(seed: u64, text: &str) -> u64 {
@@ -428,24 +270,8 @@ fn stable_hash(seed: u64, text: &str) -> u64 {
     hash
 }
 
-fn split_for_game(path: &Path, seed: u64, valid_percent: u8, test_percent: u8) -> Split {
-    let key = path.to_string_lossy();
-    let bucket = (stable_hash(seed, &key) % 100) as u8;
-    if bucket < test_percent {
-        Split::Test
-    } else if bucket < test_percent + valid_percent {
-        Split::Valid
-    } else {
-        Split::Train
-    }
-}
-
 fn split_text(split: Split) -> &'static str {
-    match split {
-        Split::Train => "train",
-        Split::Valid => "valid",
-        Split::Test => "test",
-    }
+    split.as_str()
 }
 
 fn should_include_move(
@@ -540,12 +366,14 @@ fn increment_split_records(stats: &mut DatasetStats, split: Split) {
 fn process_game(
     game_index: usize,
     path: &Path,
+    bytes: &[u8],
+    game_id: &str,
     split: Split,
     args: &Args,
     writers: &mut Writers,
     stats: &mut DatasetStats,
 ) -> Result<usize> {
-    let text = fs::read_to_string(path)?;
+    let text = std::str::from_utf8(bytes)?;
     let record = csa::parse_csa(&text)?;
     let metadata = parse_csa_metadata(&text, &record);
     if args.decisive_only && metadata.winner.is_none() {
@@ -554,7 +382,7 @@ fn process_game(
 
     let mut position = Position::default();
     let mut eligible_seen = 0usize;
-    let game_key = format!("{:016x}", stable_hash(args.seed, &path.to_string_lossy()));
+    let game_key = game_id.to_string();
     let mut candidates = Vec::<(Phase, String)>::new();
 
     for (ply_index, csa_move) in record.moves.iter().enumerate() {
@@ -570,7 +398,7 @@ fn process_game(
             break;
         }
         let move_color = match csa_move.action {
-            csa::Action::Move(color, ..) => csa_to_shogi_color(color),
+            csa::Action::Move(color, ..) => csa_color(color),
             _ => break,
         };
         let in_check = position.in_check();
@@ -603,7 +431,7 @@ fn process_game(
                 opponent_rate: player_rate(&metadata, opponent),
                 winner: metadata.winner.map(color_text),
                 result_known: metadata.result_known,
-                termination: metadata.termination,
+                termination: metadata.termination.as_str(),
                 is_winner_move,
                 legal_moves: legal_moves.len(),
                 in_check,
@@ -654,8 +482,8 @@ fn select_game_records(
         for candidate in candidates {
             let index = match candidate.0 {
                 Phase::Opening => 0,
-                Phase::Middle => 1,
-                Phase::Late => 2,
+                Phase::Middlegame => 1,
+                Phase::Endgame => 2,
             };
             phases[index].push(candidate);
         }
@@ -720,6 +548,7 @@ fn main() -> Result<()> {
     }
     let mut writers = create_writers(&args.output_dir)?;
     let mut stats = DatasetStats::default();
+    let mut input_files = Vec::new();
 
     for (game_index, path) in files.iter().enumerate() {
         if all_phase_targets_reached(&args, &stats) {
@@ -738,8 +567,31 @@ fn main() -> Result<()> {
             break;
         }
         stats.games_seen += 1;
-        let split = split_for_game(path, args.seed, args.valid_percent, args.test_percent);
-        match process_game(game_index, path, split, &args, &mut writers, &mut stats) {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                stats.games_skipped_parse += 1;
+                continue;
+            }
+        };
+        let game_id = game_content_id(&bytes);
+        input_files.push(InputFileManifest {
+            path: path.to_string_lossy().to_string(),
+            sha256: game_id.clone(),
+            bytes: bytes.len() as u64,
+        });
+        let split =
+            split_for_game_content(&game_id, args.seed, args.valid_percent, args.test_percent);
+        match process_game(
+            game_index,
+            path,
+            &bytes,
+            &game_id,
+            split,
+            &args,
+            &mut writers,
+            &mut stats,
+        ) {
             Ok(0) => stats.games_filtered += 1,
             Ok(_) => {
                 stats.games_used += 1;
@@ -749,9 +601,25 @@ fn main() -> Result<()> {
         }
     }
     flush_writers(&mut writers)?;
+    let output_files = [
+        ("train.jsonl", stats.train.records),
+        ("valid.jsonl", stats.valid.records),
+        ("test.jsonl", stats.test.records),
+    ]
+    .into_iter()
+    .map(|(name, records)| {
+        let path = args.output_dir.join(name);
+        Ok(OutputFileManifest {
+            path: name.to_string(),
+            sha256: sha256_file(&path)?,
+            records,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
 
     let manifest = DatasetManifest {
-        schema: "rank_value_dataset_v2_manifest",
+        schema_version: 3,
+        schema: "rank_value_dataset_v3_manifest",
         created_unix_secs: unix_secs(),
         git_rev: git_rev(),
         command: std::env::args().collect(),
@@ -762,6 +630,8 @@ fn main() -> Result<()> {
             .collect(),
         output_dir: args.output_dir.to_string_lossy().to_string(),
         seed: args.seed,
+        phase_policy_version: PHASE_POLICY_VERSION,
+        split_policy_version: SPLIT_POLICY_VERSION,
         shuffle_games: args.shuffle_games,
         valid_percent: args.valid_percent,
         test_percent: args.test_percent,
@@ -785,6 +655,8 @@ fn main() -> Result<()> {
         exclude_loser_after_ply: args.exclude_loser_after_ply,
         min_legal_moves: args.min_legal_moves,
         exclude_in_check: args.exclude_in_check,
+        input_files,
+        output_files,
         stats,
     };
     let manifest_path = args.output_dir.join("manifest.json");

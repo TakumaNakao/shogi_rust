@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, ValueEnum};
-use glob::glob;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,11 +10,14 @@ use plotters::prelude::*;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
-use shogi_core::{Color, Move, Piece, PieceKind, Square};
+use shogi_core::{Color, Move};
 use shogi_lib::Position;
 
 // evaluationモジュールから公開されたロジックとモデルを使用する
 use shogi_ai::evaluation::SparseModel;
+use shogi_ai::training_data::{
+    collect_csa_files, csa_color, parse_csa_metadata, parse_csa_move, CsaMetadata,
+};
 
 const DEFAULT_LEARNING_RATE: f32 = 0.1;
 const DEFAULT_L2_LAMBDA: f32 = 1e-5;
@@ -113,96 +115,6 @@ struct Args {
     no_graph: bool,
 }
 
-fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
-    match csa_piece_type {
-        csa::PieceType::Pawn => PieceKind::Pawn,
-        csa::PieceType::Lance => PieceKind::Lance,
-        csa::PieceType::Knight => PieceKind::Knight,
-        csa::PieceType::Silver => PieceKind::Silver,
-        csa::PieceType::Gold => PieceKind::Gold,
-        csa::PieceType::Bishop => PieceKind::Bishop,
-        csa::PieceType::Rook => PieceKind::Rook,
-        csa::PieceType::King => PieceKind::King,
-        csa::PieceType::ProPawn => PieceKind::ProPawn,
-        csa::PieceType::ProLance => PieceKind::ProLance,
-        csa::PieceType::ProKnight => PieceKind::ProKnight,
-        csa::PieceType::ProSilver => PieceKind::ProSilver,
-        csa::PieceType::Horse => PieceKind::ProBishop,
-        csa::PieceType::Dragon => PieceKind::ProRook,
-        csa::PieceType::All => unreachable!(),
-    }
-}
-
-fn csa_to_shogi_color(color: csa::Color) -> Color {
-    if color == csa::Color::Black {
-        Color::Black
-    } else {
-        Color::White
-    }
-}
-
-fn infer_winner(record: &csa::GameRecord) -> Option<Color> {
-    let mut last_mover = None;
-    for move_record in &record.moves {
-        match move_record.action {
-            csa::Action::Move(color, ..) => {
-                last_mover = Some(csa_to_shogi_color(color));
-            }
-            csa::Action::Toryo | csa::Action::TimeUp | csa::Action::IllegalMove => {
-                return last_mover;
-            }
-            csa::Action::IllegalAction(color) => {
-                return Some(csa_to_shogi_color(color).flip());
-            }
-            csa::Action::Tsumi | csa::Action::Kachi => {
-                return last_mover;
-            }
-            csa::Action::Chudan
-            | csa::Action::Sennichite
-            | csa::Action::Jishogi
-            | csa::Action::Hikiwake
-            | csa::Action::Matta
-            | csa::Action::Fuzumi
-            | csa::Action::Error => return None,
-        }
-    }
-    None
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct CsaMetadata {
-    black_rate: Option<i32>,
-    white_rate: Option<i32>,
-    winner: Option<Color>,
-}
-
-fn parse_rate_line(line: &str, prefix: &str) -> Option<i32> {
-    line.strip_prefix(prefix)
-        .and_then(|rest| rest.rsplit(':').next())
-        .and_then(|rate| rate.parse::<f64>().ok())
-        .map(|rate| rate.round() as i32)
-}
-
-fn parse_csa_metadata(text: &str, record: &csa::GameRecord) -> CsaMetadata {
-    let mut metadata = CsaMetadata::default();
-    for line in text.lines() {
-        if let Some(rate) = parse_rate_line(line, "'black_rate:") {
-            metadata.black_rate = Some(rate);
-        } else if let Some(rate) = parse_rate_line(line, "'white_rate:") {
-            metadata.white_rate = Some(rate);
-        }
-    }
-    metadata.winner = infer_winner(record);
-    metadata
-}
-
-fn player_rate(metadata: &CsaMetadata, color: Color) -> Option<i32> {
-    match color {
-        Color::Black => metadata.black_rate,
-        Color::White => metadata.white_rate,
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct SampleFilter {
     decisive_only: bool,
@@ -224,7 +136,10 @@ impl SampleFilter {
             return false;
         }
         if let Some(min_rate) = self.min_player_rate {
-            if !player_rate(metadata, color).is_some_and(|rate| rate >= min_rate) {
+            if !metadata
+                .player_rate(color)
+                .is_some_and(|rate| rate >= min_rate)
+            {
                 return false;
             }
         }
@@ -258,53 +173,13 @@ fn process_csa_file(
     let mut rng = ChaCha8Rng::seed_from_u64(sample_seed);
 
     for (ply_index, mv) in record.moves.iter().enumerate() {
-        let shogi_move = match mv.action {
-            csa::Action::Move(color, from_csa, to_csa, piece_type_after_csa) => {
-                let to_sq = if let Some(sq) = Square::new(to_csa.file, to_csa.rank) {
-                    sq
-                } else {
-                    break;
-                };
-
-                if from_csa.file == 0 && from_csa.rank == 0 {
-                    let piece_kind = csa_to_shogi_piece_kind(piece_type_after_csa);
-                    let piece_color = if color == csa::Color::Black {
-                        Color::Black
-                    } else {
-                        Color::White
-                    };
-                    Some(Move::Drop {
-                        piece: Piece::new(piece_kind, piece_color),
-                        to: to_sq,
-                    })
-                } else {
-                    let from_sq = if let Some(sq) = Square::new(from_csa.file, from_csa.rank) {
-                        sq
-                    } else {
-                        break;
-                    };
-                    let piece_before = if let Some(p) = shogi_lib_pos.piece_at(from_sq) {
-                        p
-                    } else {
-                        break;
-                    };
-                    let promote =
-                        piece_before.piece_kind() != csa_to_shogi_piece_kind(piece_type_after_csa);
-                    Some(Move::Normal {
-                        from: from_sq,
-                        to: to_sq,
-                        promote,
-                    })
-                }
-            }
-            _ => None,
-        };
+        let shogi_move = parse_csa_move(&shogi_lib_pos, &mv.action);
 
         if let Some(shogi_move) = shogi_move {
             let legal_moves = shogi_lib_pos.legal_moves();
             if legal_moves.contains(&shogi_move) {
                 let move_color = match mv.action {
-                    csa::Action::Move(color, ..) => csa_to_shogi_color(color),
+                    csa::Action::Move(color, ..) => csa_color(color),
                     _ => break,
                 };
                 if filter.include(move_color, ply_index, &metadata, &mut rng) {
@@ -348,37 +223,6 @@ fn draw_accuracy_graph(data: &[(usize, f32)], path: &Path) -> Result<()> {
 
     root.present()?;
     Ok(())
-}
-
-fn collect_csa_files(input_dirs: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for input_dir in input_dirs {
-        if input_dir.is_dir() {
-            let pattern = input_dir.join("**/*.csa");
-            let pattern = pattern
-                .to_str()
-                .ok_or_else(|| anyhow!("path is not valid UTF-8: {}", input_dir.display()))?;
-            for entry in glob(pattern)? {
-                files.push(entry?);
-            }
-        } else if input_dir
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("csa"))
-        {
-            files.push(input_dir.clone());
-        } else {
-            return Err(anyhow!(
-                "input path is neither a directory nor a CSA file: {}",
-                input_dir.display()
-            ));
-        }
-    }
-    files.sort();
-    files.dedup();
-    if files.is_empty() {
-        return Err(anyhow!("no CSA files found"));
-    }
-    Ok(files)
 }
 
 #[derive(Clone, Copy, Debug)]

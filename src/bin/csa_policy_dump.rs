@@ -1,11 +1,13 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use glob::glob;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
+use shogi_ai::training_data::{
+    collect_csa_files, csa_color, parse_csa_metadata, parse_csa_move, CsaMetadata,
+};
 use shogi_ai::utils::format_move_usi;
-use shogi_core::{Color, Move, Piece, PieceKind, Square};
+use shogi_core::Color;
 use shogi_lib::Position;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -44,103 +46,10 @@ struct PolicyRecord {
     teacher_move: String,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-struct CsaMetadata {
-    black_rate: Option<i32>,
-    white_rate: Option<i32>,
-    winner: Option<Color>,
-}
-
 #[derive(Default)]
 struct GameDump {
     records: Vec<PolicyRecord>,
     filtered_records: usize,
-}
-
-fn csa_to_shogi_piece_kind(csa_piece_type: csa::PieceType) -> PieceKind {
-    match csa_piece_type {
-        csa::PieceType::Pawn => PieceKind::Pawn,
-        csa::PieceType::Lance => PieceKind::Lance,
-        csa::PieceType::Knight => PieceKind::Knight,
-        csa::PieceType::Silver => PieceKind::Silver,
-        csa::PieceType::Gold => PieceKind::Gold,
-        csa::PieceType::Bishop => PieceKind::Bishop,
-        csa::PieceType::Rook => PieceKind::Rook,
-        csa::PieceType::King => PieceKind::King,
-        csa::PieceType::ProPawn => PieceKind::ProPawn,
-        csa::PieceType::ProLance => PieceKind::ProLance,
-        csa::PieceType::ProKnight => PieceKind::ProKnight,
-        csa::PieceType::ProSilver => PieceKind::ProSilver,
-        csa::PieceType::Horse => PieceKind::ProBishop,
-        csa::PieceType::Dragon => PieceKind::ProRook,
-        csa::PieceType::All => unreachable!(),
-    }
-}
-
-fn csa_to_shogi_color(color: csa::Color) -> Color {
-    if color == csa::Color::Black {
-        Color::Black
-    } else {
-        Color::White
-    }
-}
-
-fn parse_rate_line(line: &str, prefix: &str) -> Option<i32> {
-    line.strip_prefix(prefix)
-        .and_then(|rest| rest.rsplit(':').next())
-        .and_then(|rate| rate.parse::<f64>().ok())
-        .map(|rate| rate.round() as i32)
-}
-
-fn parse_csa_metadata(text: &str, record: &csa::GameRecord) -> CsaMetadata {
-    let mut metadata = CsaMetadata::default();
-    for line in text.lines() {
-        if let Some(rate) = parse_rate_line(line, "'black_rate:") {
-            metadata.black_rate = Some(rate);
-        } else if let Some(rate) = parse_rate_line(line, "'white_rate:") {
-            metadata.white_rate = Some(rate);
-        }
-    }
-    metadata.winner = infer_winner(record);
-    metadata
-}
-
-fn infer_winner(record: &csa::GameRecord) -> Option<Color> {
-    let mut last_mover = None;
-    for move_record in &record.moves {
-        match move_record.action {
-            csa::Action::Move(color, ..) => {
-                last_mover = Some(csa_to_shogi_color(color));
-            }
-            csa::Action::Toryo | csa::Action::TimeUp | csa::Action::IllegalMove => {
-                return last_mover;
-            }
-            csa::Action::IllegalAction(color) => {
-                return Some(csa_to_shogi_color(color).flip());
-            }
-            csa::Action::Tsumi => {
-                return last_mover;
-            }
-            csa::Action::Kachi => {
-                return last_mover;
-            }
-            csa::Action::Chudan
-            | csa::Action::Sennichite
-            | csa::Action::Jishogi
-            | csa::Action::Hikiwake
-            | csa::Action::Matta
-            | csa::Action::Fuzumi
-            | csa::Action::Error => return None,
-        }
-    }
-    None
-}
-
-fn player_rate(metadata: &CsaMetadata, color: Color) -> Option<i32> {
-    match color {
-        Color::Black => metadata.black_rate,
-        Color::White => metadata.white_rate,
-    }
 }
 
 fn should_include_move(
@@ -153,61 +62,14 @@ fn should_include_move(
         return false;
     }
     if let Some(min_rate) = min_player_rate {
-        if !player_rate(metadata, color).is_some_and(|rate| rate >= min_rate) {
+        if !metadata
+            .player_rate(color)
+            .is_some_and(|rate| rate >= min_rate)
+        {
             return false;
         }
     }
     true
-}
-
-fn collect_csa_files(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for input in inputs {
-        if input.is_dir() {
-            let pattern = input.join("**/*.csa");
-            let pattern = pattern
-                .to_str()
-                .ok_or_else(|| anyhow!("path is not valid UTF-8: {}", input.display()))?;
-            for entry in glob(pattern)? {
-                files.push(entry?);
-            }
-        } else if input
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("csa"))
-        {
-            files.push(input.clone());
-        }
-    }
-    files.sort();
-    files.dedup();
-    if files.is_empty() {
-        return Err(anyhow!("no CSA files found"));
-    }
-    Ok(files)
-}
-
-fn parse_csa_move(position: &Position, action: &csa::Action) -> Option<Move> {
-    let csa::Action::Move(color, from_csa, to_csa, piece_type_after_csa) = action else {
-        return None;
-    };
-    let to = Square::new(to_csa.file, to_csa.rank)?;
-    if from_csa.file == 0 && from_csa.rank == 0 {
-        let piece_kind = csa_to_shogi_piece_kind(*piece_type_after_csa);
-        let piece_color = if *color == csa::Color::Black {
-            Color::Black
-        } else {
-            Color::White
-        };
-        Some(Move::Drop {
-            piece: Piece::new(piece_kind, piece_color),
-            to,
-        })
-    } else {
-        let from = Square::new(from_csa.file, from_csa.rank)?;
-        let piece_before = position.piece_at(from)?;
-        let promote = piece_before.piece_kind() != csa_to_shogi_piece_kind(*piece_type_after_csa);
-        Some(Move::Normal { from, to, promote })
-    }
 }
 
 fn records_from_csa(
@@ -241,7 +103,7 @@ fn records_from_csa(
             break;
         }
         let move_color = match csa_move.action {
-            csa::Action::Move(color, ..) => csa_to_shogi_color(color),
+            csa::Action::Move(color, ..) => csa_color(color),
             _ => break,
         };
         if ply_index >= min_ply
