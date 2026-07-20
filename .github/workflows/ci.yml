@@ -1,0 +1,62 @@
+name: CI
+
+"on":
+  pull_request:
+  push:
+    branches:
+      - master
+      - "refactor/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUST_FONTCONFIG_DLOPEN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: HalfKP-32 library tests
+        run: cargo test --release -p shogi_ai --lib
+      - name: HalfKP-64 workspace tests
+        run: cargo test --workspace --release --features halfkp64
+      - name: HalfKP-64 all-target check
+        run: cargo check --workspace --all-targets --features halfkp64
+      - name: Existing clippy baseline
+        run: cargo clippy --workspace --all-targets --features halfkp64
+      - name: Deterministic search fingerprint
+        run: |
+          cargo build --release --features halfkp64 --bin search_fingerprint
+          target/release/search_fingerprint \
+            --depth 3 \
+            --expected benchmarks/baselines/search_fingerprint_v2.5.4_plus_master.json
+
+  windows:
+    name: Windows workspace
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: HalfKP-64 workspace tests
+        run: cargo test --workspace --release --features halfkp64
+      - name: Deterministic search fingerprint
+        shell: pwsh
+        run: |
+          cargo build --release --features halfkp64 --bin search_fingerprint
+          target/release/search_fingerprint.exe `
+            --depth 3 `
+            --expected benchmarks/baselines/search_fingerprint_v2.5.4_plus_master.json
