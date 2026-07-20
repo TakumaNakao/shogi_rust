@@ -878,7 +878,8 @@ benchmarks/baselines/v2.5.4-plus-master.json
 
 1. root workspaceを作り、現`shogi_lib`をmemberへ追加する。
 2. Cargo.lockを一本化する。
-3. resolver、edition、rust-version、release profileをworkspace rootで管理する。
+3. resolverとrelease profileをworkspace rootで管理する。editionは当面両packageで
+   Rust 2021を明示し、検証していない`rust-version`は宣言しない。
 4. 初期段階ではcrate名を変更しない。
 5. LinuxとWindowsのPR CIを追加する。
 6. HalfKP-32、HalfKP-64を必要なtargetだけでmatrix化する。
@@ -1721,7 +1722,7 @@ Phaseの着手・完了時に以下へ追記する。
 | Phase | 状態 | 開始revision | 完了revision | 結果・参照 |
 |---|---|---|---|---|
 | 0 Baseline | 完了 | `9926430` | `5aa5250` | [`benchmarks/baselines/`](../benchmarks/baselines/)、fingerprint/format fixture、性能差+1.81% |
-| 1 Workspace/CI | 進行中（workspace/CI完了） | `52cbd84` |  | 単一lockfile、workspace全test成功、性能差は原始基準比+1.21% |
+| 1 Workspace/CI | 進行中（local gate整備済み） | `52cbd84` |  | 単一lockfile、USI process test、warning ratchet、workspace全test成功、性能差は原始基準比+1.21% |
 | 2 Module split | 未着手 |  |  |  |
 | 3 Format consolidation | 未着手 |  |  |  |
 | 4 Search/USI separation | 未着手 |  |  |  |
@@ -1753,5 +1754,21 @@ Phase 0は完了した。
 - search fingerprintは完全一致。
 - HalfKP探索の全決定的カウンタは一致。実行時間中央値は`6160.15 ms`で、Phase 0再測定比`-0.59%`、原始基準比`+1.21%`。
 - `8233f65`: Linux/WindowsのPR CIを追加。HalfKP-32 library、HalfKP-64 workspace、all-target、clippy baseline、fingerprintを検証対象化。
+- `318fcd2`: 実際の`usi_engine` subprocessへstdinでcommandを送り、stdoutを検証する
+  transcript testを追加。handshake、evaluator未設定、通常局面、合法手なし局面、
+  `go infinite`直後の`stop`、`quit`を対象とし、各`go`の`bestmove`が一件であることを確認。
+- transcript testは15秒の応答timeout、5秒の終了timeout、失敗時のprocess killを持ち、
+  外部weightへ依存せずtest内で生成したTiny NNUE fixtureを使用する。
+- transcript test 3件を3回反復して全件成功。続けてHalfKP-64 workspace全testと
+  search fingerprintの完全一致を確認。
+- `d96dbd6`: production library用Clippy ratchetを追加。`shogi_lib`はwarningゼロ、
+  `shogi_ai` libraryは既存lint classだけを明示的に隔離し、新しいclassのwarningを失敗させる。
+- 同commitでRust stable運用、単一lockfile、release metadata、MSRV宣言条件を
+  [`toolchain_policy.md`](toolchain_policy.md)へ記録。未検証のMSRV値は宣言しない。
+- warning解消に伴うZobrist初期化のiterator化後、`shogi_lib` 33件とsearch fingerprintが成功。
+  RNG呼出順とposition hashは維持された。
 
-Phase 1の残作業はUSI transcript test、warning ratchet、toolchain/MSRV方針の確定である。
+Phase 1の残作業は、remote CIでLinux/Windows jobを実行して結果を記録することと、
+forced mate、search中stop、stop-before-start、worker panic、連続`go`など残りの
+USI lifecycle fixtureを安全に追加することである。内部へのfault injectionやsearch所有権の
+変更が必要なcaseは、Phase 4のSearch/USI分離と同時に実装する。
