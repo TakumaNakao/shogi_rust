@@ -58,6 +58,18 @@
     {"model_sha256": "6dd56f71882d1f3e4857a42c9454ba3000c055ac28ba9c9297ac9ff64c231e69", "reason": "hkcl_v2_exact_diagnostic"},
     {"model_sha256": "8aedd1aab9d487ee58b8e0001bc78f9c5bcda24c080156117fc192918d47e8af", "reason": "hkcl_v2_exact_diagnostic"},
     {"model_sha256": "7d6b945de260f2aa7d92103bb9db91fbcc8d16d7d9aae328af9f572489fe0bb5", "reason": "hkcl_v2_exact_diagnostic"},
-    {"model_sha256": "7b05fa5d28e3b649f0cf15aeedf1454117351476bd5eef0fb66f1a0155618a00", "reason": "hkcl_v2_exact_diagnostic"}
+    {"model_sha256": "7b05fa5d28e3b649f0cf15aeedf1454117351476bd5eef0fb66f1a0155618a00", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "0e04ab54ce789508fe6814a47d8fdf7a4bfd58fce88e7d04eacf9ff434c6ddcf", "reason": "hkcl_v3b_exact_gate_failed"},
+    {"model_sha256": "367a8fa41db56265a4b7a2fb68f0506eec7297e3ecafce3ed71dca218f639c2d", "reason": "hkcl_v3b_exact_gate_failed"},
+    {"model_sha256": "d892dd5834f282b8abc3bc2de74426688ac384271e0997cb9cfccc7ba3166e65", "reason": "hkcl_v3b_exact_gate_failed"},
+    {"model_sha256": "d89e7446a8e46c7f1c8729f0dda7283089eb694371cd6335eeb816010546a44e", "reason": "hkcl_v3b_exact_gate_failed"},
+    {"model_sha256": "fa5afeddce5f2bb4bdcb406d329c9063b58e30b6db0d93fa2791c850190c9a1a", "reason": "hkcl_v3b_exact_gate_failed"},
+    {"model_sha256": "814645b615ded1317898558587f610eb409378a18db4e262045c38b390573184", "reason": "hkcl_v3b_exact_gate_failed_scale"},
+    {"model_sha256": "617f9eea080fc7c37d847b5ce487c46b07adf47c5b23a2b7babe43add4e92aae", "reason": "hkcl_v3b_exact_gate_failed_scale"},
+    {"model_sha256": "781ea05b300b8ffaa30c489ec26a75ba1408eacf291e2e620473382224b11b59", "reason": "hkcl_v3b_exact_gate_failed_scale"},
+    {"model_sha256": "6a7a7b0a97ed95cb1a5b84a8631c5adae88ba2add8a1ba0d7349bae22d34bbfe", "reason": "hkcl_v3b_exact_gate_failed"},
+    {"model_sha256": "3096d0b27acdf4b74df49c3b1746a09e528142405ef6f1885f2fede0349d8563", "reason": "hkcl_v3b_exact_gate_failed"},
+    {"model_sha256": "5b2088a0f18c8b5620a9bbff643acdf5e32965d1a2624b2a5939088b177cd72f", "reason": "hkcl_v3b_exact_gate_failed_scale"},
+    {"model_sha256": "6fe5d1807593442b30e619b04c1a5f756bf279b9646a4d9b02aabb8464101acf", "reason": "hkcl_v3b_exact_gate_failed"}
   ]
 }
