@@ -120,6 +120,11 @@ path = "src/bin/halfkp_scratch_eval.rs"
 required-features = ["halfkp64", "training-tools"]
 
 [[bin]]
+name = "halfkp_prediction_compare"
+path = "src/bin/halfkp_prediction_compare.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
 name = "halfkp_scratch_train"
 path = "src/bin/halfkp_scratch_train.rs"
 required-features = ["halfkp64", "training-tools"]

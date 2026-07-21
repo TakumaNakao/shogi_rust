@@ -73,6 +73,8 @@ struct Args {
     /// Keep the Phase 1 output head fixed while learning shared input factors.
     #[arg(long, default_value_t = false)]
     freeze_output_head: bool,
+    #[arg(long, default_value_t = 1.0)]
+    output_learning_rate_scale: f32,
     /// Zero-centered score RMS anchor applied to symmetry/legal-health roots.
     #[arg(long, default_value_t = 0.0)]
     score_anchor_weight: f32,
@@ -290,6 +292,7 @@ pub fn run() -> Result<()> {
             "seed": args.seed, "l2": args.l2,
             "weight_decay": args.weight_decay,
             "freeze_output_head": args.freeze_output_head,
+            "output_learning_rate_scale": args.output_learning_rate_scale,
             "score_anchor_weight": args.score_anchor_weight,
             "score_anchor_cp": args.score_anchor_cp,
         }),
@@ -386,6 +389,7 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.weight_decay < 0.0
         || args.score_anchor_weight < 0.0
         || args.score_anchor_cp <= 0.0
+        || args.output_learning_rate_scale < 0.0
         || (!args.resume && args.output.exists())
         || manifest_path(&args.output).exists()
         || (args.resume && args.checkpoint_dir.is_none())
@@ -463,6 +467,7 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "l2": args.l2,
         "weight_decay": args.weight_decay,
         "freeze_output_head": args.freeze_output_head,
+        "output_learning_rate_scale": args.output_learning_rate_scale,
         "score_anchor_weight": args.score_anchor_weight,
         "score_anchor_cp": args.score_anchor_cp,
     });
@@ -841,12 +846,16 @@ fn apply_gradient(
         HALFKP_HIDDEN * 2 + 1
     };
     for h in 0..output_end {
+        let output_decay = (1.0
+            - args.learning_rate * args.output_learning_rate_scale * args.weight_decay)
+            .max(0.0);
         if args.weight_decay > 0.0 {
-            weights.out_w[h] *= decay;
+            weights.out_w[h] *= output_decay;
         }
         let g = gradient.out_w[h] * inv + args.l2 * weights.out_w[h];
         optimizer.out_w[h] += g * g;
-        weights.out_w[h] -= args.learning_rate * g / (optimizer.out_w[h].sqrt() + EPSILON);
+        weights.out_w[h] -= args.learning_rate * args.output_learning_rate_scale * g
+            / (optimizer.out_w[h].sqrt() + EPSILON);
     }
     if !args.stage.freezes_scale() {
         let g = gradient.out_b * inv;
@@ -1120,6 +1129,7 @@ mod tests {
             l2: 0.0,
             weight_decay: 0.0,
             freeze_output_head: false,
+            output_learning_rate_scale: 1.0,
             score_anchor_weight: 0.0,
             score_anchor_cp: 600.0,
             max_train_records: None,
