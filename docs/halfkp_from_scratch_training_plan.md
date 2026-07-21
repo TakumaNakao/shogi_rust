@@ -760,9 +760,9 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 | 1 | scratch lineage/manifestとinitializer | genesis再現、外部model拒否 | 完了（2026-07-21） |
 | 2 | HKCL codecとgolden fixture | round trip、corrupt拒否 | 完了（2026-07-21） |
 | 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 完了、HKCL0003 clean rank 128件を100% overfit |
-| 4 | feature factorization | fold前後forward一致 | direct/piece-relative/factor-onlyを実装、比較継続中 |
+| 4 | feature factorization | fold前後forward一致 | factor-onlyを3 seedで選定、尺度付き64k Gate通過 |
 | 5 | bounded exact mate solver | proof再検証、規則fixture | 1/3手referenceと完全検証器完了、df-pn待ち |
-| 6 | exact curriculum generator | split/coverage manifest | rule v2監査完了、全合法候補・攻守両側のrule v3へ改訂中 |
+| 6 | exact curriculum generator | split/coverage manifest | HKCL0004 rule v3、攻守64k/全proof監査完了 |
 | 7 | opening stratum classifier | deterministic分類、report | 未着手 |
 | 8 | 棋譜rank/result pipeline | no-score provenance | 未着手 |
 | 9 | scratch-only search teacher | lineage強制、immutable teacher | 未着手 |
@@ -1144,6 +1144,38 @@ registryへ昇格しない。testは未開封のまま維持する。
 この改訂により、現在の失敗modelから継続せず、Phase 1の安全なscratch parentを保持したまま、exact-onlyの
 局所課題で全体計画が停止することも避ける。棋譜pipelineを前倒しするのは旧weightへ戻ることではなく、
 ゼロ系列へ不足している広域分布と結果信号を追加するためである。
+
+### 15.3 HKCL0004 rule v3 learning curve（2026-07-22）
+
+防御側rootではroot手番と詰ませる側が異なるが、HKCL0003はproofのattacker色を保存していなかった。このまま
+同一schemaへ防御recordを追加すると旧readerが黙って誤解釈するため、HKCL0004へfail-closedでbumpし、
+`ProofLabel.attacker`を必須化した。auditはroot/good/badをstored attackerで再探索し、攻撃rootでは
+`good=mate, bad=no-mate`、防御rootでは逆を要求する。64件smokeと正式corpusの全proofが再検証に成功した。
+
+rule v3は全合法childを分類し、checking/capture/promotion/drop/quietの組合せごとに複数negativeを保持する。
+攻撃・防御を同数にし、train 4k、追加12k、追加48kを非重複streamで生成した。最終監査はtrain 64,000、
+dev 1,000、合計65,000 family、415,042 unique network input、split衝突0、proof成功65,000/65,000である。
+testはgeneratorと学習設定を固定するまで生成もmodel評価も行っていない。
+
+rank-only proofは絶対cpを定めないためmarginを0 cpへ変更した。factor-only、decoupled weight decay、legal-health
+score anchor、output head低速更新を分離してA/Bした。directに対するfactor候補のpaired改善は4k devで
++13.33 point、95%区間+11.32～+15.39 pointだった。4kから16kで約4 point改善し、3 seed同方向かつhealth非悪化
+だったため64kへ進んだ。
+
+64kではexact:health比に合わせてanchor weightを2.0へ補正し、best epoch 1を採用した。3 seedのdev結果は次の
+とおりで、開発Gate `point >= 90%`、family bootstrap下限`>= 88%`、一般health p99 `< 2,000 cp`、左右対称性を
+すべて同時に満たした。
+
+| seed | model SHA-256 | family精度 | 95%下限 | health abs p99 | symmetry RMSE |
+|---:|---|---:|---:|---:|---:|
+| 20260721 | `93e81b2b...30deeb` | 90.61% | 89.42% | 1,834 cp | 0.000062 cp |
+| 20260722 | `6d219213...75f9f9` | 90.47% | 89.25% | 1,807 cp | 0.000066 cp |
+| 20260723 | `db1563dc...b25fcd` | 90.41% | 89.21% | 1,820 cp | 0.000055 cp |
+
+これは12k開発Gateの通過であり、Phase 2本Gateやgeneration昇格ではない。3候補をregistryへまだaccepted登録せず、
+次にdev全合法手static top-1、fixed-node search、activation/feature coverageを実施する。構成を固定してHKCL0004
+testを独立生成・SHA freezeした後、一度だけtestを開く。combined opening/game Gate前にexact-only modelを
+探索教師や次世代parentへ使わない。
 
 ## 16. 参考資料と本計画への反映
 
