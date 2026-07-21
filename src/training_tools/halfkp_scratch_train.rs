@@ -1040,6 +1040,9 @@ fn print_metrics(label: &str, epoch: usize, metrics: &Metrics) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shogi_core::PartialPosition;
+    use shogi_lib::Position;
+    use shogi_usi_parser::FromUsi;
 
     fn test_args() -> Args {
         Args {
@@ -1102,6 +1105,40 @@ mod tests {
             assert!(sigmoid(value).is_finite());
             assert!(softplus(value).is_finite());
         }
+    }
+
+    #[test]
+    fn projected_center_king_rows_make_mirror_scores_equal() {
+        let original = Position::default();
+        let mirrored = Position::new(
+            PartialPosition::from_usi(
+                "sfen lnsgkgsnl/1b5r1/ppppppppp/9/9/9/PPPPPPPPP/1R5B1/LNSGKGSNL b - 1",
+            )
+            .expect("mirrored start position"),
+        );
+        let mut weights = Weights {
+            feature: (0..HALFKP_INPUTS * HALFKP_HIDDEN)
+                .map(|index| (index % 997) as f32 * 1e-7)
+                .collect(),
+            hidden_b: [0.25; HALFKP_HIDDEN],
+            out_w: [0.01; HALFKP_HIDDEN * 2 + 1],
+            out_b: 0.0,
+            factors: Some({
+                let mut factors = HalfKpFactorization::zeros();
+                for (index, value) in factors.relative.iter_mut().enumerate() {
+                    *value = (index % 991) as f32 * 1e-7;
+                }
+                factors
+            }),
+        };
+        weights.project_lr_symmetry();
+        let a = PackedHalfKpPosition::from_position(&original).expect("original");
+        let b = PackedHalfKpPosition::from_position(&mirrored).expect("mirror");
+        assert_eq!(weights.forward(&a).raw, weights.forward(&b).raw);
+        let mut folded = weights.clone();
+        let factors = folded.factors.take().expect("factors");
+        factors.fold_into(&mut folded.feature).expect("fold");
+        assert_eq!(folded.forward(&a).raw, folded.forward(&b).raw);
     }
 
     #[test]

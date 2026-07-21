@@ -57,6 +57,15 @@ impl HalfKpFactorization {
 
     pub fn project_lr_symmetry(&mut self) {
         for color_kind in 0..2 * NUM_BOARD_PIECE_KINDS {
+            for file in 0..4 {
+                for rank in 0..9 {
+                    let a = color_kind * NUM_SQUARES + file * 9 + rank;
+                    let b = color_kind * NUM_SQUARES + (8 - file) * 9 + rank;
+                    average_rows(&mut self.piece, a, b);
+                }
+            }
+        }
+        for color_kind in 0..2 * NUM_BOARD_PIECE_KINDS {
             for file_delta in 0..RELATIVE_AXIS / 2 {
                 for rank_delta in 0..RELATIVE_AXIS {
                     let a = (color_kind * RELATIVE_AXIS + file_delta) * RELATIVE_AXIS + rank_delta;
@@ -165,5 +174,21 @@ mod tests {
             &direct[feature * HALFKP_HIDDEN..(feature + 1) * HALFKP_HIDDEN],
             &expected
         );
+    }
+
+    #[test]
+    fn symmetry_projection_ties_mirrored_piece_and_relative_rows() {
+        let mut factors = HalfKpFactorization::zeros();
+        let a_piece = 0;
+        let b_piece = 8 * 9;
+        factors.piece[a_piece * HALFKP_HIDDEN] = 2.0;
+        let a_relative = 0;
+        let b_relative = (RELATIVE_AXIS - 1) * RELATIVE_AXIS;
+        factors.relative[a_relative * HALFKP_HIDDEN] = 4.0;
+        factors.project_lr_symmetry();
+        assert_eq!(factors.piece[a_piece * HALFKP_HIDDEN], 1.0);
+        assert_eq!(factors.piece[b_piece * HALFKP_HIDDEN], 1.0);
+        assert_eq!(factors.relative[a_relative * HALFKP_HIDDEN], 2.0);
+        assert_eq!(factors.relative[b_relative * HALFKP_HIDDEN], 2.0);
     }
 }
