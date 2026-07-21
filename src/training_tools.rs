@@ -15,6 +15,7 @@ pub mod halfkp_scratch_init;
 pub mod halfkp_scratch_train;
 pub mod halfkp_search_teacher;
 pub mod halfkp_search_train;
+pub mod halfkp_symmetry_generate;
 pub mod halfkp_train;
 pub mod jsonl_shard;
 pub mod kpp_learn;

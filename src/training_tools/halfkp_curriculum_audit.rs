@@ -58,6 +58,20 @@ pub fn run() -> Result<()> {
                     duplicate_inputs.insert((record.network_input_hash, split_index));
                 }
             }
+            for position in record
+                .preferences
+                .iter()
+                .flat_map(|preference| [&preference.good_child, &preference.bad_child])
+            {
+                let hash = position.network_input_hash();
+                if let Some(previous) = input_splits.insert(hash, record.split) {
+                    if previous != record.split {
+                        input_collisions.insert(hash);
+                    } else {
+                        duplicate_inputs.insert((hash, split_index));
+                    }
+                }
+            }
         }
     }
     let passed = family_collisions.is_empty() && input_collisions.is_empty();

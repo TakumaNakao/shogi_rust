@@ -961,6 +961,11 @@ gameの開始時にfamily IDを作って、そのgameから採用した全局面
 決める旧経路は削除した。`halfkp_curriculum_audit`は複数HKCLを横断してfamilyとnetwork-input canonical hashの
 split衝突を検査し、衝突が1件でもあれば非zero終了する。これによりv2 corpusは学習前に衝突0を証明できる。
 
+左右反転anchor generatorも追加し、seed `2026072101/02/03`の独立streamでtrain 8,000、valid 1,000、
+test 1,000の計10,000 familyを`runs/halfkp64-scratch-v1/symmetry-10k-v2`へ生成した。audit結果はfamily split
+衝突0、network-input split衝突0である。preference内のgood/bad childもaudit対象に含めており、rootだけを
+検査して派生入力の漏洩を見逃すことはない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
