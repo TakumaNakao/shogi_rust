@@ -1004,6 +1004,12 @@ v2bは12,000 record/12,000 family、rootとchildを合わせた20,000 unique net
 正規化している一方、symmetry MSEだけがraw network unitのままで勾配尺度が不整合だった。Gateは緩和せず、
 symmetry differenceも`difference_cp / symmetry_temperature_cp`へ正規化するよう修正し、pilotを再実行する。
 
+cp正規化後も20% anchor混合ではexact objectiveとのtrade-offが残り、symmetry RMSEをPhase 1水準へ保てなかった。
+左右反転は本来厳密な不変量なので、training時に中央筋の王bucketのmirror対応direct rowを平均し、relative factorの
+左右delta対応rowも平均する射影を各update後に適用する。中央筋以外は既存feature extractorが王位置でmirrorを
+canonical化済みである。export modelは通常HalfKP rowへfold済みなのでruntime形式・推論命令数・探索速度は変わらず、
+対称性をdataset weightとの綱引きにせず構造的に保証する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

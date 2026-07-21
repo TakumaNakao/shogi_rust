@@ -54,6 +54,20 @@ impl HalfKpFactorization {
         }
         Ok(())
     }
+
+    pub fn project_lr_symmetry(&mut self) {
+        for color_kind in 0..2 * NUM_BOARD_PIECE_KINDS {
+            for file_delta in 0..RELATIVE_AXIS / 2 {
+                for rank_delta in 0..RELATIVE_AXIS {
+                    let a = (color_kind * RELATIVE_AXIS + file_delta) * RELATIVE_AXIS + rank_delta;
+                    let b = (color_kind * RELATIVE_AXIS + (RELATIVE_AXIS - 1 - file_delta))
+                        * RELATIVE_AXIS
+                        + rank_delta;
+                    average_rows(&mut self.relative, a, b);
+                }
+            }
+        }
+    }
 }
 
 pub fn factor_indices(feature: usize) -> Result<FactorIndices> {
@@ -92,6 +106,16 @@ fn add_row_to_direct(direct: &mut [f32], direct_row: usize, factors: &[f32], fac
     let factor_start = factor_row * HALFKP_HIDDEN;
     for h in 0..HALFKP_HIDDEN {
         direct[direct_start + h] += factors[factor_start + h];
+    }
+}
+
+fn average_rows(values: &mut [f32], a: usize, b: usize) {
+    let a = a * HALFKP_HIDDEN;
+    let b = b * HALFKP_HIDDEN;
+    for h in 0..HALFKP_HIDDEN {
+        let mean = 0.5 * (values[a + h] + values[b + h]);
+        values[a + h] = mean;
+        values[b + h] = mean;
     }
 }
 

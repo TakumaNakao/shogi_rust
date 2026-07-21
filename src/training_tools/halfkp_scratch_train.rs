@@ -4,7 +4,10 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
-use shogi_ai::evaluation::{HalfKpFlatModel, HalfKpHeader, HALFKP_HIDDEN};
+use shogi_ai::evaluation::{
+    HalfKpFlatModel, HalfKpHeader, HALFKP_HIDDEN, HALFKP_INPUTS, HALFKP_PIECE_STATES,
+    NUM_BOARD_PIECE_KINDS, NUM_SQUARES,
+};
 use shogi_ai::halfkp_training::{
     CurriculumReader, CurriculumRecord, LabelSource, PackedHalfKpPosition, PreferenceKind,
 };
@@ -326,6 +329,13 @@ impl Weights {
             }
         }
     }
+
+    fn project_lr_symmetry(&mut self) {
+        project_direct_lr_symmetry(&mut self.feature);
+        if let Some(factors) = &mut self.factors {
+            factors.project_lr_symmetry();
+        }
+    }
 }
 
 impl Optimizer {
@@ -388,7 +398,8 @@ fn initialize_training(
             return Err(anyhow!("checkpoint artifact hash mismatch"));
         }
         let flat = HalfKpFlatModel::decode(&fs::read(model_path)?)?;
-        let weights = Weights::from_flat(flat, args.factorization);
+        let mut weights = Weights::from_flat(flat, args.factorization);
+        weights.project_lr_symmetry();
         let optimizer = load_optimizer(&optimizer_path, weights.feature.len())?;
         Ok((
             weights,
@@ -404,7 +415,8 @@ fn initialize_training(
                 "scratch trainer requires target scale {TARGET_SCALE}"
             ));
         }
-        let weights = Weights::from_flat(flat, args.factorization);
+        let mut weights = Weights::from_flat(flat, args.factorization);
+        weights.project_lr_symmetry();
         let optimizer = Optimizer::zeros(&weights);
         Ok((weights, optimizer, 0, 0, f64::INFINITY))
     }
@@ -787,7 +799,34 @@ fn apply_gradient(
         optimizer.out_b += g * g;
         weights.out_b -= args.learning_rate * g / (optimizer.out_b.sqrt() + EPSILON);
     }
+    weights.project_lr_symmetry();
     *gradient = Gradient::default();
+}
+
+fn project_direct_lr_symmetry(feature: &mut [f32]) {
+    if feature.len() != HALFKP_INPUTS * HALFKP_HIDDEN {
+        return;
+    }
+    const BOARD_STATES: usize = 2 * NUM_BOARD_PIECE_KINDS * NUM_SQUARES;
+    for rank in 0..9 {
+        let king_bucket = 4 * 9 + rank;
+        for color_kind in 0..2 * NUM_BOARD_PIECE_KINDS {
+            for file in 0..4 {
+                for piece_rank in 0..9 {
+                    let a_state = color_kind * NUM_SQUARES + file * 9 + piece_rank;
+                    let b_state = color_kind * NUM_SQUARES + (8 - file) * 9 + piece_rank;
+                    debug_assert!(a_state < BOARD_STATES && b_state < BOARD_STATES);
+                    let a = (king_bucket * HALFKP_PIECE_STATES + a_state) * HALFKP_HIDDEN;
+                    let b = (king_bucket * HALFKP_PIECE_STATES + b_state) * HALFKP_HIDDEN;
+                    for h in 0..HALFKP_HIDDEN {
+                        let mean = 0.5 * (feature[a + h] + feature[b + h]);
+                        feature[a + h] = mean;
+                        feature[b + h] = mean;
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn apply_sparse_rows(
