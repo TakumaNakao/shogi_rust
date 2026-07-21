@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "fixture_schema_version": 1,
+  "evaluator": "position-hash-v1",
+  "depth": 3,
+  "threads": 1,
+  "cases": [
+    {
+      "id": "startpos",
+      "input": "startpos",
+      "normalized_sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+      "position_key": 3894553740374445858,
+      "terminal": false,
+      "legal_moves": 30,
+      "bestmove": "5i6h",
+      "root_score": 870.0,
+      "root_score_bits": 1146716160,
+      "pv": [
+        "5i6h",
+        "8b3b",
+        "4i3h"
+      ],
+      "completed_depth": 3,
+      "search_failed": false,
+      "position_restored": true,
+      "counters": {
+        "nodes": 7156,
+        "quiescence_nodes": 6614,
+        "quiescence_moves_considered": 105,
+        "quiescence_moves_generated": 19690,
+        "quiescence_moves_discarded": 19585,
+        "quiescence_moves_searched": 11,
+        "quiescence_see_skips": 60,
+        "quiescence_terminal_mates": 0,
+        "check_evasion_extensions": 0,
+        "aspiration_fail_lows": 1,
+        "aspiration_fail_highs": 1,
+        "aspiration_researches": 2
+      }
+    },
+    {
+      "id": "representative_middlegame",
+      "input": "ln1g1k1nl/1r3sg2/p2psp1pp/2p3p2/1p2b4/2PP3P1/PPSG1PP1P/1BG2S1R1/LN1K3NL b Pp 25",
+      "normalized_sfen": "ln1g1k1nl/1r3sg2/p2psp1pp/2p3p2/1p2b4/2PP3P1/PPSG1PP1P/1BG2S1R1/LN1K3NL b Pp 25",
+      "position_key": 15901171932932632852,
+      "terminal": false,
+      "legal_moves": 34,
+      "bestmove": "9i9h",
+      "root_score": 744.0,
+      "root_score_bits": 1144651776,
+      "pv": [
+        "9i9h",
+        "5e2b",
+        "8h9i"
+      ],
+      "completed_depth": 3,
+      "search_failed": false,
+      "position_restored": true,
+      "counters": {
+        "nodes": 8990,
+        "quiescence_nodes": 8556,
+        "quiescence_moves_considered": 13226,
+        "quiescence_moves_generated": 107658,
+        "quiescence_moves_discarded": 94432,
+        "quiescence_moves_searched": 4295,
+        "quiescence_see_skips": 5684,
+        "quiescence_terminal_mates": 0,
+        "check_evasion_extensions": 3,
+        "aspiration_fail_lows": 1,
+        "aspiration_fail_highs": 1,
+        "aspiration_researches": 2
+      }
+    },
+    {
+      "id": "checked_quiet_evasions",
+      "input": "4k4/9/9/9/9/9/9/9/K3R4 w - 1",
+      "normalized_sfen": "4k4/9/9/9/9/9/9/9/K3R4 w - 1",
+      "position_key": 12334164650297165046,
+      "terminal": false,
+      "legal_moves": 4,
+      "bestmove": "5a6b",
+      "root_score": -602.0,
+      "root_score_bits": 3289808896,
+      "pv": [
+        "5a6b",
+        "5i1i",
+        "6b5c"
+      ],
+      "completed_depth": 3,
+      "search_failed": false,
+      "position_restored": true,
+      "counters": {
+        "nodes": 78982,
+        "quiescence_nodes": 78933,
+        "quiescence_moves_considered": 309847,
+        "quiescence_moves_generated": 999696,
+        "quiescence_moves_discarded": 689849,
+        "quiescence_moves_searched": 191564,
+        "quiescence_see_skips": 0,
+        "quiescence_terminal_mates": 0,
+        "check_evasion_extensions": 10,
+        "aspiration_fail_lows": 1,
+        "aspiration_fail_highs": 0,
+        "aspiration_researches": 1
+      }
+    },
+    {
+      "id": "all_losing_root_regression",
+      "input": "l6nl/7+R1/4k4/p1P+bp1n1p/3K1p3/P3P1S1P/ls2BP3/s3G4/9 b R2GS2NL9Pg 131",
+      "normalized_sfen": "l6nl/7+R1/4k4/p1P+bp1n1p/3K1p3/P3P1S1P/ls2BP3/s3G4/9 b R2GS2NL9Pg 131",
+      "position_key": 15403133198223037050,
+      "terminal": false,
+      "legal_moves": 1,
+      "bestmove": "6e6f",
+      "root_score": -999998.0,
+      "root_score_bits": 3379831776,
+      "pv": [
+        "6e6f",
+        "G*7f"
+      ],
+      "completed_depth": 3,
+      "search_failed": false,
+      "position_restored": true,
+      "counters": {
+        "nodes": 57155,
+        "quiescence_nodes": 57047,
+        "quiescence_moves_considered": 224840,
+        "quiescence_moves_generated": 963264,
+        "quiescence_moves_discarded": 738424,
+        "quiescence_moves_searched": 110736,
+        "quiescence_see_skips": 39474,
+        "quiescence_terminal_mates": 254,
+        "check_evasion_extensions": 9,
+        "aspiration_fail_lows": 0,
+        "aspiration_fail_highs": 0,
+        "aspiration_researches": 0
+      }
+    },
+    {
+      "id": "v252_parallel_mate_regression",
+      "input": "startpos moves 7g7f 8c8d 2g2f 4a3b 2f2e 8d8e 8h7g 3c3d 7i6h 2b7g+ 6h7g 3a2b 3i4h 2b3c 6i7h 7a7b 4g4f 5a4b 4h4g 9c9d 9g9f 6c6d 3g3f 1c1d 1g1f 7c7d 2i3g 8a7c 6g6f 7b6c 4g5f 6a6b 2h2i 6c5d 4i4h 8b8a 3g4e 3c4d 2e2d 2c2d 2i2d P*2c 2d2h B*1c P*2d 1c2d 4h4g 2a1c B*3g 4d5e 5f5e 5d5e 1f1e 1d1e 1i1e S*1g 2h2g 1g1h 2g2h 4c4d 2h1h 4d4e 4f4e P*4f 4g5f 5e5f 5g5f G*2g S*8b 8a8b S*7a 2g1h 7a8b R*3i 5i6h 4f4g+ 3f3e",
+      "normalized_sfen": "l7l/1S1g1kg2/2n1p2pn/p1pp2pb1/1p3PP1L/P1PPP4/1PS2+pB2/2GK4g/LN4r2 w RS2Psnp 78",
+      "position_key": 4545996434397961551,
+      "terminal": false,
+      "legal_moves": 149,
+      "bestmove": "S*5g",
+      "root_score": 999995.0,
+      "root_score_bits": 1232348080,
+      "pv": [
+        "S*5g",
+        "6h6g",
+        "5g5h",
+        "6g6h"
+      ],
+      "completed_depth": 3,
+      "search_failed": false,
+      "position_restored": true,
+      "counters": {
+        "nodes": 1597880,
+        "quiescence_nodes": 1596632,
+        "quiescence_moves_considered": 7821159,
+        "quiescence_moves_generated": 45778115,
+        "quiescence_moves_discarded": 37956956,
+        "quiescence_moves_searched": 3529633,
+        "quiescence_see_skips": 1782342,
+        "quiescence_terminal_mates": 15170,
+        "check_evasion_extensions": 801,
+        "aspiration_fail_lows": 0,
+        "aspiration_fail_highs": 0,
+        "aspiration_researches": 0
+      }
+    },
+    {
+      "id": "v253_no_bestmove_regression",
+      "input": "+B4+R1n1/6+S1k/4+B1spp/plp3p2/1N5P1/P1P1S1P1+r/2G1PPN2/1p2KG3/L1G4+s1 w G2L5Pnp 116",
+      "normalized_sfen": "+B4+R1n1/6+S1k/4+B1spp/plp3p2/1N5P1/P1P1S1P1+r/2G1PPN2/1p2KG3/L1G4+s1 w G2L5Pnp 116",
+      "position_key": 2436790842959529882,
+      "terminal": false,
+      "legal_moves": 80,
+      "bestmove": "N*4f",
+      "root_score": -722.0,
+      "root_score_bits": 3291774976,
+      "pv": [
+        "N*4f",
+        "4g4f",
+        "P*5d"
+      ],
+      "completed_depth": 3,
+      "search_failed": false,
+      "position_restored": true,
+      "counters": {
+        "nodes": 19834,
+        "quiescence_nodes": 19401,
+        "quiescence_moves_considered": 88388,
+        "quiescence_moves_generated": 1266727,
+        "quiescence_moves_discarded": 1178339,
+        "quiescence_moves_searched": 33330,
+        "quiescence_see_skips": 31455,
+        "quiescence_terminal_mates": 204,
+        "check_evasion_extensions": 84,
+        "aspiration_fail_lows": 1,
+        "aspiration_fail_highs": 0,
+        "aspiration_researches": 1
+      }
+    },
+    {
+      "id": "drop_and_promotion_rich",
+      "input": "+B5B1l/3s2+R1k/p5lp1/2ppp1p1p/1P5P1/PSPPP1PS1/1K1G3SP/3G3g1/LN6L w RG2N3Pn 110",
+      "normalized_sfen": "+B5B1l/3s2+R1k/p5lp1/2ppp1p1p/1P5P1/PSPPP1PS1/1K1G3SP/3G3g1/LN6L w RG2N3Pn 110",
+      "position_key": 1312203932551399956,
+      "terminal": false,
+      "legal_moves": 1,
+      "bestmove": "N*2b",
+      "root_score": -999998.0,
+      "root_score_bits": 3379831776,
+      "pv": [
+        "N*2b",
+        "3a2b+"
+      ],
+      "completed_depth": 3,
+      "search_failed": false,
+      "position_restored": true,
+      "counters": {
+        "nodes": 95129,
+        "quiescence_nodes": 94920,
+        "quiescence_moves_considered": 599106,
+        "quiescence_moves_generated": 5072687,
+        "quiescence_moves_discarded": 4473581,
+        "quiescence_moves_searched": 244340,
+        "quiescence_see_skips": 175463,
+        "quiescence_terminal_mates": 1072,
+        "check_evasion_extensions": 8,
+        "aspiration_fail_lows": 1,
+        "aspiration_fail_highs": 0,
+        "aspiration_researches": 1
+      }
+    }
+  ],
+  "totals": {
+    "nodes": 1865126,
+    "quiescence_nodes": 1862103,
+    "quiescence_moves_considered": 9056671,
+    "quiescence_moves_generated": 54207837,
+    "quiescence_moves_discarded": 45151166,
+    "quiescence_moves_searched": 4113909,
+    "quiescence_see_skips": 2034478,
+    "quiescence_terminal_mates": 16700,
+    "check_evasion_extensions": 915,
+    "aspiration_fail_lows": 5,
+    "aspiration_fail_highs": 2,
+    "aspiration_researches": 7
+  }
+}

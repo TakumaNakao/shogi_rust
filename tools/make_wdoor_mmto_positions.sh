@@ -40,7 +40,7 @@ echo "YEARS=$YEARS"
 echo "MIN_PLAYER_RATE=$MIN_PLAYER_RATE MIN_PLY=$MIN_PLY MAX_PLY=$MAX_PLY MAX_RECORDS=$MAX_RECORDS"
 echo "OUT=$OUT"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --bin csa_policy_dump
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features training-tools --bin csa_policy_dump
 
 env RUST_FONTCONFIG_DLOPEN=1 target/release/csa_policy_dump \
   "${inputs[@]}" \

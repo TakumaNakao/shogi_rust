@@ -46,7 +46,7 @@ fi
 mkdir -p "$OUT_DIR"
 
 echo "[1/2] Building the corrected HalfKP-64 engine and benchmark harness"
-cargo build --release --features halfkp64 --bin usi_engine --bin usi_benchmark
+cargo build --release --features halfkp64,benchmark-tools --bin usi_engine --bin usi_benchmark
 
 ENGINE="$ROOT_DIR/target/release/usi_engine"
 BENCH="$ROOT_DIR/target/release/usi_benchmark"

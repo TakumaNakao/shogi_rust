@@ -77,8 +77,8 @@ pub static ZOBRIST_TABLE: Lazy<ZobristTable> = Lazy::new(|| {
     }
     for c in Color::all() {
         for pk in Hand::all_hand_pieces() {
-            for num in 0..ZobristTable::MAX_HAND_NUM {
-                hands[c.array_index()][pk.array_index()][num] = Key(rng.gen()) & !Key::COLOR;
+            for key in &mut hands[c.array_index()][pk.array_index()] {
+                *key = Key(rng.gen()) & !Key::COLOR;
             }
         }
     }

@@ -105,74 +105,83 @@ if [[ "$PROFILE" == "full" && "$available_kib" -lt 15728640 ]]; then
 fi
 
 echo "[build] Compiling dataset, teacher, trainer, and gate binaries"
-cargo build --release --features halfkp64 \
+cargo build --release --features halfkp64,training-tools,benchmark-tools \
   --bin dataset_build --bin halfkp_search_teacher --bin halfkp_search_train \
-  --bin usi_engine --bin usi_benchmark
+  --bin jsonl_shard --bin usi_engine --bin usi_benchmark
 
 build_raw_datasets() {
-  if [[ "$FORCE_RAW" == "1" || ! -f "$RAW_DIR/train/.complete" ]]; then
+  local reuse_args=()
+  if [[ "$FORCE_RAW" == "1" ]]; then
     rm -rf "$RAW_DIR/train"
-    local input_args=()
-    for path in "${TRAIN_INPUTS[@]}"; do input_args+=(--input "$path"); done
-    target/release/dataset_build \
-      "${input_args[@]}" \
-      --output-dir "$RAW_DIR/train" \
-      --seed "$SEED" \
-      --shuffle-games \
-      --valid-percent 0 \
-      --test-percent 0 \
-      --target-opening-records "$TRAIN_OPENING" \
-      --target-middle-records "$TRAIN_MIDDLE" \
-      --target-late-records "$TRAIN_ENDGAME" \
-      --require-targets \
-      --target-minimum-percent 95 \
-      --phase-records-per-game 5 10 10 \
-      --min-ply 8 \
-      --max-ply 200 \
-      --min-player-rate 4000 \
-      --min-opponent-rate 4000 \
-      --known-result-only
-    touch "$RAW_DIR/train/.complete"
   else
-    echo "[data] Reusing $RAW_DIR/train"
+    reuse_args+=(--reuse-if-matches)
   fi
+  local input_args=()
+  for path in "${TRAIN_INPUTS[@]}"; do input_args+=(--input "$path"); done
+  target/release/dataset_build \
+    "${input_args[@]}" \
+    --output-dir "$RAW_DIR/train" \
+    "${reuse_args[@]}" \
+    --seed "$SEED" \
+    --shuffle-games \
+    --valid-percent 0 \
+    --test-percent 0 \
+    --target-opening-records "$TRAIN_OPENING" \
+    --target-middle-records "$TRAIN_MIDDLE" \
+    --target-late-records "$TRAIN_ENDGAME" \
+    --require-targets \
+    --target-minimum-percent 95 \
+    --phase-records-per-game 5 10 10 \
+    --min-ply 8 \
+    --max-ply 200 \
+    --min-player-rate 4000 \
+    --min-opponent-rate 4000 \
+    --known-result-only
 
-  if [[ "$FORCE_RAW" == "1" || ! -f "$RAW_DIR/eval/.complete" ]]; then
+  reuse_args=()
+  if [[ "$FORCE_RAW" == "1" ]]; then
     rm -rf "$RAW_DIR/eval"
-    local input_args=()
-    for path in "${EVAL_INPUTS[@]}"; do input_args+=(--input "$path"); done
-    target/release/dataset_build \
-      "${input_args[@]}" \
-      --output-dir "$RAW_DIR/eval" \
-      --seed "$((SEED + 1))" \
-      --shuffle-games \
-      --valid-percent 50 \
-      --test-percent 50 \
-      --target-opening-records "$EVAL_OPENING" \
-      --target-middle-records "$EVAL_MIDDLE" \
-      --target-late-records "$EVAL_ENDGAME" \
-      --require-targets \
-      --target-minimum-percent 95 \
-      --phase-records-per-game 3 5 5 \
-      --min-ply 8 \
-      --max-ply 200 \
-      --min-player-rate 4000 \
-      --min-opponent-rate 4000 \
-      --known-result-only
-    touch "$RAW_DIR/eval/.complete"
   else
-    echo "[data] Reusing $RAW_DIR/eval"
+    reuse_args+=(--reuse-if-matches)
   fi
+  input_args=()
+  for path in "${EVAL_INPUTS[@]}"; do input_args+=(--input "$path"); done
+  target/release/dataset_build \
+    "${input_args[@]}" \
+    --output-dir "$RAW_DIR/eval" \
+    "${reuse_args[@]}" \
+    --seed "$((SEED + 1))" \
+    --shuffle-games \
+    --valid-percent 50 \
+    --test-percent 50 \
+    --target-opening-records "$EVAL_OPENING" \
+    --target-middle-records "$EVAL_MIDDLE" \
+    --target-late-records "$EVAL_ENDGAME" \
+    --require-targets \
+    --target-minimum-percent 95 \
+    --phase-records-per-game 3 5 5 \
+    --min-ply 8 \
+    --max-ply 200 \
+    --min-player-rate 4000 \
+    --min-opponent-rate 4000 \
+    --known-result-only
 }
 
 make_shards() {
   local input="$1"
   local prefix="$2"
-  if [[ "$FORCE_RAW" == "1" ]] || ! compgen -G "${prefix}*.jsonl" >/dev/null; then
-    rm -f "${prefix}"*.jsonl
-    split --lines="$SHARD_LINES" --numeric-suffixes=0 --suffix-length=4 \
-      --additional-suffix=.jsonl "$input" "$prefix"
+  local parent_manifest="$3"
+  local reuse_args=()
+  if [[ "$FORCE_RAW" != "1" ]]; then
+    reuse_args+=(--reuse-if-matches)
   fi
+  target/release/jsonl_shard \
+    --input "$input" \
+    --output-prefix "$prefix" \
+    --lines "$SHARD_LINES" \
+    --suffix-width 4 \
+    --parent-manifest "$parent_manifest" \
+    "${reuse_args[@]}"
 }
 
 generate_teacher() {
@@ -180,16 +189,17 @@ generate_teacher() {
   local output="$2"
   local random_plies="$3"
   local seed="$4"
-  if [[ "$FORCE_TEACHERS" != "1" && -s "$output" ]]; then
-    echo "[teacher] Reusing $output"
-    return
+  local parent_manifest="$5"
+  local reuse_args=()
+  if [[ "$FORCE_TEACHERS" != "1" ]]; then
+    reuse_args+=(--reuse-if-matches)
   fi
-  local temporary="${output}.tmp"
-  rm -f "$temporary"
   target/release/halfkp_search_teacher \
     --weights "$INIT_WEIGHTS" \
     --input "$input" \
-    --output "$temporary" \
+    --parent-manifest "$parent_manifest" \
+    --output "$output" \
+    "${reuse_args[@]}" \
     --selection-depth "$SELECTION_DEPTH" \
     --teacher-depth "$TEACHER_DEPTH" \
     --candidate-top "$CANDIDATE_TOP" \
@@ -203,23 +213,26 @@ generate_teacher() {
     --chunk-size 128 \
     --jobs "$GENERATOR_JOBS" \
     --seed "$seed"
-  mv "$temporary" "$output"
 }
 
 prepare() {
   build_raw_datasets
-  make_shards "$RAW_DIR/train/train.jsonl" "$JSON_SHARD_DIR/train-"
-  make_shards "$RAW_DIR/eval/valid.jsonl" "$JSON_SHARD_DIR/valid-"
-  make_shards "$RAW_DIR/eval/test.jsonl" "$JSON_SHARD_DIR/test-"
+  make_shards "$RAW_DIR/train/train.jsonl" "$JSON_SHARD_DIR/train-" \
+    "$RAW_DIR/train/manifest.json"
+  make_shards "$RAW_DIR/eval/valid.jsonl" "$JSON_SHARD_DIR/valid-" \
+    "$RAW_DIR/eval/manifest.json"
+  make_shards "$RAW_DIR/eval/test.jsonl" "$JSON_SHARD_DIR/test-" \
+    "$RAW_DIR/eval/manifest.json"
 
   local index=0
   for input in "$JSON_SHARD_DIR"/train-*.jsonl; do
     local stem="${input##*/}"
     stem="${stem%.jsonl}"
-    generate_teacher "$input" "$TEACHER_DIR/${stem}.hkst" 0 "$((SEED + index))"
+    generate_teacher "$input" "$TEACHER_DIR/${stem}.hkst" 0 "$((SEED + index))" \
+      "$JSON_SHARD_DIR/train-manifest.json"
     if (( index % RANDOM_EVERY == 0 )); then
       generate_teacher "$input" "$TEACHER_DIR/${stem}-random.hkst" 4 \
-        "$((SEED + 100000 + index))"
+        "$((SEED + 100000 + index))" "$JSON_SHARD_DIR/train-manifest.json"
     fi
     index=$((index + 1))
   done
@@ -229,7 +242,7 @@ prepare() {
       local stem="${input##*/}"
       stem="${stem%.jsonl}"
       generate_teacher "$input" "$TEACHER_DIR/${stem}.hkst" 0 \
-        "$((SEED + 200000 + index))"
+        "$((SEED + 200000 + index))" "$JSON_SHARD_DIR/${kind}-manifest.json"
       index=$((index + 1))
     done
   done

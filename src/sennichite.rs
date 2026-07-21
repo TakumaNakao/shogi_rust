@@ -1,90 +1,195 @@
-use circular_buffer::CircularBuffer;
+use shogi_core::Color;
 use shogi_lib::Position;
 
 use crate::position_hash::PositionHasher;
 
-/// 千日手の状態を表す列挙型
+/// Repetition adjudication according to the Japan Shogi Association rule:
+/// four occurrences draw unless one side gave check on every one of its moves
+/// in the interval, in which case that checking side loses.
 #[derive(PartialEq, Debug, Eq, Clone, Copy)]
 pub enum SennichiteStatus {
-    /// 千日手ではない
     None,
-    /// 千日手による引き分け（連続王手ではない場合）
     Draw,
-    /// 連続王手による負け
-    PerpetualCheckLoss,
+    PerpetualCheckLoss { loser: Color },
 }
 
-/// 千日手検出器
-/// 固定サイズのリングバッファを使用して、過去の局面ハッシュを管理します。
-pub struct SennichiteDetector<const CAPACITY: usize> {
-    /// 過去の局面ハッシュの履歴（固定サイズのリングバッファ）
-    history: CircularBuffer<CAPACITY, u64>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub key: u64,
+    pub side_to_move: Color,
+    pub moved_by: Option<Color>,
+    pub gave_check: bool,
 }
 
-impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
-    /// 新しい千日手検出器を作成します。
+#[derive(Debug, Clone, Default)]
+pub struct GameHistory {
+    entries: Vec<HistoryEntry>,
+}
+
+impl GameHistory {
     pub fn new() -> Self {
-        SennichiteDetector {
-            history: CircularBuffer::new(),
-        }
+        Self::default()
     }
 
-    /// 現在の局面のハッシュ値を履歴に記録します。
+    pub fn record_initial_position(&mut self, position: &Position) {
+        self.entries.push(HistoryEntry {
+            key: PositionHasher::calculate_hash(position),
+            side_to_move: position.side_to_move(),
+            moved_by: None,
+            gave_check: false,
+        });
+    }
+
+    /// Compatibility entry point. Prefer `record_position_after_move` when the
+    /// caller knows that a legal move has just been made.
     pub fn record_position(&mut self, position: &Position) {
-        let hash = PositionHasher::calculate_hash(position);
-        self.history.push_back(hash);
+        let side_to_move = position.side_to_move();
+        let moved_by = self
+            .entries
+            .last()
+            .filter(|previous| previous.side_to_move != side_to_move)
+            .map(|previous| previous.side_to_move);
+        self.entries.push(HistoryEntry {
+            key: PositionHasher::calculate_hash(position),
+            side_to_move,
+            moved_by,
+            gave_check: moved_by.is_some() && position.in_check(),
+        });
     }
 
-    /// 履歴から最も新しい局面ハッシュを削除します。
+    pub fn record_position_after_move(&mut self, position: &Position, moved_by: Color) {
+        debug_assert_eq!(position.side_to_move(), moved_by.flip());
+        self.entries.push(HistoryEntry {
+            key: PositionHasher::calculate_hash(position),
+            side_to_move: position.side_to_move(),
+            moved_by: Some(moved_by),
+            gave_check: position.in_check(),
+        });
+    }
+
     pub fn unrecord_last_position(&mut self) {
-        self.history.pop_back();
+        self.entries.pop();
     }
 
-    /// 特定の局面の出現回数を取得します。
     pub fn get_position_count(&self, position: &Position) -> u32 {
-        let target_hash = PositionHasher::calculate_hash(position);
-        self.history.iter().filter(|&&h| h == target_hash).count() as u32
+        let target_key = PositionHasher::calculate_hash(position);
+        let side_to_move = position.side_to_move();
+        self.entries
+            .iter()
+            .filter(|entry| entry.key == target_key && entry.side_to_move == side_to_move)
+            .count() as u32
     }
 
-    /// 特定の局面が千日手であるか（4回出現したか）をチェックします。
+    pub fn adjudicate(&self, position: &Position) -> SennichiteStatus {
+        self.adjudicate_key(
+            PositionHasher::calculate_hash(position),
+            position.side_to_move(),
+        )
+    }
+
     pub fn check_sennichite(&self, position: &Position) -> SennichiteStatus {
-        let count = self.get_position_count(position);
-        if count >= 4 {
-            if position.in_check() {
-                SennichiteStatus::PerpetualCheckLoss
-            } else {
-                SennichiteStatus::Draw
-            }
-        } else {
-            SennichiteStatus::None
-        }
+        self.adjudicate(position)
     }
 
-    /// 探索中の交互着手履歴を前提に、同じ手番の局面だけを走査して千日手をチェックします。
     pub fn check_sennichite_assuming_alternating_history(
         &self,
         position: &Position,
     ) -> SennichiteStatus {
-        let target_hash = PositionHasher::calculate_hash(position);
-        let mut count = 0;
-        for &hash in self.history.iter().rev().step_by(2) {
-            if hash == target_hash {
-                count += 1;
-                if count >= 4 {
-                    return if position.in_check() {
-                        SennichiteStatus::PerpetualCheckLoss
-                    } else {
-                        SennichiteStatus::Draw
-                    };
+        self.adjudicate(position)
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn entries(&self) -> &[HistoryEntry] {
+        &self.entries
+    }
+
+    fn adjudicate_key(&self, target_key: u64, side_to_move: Color) -> SennichiteStatus {
+        let mut occurrence_count = 0;
+        let mut start = None;
+        let Some(end) = self
+            .entries
+            .iter()
+            .rposition(|entry| entry.key == target_key && entry.side_to_move == side_to_move)
+        else {
+            return SennichiteStatus::None;
+        };
+        for index in (0..=end).rev().step_by(2) {
+            let entry = &self.entries[index];
+            debug_assert_eq!(entry.side_to_move, side_to_move);
+            if entry.key == target_key {
+                occurrence_count += 1;
+                if occurrence_count == 4 {
+                    start = Some(index);
+                    break;
                 }
             }
         }
-        SennichiteStatus::None
-    }
+        let Some(start) = start else {
+            return SennichiteStatus::None;
+        };
+        let interval = &self.entries[start + 1..=end];
+        let black_checks = all_moves_gave_check(interval, Color::Black);
+        let white_checks = all_moves_gave_check(interval, Color::White);
 
-    /// 履歴をクリアします。
-    pub fn clear(&mut self) {
-        self.history.clear();
+        match (black_checks, white_checks) {
+            (true, false) => SennichiteStatus::PerpetualCheckLoss {
+                loser: Color::Black,
+            },
+            (false, true) => SennichiteStatus::PerpetualCheckLoss {
+                loser: Color::White,
+            },
+            _ => SennichiteStatus::Draw,
+        }
+    }
+}
+
+fn all_moves_gave_check(interval: &[HistoryEntry], color: Color) -> bool {
+    let mut moves = interval
+        .iter()
+        .filter(|entry| entry.moved_by == Some(color));
+    let Some(first) = moves.next() else {
+        return false;
+    };
+    first.gave_check && moves.all(|entry| entry.gave_check)
+}
+
+/// Compatibility wrapper for callers that still carry a compile-time history
+/// capacity. The rich history is intentionally not truncated at that capacity.
+#[derive(Debug, Clone, Default)]
+pub struct SennichiteDetector<const CAPACITY: usize> {
+    history: GameHistory,
+}
+
+impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
+    pub fn new() -> Self {
+        Self {
+            history: GameHistory::new(),
+        }
+    }
+}
+
+impl<const CAPACITY: usize> std::ops::Deref for SennichiteDetector<CAPACITY> {
+    type Target = GameHistory;
+
+    fn deref(&self) -> &Self::Target {
+        &self.history
+    }
+}
+
+impl<const CAPACITY: usize> std::ops::DerefMut for SennichiteDetector<CAPACITY> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.history
     }
 }
 
@@ -92,129 +197,229 @@ impl<const CAPACITY: usize> SennichiteDetector<CAPACITY> {
 mod tests {
     use super::*;
     use shogi_core::{Move, Square};
-    use shogi_usi_parser::FromUsi;
+
+    fn push(
+        history: &mut GameHistory,
+        key: u64,
+        side_to_move: Color,
+        moved_by: Color,
+        gave_check: bool,
+    ) {
+        history.entries.push(HistoryEntry {
+            key,
+            side_to_move,
+            moved_by: Some(moved_by),
+            gave_check,
+        });
+    }
 
     #[test]
-    fn test_is_sennichite_detection_with_hash() {
-        const TEST_CAPACITY: usize = 20;
-        let mut detector = SennichiteDetector::<TEST_CAPACITY>::new();
-
-        let mut pos = Position::default();
-        detector.record_position(&pos);
-
-        // 4回同じ局面を繰り返す
-        for _ in 0..3 {
-            let mv1 = Move::Normal {
-                from: Square::new(2, 7).unwrap(),
-                to: Square::new(2, 6).unwrap(),
-                promote: false,
-            };
-            let mv2 = Move::Normal {
-                from: Square::new(8, 3).unwrap(),
-                to: Square::new(8, 4).unwrap(),
-                promote: false,
-            };
-            pos.do_move(mv1);
-            pos.do_move(mv2);
-            detector.record_position(&pos);
-
-            let mv3 = Move::Normal {
-                from: Square::new(2, 6).unwrap(),
-                to: Square::new(2, 7).unwrap(),
-                promote: false,
-            };
-            let mv4 = Move::Normal {
-                from: Square::new(8, 4).unwrap(),
-                to: Square::new(8, 3).unwrap(),
-                promote: false,
-            };
-            pos.do_move(mv3);
-            pos.do_move(mv4);
-            detector.record_position(&pos);
+    fn ordinary_fourfold_repetition_is_a_draw() {
+        let mut history = GameHistory::new();
+        let repeated_key = 7;
+        history.entries.push(HistoryEntry {
+            key: repeated_key,
+            side_to_move: Color::Black,
+            moved_by: None,
+            gave_check: false,
+        });
+        for cycle in 0..3 {
+            push(&mut history, 100 + cycle, Color::White, Color::Black, false);
+            push(&mut history, 200 + cycle, Color::Black, Color::White, false);
+            push(&mut history, 300 + cycle, Color::White, Color::Black, false);
+            push(
+                &mut history,
+                repeated_key,
+                Color::Black,
+                Color::White,
+                false,
+            );
         }
-
-        // 初期局面に戻っているはず
-        let initial_pos = Position::default();
-        assert_eq!(detector.get_position_count(&initial_pos), 4);
         assert_eq!(
-            detector.check_sennichite(&initial_pos),
-            SennichiteStatus::Draw
-        );
-        assert_eq!(
-            detector.check_sennichite_assuming_alternating_history(&initial_pos),
-            SennichiteStatus::Draw
+            SennichiteStatus::Draw,
+            history.adjudicate_key(repeated_key, Color::Black)
         );
     }
 
     #[test]
-    fn test_checked_repetition_is_perpetual_check_loss() {
-        const TEST_CAPACITY: usize = 8;
-        let mut detector = SennichiteDetector::<TEST_CAPACITY>::new();
-        let partial =
-            shogi_core::PartialPosition::from_usi("sfen 4r3k/9/9/9/9/9/9/9/4K4 b - 1").unwrap();
-        let pos = Position::new(partial);
-        assert!(pos.in_check());
-
-        for _ in 0..4 {
-            detector.record_position(&pos);
+    fn only_a_side_checking_on_every_move_loses() {
+        let mut history = GameHistory::new();
+        let repeated_key = 9;
+        history.entries.push(HistoryEntry {
+            key: repeated_key,
+            side_to_move: Color::Black,
+            moved_by: None,
+            gave_check: false,
+        });
+        for cycle in 0..3 {
+            push(&mut history, 100 + cycle, Color::White, Color::Black, true);
+            push(&mut history, 200 + cycle, Color::Black, Color::White, false);
+            push(&mut history, 300 + cycle, Color::White, Color::Black, true);
+            push(
+                &mut history,
+                repeated_key,
+                Color::Black,
+                Color::White,
+                false,
+            );
         }
-
         assert_eq!(
-            detector.check_sennichite(&pos),
-            SennichiteStatus::PerpetualCheckLoss
+            SennichiteStatus::PerpetualCheckLoss {
+                loser: Color::Black
+            },
+            history.adjudicate_key(repeated_key, Color::Black)
         );
     }
 
     #[test]
-    fn alternating_history_scan_counts_same_side_positions() {
-        const TEST_CAPACITY: usize = 20;
-        let mut detector = SennichiteDetector::<TEST_CAPACITY>::new();
-
-        let mut pos = Position::default();
-        detector.record_position(&pos);
-
-        for _ in 0..3 {
-            let mv1 = Move::Normal {
-                from: Square::new(2, 7).unwrap(),
-                to: Square::new(2, 6).unwrap(),
-                promote: false,
-            };
-            pos.do_move(mv1);
-            detector.record_position(&pos);
-
-            let mv2 = Move::Normal {
-                from: Square::new(8, 3).unwrap(),
-                to: Square::new(8, 4).unwrap(),
-                promote: false,
-            };
-            pos.do_move(mv2);
-            detector.record_position(&pos);
-
-            let mv3 = Move::Normal {
-                from: Square::new(2, 6).unwrap(),
-                to: Square::new(2, 7).unwrap(),
-                promote: false,
-            };
-            pos.do_move(mv3);
-            detector.record_position(&pos);
-
-            let mv4 = Move::Normal {
-                from: Square::new(8, 4).unwrap(),
-                to: Square::new(8, 3).unwrap(),
-                promote: false,
-            };
-            pos.do_move(mv4);
-            detector.record_position(&pos);
+    fn a_non_check_inside_the_repetition_interval_makes_it_a_draw() {
+        let mut history = GameHistory::new();
+        let repeated_key = 11;
+        history.entries.push(HistoryEntry {
+            key: repeated_key,
+            side_to_move: Color::Black,
+            moved_by: None,
+            gave_check: false,
+        });
+        for cycle in 0..3 {
+            push(
+                &mut history,
+                100 + cycle,
+                Color::White,
+                Color::Black,
+                cycle != 1,
+            );
+            push(&mut history, 200 + cycle, Color::Black, Color::White, false);
+            push(&mut history, 300 + cycle, Color::White, Color::Black, true);
+            push(
+                &mut history,
+                repeated_key,
+                Color::Black,
+                Color::White,
+                false,
+            );
         }
+        assert_eq!(
+            SennichiteStatus::Draw,
+            history.adjudicate_key(repeated_key, Color::Black)
+        );
+    }
 
-        let initial_pos = Position::default();
+    #[test]
+    fn mixed_checks_by_both_sides_are_not_continuous_check() {
+        let mut history = GameHistory::new();
+        let repeated_key = 13;
+        history.entries.push(HistoryEntry {
+            key: repeated_key,
+            side_to_move: Color::Black,
+            moved_by: None,
+            gave_check: false,
+        });
+        for cycle in 0..3 {
+            push(&mut history, 100 + cycle, Color::White, Color::Black, true);
+            push(
+                &mut history,
+                200 + cycle,
+                Color::Black,
+                Color::White,
+                cycle == 1,
+            );
+            push(&mut history, 300 + cycle, Color::White, Color::Black, false);
+            push(&mut history, repeated_key, Color::Black, Color::White, true);
+        }
         assert_eq!(
-            detector.check_sennichite(&initial_pos),
-            detector.check_sennichite_assuming_alternating_history(&initial_pos)
+            SennichiteStatus::Draw,
+            history.adjudicate_key(repeated_key, Color::Black)
         );
+    }
+
+    #[test]
+    fn undo_restores_the_previous_adjudication() {
+        let mut history = GameHistory::new();
+        let repeated_key = 17;
+        history.entries.push(HistoryEntry {
+            key: repeated_key,
+            side_to_move: Color::Black,
+            moved_by: None,
+            gave_check: false,
+        });
+        for cycle in 0..3 {
+            push(&mut history, 100 + cycle, Color::White, Color::Black, false);
+            push(&mut history, 200 + cycle, Color::Black, Color::White, false);
+            push(&mut history, 300 + cycle, Color::White, Color::Black, false);
+            push(
+                &mut history,
+                repeated_key,
+                Color::Black,
+                Color::White,
+                false,
+            );
+        }
         assert_eq!(
-            detector.check_sennichite_assuming_alternating_history(&initial_pos),
-            SennichiteStatus::Draw
+            SennichiteStatus::Draw,
+            history.adjudicate_key(repeated_key, Color::Black)
         );
+        history.unrecord_last_position();
+        assert_eq!(
+            SennichiteStatus::None,
+            history.adjudicate_key(repeated_key, Color::Black)
+        );
+    }
+
+    #[test]
+    fn history_is_not_truncated_at_legacy_capacity() {
+        let mut detector = SennichiteDetector::<8>::new();
+        for ply in 0..301 {
+            let side_to_move = if ply % 2 == 0 {
+                Color::Black
+            } else {
+                Color::White
+            };
+            detector.history.entries.push(HistoryEntry {
+                key: ply,
+                side_to_move,
+                moved_by: (ply > 0).then_some(side_to_move.flip()),
+                gave_check: false,
+            });
+        }
+        assert_eq!(301, detector.len());
+    }
+
+    #[test]
+    fn real_position_fourfold_cycle_is_a_draw() {
+        let mut history = GameHistory::new();
+        let mut position = crate::utils::position_from_sfen_or_usi("4k4/9/9/9/9/9/9/9/4K4 b - 1")
+            .expect("valid kings-only position");
+        history.record_initial_position(&position);
+        let cycle = [
+            Move::Normal {
+                from: Square::new(5, 9).unwrap(),
+                to: Square::new(6, 9).unwrap(),
+                promote: false,
+            },
+            Move::Normal {
+                from: Square::new(5, 1).unwrap(),
+                to: Square::new(6, 1).unwrap(),
+                promote: false,
+            },
+            Move::Normal {
+                from: Square::new(6, 9).unwrap(),
+                to: Square::new(5, 9).unwrap(),
+                promote: false,
+            },
+            Move::Normal {
+                from: Square::new(6, 1).unwrap(),
+                to: Square::new(5, 1).unwrap(),
+                promote: false,
+            },
+        ];
+        for _ in 0..3 {
+            for mv in cycle {
+                let moved_by = position.side_to_move();
+                position.do_move(mv);
+                history.record_position_after_move(&position, moved_by);
+            }
+        }
+        assert_eq!(SennichiteStatus::Draw, history.adjudicate(&position));
     }
 }

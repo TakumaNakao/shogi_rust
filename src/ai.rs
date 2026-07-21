@@ -1,24 +1,34 @@
-use crate::evaluation::Evaluator;
+mod alpha_beta;
+mod iterative;
+mod outcome;
+mod parallel;
+mod qsearch;
+mod score;
+mod transposition;
+
+use self::score::*;
+use self::transposition::*;
+use crate::evaluation::{EvaluationContext, Evaluator};
 use crate::move_ordering::MoveOrdering;
 use crate::position_hash::PositionHasher;
-use crate::sennichite::{SennichiteDetector, SennichiteStatus};
-use crate::utils::{format_move_usi, get_piece_value};
+use crate::sennichite::{GameHistory, SennichiteStatus};
+use crate::utils::get_piece_value;
 use arrayvec::ArrayVec;
+pub use outcome::{
+    RootResult, SearchInfo, SearchLimits, SearchObserver, SearchOutcome, SearchStats,
+    SharedSearchObserver,
+};
+pub use parallel::resolve_search_threads;
 use shogi_core::Move;
 use shogi_lib::Position;
-use std::any::Any;
 use std::collections::HashMap;
-use std::io::{self, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_DEPTH: usize = 64;
-const TRANSPOSITION_TABLE_MAX_ENTRIES: usize = 1_000_000;
-const SHARED_TT_SHARDS: usize = 4096;
-const SHARED_TT_ENTRIES_PER_SHARD: usize = TRANSPOSITION_TABLE_MAX_ENTRIES / SHARED_TT_SHARDS + 1;
 const ASPIRATION_WINDOW: f32 = 300.0;
 const CHECK_MOVE_BONUS: i32 = 2_000;
 const SEE_ORDERING_SCALE: i32 = 20;
@@ -27,190 +37,13 @@ const SEARCH_THREAD_STACK_BYTES: usize = 4 * 1024 * 1024;
 // Checked qsearch nodes must examine every evasion, so cap checking sequences explicitly.
 const MAX_QUIESCENCE_PLY: u8 = 8;
 const TIME_CHECK_NODE_INTERVAL: u64 = 1024;
-const USI_SCORE_CP_LIMIT: i32 = 2_000;
-const USI_SCORE_CP_SOFT_START: i32 = 1_000;
-const MATE_SCORE: f32 = 1_000_000.0;
-const MATE_THRESHOLD: f32 = MATE_SCORE - 1_000.0;
-const REPETITION_WIN_SCORE: f32 = 500_000.0;
 type LegalMoves = ArrayVec<Move, 593>;
-
-struct StopOnDrop(Arc<AtomicBool>);
-
-impl Drop for StopOnDrop {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-}
-
-#[inline]
-fn mate_loss_score(ply_from_root: u16) -> f32 {
-    -MATE_SCORE + f32::from(ply_from_root)
-}
-
-#[inline]
-fn score_to_tt(score: f32, ply_from_root: u16) -> f32 {
-    if score >= MATE_THRESHOLD {
-        score + f32::from(ply_from_root)
-    } else if score <= -MATE_THRESHOLD {
-        score - f32::from(ply_from_root)
-    } else {
-        score
-    }
-}
-
-#[inline]
-fn score_from_tt(score: f32, ply_from_root: u16) -> f32 {
-    if score >= MATE_THRESHOLD {
-        score - f32::from(ply_from_root)
-    } else if score <= -MATE_THRESHOLD {
-        score + f32::from(ply_from_root)
-    } else {
-        score
-    }
-}
-
-#[inline]
-fn is_history_dependent_score(score: f32) -> bool {
-    score == 0.0 || (score.abs() >= REPETITION_WIN_SCORE - 1.0 && score.abs() < MATE_THRESHOLD)
-}
-
-fn usi_display_score_cp(score: f32) -> i32 {
-    if !score.is_finite() {
-        return if score.is_sign_negative() {
-            -USI_SCORE_CP_LIMIT
-        } else {
-            USI_SCORE_CP_LIMIT
-        };
-    }
-
-    let sign = if score < 0.0 { -1 } else { 1 };
-    let abs_score = score.abs();
-    let soft_start = USI_SCORE_CP_SOFT_START as f32;
-    let limit = USI_SCORE_CP_LIMIT as f32;
-    let displayed = if abs_score <= soft_start {
-        abs_score
-    } else {
-        let tail = limit - soft_start;
-        soft_start + tail * (1.0 - (-(abs_score - soft_start) / tail).exp())
-    };
-
-    sign * (displayed.round() as i32).min(USI_SCORE_CP_LIMIT)
-}
-
-/// トランスポジションテーブルに格納する評価値の種類
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum NodeType {
-    Exact,
-    LowerBound,
-    UpperBound,
-}
-
-/// トランスポジションテーブルのエントリ
-#[derive(Clone, Copy, Debug)]
-struct TranspositionEntry {
-    score: f32,
-    depth: u8,
-    node_type: NodeType,
-    best_move: Option<Move>,
-    generation: u32,
-}
-
-struct SharedTranspositionTable {
-    shards: Box<[RwLock<HashMap<u64, TranspositionEntry>>]>,
-}
-
-impl SharedTranspositionTable {
-    fn new() -> Self {
-        let shards = (0..SHARED_TT_SHARDS)
-            .map(|_| RwLock::new(HashMap::with_capacity(SHARED_TT_ENTRIES_PER_SHARD)))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        Self { shards }
-    }
-
-    #[inline]
-    fn shard_index(hash: u64) -> usize {
-        (hash as usize) & (SHARED_TT_SHARDS - 1)
-    }
-
-    fn get(&self, hash: u64) -> Option<TranspositionEntry> {
-        let shard = self.shards[Self::shard_index(hash)]
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        shard.get(&hash).copied()
-    }
-
-    fn insert(&self, hash: u64, entry: TranspositionEntry) {
-        let mut shard = self.shards[Self::shard_index(hash)]
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !shard.contains_key(&hash) && shard.len() >= SHARED_TT_ENTRIES_PER_SHARD {
-            let replacement = shard
-                .iter()
-                .take(8)
-                .min_by_key(|(_, candidate)| {
-                    (candidate.generation == entry.generation, candidate.depth)
-                })
-                .map(|(&key, _)| key);
-            if let Some(key) = replacement {
-                shard.remove(&key);
-            }
-        }
-        shard.insert(hash, entry);
-    }
-
-    fn clear(&self) {
-        for shard in &self.shards {
-            shard
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clear();
-        }
-    }
-}
-
-enum TranspositionTable {
-    Local(HashMap<u64, TranspositionEntry>),
-    Shared(Arc<SharedTranspositionTable>),
-}
-
-impl TranspositionTable {
-    fn get(&self, hash: u64) -> Option<TranspositionEntry> {
-        match self {
-            Self::Local(table) => table.get(&hash).copied(),
-            Self::Shared(table) => table.get(hash),
-        }
-    }
-
-    fn insert(&mut self, hash: u64, entry: TranspositionEntry) {
-        match self {
-            Self::Local(table) => {
-                table.insert(hash, entry);
-            }
-            Self::Shared(table) => table.insert(hash, entry),
-        }
-    }
-
-    fn clear(&mut self) {
-        match self {
-            Self::Local(table) => table.clear(),
-            Self::Shared(table) => table.clear(),
-        }
-    }
-
-    fn local_len(&self) -> Option<usize> {
-        match self {
-            Self::Local(table) => Some(table.len()),
-            Self::Shared(_) => None,
-        }
-    }
-}
 
 /// 将棋のアルファベータ探索を管理する構造体
 pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     move_ordering: MoveOrdering,
     pub evaluator: E,
-    pub sennichite_detector: SennichiteDetector<HISTORY_CAPACITY>,
+    pub sennichite_detector: GameHistory,
     transposition_table: TranspositionTable,
     killer_moves: [[Option<Move>; 2]; MAX_DEPTH],
     start_time: Option<Instant>,
@@ -228,11 +61,13 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     aspiration_fail_lows: u64,
     aspiration_fail_highs: u64,
     aspiration_researches: u64,
-    emit_info: bool,
+    observer: Option<SharedSearchObserver>,
     search_generation: u32,
     stop_signal: Option<Arc<AtomicBool>>,
-    eval_context: Option<Box<dyn Any + Send>>,
+    eval_context: Option<EvaluationContext>,
     last_completed_depth: u8,
+    last_root_score: Option<f32>,
+    last_pv: Vec<Move>,
     last_search_failed: bool,
 }
 
@@ -241,7 +76,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         ShogiAI {
             move_ordering: MoveOrdering::new(),
             evaluator,
-            sennichite_detector: SennichiteDetector::new(),
+            sennichite_detector: GameHistory::new(),
             transposition_table: TranspositionTable::Local(HashMap::new()),
             killer_moves: [[None; 2]; MAX_DEPTH],
             start_time: None,
@@ -259,11 +94,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             aspiration_fail_lows: 0,
             aspiration_fail_highs: 0,
             aspiration_researches: 0,
-            emit_info: true,
+            observer: None,
             search_generation: 0,
             stop_signal: None,
             eval_context: None,
             last_completed_depth: 0,
+            last_root_score: None,
+            last_pv: Vec::new(),
             last_search_failed: false,
         }
     }
@@ -285,24 +122,24 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 
     fn evaluate_position(&self, position: &Position) -> f32 {
         self.eval_context
-            .as_deref()
+            .as_ref()
             .and_then(|ctx| self.evaluator.evaluate_context(position, ctx))
             .unwrap_or_else(|| self.evaluator.evaluate(position))
     }
 
     fn make_move(&mut self, position: &mut Position, mv: Move) {
-        if let Some(ctx) = self.eval_context.as_deref_mut() {
+        if let Some(ctx) = self.eval_context.as_mut() {
             self.evaluator.prepare_context_move(ctx, position, mv);
         }
         position.do_move(mv);
-        if let Some(ctx) = self.eval_context.as_deref_mut() {
+        if let Some(ctx) = self.eval_context.as_mut() {
             self.evaluator.commit_context_move(ctx, position);
         }
     }
 
     fn undo_move(&mut self, position: &mut Position, mv: Move) {
         position.undo_move(mv);
-        if let Some(ctx) = self.eval_context.as_deref_mut() {
+        if let Some(ctx) = self.eval_context.as_mut() {
             self.evaluator.undo_context_move(ctx);
         }
     }
@@ -312,7 +149,32 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.sennichite_detector.clear();
         self.transposition_table.clear();
         self.clear_killer_moves();
+        self.eval_context = None;
+        self.last_root_score = None;
+        self.last_pv.clear();
         self.last_search_failed = false;
+    }
+
+    /// Restores the state that can influence an independent search while
+    /// retaining the evaluator allocation owned by this session.
+    pub fn reset_for_independent_search(&mut self) {
+        self.clear();
+        self.start_time = None;
+        self.time_limit = None;
+        self.next_time_check_nodes = 0;
+        self.nodes_searched = 0;
+        self.quiescence_nodes_searched = 0;
+        self.quiescence_moves_considered = 0;
+        self.quiescence_moves_generated = 0;
+        self.quiescence_moves_discarded = 0;
+        self.quiescence_moves_searched = 0;
+        self.quiescence_see_skips = 0;
+        self.quiescence_terminal_mates = 0;
+        self.check_evasion_extensions = 0;
+        self.aspiration_fail_lows = 0;
+        self.aspiration_fail_highs = 0;
+        self.aspiration_researches = 0;
+        self.last_completed_depth = 0;
     }
 
     fn clear_killer_moves(&mut self) {
@@ -324,7 +186,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     pub fn set_emit_info(&mut self, emit_info: bool) {
-        self.emit_info = emit_info;
+        if !emit_info {
+            self.observer = None;
+        }
+    }
+
+    pub fn set_search_observer(&mut self, observer: Option<SharedSearchObserver>) {
+        self.observer = observer;
     }
 
     pub fn set_stop_signal(&mut self, stop_signal: Option<Arc<AtomicBool>>) {
@@ -383,8 +251,48 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.last_completed_depth
     }
 
+    /// Returns the raw root score from the last fully completed iteration.
+    pub fn last_root_score(&self) -> Option<f32> {
+        self.last_root_score
+    }
+
+    /// Returns the principal variation from the last fully completed iteration.
+    pub fn last_pv(&self) -> &[Move] {
+        &self.last_pv
+    }
+
     pub fn last_search_failed(&self) -> bool {
         self.last_search_failed
+    }
+
+    pub fn search_stats(&self) -> SearchStats {
+        SearchStats {
+            nodes: self.nodes_searched,
+            quiescence_nodes: self.quiescence_nodes_searched,
+            quiescence_moves_considered: self.quiescence_moves_considered,
+            quiescence_moves_generated: self.quiescence_moves_generated,
+            quiescence_moves_discarded: self.quiescence_moves_discarded,
+            quiescence_moves_searched: self.quiescence_moves_searched,
+            quiescence_see_skips: self.quiescence_see_skips,
+            quiescence_terminal_mates: self.quiescence_terminal_mates,
+            check_evasion_extensions: self.check_evasion_extensions,
+            aspiration_fail_lows: self.aspiration_fail_lows,
+            aspiration_fail_highs: self.aspiration_fail_highs,
+            aspiration_researches: self.aspiration_researches,
+        }
+    }
+
+    fn search_outcome(&self, best_move: Option<Move>) -> SearchOutcome {
+        SearchOutcome {
+            root: best_move.map(|best_move| RootResult {
+                best_move,
+                score: self.last_root_score,
+                completed_depth: self.last_completed_depth,
+                pv: self.last_pv.clone(),
+            }),
+            stats: self.search_stats(),
+            failed: self.last_search_failed,
+        }
     }
 
     pub fn recover_from_search_failure(&mut self, position: &Position) {
@@ -397,6 +305,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.time_limit = None;
         self.next_time_check_nodes = 0;
         self.last_completed_depth = 0;
+        self.last_root_score = None;
+        self.last_pv.clear();
         self.last_search_failed = true;
     }
 
@@ -472,739 +382,22 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         score
     }
 
-    pub fn quiescence_search(
-        &mut self,
-        position: &mut Position,
-        alpha: f32,
-        beta: f32,
-    ) -> Option<(f32, Vec<Move>)> {
-        self.quiescence_search_internal(position, alpha, beta, 0, 0, None)
-    }
-
-    fn filter_quiescence_moves_from_legal(
-        position: &Position,
-        mut moves: LegalMoves,
-    ) -> (LegalMoves, usize) {
-        let generated = moves.len();
-        moves.retain(|m| {
-            if let Move::Normal { to, .. } = *m {
-                position.piece_at(to).is_some() || position.is_check_move(*m)
-            } else {
-                position.is_check_move(*m)
-            }
-        });
-        (moves, generated)
-    }
-
-    fn quiescence_search_internal(
-        &mut self,
-        position: &mut Position,
-        mut alpha: f32,
-        beta: f32,
-        ply_from_root: u16,
-        quiescence_ply: u8,
-        precomputed_moves: Option<LegalMoves>,
-    ) -> Option<(f32, Vec<Move>)> {
-        assert!(
-            alpha < beta,
-            "invalid quiescence window: alpha={alpha}, beta={beta}"
-        );
-        if self.is_time_up() {
-            return None;
-        }
-        self.nodes_searched += 1;
-        self.quiescence_nodes_searched += 1;
-
-        let in_check = position.in_check();
-        let stand_pat_score = if in_check {
-            None
-        } else {
-            let score = self.evaluate_position(position);
-            if score >= beta {
-                return Some((beta, Vec::new()));
-            }
-            alpha = alpha.max(score);
-            Some(score)
-        };
-        let (moves, generated_moves) = if in_check {
-            let moves = precomputed_moves.unwrap_or_else(|| position.legal_moves());
-            let generated = moves.len();
-            (moves, generated)
-        } else {
-            precomputed_moves
-                .map(|moves| Self::filter_quiescence_moves_from_legal(position, moves))
-                .unwrap_or_else(|| position.legal_quiescence_moves_with_generated_count())
-        };
-
-        self.quiescence_moves_generated += generated_moves as u64;
-        self.quiescence_moves_discarded += (generated_moves - moves.len()) as u64;
-        if moves.is_empty() {
-            if in_check {
-                self.quiescence_terminal_mates += 1;
-                return Some((mate_loss_score(ply_from_root), Vec::new()));
-            }
-            return Some((
-                stand_pat_score.expect("non-check position has stand-pat"),
-                Vec::new(),
-            ));
-        }
-        self.quiescence_moves_considered += moves.len() as u64;
-
-        let mut best_score = stand_pat_score.unwrap_or(-f32::INFINITY);
-
-        let mut scored_moves: Vec<(Move, i32)> = moves
-            .iter()
-            .map(|&mv| {
-                (
-                    mv,
-                    self.move_ordering.score_move_without_counter(&mv, position),
-                )
-            })
-            .collect();
-        scored_moves.sort_unstable_by_key(|a| -a.1);
-
-        for (mv, _) in scored_moves {
-            if !in_check && self.see(position, mv) < 0 {
-                self.quiescence_see_skips += 1;
-                continue;
-            }
-
-            self.quiescence_moves_searched += 1;
-            self.make_move(position, mv);
-            self.sennichite_detector.record_position(position);
-            let sennichite_status = self.is_sennichite_internal(position);
-            let score_result = match sennichite_status {
-                SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((REPETITION_WIN_SCORE, Vec::new())),
-                SennichiteStatus::None => {
-                    if quiescence_ply >= MAX_QUIESCENCE_PLY {
-                        if position.in_check() && !position.has_legal_evasion() {
-                            Some((mate_loss_score(ply_from_root.saturating_add(1)), Vec::new()))
-                        } else {
-                            Some((self.evaluate_position(position), Vec::new()))
-                        }
-                    } else {
-                        self.quiescence_search_internal(
-                            position,
-                            -beta,
-                            -alpha,
-                            ply_from_root.saturating_add(1),
-                            quiescence_ply.saturating_add(1),
-                            None,
-                        )
-                    }
-                }
-            };
-            self.sennichite_detector.unrecord_last_position();
-            self.undo_move(position, mv);
-
-            if let Some((current_score, _)) = score_result {
-                let negated_score = -current_score;
-                if negated_score > best_score {
-                    best_score = negated_score;
-                }
-                alpha = alpha.max(negated_score);
-                if alpha >= beta {
-                    break;
-                }
-            } else {
-                return None;
-            }
-        }
-        Some((best_score, Vec::new()))
-    }
-
-    pub fn alpha_beta_search(
-        &mut self,
-        position: &mut Position,
-        depth: u8,
-        alpha: f32,
-        beta: f32,
-    ) -> Option<(f32, Vec<Move>)> {
-        if self.eval_context.is_none() {
-            self.begin_eval_context(position);
-        }
-        self.alpha_beta_search_internal(position, depth, alpha, beta, 1, 0, None)
-    }
-
-    fn search_root_child(
-        &mut self,
-        position: &mut Position,
-        depth: u8,
-        alpha: f32,
-        beta: f32,
-    ) -> Option<(f32, Vec<Move>)> {
-        self.alpha_beta_search_internal(position, depth, alpha, beta, 1, 1, None)
-    }
-
-    fn alpha_beta_search_internal(
-        &mut self,
-        position: &mut Position,
-        depth: u8,
-        mut alpha: f32,
-        mut beta: f32,
-        check_evasion_extension_budget: u8,
-        ply_from_root: u16,
-        precomputed_moves: Option<LegalMoves>,
-    ) -> Option<(f32, Vec<Move>)> {
-        assert!(
-            alpha < beta,
-            "invalid alpha-beta window: alpha={alpha}, beta={beta}"
-        );
-        if self.is_time_up() {
-            return None;
-        }
-        if depth == 0 {
-            return self.quiescence_search_internal(
-                position,
-                alpha,
-                beta,
-                ply_from_root,
-                0,
-                precomputed_moves,
-            );
-        }
-        self.nodes_searched += 1;
-
-        let hash = PositionHasher::calculate_hash(position);
-        let tt_entry = self.transposition_table.get(hash);
-        let tt_best_move = tt_entry.and_then(|entry| entry.best_move);
-        if let Some(entry) = tt_entry {
-            if entry.generation == self.search_generation && entry.depth >= depth {
-                let tt_score = score_from_tt(entry.score, ply_from_root);
-                match entry.node_type {
-                    NodeType::Exact => {
-                        return Some((tt_score, entry.best_move.map_or(Vec::new(), |m| vec![m])))
-                    }
-                    NodeType::LowerBound => alpha = alpha.max(tt_score),
-                    NodeType::UpperBound => beta = beta.min(tt_score),
-                }
-                if alpha >= beta {
-                    return Some((tt_score, entry.best_move.map_or(Vec::new(), |m| vec![m])));
-                }
-            }
-        }
-
-        let moves = precomputed_moves.unwrap_or_else(|| position.legal_moves());
-        if moves.is_empty() {
-            return Some((mate_loss_score(ply_from_root), Vec::new()));
-        }
-
-        let mut scored_moves = Vec::with_capacity(moves.len());
-        for mv in moves.iter() {
-            scored_moves.push((*mv, self.search_ordering_score(position, *mv)));
-        }
-        scored_moves.sort_unstable_by_key(|a| -a.1);
-        let mut sorted_moves = scored_moves;
-
-        if (depth as usize) < MAX_DEPTH {
-            let killers = self.killer_moves[depth as usize];
-            for &killer in killers.iter().flatten().rev() {
-                if let Some(pos) = sorted_moves.iter().position(|&(m, _)| m == killer) {
-                    let mv = sorted_moves.remove(pos);
-                    sorted_moves.insert(0, mv);
-                }
-            }
-        }
-        if let Some(tt_move) = tt_best_move {
-            if let Some(pos) = sorted_moves.iter().position(|&(m, _)| m == tt_move) {
-                let mv = sorted_moves.remove(pos);
-                sorted_moves.insert(0, mv);
-            }
-        }
-
-        let mut best_score = -f32::INFINITY;
-        let mut best_move: Option<Move> = None;
-        let mut best_pv = Vec::new();
-        let mut node_type = NodeType::UpperBound;
-
-        for (mv, _) in sorted_moves {
-            self.make_move(position, mv);
-            self.sennichite_detector.record_position(position);
-            let sennichite_status = self.is_sennichite_internal(position);
-            let search_result = match sennichite_status {
-                SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                SennichiteStatus::PerpetualCheckLoss => Some((REPETITION_WIN_SCORE, Vec::new())),
-                SennichiteStatus::None => {
-                    let mut child_depth = depth - 1;
-                    let mut child_extension_budget = check_evasion_extension_budget;
-                    let mut child_precomputed_moves = None;
-                    if depth == 1 && check_evasion_extension_budget > 0 && position.in_check() {
-                        let child_moves = position.legal_moves();
-                        if child_moves.len() <= CHECK_EVASION_EXTENSION_MAX_REPLIES {
-                            child_depth = 1;
-                            child_extension_budget -= 1;
-                            self.check_evasion_extensions += 1;
-                        }
-                        child_precomputed_moves = Some(child_moves);
-                    }
-                    self.alpha_beta_search_internal(
-                        position,
-                        child_depth,
-                        -beta,
-                        -alpha,
-                        child_extension_budget,
-                        ply_from_root.saturating_add(1),
-                        child_precomputed_moves,
-                    )
-                }
-            };
-            self.sennichite_detector.unrecord_last_position();
-            self.undo_move(position, mv);
-
-            if let Some((score, pv)) = search_result {
-                let current_score = -score;
-                if current_score > best_score {
-                    best_score = current_score;
-                    best_move = Some(mv);
-                    best_pv = pv;
-                }
-                if best_score > alpha {
-                    alpha = best_score;
-                    node_type = NodeType::Exact;
-                }
-                if alpha >= beta {
-                    self.update_killer_moves(depth, mv);
-                    self.move_ordering
-                        .update_history(&mv, position, depth as i32 * 10);
-                    node_type = NodeType::LowerBound;
-                    break;
-                }
-            } else {
-                return None;
-            }
-        }
-
-        let mut final_pv = Vec::new();
-        if let Some(bm) = best_move {
-            final_pv.push(bm);
-            final_pv.extend(best_pv);
-        }
-
-        if !is_history_dependent_score(best_score) {
-            let entry = TranspositionEntry {
-                score: score_to_tt(best_score, ply_from_root),
-                depth,
-                node_type,
-                best_move,
-                generation: self.search_generation,
-            };
-            self.transposition_table.insert(hash, entry);
-        }
-        Some((best_score, final_pv))
-    }
-
     pub fn is_sennichite_internal(&self, position: &Position) -> SennichiteStatus {
-        self.sennichite_detector
-            .check_sennichite_assuming_alternating_history(position)
+        self.sennichite_detector.adjudicate(position)
     }
 
-    pub fn find_best_move(
-        &mut self,
-        position: &mut Position,
-        max_depth: u8,
-        time_limit_ms: Option<u64>,
-    ) -> Option<Move> {
-        self.last_search_failed = false;
-        self.find_best_move_with_root_offset(position, max_depth, time_limit_ms, 0, true)
-    }
-
-    fn find_best_move_with_root_offset(
-        &mut self,
-        position: &mut Position,
-        max_depth: u8,
-        time_limit_ms: Option<u64>,
-        root_offset: usize,
-        primary_worker: bool,
-    ) -> Option<Move> {
-        self.begin_eval_context(position);
-        if primary_worker
-            && self
-                .transposition_table
-                .local_len()
-                .is_some_and(|len| len > TRANSPOSITION_TABLE_MAX_ENTRIES)
-        {
-            self.transposition_table.clear();
-        }
-        self.search_generation = self.search_generation.wrapping_add(1);
-        if self.search_generation == 0 {
-            self.search_generation = 1;
-            self.transposition_table.clear();
-        }
-        self.clear_killer_moves();
-        self.start_time = Some(Instant::now());
-        self.time_limit = time_limit_ms.map(Duration::from_millis);
-        self.next_time_check_nodes = 0;
-        self.nodes_searched = 0;
-        self.quiescence_nodes_searched = 0;
-        self.quiescence_moves_considered = 0;
-        self.quiescence_moves_generated = 0;
-        self.quiescence_moves_discarded = 0;
-        self.quiescence_moves_searched = 0;
-        self.quiescence_see_skips = 0;
-        self.quiescence_terminal_mates = 0;
-        self.check_evasion_extensions = 0;
-        self.aspiration_fail_lows = 0;
-        self.aspiration_fail_highs = 0;
-        self.aspiration_researches = 0;
-        self.last_completed_depth = 0;
-
-        let moves = position.legal_moves();
-        if moves.is_empty() {
-            return None;
-        }
-
-        let mut scored_moves = Vec::with_capacity(moves.len());
-        for mv in moves.iter() {
-            scored_moves.push((*mv, self.search_ordering_score(position, *mv)));
-        }
-        scored_moves.sort_unstable_by_key(|a| -a.1);
-        let mut sorted_moves = scored_moves;
-        let root_hash = PositionHasher::calculate_hash(position);
-        if let Some(tt_move) = self
-            .transposition_table
-            .get(root_hash)
-            .and_then(|entry| entry.best_move)
-        {
-            if let Some(pos) = sorted_moves.iter().position(|&(m, _)| m == tt_move) {
-                let mv = sorted_moves.remove(pos);
-                sorted_moves.insert(0, mv);
-            }
-        }
-        let mut best_move: Option<Move> = sorted_moves.first().map(|&(mv, _)| mv);
-        let mut previous_eval: Option<f32> = None;
-
-        for depth in 1..=max_depth {
-            if let Some(previous_best) = best_move {
-                if let Some(pos) = sorted_moves.iter().position(|&(m, _)| m == previous_best) {
-                    let mv = sorted_moves.remove(pos);
-                    sorted_moves.insert(0, mv);
-                }
-            }
-            if root_offset > 0 && sorted_moves.len() > 1 {
-                let offset = (root_offset + depth as usize - 1) % sorted_moves.len();
-                sorted_moves.rotate_left(offset);
-            }
-            let mut current_best_move_for_depth: Option<Move> = None;
-            let mut best_eval_for_depth = -f32::INFINITY;
-            let mut best_pv_for_depth: Vec<Move> = Vec::new();
-            let (mut alpha, mut beta) = previous_eval
-                .map(|eval| (eval - ASPIRATION_WINDOW, eval + ASPIRATION_WINDOW))
-                .unwrap_or((-f32::INFINITY, f32::INFINITY));
-            let aspiration_alpha = alpha;
-            let aspiration_beta = beta;
-            let mut search_interrupted = false;
-
-            for &(mv, _) in &sorted_moves {
-                if self.is_time_up() {
-                    search_interrupted = true;
-                    break;
-                }
-
-                self.make_move(position, mv);
-                self.sennichite_detector.record_position(position);
-                let sennichite_status = self.is_sennichite_internal(position);
-
-                let eval_result = match sennichite_status {
-                    SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                    SennichiteStatus::PerpetualCheckLoss => {
-                        Some((REPETITION_WIN_SCORE, Vec::new()))
-                    }
-                    SennichiteStatus::None => {
-                        if current_best_move_for_depth.is_some() && alpha.is_finite() {
-                            match self.search_root_child(position, depth - 1, -alpha - 1.0, -alpha)
-                            {
-                                Some((score, _)) if -score > alpha => {
-                                    self.search_root_child(position, depth - 1, -beta, -alpha)
-                                }
-                                narrow_result => narrow_result,
-                            }
-                        } else {
-                            self.search_root_child(position, depth - 1, -beta, -alpha)
-                        }
-                    }
-                };
-                self.sennichite_detector.unrecord_last_position();
-                self.undo_move(position, mv);
-
-                if let Some((eval, pv)) = eval_result {
-                    let current_eval = -eval;
-                    if current_eval > best_eval_for_depth {
-                        best_eval_for_depth = current_eval;
-                        current_best_move_for_depth = Some(mv);
-                        let mut current_pv = vec![mv];
-                        current_pv.extend(pv);
-                        best_pv_for_depth = current_pv;
-                    }
-                    alpha = alpha.max(current_eval);
-                    if alpha >= beta {
-                        break;
-                    }
+    fn sennichite_score(&self, position: &Position) -> Option<f32> {
+        match self.is_sennichite_internal(position) {
+            SennichiteStatus::None => None,
+            SennichiteStatus::Draw => Some(0.0),
+            SennichiteStatus::PerpetualCheckLoss { loser } => {
+                Some(if loser == position.side_to_move() {
+                    -REPETITION_WIN_SCORE
                 } else {
-                    search_interrupted = true;
-                    break;
-                }
-            }
-
-            if !search_interrupted {
-                if best_eval_for_depth <= aspiration_alpha || best_eval_for_depth >= aspiration_beta
-                {
-                    if aspiration_alpha.is_finite() && aspiration_beta.is_finite() {
-                        self.aspiration_researches += 1;
-                        if best_eval_for_depth <= aspiration_alpha {
-                            self.aspiration_fail_lows += 1;
-                        } else {
-                            self.aspiration_fail_highs += 1;
-                        }
-                    }
-                    alpha = -f32::INFINITY;
-                    beta = f32::INFINITY;
-                    current_best_move_for_depth = None;
-                    best_eval_for_depth = -f32::INFINITY;
-                    best_pv_for_depth.clear();
-
-                    for &(mv, _) in &sorted_moves {
-                        if self.is_time_up() {
-                            search_interrupted = true;
-                            break;
-                        }
-
-                        self.make_move(position, mv);
-                        self.sennichite_detector.record_position(position);
-                        let sennichite_status = self.is_sennichite_internal(position);
-
-                        let eval_result = match sennichite_status {
-                            SennichiteStatus::Draw => Some((0.0, Vec::new())),
-                            SennichiteStatus::PerpetualCheckLoss => {
-                                Some((REPETITION_WIN_SCORE, Vec::new()))
-                            }
-                            SennichiteStatus::None => {
-                                self.search_root_child(position, depth - 1, -beta, -alpha)
-                            }
-                        };
-                        self.sennichite_detector.unrecord_last_position();
-                        self.undo_move(position, mv);
-
-                        if let Some((eval, pv)) = eval_result {
-                            let current_eval = -eval;
-                            if current_eval > best_eval_for_depth {
-                                best_eval_for_depth = current_eval;
-                                current_best_move_for_depth = Some(mv);
-                                let mut current_pv = vec![mv];
-                                current_pv.extend(pv);
-                                best_pv_for_depth = current_pv;
-                            }
-                            alpha = alpha.max(current_eval);
-                        } else {
-                            search_interrupted = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if !search_interrupted {
-                let Some(current_best_move) = current_best_move_for_depth else {
-                    break;
-                };
-                if best_pv_for_depth.is_empty() {
-                    break;
-                }
-                best_move = Some(current_best_move);
-                previous_eval = Some(best_eval_for_depth);
-                self.last_completed_depth = depth;
-                if let Some(bm) = best_move {
-                    self.move_ordering
-                        .update_history(&bm, position, depth as i32 * 20);
-                }
-
-                // --- infoコマンド出力 ---
-                let elapsed_time = self.start_time.unwrap().elapsed().as_millis();
-                let pv_string = best_pv_for_depth
-                    .iter()
-                    .map(|m| format_move_usi(*m))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-
-                // 評価値は手番視点に変換する
-                let score_cp = usi_display_score_cp(best_eval_for_depth);
-
-                if self.emit_info {
-                    println!(
-                        "info depth {} score cp {} time {} nodes {} pv {}",
-                        depth, score_cp, elapsed_time, self.nodes_searched, pv_string
-                    );
-                    let _ = io::stdout().flush();
-                }
-                // --- ここまで ---
-
-                if depth == max_depth {
-                    break;
-                }
-            } else {
-                break;
+                    REPETITION_WIN_SCORE
+                })
             }
         }
-        best_move
-    }
-}
-
-impl<E, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY>
-where
-    E: Evaluator + Clone + Send + Sync + 'static,
-{
-    pub fn find_best_move_parallel(
-        &mut self,
-        position: &mut Position,
-        max_depth: u8,
-        time_limit_ms: Option<u64>,
-        threads: usize,
-    ) -> Option<Move> {
-        let threads = resolve_search_threads(threads);
-        let root_position = position.clone();
-        let fallback_move = position.legal_moves().first().copied();
-        self.last_search_failed = false;
-
-        if threads == 1 {
-            if matches!(&self.transposition_table, TranspositionTable::Shared(_)) {
-                self.transposition_table = TranspositionTable::Local(HashMap::new());
-            }
-            return match catch_unwind(AssertUnwindSafe(|| {
-                self.find_best_move(position, max_depth, time_limit_ms)
-            })) {
-                Ok(best_move) => best_move,
-                Err(_) => {
-                    *position = root_position;
-                    self.recover_from_search_failure(position);
-                    fallback_move
-                }
-            };
-        }
-
-        let shared_tt = match &self.transposition_table {
-            TranspositionTable::Shared(table) => table.clone(),
-            TranspositionTable::Local(_) => {
-                let table = Arc::new(SharedTranspositionTable::new());
-                self.transposition_table = TranspositionTable::Shared(table.clone());
-                table
-            }
-        };
-        let owns_stop_signal = self.stop_signal.is_none();
-        let stop_signal = self
-            .stop_signal
-            .clone()
-            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-        if owns_stop_signal {
-            self.stop_signal = Some(stop_signal.clone());
-        }
-
-        let evaluator = self.evaluator.clone();
-        let generation = self.search_generation;
-        let emit_info = self.emit_info;
-
-        let parallel_result = catch_unwind(AssertUnwindSafe(|| {
-            thread::scope(|scope| {
-                let _stop_on_drop = StopOnDrop(stop_signal.clone());
-                let mut handles = Vec::with_capacity(threads - 1);
-                let mut worker_failed = false;
-                for worker_id in 1..threads {
-                    let evaluator = evaluator.clone();
-                    let table = shared_tt.clone();
-                    let worker_stop_signal = stop_signal.clone();
-                    let mut worker_position = root_position.clone();
-                    match thread::Builder::new()
-                        .stack_size(SEARCH_THREAD_STACK_BYTES)
-                        .spawn_scoped(scope, move || {
-                            let mut worker =
-                                ShogiAI::new_with_shared_tt(evaluator, table, generation);
-                            worker.set_emit_info(false);
-                            worker.set_stop_signal(Some(worker_stop_signal.clone()));
-                            // A failed helper must stop the primary search instead of stranding USI.
-                            let worker_result = catch_unwind(AssertUnwindSafe(|| {
-                                worker.find_best_move_with_root_offset(
-                                    &mut worker_position,
-                                    max_depth,
-                                    time_limit_ms,
-                                    worker_id,
-                                    false,
-                                )
-                            }));
-                            match worker_result {
-                                Ok(best_move) => Ok((best_move, worker)),
-                                Err(_) => {
-                                    worker_stop_signal.store(true, Ordering::Relaxed);
-                                    Err(())
-                                }
-                            }
-                        }) {
-                        Ok(handle) => handles.push(handle),
-                        Err(_) => {
-                            worker_failed = true;
-                            stop_signal.store(true, Ordering::Relaxed);
-                            break;
-                        }
-                    }
-                }
-
-                self.set_emit_info(emit_info);
-                // Keep the root position recoverable even if an internal invariant fires.
-                let main_result = catch_unwind(AssertUnwindSafe(|| {
-                    self.find_best_move_with_root_offset(
-                        position,
-                        max_depth,
-                        time_limit_ms,
-                        0,
-                        true,
-                    )
-                }));
-                stop_signal.store(true, Ordering::Relaxed);
-
-                for handle in handles {
-                    match handle.join() {
-                        Ok(Ok((_worker_move, worker))) => self.absorb_statistics(&worker),
-                        Ok(Err(())) | Err(_) => worker_failed = true,
-                    }
-                }
-
-                if worker_failed {
-                    self.transposition_table.clear();
-                    self.last_search_failed = true;
-                }
-
-                match main_result {
-                    Ok(main_move) => main_move,
-                    Err(_) => {
-                        *position = root_position.clone();
-                        self.recover_from_search_failure(position);
-                        fallback_move
-                    }
-                }
-            })
-        }));
-
-        if owns_stop_signal {
-            self.stop_signal = None;
-        }
-
-        match parallel_result {
-            Ok(best_move) => best_move,
-            Err(_) => {
-                *position = root_position;
-                self.recover_from_search_failure(position);
-                fallback_move
-            }
-        }
-    }
-}
-
-pub fn resolve_search_threads(requested: usize) -> usize {
-    if requested == 0 {
-        thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1)
-            .min(256)
-    } else {
-        requested.clamp(1, 256)
     }
 }
 
@@ -1261,26 +454,6 @@ mod tests {
     }
 
     #[test]
-    fn usi_display_score_keeps_small_values() {
-        assert_eq!(0, usi_display_score_cp(0.0));
-        assert_eq!(500, usi_display_score_cp(500.0));
-        assert_eq!(-500, usi_display_score_cp(-500.0));
-        assert_eq!(1000, usi_display_score_cp(1000.0));
-    }
-
-    #[test]
-    fn usi_display_score_soft_limits_large_values() {
-        let two_thousand = usi_display_score_cp(2000.0);
-        let four_thousand = usi_display_score_cp(4000.0);
-        assert!(two_thousand > 1000);
-        assert!(four_thousand > two_thousand);
-        assert!(four_thousand < USI_SCORE_CP_LIMIT);
-        assert_eq!(-four_thousand, usi_display_score_cp(-4000.0));
-        assert_eq!(USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::INFINITY));
-        assert_eq!(-USI_SCORE_CP_LIMIT, usi_display_score_cp(f32::NEG_INFINITY));
-    }
-
-    #[test]
     fn mate_scores_round_trip_through_tt_at_different_ply() {
         let win_at_ply_seven = MATE_SCORE - 7.0;
         let loss_at_ply_nine = -MATE_SCORE + 9.0;
@@ -1296,6 +469,33 @@ mod tests {
         assert!(is_history_dependent_score(0.0));
         assert!(is_history_dependent_score(REPETITION_WIN_SCORE));
         assert!(is_history_dependent_score(-REPETITION_WIN_SCORE));
+    }
+
+    #[test]
+    fn independent_search_reset_matches_fresh_sessions() {
+        let position = Position::default();
+        let moves = position.legal_moves();
+        let mut reused = ShogiAI::<_, 256>::new(HashEvaluator);
+        reused.set_emit_info(false);
+
+        for &mv in moves.iter().take(4) {
+            let mut child = position.clone();
+            child.do_move(mv);
+            let mut fresh = ShogiAI::<_, 256>::new(HashEvaluator);
+            fresh.set_emit_info(false);
+            fresh.sennichite_detector.record_initial_position(&child);
+            let mut fresh_child = child.clone();
+            let expected = fresh
+                .alpha_beta_search(&mut fresh_child, 2, f32::NEG_INFINITY, f32::INFINITY)
+                .expect("fresh score");
+
+            reused.reset_for_independent_search();
+            reused.sennichite_detector.record_initial_position(&child);
+            let actual = reused
+                .alpha_beta_search(&mut child, 2, f32::NEG_INFINITY, f32::INFINITY)
+                .expect("reused score");
+            assert_eq!(expected, actual);
+        }
     }
 
     #[test]
@@ -1369,6 +569,69 @@ mod tests {
             legacy.last_completed_depth(),
             parallel.last_completed_depth()
         );
+        assert_eq!(legacy.last_root_score(), parallel.last_root_score());
+        assert_eq!(legacy.last_pv(), parallel.last_pv());
+    }
+
+    #[test]
+    fn completed_search_exposes_root_score_and_pv() {
+        let mut position = Position::default();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.sennichite_detector.record_position(&position);
+        let observed_depths = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observer_depths = observed_depths.clone();
+        ai.set_search_observer(Some(Arc::new(move |info: &SearchInfo| {
+            observer_depths.lock().unwrap().push(info.depth);
+        })));
+
+        let outcome = ai.search(&mut position, SearchLimits::from_millis(2, None));
+        let best_move = outcome
+            .best_move()
+            .expect("start position has a legal move");
+
+        assert_eq!(2, ai.last_completed_depth());
+        assert_eq!(Some(0.0), ai.last_root_score());
+        assert_eq!(Some(best_move), ai.last_pv().first().copied());
+        assert_eq!(vec![1, 2], *observed_depths.lock().unwrap());
+        assert_eq!(ai.search_stats(), outcome.stats);
+        assert_eq!(Some(0.0), outcome.root.as_ref().and_then(|root| root.score));
+        assert!(!outcome.failed);
+    }
+
+    #[test]
+    fn subtree_history_detects_fourth_occurrence_and_restores_on_undo() {
+        let mut position =
+            position_from_sfen_or_usi("4k4/9/9/9/9/9/9/9/4K4 b - 1").expect("valid position");
+        let cycle = ["5i6i", "5a6a", "6i5i", "6a5a"]
+            .map(|text| parse_usi_move_for_color(text, position.side_to_move()));
+        let cycle = cycle.map(|mv| mv.expect("valid cycle move"));
+        let mut history = GameHistory::new();
+        history.record_initial_position(&position);
+        for _ in 0..2 {
+            for mv in cycle {
+                let moved_by = position.side_to_move();
+                position.do_move(mv);
+                history.record_position_after_move(&position, moved_by);
+            }
+        }
+        assert_eq!(3, history.get_position_count(&position));
+
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.sennichite_detector = history;
+        for mv in cycle {
+            let moved_by = position.side_to_move();
+            ai.make_move(&mut position, mv);
+            ai.sennichite_detector
+                .record_position_after_move(&position, moved_by);
+        }
+        assert_eq!(Some(0.0), ai.sennichite_score(&position));
+
+        for mv in cycle.into_iter().rev() {
+            ai.sennichite_detector.unrecord_last_position();
+            ai.undo_move(&mut position, mv);
+        }
+        assert_eq!(3, ai.sennichite_detector.get_position_count(&position));
+        assert_eq!(None, ai.sennichite_score(&position));
     }
 
     #[test]

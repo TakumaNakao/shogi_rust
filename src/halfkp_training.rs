@@ -1,20 +1,118 @@
-use anyhow::{anyhow, Context, Result};
+mod codec;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use shogi_core::Color;
 use shogi_lib::Position;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::Path;
+use std::io::{BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
 
-use crate::evaluation::{extract_halfkp_features_for, HALFKP_HIDDEN, HALFKP_INPUTS};
-
-const DATASET_MAGIC: &[u8; 8] = b"HKST0002";
-const DATASET_VERSION: u32 = 2;
-const RECORD_MAGIC: u32 = 0x3152_4b48;
+use crate::evaluation::extract_halfkp_features_for;
+use crate::training_data::{artifact_metadata, sha256_hex, ArtifactMetadata, RunEnvironment};
 
 pub const CANDIDATE_SEARCH_BEST: u8 = 1;
 pub const CANDIDATE_GAME_MOVE: u8 = 2;
 pub const CANDIDATE_RANDOM: u8 = 4;
 pub const CANDIDATE_TACTICAL: u8 = 8;
+pub const SEARCH_TEACHER_SEMANTICS_VERSION: u32 = 3;
+pub const SEARCH_TEACHER_SEMANTICS_ID: &str = "jsa-complete-check-interval-v1";
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct SearchTeacherManifest {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub stage: String,
+    pub format: String,
+    pub teacher_semantics_version: u32,
+    pub teacher_semantics_id: String,
+    pub records: u64,
+    #[serde(default)]
+    pub stage_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<RunEnvironment>,
+    #[serde(default)]
+    pub inputs: Vec<ArtifactMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ArtifactMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_binary: Option<ArtifactMetadata>,
+    #[serde(default)]
+    pub feature_profile: String,
+    #[serde(default)]
+    pub search_limits: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jobs: Option<usize>,
+    #[serde(default)]
+    pub random_seeds: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_policy_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_policy_version: Option<u32>,
+    #[serde(default)]
+    pub parent_manifest_sha256: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<ArtifactMetadata>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SearchTeacherProvenance {
+    pub environment: Option<RunEnvironment>,
+    pub inputs: Vec<ArtifactMetadata>,
+    pub model: Option<ArtifactMetadata>,
+    pub engine_binary: Option<ArtifactMetadata>,
+    pub feature_profile: String,
+    pub search_limits: serde_json::Value,
+    pub jobs: Option<usize>,
+    pub random_seeds: Vec<u64>,
+    pub phase_policy_version: Option<u32>,
+    pub split_policy_version: Option<u32>,
+    pub parent_manifest_sha256: Vec<String>,
+}
+
+impl SearchTeacherProvenance {
+    pub fn stage_fingerprint(&self) -> Result<String> {
+        let input_content = self
+            .inputs
+            .iter()
+            .map(|artifact| (&artifact.sha256, artifact.records))
+            .collect::<Vec<_>>();
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "stage": "halfkp_search_teacher",
+            "inputs": input_content,
+            "model_sha256": self.model.as_ref().map(|artifact| &artifact.sha256),
+            "engine_binary_sha256": self.engine_binary.as_ref().map(|artifact| &artifact.sha256),
+            "feature_profile": self.feature_profile,
+            "search_limits": self.search_limits,
+            "jobs": self.jobs,
+            "random_seeds": self.random_seeds,
+            "phase_policy_version": self.phase_policy_version,
+            "split_policy_version": self.split_policy_version,
+            "teacher_semantics_version": SEARCH_TEACHER_SEMANTICS_VERSION,
+            "teacher_semantics_id": SEARCH_TEACHER_SEMANTICS_ID,
+            "parent_manifest_sha256": self.parent_manifest_sha256,
+        });
+        Ok(sha256_hex(&serde_json::to_vec(&value)?))
+    }
+}
+
+pub fn search_teacher_manifest_path(dataset: &Path) -> PathBuf {
+    let mut path = dataset.as_os_str().to_os_string();
+    path.push(".manifest.json");
+    PathBuf::from(path)
+}
+
+pub fn read_search_teacher_manifest(dataset: &Path) -> Result<Option<SearchTeacherManifest>> {
+    let path = search_teacher_manifest_path(dataset);
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(
+            serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?,
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct PackedHalfKpPosition {
@@ -69,7 +167,10 @@ pub struct SearchTeacherRecord {
 
 pub struct SearchTeacherWriter {
     writer: BufWriter<File>,
+    dataset_path: PathBuf,
+    temporary_path: PathBuf,
     records: u64,
+    provenance: SearchTeacherProvenance,
 }
 
 impl SearchTeacherWriter {
@@ -78,52 +179,100 @@ impl SearchTeacherWriter {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
+        let temporary_path = append_suffix(path, ".tmp");
         let mut writer = BufWriter::new(
-            File::create(path).with_context(|| format!("create {}", path.display()))?,
+            File::create(&temporary_path)
+                .with_context(|| format!("create {}", temporary_path.display()))?,
         );
-        writer.write_all(DATASET_MAGIC)?;
-        writer.write_all(&DATASET_VERSION.to_le_bytes())?;
-        writer.write_all(&(HALFKP_HIDDEN as u32).to_le_bytes())?;
-        writer.write_all(&(HALFKP_INPUTS as u32).to_le_bytes())?;
-        Ok(Self { writer, records: 0 })
+        codec::write_header(&mut writer)?;
+        Ok(Self {
+            writer,
+            dataset_path: path.to_path_buf(),
+            temporary_path,
+            records: 0,
+            provenance: SearchTeacherProvenance::default(),
+        })
+    }
+
+    pub fn set_provenance(&mut self, provenance: SearchTeacherProvenance) {
+        self.provenance = provenance;
     }
 
     pub fn write_record(&mut self, record: &SearchTeacherRecord) -> Result<()> {
-        if record.candidates.is_empty() || record.candidates.len() > u8::MAX as usize {
-            return Err(anyhow!("invalid candidate count"));
-        }
-        if !record.root_search_score_cp.is_finite()
-            || !record.sample_weight.is_finite()
-            || record.sample_weight <= 0.0
-        {
-            return Err(anyhow!("invalid teacher record scalar"));
-        }
-        self.writer.write_all(&RECORD_MAGIC.to_le_bytes())?;
-        self.writer.write_all(&record.position_hash.to_le_bytes())?;
-        self.writer.write_all(&record.ply.to_le_bytes())?;
-        self.writer.write_all(&[record.phase])?;
-        self.writer.write_all(&[encode_result(record.result)?])?;
-        self.writer
-            .write_all(&[record.candidates.len() as u8, record.teacher_depth])?;
-        self.writer
-            .write_all(&record.root_search_score_cp.to_le_bytes())?;
-        self.writer.write_all(&record.sample_weight.to_le_bytes())?;
-        write_position(&mut self.writer, &record.root)?;
-        for candidate in &record.candidates {
-            if !candidate.score_cp.is_finite() {
-                return Err(anyhow!("non-finite candidate score"));
-            }
-            self.writer.write_all(&[candidate.flags, 0, 0, 0])?;
-            self.writer.write_all(&candidate.score_cp.to_le_bytes())?;
-            write_position(&mut self.writer, &candidate.child)?;
-        }
+        codec::write_record(&mut self.writer, record)?;
         self.records += 1;
         Ok(())
     }
 
     pub fn finish(mut self) -> Result<u64> {
         self.writer.flush()?;
-        Ok(self.records)
+        self.writer.get_ref().sync_all()?;
+        let records = self.records;
+        let dataset_path = self.dataset_path;
+        let temporary_path = self.temporary_path;
+        let provenance = self.provenance;
+        drop(self.writer);
+        replace_file(&temporary_path, &dataset_path)?;
+        let output = artifact_metadata(&dataset_path, Some(records))?;
+        let stage_fingerprint = provenance.stage_fingerprint()?;
+        let manifest = SearchTeacherManifest {
+            schema_version: 2,
+            stage: "halfkp_search_teacher".to_string(),
+            format: "HKST0002".to_string(),
+            teacher_semantics_version: SEARCH_TEACHER_SEMANTICS_VERSION,
+            teacher_semantics_id: SEARCH_TEACHER_SEMANTICS_ID.to_string(),
+            records,
+            stage_fingerprint,
+            environment: provenance.environment,
+            inputs: provenance.inputs,
+            model: provenance.model,
+            engine_binary: provenance.engine_binary,
+            feature_profile: provenance.feature_profile,
+            search_limits: provenance.search_limits,
+            jobs: provenance.jobs,
+            random_seeds: provenance.random_seeds,
+            phase_policy_version: provenance.phase_policy_version,
+            split_policy_version: provenance.split_policy_version,
+            parent_manifest_sha256: provenance.parent_manifest_sha256,
+            output: Some(output),
+        };
+        let path = search_teacher_manifest_path(&dataset_path);
+        let temporary_manifest = append_suffix(&path, ".tmp");
+        let bytes = serde_json::to_vec_pretty(&manifest)?;
+        std::fs::write(&temporary_manifest, bytes)
+            .with_context(|| format!("write {}", temporary_manifest.display()))?;
+        replace_file(&temporary_manifest, &path)?;
+        Ok(records)
+    }
+}
+
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+    match std::fs::rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if destination.exists()
+                && matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                ) =>
+        {
+            std::fs::remove_file(destination)?;
+            std::fs::rename(source, destination)?;
+            Ok(())
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "replace {} with {}",
+                destination.display(),
+                source.display()
+            )
+        }),
     }
 }
 
@@ -135,207 +284,80 @@ impl SearchTeacherReader {
     pub fn open(path: &Path) -> Result<Self> {
         let mut reader =
             BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
-        let mut magic = [0u8; 8];
-        reader.read_exact(&mut magic)?;
-        let version = read_u32(&mut reader)?;
-        let hidden = read_u32(&mut reader)? as usize;
-        let inputs = read_u32(&mut reader)? as usize;
-        if &magic != DATASET_MAGIC
-            || version != DATASET_VERSION
-            || hidden != HALFKP_HIDDEN
-            || inputs != HALFKP_INPUTS
-        {
-            return Err(anyhow!("incompatible HalfKP search teacher dataset"));
-        }
+        codec::read_header(&mut reader)?;
         Ok(Self { reader })
     }
 
     pub fn read_record(&mut self) -> Result<Option<SearchTeacherRecord>> {
-        let Some(record_magic) = read_u32_or_eof(&mut self.reader)? else {
-            return Ok(None);
-        };
-        if record_magic != RECORD_MAGIC {
-            return Err(anyhow!("invalid packed record marker"));
-        }
-        let position_hash = read_u64(&mut self.reader)?;
-        let ply = read_u16(&mut self.reader)?;
-        let phase = read_u8(&mut self.reader)?;
-        let result = decode_result(read_u8(&mut self.reader)?)?;
-        let candidate_count = read_u8(&mut self.reader)? as usize;
-        let teacher_depth = read_u8(&mut self.reader)?;
-        let root_search_score_cp = read_f32(&mut self.reader)?;
-        let sample_weight = read_f32(&mut self.reader)?;
-        let root = read_position(&mut self.reader)?;
-        let mut candidates = Vec::with_capacity(candidate_count);
-        for _ in 0..candidate_count {
-            let flags = read_u8(&mut self.reader)?;
-            let mut reserved = [0u8; 3];
-            self.reader.read_exact(&mut reserved)?;
-            let score_cp = read_f32(&mut self.reader)?;
-            let child = read_position(&mut self.reader)?;
-            candidates.push(SearchTeacherCandidate {
-                flags,
-                score_cp,
-                child,
-            });
-        }
-        if candidate_count == 0
-            || !root_search_score_cp.is_finite()
-            || !sample_weight.is_finite()
-            || sample_weight <= 0.0
-            || candidates
-                .iter()
-                .any(|candidate| !candidate.score_cp.is_finite())
-        {
-            return Err(anyhow!("invalid packed teacher record"));
-        }
-        Ok(Some(SearchTeacherRecord {
-            position_hash,
-            ply,
-            phase,
-            teacher_depth,
-            result,
-            root_search_score_cp,
-            sample_weight,
-            root,
-            candidates,
-        }))
+        codec::read_record(&mut self.reader)
     }
-}
-
-fn write_position(writer: &mut impl Write, position: &PackedHalfKpPosition) -> Result<()> {
-    if position.features_black.len() > u8::MAX as usize
-        || position.features_white.len() > u8::MAX as usize
-    {
-        return Err(anyhow!("too many HalfKP active features"));
-    }
-    writer.write_all(&[
-        u8::from(position.side_to_move == Color::White),
-        position.features_black.len() as u8,
-        position.features_white.len() as u8,
-        0,
-    ])?;
-    writer.write_all(&position.material_black.to_le_bytes())?;
-    writer.write_all(&position.material_white.to_le_bytes())?;
-    for &feature in position
-        .features_black
-        .iter()
-        .chain(position.features_white.iter())
-    {
-        if feature as usize >= HALFKP_INPUTS {
-            return Err(anyhow!("HalfKP feature out of range"));
-        }
-        writer.write_all(&feature.to_le_bytes())?;
-    }
-    Ok(())
-}
-
-fn read_position(reader: &mut impl Read) -> Result<PackedHalfKpPosition> {
-    let side = read_u8(reader)?;
-    let black_len = read_u8(reader)? as usize;
-    let white_len = read_u8(reader)? as usize;
-    let _reserved = read_u8(reader)?;
-    let material_black = read_f32(reader)?;
-    let material_white = read_f32(reader)?;
-    let mut features_black = Vec::with_capacity(black_len);
-    let mut features_white = Vec::with_capacity(white_len);
-    for index in 0..black_len + white_len {
-        let feature = read_u32(reader)?;
-        if feature as usize >= HALFKP_INPUTS {
-            return Err(anyhow!("packed HalfKP feature out of range"));
-        }
-        if index < black_len {
-            features_black.push(feature);
-        } else {
-            features_white.push(feature);
-        }
-    }
-    Ok(PackedHalfKpPosition {
-        side_to_move: if side == 0 {
-            Color::Black
-        } else if side == 1 {
-            Color::White
-        } else {
-            return Err(anyhow!("invalid packed side to move"));
-        },
-        features_black,
-        features_white,
-        material_black,
-        material_white,
-    })
-}
-
-fn encode_result(result: Option<f32>) -> Result<u8> {
-    match result {
-        None => Ok(255),
-        Some(0.0) => Ok(0),
-        Some(0.5) => Ok(1),
-        Some(1.0) => Ok(2),
-        Some(_) => Err(anyhow!("result must be loss, draw, win, or unknown")),
-    }
-}
-
-fn decode_result(value: u8) -> Result<Option<f32>> {
-    match value {
-        0 => Ok(Some(0.0)),
-        1 => Ok(Some(0.5)),
-        2 => Ok(Some(1.0)),
-        255 => Ok(None),
-        _ => Err(anyhow!("invalid packed result")),
-    }
-}
-
-fn read_u8(reader: &mut impl Read) -> Result<u8> {
-    let mut bytes = [0u8; 1];
-    reader.read_exact(&mut bytes)?;
-    Ok(bytes[0])
-}
-
-fn read_u16(reader: &mut impl Read) -> Result<u16> {
-    let mut bytes = [0u8; 2];
-    reader.read_exact(&mut bytes)?;
-    Ok(u16::from_le_bytes(bytes))
-}
-
-fn read_u32(reader: &mut impl Read) -> Result<u32> {
-    let mut bytes = [0u8; 4];
-    reader.read_exact(&mut bytes)?;
-    Ok(u32::from_le_bytes(bytes))
-}
-
-fn read_u32_or_eof(reader: &mut impl Read) -> Result<Option<u32>> {
-    let mut bytes = [0u8; 4];
-    let mut offset = 0;
-    while offset < bytes.len() {
-        let read = reader.read(&mut bytes[offset..])?;
-        if read == 0 {
-            return if offset == 0 {
-                Ok(None)
-            } else {
-                Err(anyhow!("truncated packed record marker"))
-            };
-        }
-        offset += read;
-    }
-    Ok(Some(u32::from_le_bytes(bytes)))
-}
-
-fn read_u64(reader: &mut impl Read) -> Result<u64> {
-    let mut bytes = [0u8; 8];
-    reader.read_exact(&mut bytes)?;
-    Ok(u64::from_le_bytes(bytes))
-}
-
-fn read_f32(reader: &mut impl Read) -> Result<f32> {
-    let mut bytes = [0u8; 4];
-    reader.read_exact(&mut bytes)?;
-    Ok(f32::from_le_bytes(bytes))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evaluation::{HALFKP_HIDDEN, HALFKP_INPUTS};
     use crate::position_hash::PositionHasher;
+
+    fn decode_hex_fixture(contents: &str) -> Vec<u8> {
+        contents
+            .split_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).expect("valid fixture byte"))
+            .collect()
+    }
+
+    fn golden_teacher_bytes() -> Vec<u8> {
+        let fixture = if cfg!(feature = "halfkp64") {
+            include_str!("../tests/fixtures/teacher/hkst_v2_halfkp64.hex")
+        } else {
+            include_str!("../tests/fixtures/teacher/hkst_v2_halfkp32.hex")
+        };
+        decode_hex_fixture(fixture)
+    }
+
+    fn teacher_fixture_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "shogi-ai-{label}-{}-{}.hkst",
+            std::process::id(),
+            HALFKP_HIDDEN
+        ))
+    }
+
+    fn write_teacher_fixture(label: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = teacher_fixture_path(label);
+        std::fs::write(&path, bytes).expect("write teacher fixture");
+        path
+    }
+
+    fn golden_teacher_record() -> SearchTeacherRecord {
+        SearchTeacherRecord {
+            position_hash: 0x0123_4567_89ab_cdef,
+            ply: 12,
+            phase: 1,
+            teacher_depth: 4,
+            result: Some(0.5),
+            root_search_score_cp: 42.25,
+            sample_weight: 0.75,
+            root: PackedHalfKpPosition {
+                side_to_move: Color::Black,
+                features_black: vec![0],
+                features_white: vec![(HALFKP_INPUTS - 1) as u32],
+                material_black: 100.0,
+                material_white: -100.0,
+            },
+            candidates: vec![SearchTeacherCandidate {
+                flags: CANDIDATE_SEARCH_BEST | CANDIDATE_GAME_MOVE,
+                score_cp: 37.5,
+                child: PackedHalfKpPosition {
+                    side_to_move: Color::White,
+                    features_black: vec![1],
+                    features_white: vec![2],
+                    material_black: 50.0,
+                    material_white: -50.0,
+                },
+            }],
+        }
+    }
 
     #[test]
     fn packed_position_extracts_valid_halfkp_features() {
@@ -379,6 +401,17 @@ mod tests {
         let mut writer = SearchTeacherWriter::create(&path).expect("create dataset");
         writer.write_record(&record).expect("write record");
         assert_eq!(1, writer.finish().expect("finish dataset"));
+        let manifest = read_search_teacher_manifest(&path)
+            .expect("read manifest")
+            .expect("manifest exists");
+        assert_eq!(2, manifest.schema_version);
+        assert_eq!("HKST0002", manifest.format);
+        assert_eq!(
+            SEARCH_TEACHER_SEMANTICS_VERSION,
+            manifest.teacher_semantics_version
+        );
+        assert_eq!(SEARCH_TEACHER_SEMANTICS_ID, manifest.teacher_semantics_id);
+        assert_eq!(1, manifest.records);
 
         let mut reader = SearchTeacherReader::open(&path).expect("open dataset");
         let decoded = reader
@@ -395,6 +428,143 @@ mod tests {
             decoded.candidates[0].score_cp
         );
         assert!(reader.read_record().expect("read eof").is_none());
+        std::fs::remove_file(search_teacher_manifest_path(&path)).expect("remove manifest");
         std::fs::remove_file(path).expect("remove dataset");
+    }
+
+    #[test]
+    fn teacher_v2_reader_and_writer_match_golden_fixture() {
+        let golden = golden_teacher_bytes();
+        assert_eq!(94, golden.len());
+
+        let fixture_path = write_teacher_fixture("teacher-v2-golden-read", &golden);
+        let mut reader = SearchTeacherReader::open(&fixture_path).expect("open golden dataset");
+        let decoded = reader
+            .read_record()
+            .expect("read golden record")
+            .expect("golden record exists");
+        assert_eq!(0x0123_4567_89ab_cdef, decoded.position_hash);
+        assert_eq!(12, decoded.ply);
+        assert_eq!(1, decoded.phase);
+        assert_eq!(4, decoded.teacher_depth);
+        assert_eq!(Some(0.5), decoded.result);
+        assert_eq!(42.25, decoded.root_search_score_cp);
+        assert_eq!(0.75, decoded.sample_weight);
+        assert_eq!(Color::Black, decoded.root.side_to_move);
+        assert_eq!(vec![0], decoded.root.features_black);
+        assert_eq!(
+            vec![(HALFKP_INPUTS - 1) as u32],
+            decoded.root.features_white
+        );
+        assert_eq!(100.0, decoded.root.material_black);
+        assert_eq!(-100.0, decoded.root.material_white);
+        assert_eq!(1, decoded.candidates.len());
+        assert_eq!(
+            CANDIDATE_SEARCH_BEST | CANDIDATE_GAME_MOVE,
+            decoded.candidates[0].flags
+        );
+        assert_eq!(37.5, decoded.candidates[0].score_cp);
+        assert_eq!(Color::White, decoded.candidates[0].child.side_to_move);
+        assert_eq!(vec![1], decoded.candidates[0].child.features_black);
+        assert_eq!(vec![2], decoded.candidates[0].child.features_white);
+        assert!(reader.read_record().expect("read golden eof").is_none());
+        std::fs::remove_file(fixture_path).expect("remove golden fixture copy");
+
+        let output_path = teacher_fixture_path("teacher-v2-golden-write");
+        let mut writer = SearchTeacherWriter::create(&output_path).expect("create output dataset");
+        writer
+            .write_record(&golden_teacher_record())
+            .expect("write golden record");
+        assert_eq!(1, writer.finish().expect("finish golden output"));
+        let actual = std::fs::read(&output_path).expect("read written golden dataset");
+        let manifest = read_search_teacher_manifest(&output_path)
+            .expect("read golden manifest")
+            .expect("golden manifest exists");
+        assert_eq!(
+            SEARCH_TEACHER_SEMANTICS_VERSION,
+            manifest.teacher_semantics_version
+        );
+        assert_eq!(1, manifest.records);
+        std::fs::remove_file(search_teacher_manifest_path(&output_path))
+            .expect("remove golden manifest");
+        std::fs::remove_file(output_path).expect("remove golden output");
+        assert_eq!(golden, actual);
+    }
+
+    #[test]
+    fn teacher_v2_rejects_truncated_and_corrupt_data() {
+        let golden = golden_teacher_bytes();
+
+        for &length in &[0, 7, 8, 11, 12, 19] {
+            let path = write_teacher_fixture(
+                &format!("teacher-v2-truncated-header-{length}"),
+                &golden[..length],
+            );
+            assert!(
+                SearchTeacherReader::open(&path).is_err(),
+                "header length {length} must be rejected"
+            );
+            std::fs::remove_file(path).ok();
+        }
+
+        for &length in &[21, 23, 32, 45, 65, 93] {
+            let path = write_teacher_fixture(
+                &format!("teacher-v2-truncated-record-{length}"),
+                &golden[..length],
+            );
+            let mut reader = SearchTeacherReader::open(&path).expect("complete header");
+            assert!(
+                reader.read_record().is_err(),
+                "record length {length} must be rejected"
+            );
+            std::fs::remove_file(path).ok();
+        }
+
+        let mut invalid_magic = golden.clone();
+        invalid_magic[0] ^= 0xff;
+        let path = write_teacher_fixture("teacher-v2-invalid-magic", &invalid_magic);
+        assert!(SearchTeacherReader::open(&path).is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut invalid_version = golden.clone();
+        invalid_version[8..12].copy_from_slice(&3u32.to_le_bytes());
+        let path = write_teacher_fixture("teacher-v2-invalid-version", &invalid_version);
+        assert!(SearchTeacherReader::open(&path).is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut invalid_record_magic = golden.clone();
+        invalid_record_magic[20] ^= 0xff;
+        let path = write_teacher_fixture("teacher-v2-invalid-record-magic", &invalid_record_magic);
+        let mut reader = SearchTeacherReader::open(&path).expect("valid header");
+        assert!(reader.read_record().is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut invalid_result = golden.clone();
+        invalid_result[35] = 3;
+        let path = write_teacher_fixture("teacher-v2-invalid-result", &invalid_result);
+        let mut reader = SearchTeacherReader::open(&path).expect("valid header");
+        assert!(reader.read_record().is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut zero_candidates = golden.clone();
+        zero_candidates[36] = 0;
+        let path = write_teacher_fixture("teacher-v2-zero-candidates", &zero_candidates);
+        let mut reader = SearchTeacherReader::open(&path).expect("valid header");
+        assert!(reader.read_record().is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut invalid_side = golden.clone();
+        invalid_side[46] = 2;
+        let path = write_teacher_fixture("teacher-v2-invalid-side", &invalid_side);
+        let mut reader = SearchTeacherReader::open(&path).expect("valid header");
+        assert!(reader.read_record().is_err());
+        std::fs::remove_file(path).ok();
+
+        let mut invalid_feature = golden;
+        invalid_feature[58..62].copy_from_slice(&(HALFKP_INPUTS as u32).to_le_bytes());
+        let path = write_teacher_fixture("teacher-v2-invalid-feature", &invalid_feature);
+        let mut reader = SearchTeacherReader::open(&path).expect("valid header");
+        assert!(reader.read_record().is_err());
+        std::fs::remove_file(path).ok();
     }
 }

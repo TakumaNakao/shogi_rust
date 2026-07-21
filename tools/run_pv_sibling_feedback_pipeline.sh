@@ -106,7 +106,7 @@ echo "FEEDBACK_MAX_REGRET_DELTA_CP=$FEEDBACK_MAX_REGRET_DELTA_CP"
 echo "FEEDBACK_MAX_GOOD_REGRET_CP=$FEEDBACK_MAX_GOOD_REGRET_CP"
 echo "FEEDBACK_WEIGHT=$FEEDBACK_WEIGHT EPOCHS=$EPOCHS LEARNING_RATE=$LEARNING_RATE"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features training-tools,benchmark-tools,research-tools \
   --bin mmto_tree_dump \
   --bin tree_feedback_collect \
   --bin rank_stats \

@@ -38,9 +38,9 @@ HALFKP_TARGET="${HALFKP_TARGET:-$ROOT_DIR/target/bench-halfkp64}"
 mkdir -p "$OUT_DIR"
 
 echo "[1/4] Building KPP engine and benchmark harness"
-CARGO_TARGET_DIR="$KPP_TARGET" cargo build --release --bin usi_engine --bin usi_benchmark --bin search_profile
+CARGO_TARGET_DIR="$KPP_TARGET" cargo build --release --features benchmark-tools --bin usi_engine --bin usi_benchmark --bin search_profile
 echo "[2/4] Building HalfKP-64 engine"
-CARGO_TARGET_DIR="$HALFKP_TARGET" cargo build --release --features halfkp64 --bin usi_engine --bin search_profile
+CARGO_TARGET_DIR="$HALFKP_TARGET" cargo build --release --features halfkp64,benchmark-tools --bin usi_engine --bin search_profile
 
 KPP_ENGINE="$KPP_TARGET/release/usi_engine"
 HALFKP_ENGINE="$HALFKP_TARGET/release/usi_engine"

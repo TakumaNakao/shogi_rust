@@ -39,7 +39,7 @@ if [[ "$RESUME" == "1" ]]; then
 fi
 
 export RUST_FONTCONFIG_DLOPEN=1
-cargo build --release --features halfkp64 --bin halfkp_kpp_train
+cargo build --release --features halfkp64,training-tools --bin halfkp_kpp_train
 
 target/release/halfkp_kpp_train \
   --train "$SHARD_DIR/rank_train.jsonl" \

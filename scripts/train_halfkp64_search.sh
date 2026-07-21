@@ -32,21 +32,22 @@ done
 mkdir -p "$OUT_DIR"
 
 echo "[1/4] Building HalfKP-64 teacher generator and trainer"
-cargo build --release --features halfkp64 \
+cargo build --release --features halfkp64,training-tools \
   --bin halfkp_search_teacher --bin halfkp_search_train
 
 generate_teacher_data() {
   local input="$1"
   local output="$2"
   local seed="$3"
-  if [[ "$FORCE_DATA" != "1" && -s "$output" ]]; then
-    echo "Reusing teacher data: $output"
-    return
+  local reuse_args=()
+  if [[ "$FORCE_DATA" != "1" ]]; then
+    reuse_args+=(--reuse-if-matches)
   fi
   target/release/halfkp_search_teacher \
     --weights "$INIT_WEIGHTS" \
     --input "$input" \
     --output "$output" \
+    "${reuse_args[@]}" \
     --selection-depth "$SELECTION_DEPTH" \
     --teacher-depth "$TEACHER_DEPTH" \
     --candidate-top "$CANDIDATE_TOP" \

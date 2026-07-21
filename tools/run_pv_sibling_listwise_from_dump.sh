@@ -83,7 +83,7 @@ echo "LISTWISE_WEIGHT_MODE=$LISTWISE_WEIGHT_MODE"
 echo "BEST_METRIC=$BEST_METRIC"
 echo "LEARNING_RATE=$LEARNING_RATE MAX_WEIGHT_DELTA=$MAX_WEIGHT_DELTA"
 
-env RUST_FONTCONFIG_DLOPEN=1 cargo build --release \
+env RUST_FONTCONFIG_DLOPEN=1 cargo build --release --features training-tools,benchmark-tools,research-tools \
   --bin mmto_tree_train \
   --bin mmto_score_gate \
   --bin mmto_rerank_gate \

@@ -1,6 +1,6 @@
 use shogi_ai::ai::ShogiAI;
 use shogi_ai::evaluation::{Evaluator, SparseModelEvaluator};
-use shogi_ai::sennichite::SennichiteStatus;
+use shogi_ai::sennichite::{GameHistory, SennichiteStatus};
 use shogi_ai::utils::{draw_evaluation_graph, move_to_kif};
 use shogi_core::Color;
 use shogi_lib::Position;
@@ -38,8 +38,8 @@ fn main() {
     let mut sente_evaluation_history: Vec<(usize, f32)> = Vec::new();
     let mut gote_evaluation_history: Vec<(usize, f32)> = Vec::new();
 
-    ai_sente.sennichite_detector.record_position(&position);
-    ai_gote.sennichite_detector.record_position(&position);
+    let mut game_history = GameHistory::new();
+    game_history.record_initial_position(&position);
 
     loop {
         turn += 1;
@@ -72,25 +72,24 @@ fn main() {
             max_depth
         );
 
+        current_ai.sennichite_detector = game_history.clone();
         let best_move = current_ai.find_best_move(&mut position, max_depth, None);
 
         match best_move {
             Some(mv) => {
                 kif_moves.push(move_to_kif(&mv, &position, turn));
                 println!("見つかった最適な指し手: {:?}", mv);
+                let moved_by = position.side_to_move();
                 position.do_move(mv);
-                current_ai.sennichite_detector.record_position(&position);
-                let sennichite_status = current_ai.is_sennichite_internal(&position);
+                game_history.record_position_after_move(&position, moved_by);
+                let sennichite_status = game_history.adjudicate(&position);
                 match sennichite_status {
                     SennichiteStatus::Draw => {
                         println!("千日手により対局終了。");
                         break;
                     }
-                    SennichiteStatus::PerpetualCheckLoss => {
-                        println!(
-                            "連続王手により対局終了（{:?}の負け）。",
-                            position.side_to_move()
-                        );
+                    SennichiteStatus::PerpetualCheckLoss { loser } => {
+                        println!("連続王手により対局終了（{:?}の負け）。", loser);
                         break;
                     }
                     SennichiteStatus::None => {}

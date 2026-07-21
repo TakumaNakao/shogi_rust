@@ -1,0 +1,698 @@
+{
+  "schema_version": 1,
+  "baseline_id": "v2.5.4-plus-master",
+  "captured_at": "2026-07-20",
+  "source": {
+    "revision": "5bc22c740389",
+    "describe": "v2.5.4-5-g5bc22c7",
+    "dirty": false
+  },
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "cpu": "AMD Ryzen 7 PRO 4750U",
+    "physical_cores": 8,
+    "logical_cpus": 16,
+    "cpu_features": [
+      "avx2"
+    ],
+    "rustc": "1.95.0",
+    "cargo": "1.95.0",
+    "profile": "release",
+    "features": [
+      "halfkp64"
+    ]
+  },
+  "artifacts": {
+    "weight": {
+      "path_hint": "policy_weights_halfkp64_kpp_distilled_v2.5.0.binary",
+      "sha256": "91784d6f03f70580468a1509f968cbaaf598fbce084c22a739cb870344fb7c00",
+      "tracked": false
+    },
+    "positions": {
+      "path": "taya36.sfen",
+      "sha256": "22950f42a2d65292fa689a8c84e3af7dc160c571e9aa559699b0beaf1bc9adce",
+      "line_count": 1956,
+      "tracked": true
+    }
+  },
+  "search_profile": {
+    "command": [
+      "target/release/search_profile",
+      "--halfkp-weights",
+      "policy_weights_halfkp64_kpp_distilled_v2.5.0.binary",
+      "--positions",
+      "taya36.sfen",
+      "--samples",
+      "16",
+      "--depth",
+      "5",
+      "--seed",
+      "9501",
+      "--threads",
+      "1"
+    ],
+    "resolved_threads": 1,
+    "samples": 16,
+    "depth": 5,
+    "seed": 9501,
+    "deterministic_counters": {
+      "completed_depth_total": 80,
+      "total_nodes": 6208693,
+      "quiescence_nodes": 5763074,
+      "quiescence_moves_generated": 87300534,
+      "quiescence_moves_discarded": 76862168,
+      "quiescence_moves_considered": 10438366,
+      "quiescence_moves_searched": 3134345
+    },
+    "timing_runs_ms": [
+      6075.50,
+      6086.42,
+      6133.18
+    ],
+    "median_elapsed_ms": 6086.42,
+    "median_nodes_per_second_approx": 1020100,
+    "notes": [
+      "This is the first recorded baseline, not evidence of a historical regression.",
+      "Timing is valid only for comparisons on a stable equivalent machine.",
+      "The input file name is historical; the file contains 1956 lines, while this command samples 16."
+    ]
+  },
+  "phase0_validation": {
+    "revision": "96c59e5820774b5685a7e93cbecbe766064f7693",
+    "search_fingerprint": {
+      "command": [
+        "target/release/search_fingerprint",
+        "--depth",
+        "3",
+        "--expected",
+        "benchmarks/baselines/search_fingerprint_v2.5.4_plus_master.json"
+      ],
+      "repeat_count": 2,
+      "result": "exact match",
+      "observed_elapsed_seconds_approx": 1.83,
+      "observed_max_rss_kb": 3584
+    },
+    "performance_recheck": {
+      "command": "same as search_profile.command",
+      "deterministic_counters_match": true,
+      "timing_runs_ms": [
+        6166.22,
+        6203.21,
+        6196.43
+      ],
+      "median_elapsed_ms": 6196.43,
+      "baseline_delta_percent": 1.8075,
+      "gate_percent": 3.0,
+      "result": "pass",
+      "notes": [
+        "This recheck validates the root score/PV observation fields and fingerprint harness.",
+        "Timing has normal local noise; deterministic search counters are the hard equivalence gate."
+      ]
+    },
+    "completion": {
+      "implementation_revision": "5aa5250",
+      "halfkp64_library_tests": 35,
+      "halfkp32_library_tests": 35,
+      "shogi_lib_tests": 33,
+      "trainer_tests": 1,
+      "halfkp64_all_targets_check": "pass",
+      "format_fixtures": [
+        "tests/fixtures/halfkp/header_v1_halfkp32.hex",
+        "tests/fixtures/halfkp/header_v1_halfkp64.hex",
+        "tests/fixtures/teacher/hkst_v2_halfkp32.hex",
+        "tests/fixtures/teacher/hkst_v2_halfkp64.hex"
+      ],
+      "metadata_tool": "tools/capture_benchmark_metadata.sh"
+    }
+  },
+  "phase1_workspace_validation": {
+    "implementation_revision": "52cbd84",
+    "workspace_members": [
+      "shogi_ai",
+      "shogi_lib"
+    ],
+    "lockfiles": [
+      "Cargo.lock"
+    ],
+    "tests": {
+      "command": "cargo test --workspace --release --features halfkp64",
+      "shogi_ai_library": 35,
+      "halfkp_search_train": 1,
+      "shogi_lib_library": 33,
+      "all_binary_test_targets_built": true,
+      "result": "pass"
+    },
+    "search_fingerprint": "exact match",
+    "performance_recheck": {
+      "deterministic_counters_match": true,
+      "timing_runs_ms": [
+        6146.32,
+        6191.16,
+        6160.15
+      ],
+      "median_elapsed_ms": 6160.15,
+      "delta_vs_original_baseline_percent": 1.2114,
+      "delta_vs_phase0_recheck_percent": -0.5855,
+      "gate_percent": 3.0,
+      "result": "pass"
+    },
+    "ci_revision": "8233f65",
+    "ci_jobs": [
+      "Linux workspace",
+      "Windows workspace"
+    ]
+  },
+  "phase2_module_split_validation": {
+    "implementation_revision": "4da6f3e",
+    "modules": {
+      "ai": [
+        "score",
+        "transposition",
+        "qsearch",
+        "alpha_beta",
+        "iterative",
+        "parallel"
+      ],
+      "evaluation": [
+        "codec",
+        "constants",
+        "debug",
+        "evaluator",
+        "facade",
+        "features",
+        "halfkp",
+        "kernels",
+        "sparse",
+        "tiny_nnue"
+      ]
+    },
+    "tests": {
+      "command": "cargo test --workspace --release --features halfkp64",
+      "shogi_ai_library": 35,
+      "halfkp_search_train": 1,
+      "usi_transcript": 5,
+      "shogi_lib_library": 33,
+      "all_binary_test_targets_built": true,
+      "result": "pass"
+    },
+    "search_fingerprint": "exact match",
+    "clippy_ratchet": "pass",
+    "cargo_fmt_check": "pass",
+    "performance_recheck": {
+      "deterministic_counters_match": true,
+      "timing_runs_ms": [
+        6150.15,
+        6158.48,
+        6202.85,
+        6208.15,
+        6141.89,
+        6153.19,
+        6252.83
+      ],
+      "median_elapsed_ms": 6158.48,
+      "delta_vs_original_baseline_percent": 1.184,
+      "delta_vs_phase1_percent": -0.0271,
+      "gate_percent": 3.0,
+      "result": "pass"
+    }
+  },
+  "phase3_format_codec_validation": {
+    "implementation_revision": "5941250",
+    "halfkp": {
+      "header_definition": "src/evaluation/codec.rs",
+      "flat_tensor_codec_shared_by": [
+        "runtime",
+        "halfkp_search_train",
+        "halfkp_train",
+        "halfkp_kpp_train"
+      ],
+      "magic_definition_count": 1,
+      "version_definition_count": 1,
+      "golden_halfkp32": "exact bytes",
+      "golden_halfkp64": "exact bytes",
+      "legacy_writer_round_trip": "exact bytes",
+      "runtime_aligned_score": "exact"
+    },
+    "hkst_v2": {
+      "codec_definition": "src/halfkp_training/codec.rs",
+      "golden_halfkp32": "exact bytes",
+      "golden_halfkp64": "exact bytes",
+      "candidate_order_and_flags": "exact",
+      "corrupt_and_truncated_inputs": "rejected"
+    },
+    "tests": {
+      "workspace_command": "cargo test --workspace --release --features halfkp64",
+      "workspace_result": "pass",
+      "final_halfkp64_library_tests": 35,
+      "final_trainer_tests": 1,
+      "halfkp64_all_targets_check": "pass",
+      "clippy_ratchet": "pass",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match"
+    },
+    "paired_performance_check": {
+      "control_revision": "89245bd",
+      "candidate_revision": "5941250",
+      "method": "five alternating runs using separately built binaries",
+      "control_timing_runs_ms": [
+        6085.00,
+        6271.55,
+        6275.83,
+        6289.11,
+        6303.08
+      ],
+      "candidate_timing_runs_ms": [
+        6253.51,
+        6283.06,
+        6365.92,
+        6230.73,
+        6343.17
+      ],
+      "control_median_elapsed_ms": 6275.83,
+      "candidate_median_elapsed_ms": 6283.06,
+      "candidate_delta_percent": 0.1152,
+      "deterministic_counters_match": true,
+      "gate_percent": 3.0,
+      "result": "pass",
+      "notes": [
+        "An initial unpaired absolute recheck exceeded the gate because the host had drifted slower.",
+        "The same-session Phase 2 control reproduced the slowdown, so the alternating paired comparison is the regression decision."
+      ]
+    }
+  },
+  "phase4_search_api_validation": {
+    "implementation_revision": "edf04b0",
+    "search_api": [
+      "SearchLimits",
+      "SearchInfo",
+      "SearchStats",
+      "RootResult",
+      "SearchOutcome",
+      "SearchObserver"
+    ],
+    "usi_lifecycle": {
+      "generation_owned_search_job": true,
+      "cancel_and_join_on_replacement": true,
+      "cancel_and_join_on_quit": true,
+      "single_bestmove_emitter": "emit_search_response",
+      "overlapping_searches": false
+    },
+    "tests": {
+      "halfkp64_library_tests": 35,
+      "usi_transcript_tests": 6,
+      "halfkp64_all_targets_check": "pass",
+      "clippy_ratchet": "pass",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match",
+      "windows_process_shutdown": "remote CI not run locally"
+    },
+    "performance_recheck": {
+      "deterministic_counters_match": true,
+      "timing_runs_ms": [
+        6182.05,
+        6161.58,
+        6207.24,
+        6135.01,
+        6313.73,
+        6391.25,
+        6173.26
+      ],
+      "median_elapsed_ms": 6182.05,
+      "delta_vs_phase2_percent": 0.3827,
+      "gate_percent": 3.0,
+      "result": "pass"
+    }
+  },
+  "phase5_repetition_validation": {
+    "implementation_revision": "7cc7413",
+    "change_class": "C: correctness",
+    "rule_source": {
+      "organization": "Japan Shogi Association",
+      "url": "https://www.shogi.or.jp/match/taikyoku_rules/",
+      "rule": "four occurrences of the same position with the same side to move; a side continuously checking throughout the repetition interval loses"
+    },
+    "history_model": {
+      "type": "GameHistory",
+      "recorded_per_ply": [
+        "position key",
+        "side to move",
+        "mover",
+        "gave check"
+      ],
+      "bounded_by_legacy_256_ply_capacity": false,
+      "search_do_undo_synchronized": true,
+      "usi_position_history_preserved": true,
+      "adjudication_allocation_free": true
+    },
+    "teacher_semantics": {
+      "version": 3,
+      "id": "jsa-complete-check-interval-v1",
+      "sidecar_suffix": ".manifest.json",
+      "new_datasets_write_manifest": true,
+      "mismatched_or_missing_manifest_rejected_by_default": true,
+      "legacy_opt_in": "--allow-legacy-teacher-semantics"
+    },
+    "tests": {
+      "halfkp64_library_tests": 41,
+      "halfkp32_library_tests": 41,
+      "halfkp_search_train_tests": 3,
+      "usi_transcript_tests": 6,
+      "shogi_lib_tests": 33,
+      "halfkp64_workspace_release": "pass",
+      "halfkp64_all_targets_check": "pass",
+      "clippy_ratchet": "pass",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match",
+      "rule_fixtures": [
+        "ordinary fourfold repetition",
+        "continuous-check loss",
+        "non-check inside repetition interval",
+        "mixed checks",
+        "undo restoration",
+        "history longer than 256 plies",
+        "legal kings-only fourfold cycle",
+        "three preloaded occurrences and subtree fourth occurrence"
+      ]
+    },
+    "paired_performance_check": {
+      "control_revision": "10992f4",
+      "candidate_revision": "88c9e13",
+      "method": "five alternating runs using separately built binaries",
+      "control_timing_runs_ms": [
+        6380.00,
+        6321.24,
+        6382.21,
+        6148.55,
+        6367.12
+      ],
+      "candidate_timing_runs_ms": [
+        6474.86,
+        6524.18,
+        6299.38,
+        6352.31,
+        6481.89
+      ],
+      "control_median_elapsed_ms": 6367.12,
+      "candidate_median_elapsed_ms": 6474.86,
+      "candidate_delta_percent": 1.692,
+      "deterministic_counters_match": true,
+      "gate_percent": 3.0,
+      "result": "pass",
+      "notes": [
+        "The unpaired absolute timing had host drift, so the same-session alternating comparison is the regression decision.",
+        "The teacher-manifest commit does not affect the search runtime."
+      ]
+    }
+  },
+  "phase6_data_training_validation": {
+    "implementation_revision": "fd2c5cd",
+    "training_conventions": {
+      "module": "src/training_data.rs",
+      "phase_policy_version": 1,
+      "phase_boundaries": {
+        "opening_max_ply": 40,
+        "middlegame_max_ply": 90
+      },
+      "split_policy_version": 2,
+      "game_id": "SHA-256 of CSA content",
+      "split_key": "SHA-256(split-v2 domain, seed, game content ID)",
+      "duplicate_content_removed": true,
+      "path_independent": true
+    },
+    "manifests": {
+      "dataset_build": "stage fingerprint plus input/output SHA-256 and record counts",
+      "jsonl_shard": "parent fingerprint plus input/output SHA-256 and record counts",
+      "halfkp_search_teacher": "teacher semantics, engine/model/input/output hashes, limits, jobs and seeds",
+      "halfkp_search_train": "dataset/model/binary hashes, hyperparameters, metrics and output hash",
+      "checkpoint": "run fingerprint and per-file SHA-256",
+      "stale_reuse_policy": "reuse only when stage fingerprint and output hashes match"
+    },
+    "teacher_session_equivalence": {
+      "control_revision": "dab2531",
+      "candidate_revision": "fd2c5cd",
+      "positions": 8,
+      "selection_depth": 1,
+      "teacher_depth": 2,
+      "jobs": 1,
+      "seed": 4242,
+      "records": 8,
+      "candidates": 58,
+      "control_sha256": "643ebb63a1bd4cfd82bf6f79ae8ef122086ed2dda72e22ca4c1e63b25739d22b",
+      "candidate_sha256": "643ebb63a1bd4cfd82bf6f79ae8ef122086ed2dda72e22ca4c1e63b25739d22b",
+      "result": "exact match"
+    },
+    "streaming_trainer": {
+      "manifest_record_count_without_decode": true,
+      "training_chunk_default_records": 25000,
+      "evaluation_chunk_default_records": 4096,
+      "validation_and_test_streamed": true,
+      "per_feature_hidden_gradient_copies_removed": true,
+      "batch_accumulator_reused": true,
+      "sparse_norm_reduction_order": "sorted feature index",
+      "smoke_peak_rss_kb": 83256,
+      "smoke_records": 2,
+      "smoke_elapsed_seconds": 0.27
+    },
+    "checkpoint_equivalence": {
+      "optimizer_round_trip_tests": [
+        "AdaGrad",
+        "schedule-free"
+      ],
+      "comparison": "uninterrupted 2 epochs versus 1 epoch plus resume",
+      "threads": 1,
+      "records": 2,
+      "continuous_sha256": "ef70ee5671e2c58abe3ad659b1426ba70521845df15318e769dbccfd646ef7ae",
+      "resumed_sha256": "ef70ee5671e2c58abe3ad659b1426ba70521845df15318e769dbccfd646ef7ae",
+      "best_validation_score": 0.07553754894733429,
+      "result": "exact match"
+    },
+    "tests": {
+      "halfkp64_library_tests": 45,
+      "halfkp32_library_tests": 45,
+      "halfkp_search_train_tests": 6,
+      "usi_transcript_tests": 6,
+      "shogi_lib_tests": 33,
+      "halfkp64_workspace_release": "pass",
+      "halfkp64_all_targets_check": "pass",
+      "clippy_ratchet": "pass",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match"
+    },
+    "paired_performance_check": {
+      "control_revision": "e7cffe0",
+      "candidate_revision": "fd2c5cd",
+      "method": "five alternating runs using separately built binaries",
+      "control_timing_runs_ms": [
+        6554.20,
+        6578.11,
+        6622.15,
+        6645.70,
+        6391.98
+      ],
+      "candidate_timing_runs_ms": [
+        6598.09,
+        6635.71,
+        6687.40,
+        6685.45,
+        6862.18
+      ],
+      "control_median_elapsed_ms": 6578.11,
+      "candidate_median_elapsed_ms": 6685.45,
+      "candidate_delta_percent": 1.6318,
+      "deterministic_counters_match": true,
+      "gate_percent": 3.0,
+      "result": "pass"
+    }
+  },
+  "phase7_repository_validation": {
+    "implementation_revision": "4d267e4",
+    "binary_inventory": {
+      "autobins": false,
+      "explicit_targets": 57,
+      "production_default": [
+        "usi_engine"
+      ],
+      "opt_in_features": [
+        "training-tools",
+        "benchmark-tools",
+        "research-tools"
+      ],
+      "legacy_cli_names_changed": false,
+      "deprecated_shims_required": false,
+      "inventory_check": "pass"
+    },
+    "production_dependency_isolation": {
+      "excluded_without_tool_features": [
+        "csa",
+        "glob",
+        "plotters",
+        "sha2"
+      ],
+      "unused_direct_dependencies_removed": [
+        "circular-buffer",
+        "flate2",
+        "indicatif",
+        "libc",
+        "ndarray"
+      ]
+    },
+    "repository_policy": {
+      "binary_inventory": "docs/binaries.md",
+      "artifact_policy": "docs/artifact_policy.md",
+      "report_metadata": "report/README.md",
+      "architecture_decisions": [
+        "docs/adr/0001-explicit-binary-targets.md",
+        "docs/adr/0002-artifact-layout.md"
+      ]
+    },
+    "tests": {
+      "halfkp64_library_tests": 45,
+      "halfkp_search_train_tests": 6,
+      "usi_transcript_tests": 6,
+      "shogi_lib_tests": 33,
+      "workspace_release_all_features": "pass",
+      "all_target_all_feature_check": "pass",
+      "clippy_ratchet": "pass",
+      "all_feature_clippy_visibility": "pass with existing warnings",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match",
+      "shell_syntax": "pass"
+    },
+    "paired_performance_check": {
+      "control_revision": "cd0f422",
+      "candidate_revision": "4d267e4",
+      "method": "five alternating runs using separately built binaries",
+      "control_timing_runs_ms": [
+        6559.24,
+        6679.41,
+        6718.57,
+        6733.16,
+        6671.97
+      ],
+      "candidate_timing_runs_ms": [
+        6600.98,
+        6657.33,
+        6688.17,
+        6436.04,
+        6628.10
+      ],
+      "control_median_elapsed_ms": 6679.41,
+      "candidate_median_elapsed_ms": 6628.10,
+      "candidate_delta_percent": -0.7682,
+      "deterministic_counters_match": true,
+      "gate_percent": 3.0,
+      "result": "pass"
+    }
+  },
+  "phase8_performance_cutover_validation": {
+    "implementation_revision": "b6416e0",
+    "accepted_changes": [
+      {
+        "revision": "0368306",
+        "change": "replace Any/downcast incremental evaluator state with EvaluationContext enum",
+        "search_fingerprint": "exact match",
+        "control_median_elapsed_ms": 6604.66,
+        "candidate_median_elapsed_ms": 6558.25,
+        "candidate_delta_percent": -0.7027
+      },
+      {
+        "revisions": [
+          "cb9c198",
+          "3349145",
+          "b6416e0"
+        ],
+        "change": "move supported training and benchmark implementations behind library run entry points and enforce thin CLI wrappers",
+        "production_binary_changed": false
+      }
+    ],
+    "rejected_changes": [
+      {
+        "change": "reuse move-ordering check flags during move application",
+        "control_median_elapsed_ms": 6507.39,
+        "candidate_median_elapsed_ms": 6535.22,
+        "candidate_delta_percent": 0.4277,
+        "result": "reverted",
+        "report": "report/2026-07-21_UTC_precomputed-check-flag-reuse-rejected.md"
+      }
+    ],
+    "final_release_candidate": {
+      "profile": "release ThinLTO, codegen-units=1, halfkp64",
+      "linux_binary": "target/release/usi_engine",
+      "linux_binary_bytes": 989472,
+      "linux_binary_sha256": "1705c3d88acd16b522b6e6e53d98d726a332086d020a526fe7c9611cbd17edc4",
+      "weight_sha256": "91784d6f03f70580468a1509f968cbaaf598fbce084c22a739cb870344fb7c00",
+      "positions_sha256": "22950f42a2d65292fa689a8c84e3af7dc160c571e9aa559699b0beaf1bc9adce",
+      "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+      "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+      "linux_usi_smoke": "usiok, readyok, bestmove 1g1f",
+      "windows_msvc_release_check": "pass",
+      "windows_runtime_and_shogihome": "external acceptance pending"
+    },
+    "tests": {
+      "halfkp64_library_tests": 51,
+      "halfkp32_library_tests": 51,
+      "halfkp_search_train_tests_in_library": 6,
+      "usi_transcript_tests": 6,
+      "shogi_lib_tests": 33,
+      "workspace_release_all_features": "pass",
+      "all_target_all_feature_check": "pass",
+      "binary_inventory_and_thin_entry_check": "pass",
+      "clippy_ratchet": "pass",
+      "cargo_fmt_check": "pass",
+      "search_fingerprint": "exact match",
+      "checkpoint_resume": "exact match test pass",
+      "format_golden_fixtures": "pass"
+    },
+    "final_paired_performance_check": {
+      "control_revision": "fe79a50",
+      "candidate_revision": "b6416e0",
+      "method": "seven alternating runs using separately built binaries",
+      "control_sorted_timing_runs_ms": [
+        6343.70,
+        6356.38,
+        6531.87,
+        6606.62,
+        6624.84,
+        6631.22,
+        6631.40
+      ],
+      "candidate_sorted_timing_runs_ms": [
+        6212.38,
+        6271.06,
+        6468.60,
+        6479.09,
+        6499.80,
+        6503.83,
+        6522.27
+      ],
+      "control_median_elapsed_ms": 6606.62,
+      "candidate_median_elapsed_ms": 6479.09,
+      "candidate_delta_percent": -1.9303,
+      "deterministic_counter_digest": "d460ad244b6b219e84ca7f4be1f332acdcf193ca63cf8165781998c909469ff1",
+      "deterministic_counters_match": true,
+      "gate_percent": 3.0,
+      "result": "pass"
+    },
+    "paired_game_smoke": {
+      "control_revision": "fe79a50",
+      "candidate_revision": "b6416e0",
+      "games": 20,
+      "time_limit_ms": 20,
+      "depth_cap": 8,
+      "max_plies": 120,
+      "threads_per_engine": 1,
+      "jobs": 2,
+      "seed": 20260721,
+      "candidate_wins": 7,
+      "control_wins": 6,
+      "draws": 7,
+      "candidate_total_score_percent": 52.5,
+      "total_score_95_percent_ci": [
+        34.87,
+        70.13
+      ],
+      "interpretation": "cutover smoke only; no statistically significant strength claim"
+    }
+  }
+}
