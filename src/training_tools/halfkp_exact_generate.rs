@@ -255,7 +255,11 @@ fn make_record(
     Ok(CurriculumRecord {
         source: LabelSource::ExactMate,
         group_id: u64::from_le_bytes(family_hash[..8].try_into().expect("hash width")),
-        position_hash: position.key(),
+        position_hash: u64::from_le_bytes(
+            root.network_input_hash()[..8]
+                .try_into()
+                .expect("hash width"),
+        ),
         family_hash,
         network_input_hash: root.network_input_hash(),
         root_sfen: position.to_sfen_owned(),

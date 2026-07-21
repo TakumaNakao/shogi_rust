@@ -1028,6 +1028,10 @@ HKCL0003はcanonical root SFEN、preferenceごとのstable USI good/bad move、p
 horizon内非詰みであることを全件再証明する。今回のexact GateはSFEN snapshotをstateless rootとして開始する。
 千日手履歴を使う将来のgame/search corpusではposition commandとmove historyを別途必須化する。
 
+生成中のSFEN round-trip監査で、incremental Zobrist keyがsnapshot再構築時のkeyと一致しない局面が見つかった。
+内部探索keyをdataset identityに流用せず、HKCLの`position_hash`はcanonical network-input SHA-256の先頭64 bitと
+定義し直した。完全な256 bit hashも別fieldに保持してsplit監査へ使うため、64 bit値は索引用途に限定する。
+
 HKCL0002 exact corpusとその派生modelはすべてdiagnostic-only/rejectとする。test metricは未開封だが旧schemaのtestは
 freezeせず破棄し、HKCL0003の独立seedで再生成する。Phase 1も安価にHKCL0003で再生成・再学習して旧Phase 1を
 supersedeし、trainerの標準経路へ旧schema例外を残さない。この方針は計画外事象に対するサブエージェント監査の

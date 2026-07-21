@@ -265,8 +265,16 @@ fn validate_record(header: &CurriculumHeader, record: &CurriculumRecord) -> Resu
         .map_err(|_| anyhow!("invalid HKCL root SFEN"))?;
     let parsed_root = PackedHalfKpPosition::from_position(&parsed)
         .ok_or_else(|| anyhow!("HKCL root SFEN lacks a king"))?;
-    if parsed_root != record.root || parsed.key() != record.position_hash {
+    if parsed_root != record.root {
         return Err(anyhow!("HKCL root SFEN does not match packed root"));
+    }
+    let canonical_position_hash = u64::from_le_bytes(
+        record.network_input_hash[..8]
+            .try_into()
+            .expect("SHA-256 prefix width"),
+    );
+    if record.position_hash != canonical_position_hash {
+        return Err(anyhow!("HKCL position hash is not canonical"));
     }
     if !record.confidence.is_finite()
         || !(0.0..=1.0).contains(&record.confidence)
@@ -765,7 +773,11 @@ mod tests {
         CurriculumRecord {
             source: LabelSource::ExactMate,
             group_id: 11,
-            position_hash: source.key(),
+            position_hash: u64::from_le_bytes(
+                root.network_input_hash()[..8]
+                    .try_into()
+                    .expect("hash width"),
+            ),
             family_hash: [13; 32],
             network_input_hash: root.network_input_hash(),
             root_sfen: source.to_sfen_owned(),
