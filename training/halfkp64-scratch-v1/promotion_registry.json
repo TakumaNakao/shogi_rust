@@ -19,12 +19,12 @@
       "decision_commit": "a17a799"
     },
     {
-      "model_sha256": "caf2e9559028a674d762e4e2c587801cb5c907571e647adf8f5b7c666e27bd6b",
+      "model_sha256": "1d773b4f41f5b485cda8fc94dd4b7131328fde332e33e5c6e7382fff33840ea2",
       "generation": 1,
-      "gate_report_sha256": "b9f600d65a447df1b41fa373cfcb0a78a43755628ac5cdc02a87f9e3c32287ed",
+      "gate_report_sha256": "c53b8a08645a086b4cf8f17cc721225a7e806bff75e7a95115602eaf43a0941f",
       "decision": "accepted_gate",
       "accepted_at": "2026-07-22T00:00:00+09:00",
-      "decision_commit": "6d656d6"
+      "decision_commit": "56e66ee"
     }
   ],
   "rejected": [
@@ -37,6 +37,27 @@
     {"model_sha256": "4778160e6755915cc847daacaa8458b8b9a53d62c9052b7ada2b786a57c6c03d", "reason": "exact_v1_diagnostic"},
     {"model_sha256": "93fd405ed03fc536f1d01b7293b853dff624333b1cdbf0d182648a3f4aaf73aa", "reason": "exact_v1_diagnostic"},
     {"model_sha256": "4eefbc177f62ed500f7a5e6f2f552614772721594f03207d76ad060d7a2a6cf1", "reason": "exact_v1_diagnostic"},
-    {"model_sha256": "a0b8ad5abb22780701321109d6338c5b02c915fd506f7cc8d91ca9b381e14246", "reason": "exact_v1_diagnostic"}
+    {"model_sha256": "a0b8ad5abb22780701321109d6338c5b02c915fd506f7cc8d91ca9b381e14246", "reason": "exact_v1_diagnostic"},
+    {"model_sha256": "caf2e9559028a674d762e4e2c587801cb5c907571e647adf8f5b7c666e27bd6b", "reason": "hkcl_v2_phase1_superseded"},
+    {"model_sha256": "541f4c2e385081d4bb5d02b53800e068c9f29d7659a153fbe2cad379eae43e11", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "9ac48d331a865c4c028d2566fbae6a57667a66e32b9ea71d9f8e445108a76cc6", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "035bf0827aa73aa1b767a4267d64b53ee0a4af60e8708b61fe538b0f8e6b89c9", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "8b765316d5d5c9010a717fb4f6e650e6ade724090afdde9168216967ed7bf867", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "b7e8b355054b120590c11a529a5adc126731c0ab3f6633d57b6ebe2baa2b7e09", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "f2aca93ebff966491421e9a71c8d574a71f9324d7f08df126716821705c68ced", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "00af000c38c7d404a3a07901fd9f5932b3a118471e4cd84f8cb1ebbd32c2e2fb", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "5fb42dcf087f3be67bf5461cc41907c5f343e3bafab83b5a3be89418e22d2fd1", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "91c552de92d4ba031606e0783ec6dbb0948db0de24d6923e9c40d5982e91136a", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "fbacd3484d42098b984a4e88d4d4f5471e14e2f7cbfa18a71b1ea4f0b5cad5ec", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "b0046f6e16e3518a35b33426fbb06de2174d4230732b7a048fc2a86bdebe9db2", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "eba99162986921636791094bccc2108ac9a4490d280e1b5e255c5ffd6d07cf0d", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "546a1a8f279bbb7342781fb3ccc1217b429f3d64530d9cd27b0fbff6d8186219", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "adf86ff95ff5cc20e89c7d6fec96646b6943eb008eaf8fd88d28eaac2517eaf0", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "aa5943de11fbd3078f45dafa36722db826f208d6b2eec81105b225c624bdeb54", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "6e4144ff648a0f3057301ed6486eda7017c9addd13b46b3d0b321679d7901826", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "6dd56f71882d1f3e4857a42c9454ba3000c055ac28ba9c9297ac9ff64c231e69", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "8aedd1aab9d487ee58b8e0001bc78f9c5bcda24c080156117fc192918d47e8af", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "7d6b945de260f2aa7d92103bb9db91fbcc8d16d7d9aae328af9f572489fe0bb5", "reason": "hkcl_v2_exact_diagnostic"},
+    {"model_sha256": "7b05fa5d28e3b649f0cf15aeedf1454117351476bd5eef0fb66f1a0155618a00", "reason": "hkcl_v2_exact_diagnostic"}
   ]
 }

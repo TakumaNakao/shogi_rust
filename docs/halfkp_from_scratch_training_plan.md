@@ -1037,6 +1037,12 @@ freezeせず破棄し、HKCL0003の独立seedで再生成する。Phase 1も安�
 supersedeし、trainerの標準経路へ旧schema例外を残さない。この方針は計画外事象に対するサブエージェント監査の
 推奨と一致する。
 
+HKCL0003 Phase 1は`symmetry-10k-v3d`（train 8,000/valid 1,000/test 1,000、split衝突0）で再実行した。
+左右row射影により全splitのsymmetry lossとtest RMSEは表示精度で0、score p99 10.697 cp、`out_b=0`、material
+coefficient `=0`だった。新Phase 1 model hash
+`1d773b4f41f5b485cda8fc94dd4b7131328fde332e33e5c6e7382fff33840ea2`を昇格し、HKCL0002 Phase 1 modelと
+確認済みHKCL0002 exact派生modelをregistryで明示rejectした。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
