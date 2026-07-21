@@ -755,10 +755,10 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 |---:|---|---|---|
 | 1 | scratch lineage/manifestとinitializer | genesis再現、外部model拒否 | 完了（2026-07-21） |
 | 2 | HKCL codecとgolden fixture | round trip、corrupt拒否 | 完了（2026-07-21） |
-| 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 実装完了、clean rank 128件pilot待ち |
-| 4 | feature factorization | fold前後forward一致 | mapping/fold完了、trainer統合待ち |
-| 5 | bounded exact mate solver | proof再検証、規則fixture | 1/3手reference完了、全件再検証とdf-pn待ち |
-| 6 | exact curriculum generator | split/coverage manifest | v1棄却、family-safe v2再設計中 |
+| 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 完了、HKCL0003 clean rank 128件を100% overfit |
+| 4 | feature factorization | fold前後forward一致 | direct/piece-relative/factor-onlyを実装、比較継続中 |
+| 5 | bounded exact mate solver | proof再検証、規則fixture | 1/3手referenceと完全検証器完了、df-pn待ち |
+| 6 | exact curriculum generator | split/coverage manifest | HKCL0003 rule v2の12k生成・全件監査完了 |
 | 7 | opening stratum classifier | deterministic分類、report | 未着手 |
 | 8 | 棋譜rank/result pipeline | no-score provenance | 未着手 |
 | 9 | scratch-only search teacher | lineage強制、immutable teacher | 未着手 |
@@ -1046,6 +1046,39 @@ coefficient `=0`だった。新Phase 1 model hash
 HKCL0003 clean-128は128 record/128 familyを生成し、root proofとgood/bad childのsolver再走を含む128/128件の
 revalidationに成功した。新Phase 1 modelからfactorized trainerで100%（128/128）overfitし、capacity Gateを
 再通過した。このmodelはtrain=validの診断専用で昇格させない。
+
+#### HKCL0003 rule v2 exact 12k（2026-07-22）
+
+最初の`exact-12k-v3`はfamily/input split衝突0だったが、旧検証器がhorizon末端の
+`ProvenNoMate + empty edges`を通常のAND反証として扱い、health 102件を誤って拒否した。独立監査で
+train 83、valid 12、test 7件がすべて同じ原因で、rank pairの失敗は0件と確認した。検証器をsolverと同じ
+`resource -> repetition -> legal terminal -> horizon`順に直し、horizon leafと探索路上反復だけに空edgeを
+許した。さらにdefender-to-moveから始まるgood/bad child proofもtree全体を検証するようにした。回帰test、
+clean-128、旧12kの再検証はすべて成功した。
+
+旧成果物をそのまま昇格せず、generatorの`rule_version=2`、新規seed、固定優先順位
+`test > valid > train`で`exact-12k-v3b`を再生成した。内訳はtrain 9,600、valid 1,200、test 1,200、合計
+12,000 record/12,000 family/23,920 unique network inputである。rootおよび全childのinput split衝突0、
+family split衝突0、proof再検証12,000/12,000を満たした。凍結test artifactは次であり、構成確定まで
+model metricを開かない。
+
+- `test/pairs.hkcl`: `cd032a633566c1b5f6486c205c95664d68a68dfb024465438410da5692080355`
+- `test/health.hkcl`: `5cc2136e293822d7255a582c15e62b6c40f6b425eeb2d5a82fd554a6a18a04d6`
+- `audit-final.json`: `357215521a42d30dd3b29321cbedf5fb6c27604d9b0ea538983924d774bb849e`
+
+新Phase 1 modelを親に、train/valid pairだけでdirectとpiece-relativeを3 learning rate、各3 epoch比較した。
+最良piece-relative (`lr=0.005`) はtrain 95.84%、valid 77.25%、valid score absolute p99 1,777 cpで、
+開発Gateのtrain 99%/valid 90%に未達だった。左右対称RMSEは全候補で0.0001 cp以下を維持した。
+
+巨大なdirect rowの局所記憶と共有factorの競合を分離するため、Phase 1 direct rowを固定してpiece/relative
+factorだけを学習し、最後に通常HalfKP rowへfoldする`factor-only`対照を追加した。`lr=0.01, l2=1e-4`で
+validは80.00%へ改善したが、train 90.38%、p99 3,342 cpでGate未達かつ尺度が大きい。`l2=0.01`では
+p99 1,786 cpへ抑制できたがvalid 79.00%だった。したがって12k候補はすべてdiagnostic/rejectedとし、
+registryへ昇格しない。testは未開封のまま維持する。
+
+次はfamily bootstrapと全合法手static top-1を実装し、factor-onlyの改善がpair sampling固有でないことを
+devだけで確認する。その後、共有表現とscale制御を固定してから50k learning curveへ進む。90% Gateや
+95%本Gateは緩和しない。
 
 ## 16. 参考資料と本計画への反映
 

@@ -88,6 +88,7 @@ enum TrainingStage {
 enum FactorizationMode {
     Direct,
     PieceRelative,
+    FactorOnly,
 }
 
 impl TrainingStage {
@@ -152,6 +153,7 @@ struct Weights {
     out_w: [f32; HALFKP_HIDDEN * 2 + 1],
     out_b: f32,
     factors: Option<HalfKpFactorization>,
+    train_direct: bool,
 }
 
 #[derive(Clone)]
@@ -292,8 +294,8 @@ impl Weights {
             hidden_b: flat.hidden_b,
             out_w: flat.out_w,
             out_b: flat.out_b,
-            factors: (factorization == FactorizationMode::PieceRelative)
-                .then(HalfKpFactorization::zeros),
+            factors: (factorization != FactorizationMode::Direct).then(HalfKpFactorization::zeros),
+            train_direct: factorization != FactorizationMode::FactorOnly,
         }
     }
 
@@ -369,7 +371,7 @@ fn validate_args(args: &Args) -> Result<()> {
         || (!args.resume && args.output.exists())
         || manifest_path(&args.output).exists()
         || (args.resume && args.checkpoint_dir.is_none())
-        || (args.factorization == FactorizationMode::PieceRelative
+        || (args.factorization != FactorizationMode::Direct
             && (args.resume || args.checkpoint_dir.is_some()))
     {
         return Err(anyhow!("invalid arguments or output already exists"));
@@ -703,6 +705,7 @@ fn add_position_gradient(
                 h,
                 stm_hidden,
                 weights.factors.is_some(),
+                weights.train_direct,
             );
         }
         for &feature in nstm_features {
@@ -712,6 +715,7 @@ fn add_position_gradient(
                 h,
                 nstm_hidden,
                 weights.factors.is_some(),
+                weights.train_direct,
             );
         }
     }
@@ -723,11 +727,14 @@ fn add_feature_gradient(
     hidden: usize,
     value: f32,
     factorized: bool,
+    train_direct: bool,
 ) {
-    gradient
-        .feature
-        .entry(feature)
-        .or_insert([0.0; HALFKP_HIDDEN])[hidden] += value;
+    if train_direct {
+        gradient
+            .feature
+            .entry(feature)
+            .or_insert([0.0; HALFKP_HIDDEN])[hidden] += value;
+    }
     if factorized {
         let indices = factor_indices(feature).expect("validated feature");
         gradient
@@ -1080,6 +1087,7 @@ mod tests {
             out_w,
             out_b: 0.0,
             factors: None,
+            train_direct: true,
         }
     }
 
@@ -1108,6 +1116,14 @@ mod tests {
     }
 
     #[test]
+    fn factor_only_gradient_does_not_update_direct_rows() {
+        let mut gradient = Gradient::default();
+        add_feature_gradient(&mut gradient, 0, 0, 1.0, true, false);
+        assert!(gradient.feature.is_empty());
+        assert!(!gradient.factor_piece.is_empty());
+    }
+
+    #[test]
     fn projected_center_king_rows_make_mirror_scores_equal() {
         let original = Position::default();
         let mirrored = Position::new(
@@ -1130,6 +1146,7 @@ mod tests {
                 }
                 factors
             }),
+            train_direct: true,
         };
         weights.project_lr_symmetry();
         let a = PackedHalfKpPosition::from_position(&original).expect("original");
