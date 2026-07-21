@@ -948,6 +948,19 @@ rejectした。trainerはparent model、parent manifest、Gate report、registry
 同じlineageであるだけのmodelを親として受け付けない。registry hashとGate report hashは新しいtraining
 manifestとrun fingerprintへ入る。hash不一致拒否testを通過した。
 
+#### HKCL0002とsplit isolation（2026-07-21）
+
+codecを`HKCL0002`へ更新し、`HKCL0001`をheaderで拒否するようにした。各recordはgenerator family hashと、
+実際にnetworkが見る`PackedHalfKP + side-to-move + material`のSHA-256を別々に必須保持する。reader/writerは
+network-input hashをroot featuresから再計算し、不一致を拒否する。bounded proofには`horizon_plies`と
+`solver_mode`を必須化し、旧`ProvenNoMate`を`NoForcedMateWithinHorizon`へ改名した。mate distanceがhorizonを
+超えるrecord、proof metadataのないexact recordも拒否する。
+
+`halfkp_exact_generate`はv2で1実行1 splitへ変更した。train/valid/testは異なるseedで別々に生成し、random
+gameの開始時にfamily IDを作って、そのgameから採用した全局面へ同じIDを付ける。局面ごとのhashでsplitを
+決める旧経路は削除した。`halfkp_curriculum_audit`は複数HKCLを横断してfamilyとnetwork-input canonical hashの
+split衝突を検査し、衝突が1件でもあれば非zero終了する。これによりv2 corpusは学習前に衝突0を証明できる。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

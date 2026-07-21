@@ -7,9 +7,9 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"HKCL0001";
-const VERSION: u32 = 1;
-const RECORD_MAGIC: u32 = 0x314c_4348;
+const MAGIC: &[u8; 8] = b"HKCL0002";
+const VERSION: u32 = 2;
+const RECORD_MAGIC: u32 = 0x324c_4348;
 const RECORD_COUNT_OFFSET: u64 = 20;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -46,8 +46,15 @@ pub enum ProofStatus {
     Unknown = 0,
     NotProven = 1,
     ProvenMate = 2,
-    ProvenNoMate = 3,
+    NoForcedMateWithinHorizon = 3,
     ResourceLimit = 4,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ProofMode {
+    CheckingOnly = 0,
+    AllLegal = 1,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,6 +79,8 @@ impl OpeningStratum {
 pub struct ProofLabel {
     pub status: ProofStatus,
     pub mate_distance: Option<u16>,
+    pub horizon_plies: u16,
+    pub solver_mode: ProofMode,
     pub nodes: u64,
     pub rule_version: u32,
 }
@@ -90,6 +99,7 @@ pub struct CurriculumRecord {
     pub group_id: u64,
     pub position_hash: u64,
     pub family_hash: [u8; 32],
+    pub network_input_hash: [u8; 32],
     pub split: DatasetSplit,
     pub ply: u16,
     pub phase: u8,
@@ -232,6 +242,16 @@ fn validate_header(header: &CurriculumHeader) -> Result<()> {
 }
 
 fn validate_record(header: &CurriculumHeader, record: &CurriculumRecord) -> Result<()> {
+    if record.family_hash == [0; 32] || record.network_input_hash == [0; 32] {
+        return Err(anyhow!(
+            "HKCL family and network-input hashes must be non-zero"
+        ));
+    }
+    if record.network_input_hash != record.root.network_input_hash() {
+        return Err(anyhow!(
+            "HKCL network-input hash does not match root features"
+        ));
+    }
     if !record.confidence.is_finite()
         || !(0.0..=1.0).contains(&record.confidence)
         || !record.sample_weight.is_finite()
@@ -263,6 +283,20 @@ fn validate_record(header: &CurriculumHeader, record: &CurriculumRecord) -> Resu
         if proof.rule_version == 0 {
             return Err(anyhow!("proof rule version must be non-zero"));
         }
+        if proof.horizon_plies == 0 {
+            return Err(anyhow!("proof horizon must be non-zero"));
+        }
+        if proof
+            .mate_distance
+            .is_some_and(|distance| distance > proof.horizon_plies)
+        {
+            return Err(anyhow!("mate distance exceeds proof horizon"));
+        }
+    } else if matches!(
+        record.source,
+        LabelSource::ExactMate | LabelSource::ExactTactic
+    ) {
+        return Err(anyhow!("exact labels require bounded proof metadata"));
     }
     validate_position(&record.root)?;
     for preference in &record.preferences {
@@ -318,6 +352,7 @@ fn write_record(writer: &mut impl Write, record: &CurriculumRecord) -> Result<()
     writer.write_all(&record.group_id.to_le_bytes())?;
     writer.write_all(&record.position_hash.to_le_bytes())?;
     writer.write_all(&record.family_hash)?;
+    writer.write_all(&record.network_input_hash)?;
     writer.write_all(&record.ply.to_le_bytes())?;
     writer.write_all(&record.opening_stratum.0.to_le_bytes())?;
     writer.write_all(&record.confidence.to_le_bytes())?;
@@ -329,6 +364,8 @@ fn write_record(writer: &mut impl Write, record: &CurriculumRecord) -> Result<()
     writer.write_all(&(record.preferences.len() as u16).to_le_bytes())?;
     if let Some(proof) = &record.proof {
         writer.write_all(&proof.mate_distance.unwrap_or(u16::MAX).to_le_bytes())?;
+        writer.write_all(&proof.horizon_plies.to_le_bytes())?;
+        writer.write_all(&[proof.solver_mode as u8, 0, 0, 0])?;
         writer.write_all(&proof.nodes.to_le_bytes())?;
         writer.write_all(&proof.rule_version.to_le_bytes())?;
     }
@@ -353,6 +390,8 @@ fn read_record(reader: &mut impl Read) -> Result<CurriculumRecord> {
     let position_hash = read_u64(reader)?;
     let mut family_hash = [0u8; 32];
     reader.read_exact(&mut family_hash)?;
+    let mut network_input_hash = [0u8; 32];
+    reader.read_exact(&mut network_input_hash)?;
     let ply = read_u16(reader)?;
     let opening_stratum = OpeningStratum(read_u16(reader)?);
     let confidence = read_f32(reader)?;
@@ -368,7 +407,13 @@ fn read_record(reader: &mut impl Read) -> Result<CurriculumRecord> {
         Some(ProofLabel {
             status,
             mate_distance: (mate_distance != u16::MAX).then_some(mate_distance),
-            nodes: read_u64(reader)?,
+            horizon_plies: read_u16(reader)?,
+            solver_mode: decode_proof_mode(read_u8(reader)?)?,
+            nodes: {
+                let mut reserved = [0; 3];
+                reader.read_exact(&mut reserved)?;
+                read_u64(reader)?
+            },
             rule_version: read_u32(reader)?,
         })
     };
@@ -390,6 +435,7 @@ fn read_record(reader: &mut impl Read) -> Result<CurriculumRecord> {
         group_id,
         position_hash,
         family_hash,
+        network_input_hash,
         split,
         ply,
         phase,
@@ -509,9 +555,16 @@ fn decode_proof_status(value: u8) -> Result<ProofStatus> {
         0 => Ok(ProofStatus::Unknown),
         1 => Ok(ProofStatus::NotProven),
         2 => Ok(ProofStatus::ProvenMate),
-        3 => Ok(ProofStatus::ProvenNoMate),
+        3 => Ok(ProofStatus::NoForcedMateWithinHorizon),
         4 => Ok(ProofStatus::ResourceLimit),
         _ => Err(anyhow!("invalid HKCL proof status")),
+    }
+}
+fn decode_proof_mode(value: u8) -> Result<ProofMode> {
+    match value {
+        0 => Ok(ProofMode::CheckingOnly),
+        1 => Ok(ProofMode::AllLegal),
+        _ => Err(anyhow!("invalid HKCL proof mode")),
     }
 }
 fn decode_preference(value: u8) -> Result<PreferenceKind> {
@@ -598,22 +651,26 @@ mod tests {
         }
     }
     fn record() -> CurriculumRecord {
+        let root = position(Color::Black);
         CurriculumRecord {
             source: LabelSource::ExactMate,
             group_id: 11,
             position_hash: 12,
             family_hash: [13; 32],
+            network_input_hash: root.network_input_hash(),
             split: DatasetSplit::Train,
             ply: 5,
             phase: 0,
             opening_stratum: OpeningStratum::UNKNOWN,
             confidence: 1.0,
             sample_weight: 0.5,
-            root: position(Color::Black),
+            root,
             result: Some(1.0),
             proof: Some(ProofLabel {
                 status: ProofStatus::ProvenMate,
                 mate_distance: Some(3),
+                horizon_plies: 3,
+                solver_mode: ProofMode::CheckingOnly,
                 nodes: 99,
                 rule_version: 1,
             }),
@@ -632,7 +689,7 @@ mod tests {
         write_header(&mut bytes, &header(), 3).expect("header");
         assert_eq!(
             &bytes[..32],
-            b"HKCL0001\x01\0\0\0\x40\0\0\0\x08\x9c\x01\0\x03\0\0\0\0\0\0\0\xb5\0\0\0"
+            b"HKCL0002\x02\0\0\0\x40\0\0\0\x08\x9c\x01\0\x03\0\0\0\0\0\0\0\xb5\0\0\0"
         );
     }
 
@@ -659,6 +716,21 @@ mod tests {
         let mut self_search = record();
         self_search.source = LabelSource::SelfSearch;
         assert!(validate_record(&header(), &self_search).is_err());
+    }
+
+    #[test]
+    fn network_hash_and_bounded_proof_semantics_are_enforced() {
+        let mut invalid = record();
+        invalid.network_input_hash = [99; 32];
+        assert!(validate_record(&header(), &invalid).is_err());
+
+        let mut invalid = record();
+        invalid.proof.as_mut().expect("proof").horizon_plies = 2;
+        assert!(validate_record(&header(), &invalid).is_err());
+
+        let mut invalid = record();
+        invalid.proof = None;
+        assert!(validate_record(&header(), &invalid).is_err());
     }
 
     #[test]

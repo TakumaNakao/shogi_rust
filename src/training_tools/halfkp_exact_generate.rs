@@ -1,18 +1,17 @@
 use anyhow::{anyhow, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 use shogi_ai::halfkp_training::{
     CurriculumHeader, CurriculumPreference, CurriculumReader, CurriculumRecord, CurriculumWriter,
-    LabelSource, OpeningStratum, PackedHalfKpPosition, PreferenceKind, ProofLabel, ProofStatus,
+    LabelSource, OpeningStratum, PackedHalfKpPosition, PreferenceKind, ProofLabel, ProofMode,
+    ProofStatus,
 };
 use shogi_ai::mate_proof::{
     solve_bounded_mate, solve_bounded_mate_for, AttackMoveMode, MateLimits, MateProofStatus,
 };
-use shogi_ai::training_data::{
-    capture_run_environment, split_for_game_content, DatasetSplit, TrainingPhase,
-};
+use shogi_ai::training_data::{capture_run_environment, DatasetSplit, TrainingPhase};
 use shogi_lib::Position;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -24,7 +23,9 @@ const RULE_VERSION: u32 = 1;
 #[command(about = "Generate evaluator-free bounded mate HKCL records from legal random games")]
 struct Args {
     #[arg(long)]
-    output_dir: PathBuf,
+    output: PathBuf,
+    #[arg(long, value_enum)]
+    split: SplitArg,
     #[arg(long, default_value_t = 200)]
     mate1: usize,
     #[arg(long, default_value_t = 200)]
@@ -39,27 +40,20 @@ struct Args {
     seed: u64,
 }
 
-struct Writers {
-    train: CurriculumWriter,
-    valid: CurriculumWriter,
-    test: CurriculumWriter,
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SplitArg {
+    Train,
+    Valid,
+    Test,
 }
 
-impl Writers {
-    fn write(&mut self, record: &CurriculumRecord) -> Result<()> {
-        match record.split {
-            DatasetSplit::Train => self.train.write_record(record),
-            DatasetSplit::Valid => self.valid.write_record(record),
-            DatasetSplit::Test => self.test.write_record(record),
+impl SplitArg {
+    fn dataset(self) -> DatasetSplit {
+        match self {
+            Self::Train => DatasetSplit::Train,
+            Self::Valid => DatasetSplit::Valid,
+            Self::Test => DatasetSplit::Test,
         }
-    }
-
-    fn finish(self) -> Result<[u64; 3]> {
-        Ok([
-            self.train.finish()?,
-            self.valid.finish()?,
-            self.test.finish()?,
-        ])
     }
 }
 
@@ -70,7 +64,9 @@ pub fn run() -> Result<()> {
             "all category targets and node-limit must be non-zero"
         ));
     }
-    std::fs::create_dir_all(&args.output_dir)?;
+    if let Some(parent) = args.output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let revision = capture_run_environment()
         .git_revision
         .unwrap_or_else(|| "unknown".to_string());
@@ -81,7 +77,8 @@ pub fn run() -> Result<()> {
         seed: args.seed,
         input_sha256: vec![],
         generator_config: serde_json::json!({
-            "generator": "legal_random_play_bounded_mate_v1",
+            "generator": "legal_random_play_bounded_mate_v2",
+            "stream_split": format!("{:?}", args.split).to_ascii_lowercase(),
             "mate_plies": [1, 3],
             "node_limit": args.node_limit,
             "rule_version": RULE_VERSION,
@@ -91,15 +88,13 @@ pub fn run() -> Result<()> {
         teacher_model_sha256: None,
         teacher_lineage_id: None,
     };
-    let mut writers = Writers {
-        train: CurriculumWriter::create(&args.output_dir.join("train.hkcl"), header.clone())?,
-        valid: CurriculumWriter::create(&args.output_dir.join("valid.hkcl"), header.clone())?,
-        test: CurriculumWriter::create(&args.output_dir.join("test.hkcl"), header)?,
-    };
+    let mut writer = CurriculumWriter::create(&args.output, header)?;
     let mut rng = ChaCha20Rng::seed_from_u64(args.seed);
     let mut position = Position::default();
     let mut game_ply = 0usize;
-    let mut seen_hashes = HashSet::new();
+    let mut seen_inputs = HashSet::new();
+    let mut game_index = 0u64;
+    let mut family = family_hash(args.seed, game_index);
     let mut mate1 = 0usize;
     let mut mate3 = 0usize;
     let mut no_mate3 = 0usize;
@@ -109,11 +104,9 @@ pub fn run() -> Result<()> {
         && (mate1 < args.mate1 || mate3 < args.mate3 || no_mate3 < args.no_mate3)
     {
         examined += 1;
-        let sfen = position.to_sfen_owned();
-        let family_hash = Sha256::digest(sfen.as_bytes());
-        let mut family = [0u8; 32];
-        family.copy_from_slice(&family_hash);
-        if seen_hashes.insert(family) {
+        let packed = PackedHalfKpPosition::from_position(&position)
+            .ok_or_else(|| anyhow!("generated legal position lacks a king"))?;
+        if seen_inputs.insert(packed.network_input_hash()) {
             let proof = solve_bounded_mate(
                 &position,
                 MateLimits {
@@ -133,8 +126,14 @@ pub fn run() -> Result<()> {
                 _ => false,
             };
             if category_available {
-                let record = make_record(&position, family, &proof, args.seed, args.node_limit)?;
-                writers.write(&record)?;
+                let record = make_record(
+                    &position,
+                    family,
+                    args.split.dataset(),
+                    &proof,
+                    args.node_limit,
+                )?;
+                writer.write_record(&record)?;
                 match (proof.root.status, proof.root.mate_distance) {
                     (MateProofStatus::ProvenMate, Some(1)) => mate1 += 1,
                     (MateProofStatus::ProvenMate, Some(3)) => mate3 += 1,
@@ -149,6 +148,8 @@ pub fn run() -> Result<()> {
         if legal.is_empty() || game_ply >= 300 {
             position = Position::default();
             game_ply = 0;
+            game_index += 1;
+            family = family_hash(args.seed, game_index);
         } else {
             position.do_move(legal[rng.gen_range(0..legal.len())]);
         }
@@ -156,55 +157,60 @@ pub fn run() -> Result<()> {
             println!("examined={examined} mate1={mate1} mate3={mate3} no_mate3={no_mate3} resource={resource_limits}");
         }
     }
-    let records = writers.finish()?;
-    println!("complete examined={examined} mate1={mate1} mate3={mate3} no_mate3={no_mate3} resource={resource_limits} train={} valid={} test={}", records[0], records[1], records[2]);
+    let records = writer.finish()?;
+    println!("complete examined={examined} mate1={mate1} mate3={mate3} no_mate3={no_mate3} resource={resource_limits} records={records}");
     if mate1 < args.mate1 || mate3 < args.mate3 || no_mate3 < args.no_mate3 {
         return Err(anyhow!("category targets not reached before max-positions"));
     }
     // Re-open all outputs so the declared count and trailing-byte checks run.
-    for name in ["train.hkcl", "valid.hkcl", "test.hkcl"] {
-        verify_dataset(&args.output_dir.join(name))?;
-    }
+    verify_dataset(&args.output)?;
     Ok(())
+}
+
+fn family_hash(seed: u64, game_index: u64) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"halfkp-exact-random-game-family-v2\0");
+    hash.update(seed.to_le_bytes());
+    hash.update(game_index.to_le_bytes());
+    hash.finalize().into()
 }
 
 fn make_record(
     position: &Position,
     family_hash: [u8; 32],
+    split: DatasetSplit,
     proof: &shogi_ai::mate_proof::MateProof,
-    seed: u64,
     node_limit: u64,
 ) -> Result<CurriculumRecord> {
-    let hex = family_hash
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let split = split_for_game_content(&hex, seed, 10, 10);
     let status = match proof.root.status {
         MateProofStatus::ProvenMate => ProofStatus::ProvenMate,
-        MateProofStatus::ProvenNoMate => ProofStatus::ProvenNoMate,
+        MateProofStatus::ProvenNoMate => ProofStatus::NoForcedMateWithinHorizon,
         MateProofStatus::ResourceLimit => ProofStatus::ResourceLimit,
     };
     let preferences = exact_preferences(position, proof, node_limit)?;
+    let root = PackedHalfKpPosition::from_position(position)
+        .ok_or_else(|| anyhow!("generated legal position lacks a king"))?;
     Ok(CurriculumRecord {
         source: LabelSource::ExactMate,
         group_id: u64::from_le_bytes(family_hash[..8].try_into().expect("hash width")),
         position_hash: position.key(),
         family_hash,
+        network_input_hash: root.network_input_hash(),
         split,
         ply: position.ply(),
         phase: TrainingPhase::for_ply(position.ply() as usize).code(),
         opening_stratum: OpeningStratum::UNKNOWN,
         confidence: 1.0,
         sample_weight: 1.0,
-        root: PackedHalfKpPosition::from_position(position)
-            .ok_or_else(|| anyhow!("generated legal position lacks a king"))?,
+        root,
         // Exact mate is a bounded proof objective, not a literal game-result
         // probability of one. The trainer applies its configured bounded target.
         result: None,
         proof: Some(ProofLabel {
             status,
             mate_distance: proof.root.mate_distance,
+            horizon_plies: 3,
+            solver_mode: ProofMode::CheckingOnly,
             nodes: proof.nodes,
             rule_version: RULE_VERSION,
         }),

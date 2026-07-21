@@ -80,6 +80,11 @@ path = "src/bin/halfkp_exact_generate.rs"
 required-features = ["halfkp64", "training-tools"]
 
 [[bin]]
+name = "halfkp_curriculum_audit"
+path = "src/bin/halfkp_curriculum_audit.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
 name = "halfkp_kpp_train"
 path = "src/bin/halfkp_kpp_train.rs"
 required-features = ["training-tools"]

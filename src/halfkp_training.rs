@@ -3,11 +3,12 @@ mod curriculum;
 
 pub use curriculum::{
     CurriculumHeader, CurriculumPreference, CurriculumReader, CurriculumRecord, CurriculumWriter,
-    LabelSource, OpeningStratum, PreferenceKind, ProofLabel, ProofStatus,
+    LabelSource, OpeningStratum, PreferenceKind, ProofLabel, ProofMode, ProofStatus,
 };
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use shogi_core::Color;
 use shogi_lib::Position;
 use std::fs::File;
@@ -120,7 +121,7 @@ pub fn read_search_teacher_manifest(dataset: &Path) -> Result<Option<SearchTeach
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PackedHalfKpPosition {
     pub side_to_move: Color,
     pub features_black: Vec<u32>,
@@ -148,6 +149,24 @@ impl PackedHalfKpPosition {
             material_black: black.material,
             material_white: white.material,
         })
+    }
+
+    /// Stable identity of everything visible to the HalfKP network.
+    pub fn network_input_hash(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"halfkp64-network-input-v1\0");
+        hash.update([u8::from(self.side_to_move == Color::White)]);
+        hash.update(self.material_black.to_le_bytes());
+        hash.update(self.material_white.to_le_bytes());
+        hash.update((self.features_black.len() as u32).to_le_bytes());
+        for feature in &self.features_black {
+            hash.update(feature.to_le_bytes());
+        }
+        hash.update((self.features_white.len() as u32).to_le_bytes());
+        for feature in &self.features_white {
+            hash.update(feature.to_le_bytes());
+        }
+        hash.finalize().into()
     }
 }
 
