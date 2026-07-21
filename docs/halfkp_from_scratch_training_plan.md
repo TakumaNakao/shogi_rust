@@ -972,6 +972,13 @@ familyはhash順へ一度固定してから`seed ^ epoch`でshuffleするため�
 gradientの分母はrecord数でなく有効family数とし、objectiveを持たないbounded non-mate recordがlearning rateを
 薄めない。1手詰みのterminal childもrank pairから除外した。
 
+Phase 1の確定run `phase1-symmetry-v2c`はgenesis
+`a953b54da0d0c2f891ef94ebda81237ac4263b52f7addbc9bf3f383e540534c7`から5 epoch学習した。独立test
+1,000 familyの左右対称score RMSEはgenesisの2.7360 cpから0.6228 cpへ改善し、score absolute p99は
+3.228 cp、`out_b=0`、material coefficient `=0`を維持した。model hash
+`caf2e9559028a674d762e4e2c587801cb5c907571e647adf8f5b7c666e27bd6b`をPhase 1 Gate合格としてregistryへ
+追加した。これ以前のdirty pilot `phase1-symmetry-v2`は昇格対象にしない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
