@@ -704,7 +704,7 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 | 1 | scratch lineage/manifestとinitializer | genesis再現、外部model拒否 | 完了（2026-07-21） |
 | 2 | HKCL codecとgolden fixture | round trip、corrupt拒否 | 完了（2026-07-21） |
 | 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 実装完了、exact 128件pilot待ち |
-| 4 | feature factorization | fold前後forward一致 | 未着手 |
+| 4 | feature factorization | fold前後forward一致 | mapping/fold完了、trainer統合待ち |
 | 5 | bounded exact mate solver | proof再検証、規則fixture | 未着手 |
 | 6 | exact curriculum generator | split/coverage manifest | 未着手 |
 | 7 | opening stratum classifier | deterministic分類、report | 未着手 |
@@ -770,6 +770,13 @@ optimizer/model checkpointはhash付きで原子的に保存し、run fingerprin
 gradientの有限差分、極端入力の有限性、単一target overfit、optimizer破損拒否、中断再開と連続更新の
 bit一致testを通過した。計画上の128件overfit Gateは、bounded solverが生成するexact fixtureで実施するため、
 この時点では項目3を暫定状態とする。
+
+### 14.4 feature factorization実施記録（2026-07-21）
+
+training-onlyの`E_piece`と`E_relative`のindex規約、accumulation、runtime HalfKP direct rowへのfoldを実装した。
+持ち駒がpiece factorだけを持つこと、king bucketが異なっても同じ相対配置を共有すること、fold前後の
+hidden accumulationがbit一致することをtestした。trainerのoptimizer/checkpointへfactor stateを統合し、
+factor有無のexact pilotを実行するまでは項目4を暫定状態とする。
 
 ## 15. 最初に行うpilot
 
