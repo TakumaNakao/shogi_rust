@@ -58,6 +58,7 @@ pub enum PreferenceKind {
     LongerDefense = 2,
     ExpertMove = 3,
     Search = 4,
+    SymmetryEqual = 5,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -520,6 +521,7 @@ fn decode_preference(value: u8) -> Result<PreferenceKind> {
         2 => Ok(PreferenceKind::LongerDefense),
         3 => Ok(PreferenceKind::ExpertMove),
         4 => Ok(PreferenceKind::Search),
+        5 => Ok(PreferenceKind::SymmetryEqual),
         _ => Err(anyhow!("invalid HKCL preference kind")),
     }
 }

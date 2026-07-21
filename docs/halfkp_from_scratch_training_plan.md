@@ -703,7 +703,7 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 |---:|---|---|---|
 | 1 | scratch lineage/manifestとinitializer | genesis再現、外部model拒否 | 完了（2026-07-21） |
 | 2 | HKCL codecとgolden fixture | round trip、corrupt拒否 | 完了（2026-07-21） |
-| 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 未着手 |
+| 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 実装完了、exact 128件pilot待ち |
 | 4 | feature factorization | fold前後forward一致 | 未着手 |
 | 5 | bounded exact mate solver | proof再検証、規則fixture | 未着手 |
 | 6 | exact curriculum generator | split/coverage manifest | 未着手 |
@@ -758,6 +758,18 @@ proof statusは`unknown`、`not_proven`、`proven_mate`、`proven_no_mate`、`re
 exact labelに教師modelが付くこと、self-search labelに同一lineageの教師modelがないこと、非有限scalar、
 範囲外feature、record数不一致、trailing byteを拒否する。固定header golden prefix、record round trip、marker
 破損、provenance違反、file-level count patch/trailing byteの4 testを通過した。
+
+### 14.3 scratch trainer実施記録（2026-07-21）
+
+`halfkp_scratch_train`を追加した。HKCL以外を入力できず、初期modelのSHA-256とmanifest、dataset headerの
+`halfkp64-scratch-v1` lineageを照合する。WDL BCE、証明済み詰み、candidate順位、対称一致を別lossとして
+扱い、mini-batch sparse-row AdaGradで更新する。`proven_no_mate`は敗北labelへ変換せず、明示WDLまたは
+証明済みcandidate pairだけを学習する。
+
+optimizer/model checkpointはhash付きで原子的に保存し、run fingerprintが異なる再開を拒否する。value
+gradientの有限差分、極端入力の有限性、単一target overfit、optimizer破損拒否、中断再開と連続更新の
+bit一致testを通過した。計画上の128件overfit Gateは、bounded solverが生成するexact fixtureで実施するため、
+この時点では項目3を暫定状態とする。
 
 ## 15. 最初に行うpilot
 

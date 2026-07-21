@@ -32,7 +32,7 @@ production buildではtraining/research targetと、それらだけが使う`csa
   `halfkp_dataset_shard`, `halfkp_rank_dataset`, `jsonl_shard`, `kpp_position_pool`,
   `rank_stats`
 - teacher/trainer: `bonanza_pairwise_train`, `halfkp_kpp_train`,
-  `halfkp_search_teacher`, `halfkp_search_train`, `halfkp_scratch_init`,
+  `halfkp_search_teacher`, `halfkp_search_train`, `halfkp_scratch_init`, `halfkp_scratch_train`,
   `halfkp_train`, `kpp_learn`, `kpp_self_learn`
 
 ```bash
