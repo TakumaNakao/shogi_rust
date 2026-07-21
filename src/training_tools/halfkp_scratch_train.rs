@@ -11,6 +11,7 @@ use shogi_ai::halfkp_training::{
 use shogi_ai::training_data::{
     artifact_metadata, capture_run_environment, sha256_file, sha256_hex,
 };
+use shogi_ai::training_tools::halfkp_factorization::{factor_indices, HalfKpFactorization};
 use shogi_ai::training_tools::scratch_lineage::{
     require_accepted_parent, DEFAULT_PROMOTION_REGISTRY,
 };
@@ -55,6 +56,8 @@ struct Args {
     rank_weight: f32,
     #[arg(long, value_enum)]
     stage: TrainingStage,
+    #[arg(long, value_enum, default_value_t = FactorizationMode::Direct)]
+    factorization: FactorizationMode,
     #[arg(long, default_value_t = 20260721)]
     seed: u64,
     #[arg(long, default_value_t = 1e-6)]
@@ -74,6 +77,12 @@ enum TrainingStage {
     Phase1,
     Phase2,
     Calibrated,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum FactorizationMode {
+    Direct,
+    PieceRelative,
 }
 
 impl TrainingStage {
@@ -137,6 +146,7 @@ struct Weights {
     hidden_b: [f32; HALFKP_HIDDEN],
     out_w: [f32; HALFKP_HIDDEN * 2 + 1],
     out_b: f32,
+    factors: Option<HalfKpFactorization>,
 }
 
 #[derive(Clone)]
@@ -145,6 +155,8 @@ struct Optimizer {
     hidden_b: [f32; HALFKP_HIDDEN],
     out_w: [f32; HALFKP_HIDDEN * 2 + 1],
     out_b: f32,
+    factor_piece: Vec<f32>,
+    factor_relative: Vec<f32>,
 }
 
 struct Gradient {
@@ -152,6 +164,8 @@ struct Gradient {
     hidden_b: [f32; HALFKP_HIDDEN],
     out_w: [f32; HALFKP_HIDDEN * 2 + 1],
     out_b: f32,
+    factor_piece: HashMap<usize, [f32; HALFKP_HIDDEN]>,
+    factor_relative: HashMap<usize, [f32; HALFKP_HIDDEN]>,
     loss: f64,
     objectives: usize,
 }
@@ -163,6 +177,8 @@ impl Default for Gradient {
             hidden_b: [0.0; HALFKP_HIDDEN],
             out_w: [0.0; HALFKP_HIDDEN * 2 + 1],
             out_b: 0.0,
+            factor_piece: HashMap::new(),
+            factor_relative: HashMap::new(),
             loss: 0.0,
             objectives: 0,
         }
@@ -250,6 +266,7 @@ pub fn run() -> Result<()> {
             "learning_rate": args.learning_rate, "kappa_cp": args.kappa_cp,
             "rank_temperature_cp": args.rank_temperature_cp, "rank_weight": args.rank_weight,
             "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
+            "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
             "seed": args.seed, "l2": args.l2,
         }),
         best_epoch,
@@ -262,43 +279,66 @@ pub fn run() -> Result<()> {
 }
 
 impl Weights {
-    fn from_flat(flat: HalfKpFlatModel) -> Self {
+    fn from_flat(flat: HalfKpFlatModel, factorization: FactorizationMode) -> Self {
         Self {
             feature: flat.feature_emb,
             hidden_b: flat.hidden_b,
             out_w: flat.out_w,
             out_b: flat.out_b,
+            factors: (factorization == FactorizationMode::PieceRelative)
+                .then(HalfKpFactorization::zeros),
         }
     }
 
     fn forward(&self, position: &PackedHalfKpPosition) -> Forward {
-        let value = HalfKpFlatModel::forward_parts(
-            &self.feature,
-            &self.hidden_b,
-            &self.out_w,
-            self.out_b,
-            position.features_black.iter().map(|&x| x as usize),
-            position.features_white.iter().map(|&x| x as usize),
-            position.material_black,
-            position.material_white,
-            position.side_to_move == Color::Black,
-            TARGET_SCALE,
-        );
-        Forward {
-            black: value.black,
-            white: value.white,
-            raw: value.raw,
+        let mut black = self.hidden_b;
+        let mut white = self.hidden_b;
+        self.accumulate_features(&position.features_black, &mut black);
+        self.accumulate_features(&position.features_white, &mut white);
+        let (stm, nstm, material) = if position.side_to_move == Color::Black {
+            (&black, &white, position.material_black)
+        } else {
+            (&white, &black, position.material_white)
+        };
+        let mut raw = self.out_b + self.out_w[HALFKP_HIDDEN * 2] * material / TARGET_SCALE;
+        for h in 0..HALFKP_HIDDEN {
+            raw += self.out_w[h] * stm[h].clamp(0.0, 1.0);
+            raw += self.out_w[HALFKP_HIDDEN + h] * nstm[h].clamp(0.0, 1.0);
+        }
+        Forward { black, white, raw }
+    }
+
+    fn accumulate_features(&self, features: &[u32], hidden: &mut [f32; HALFKP_HIDDEN]) {
+        for &feature in features {
+            let feature = feature as usize;
+            let start = feature * HALFKP_HIDDEN;
+            for h in 0..HALFKP_HIDDEN {
+                hidden[h] += self.feature[start + h];
+            }
+            if let Some(factors) = &self.factors {
+                factors
+                    .add_feature(feature, hidden)
+                    .expect("validated feature");
+            }
         }
     }
 }
 
 impl Optimizer {
-    fn zeros(features: usize) -> Self {
+    fn zeros(weights: &Weights) -> Self {
         Self {
-            feature: vec![0.0; features],
+            feature: vec![0.0; weights.feature.len()],
             hidden_b: [0.0; HALFKP_HIDDEN],
             out_w: [0.0; HALFKP_HIDDEN * 2 + 1],
             out_b: 0.0,
+            factor_piece: weights
+                .factors
+                .as_ref()
+                .map_or_else(Vec::new, |factors| vec![0.0; factors.piece.len()]),
+            factor_relative: weights
+                .factors
+                .as_ref()
+                .map_or_else(Vec::new, |factors| vec![0.0; factors.relative.len()]),
         }
     }
 }
@@ -314,6 +354,8 @@ fn validate_args(args: &Args) -> Result<()> {
         || (!args.resume && args.output.exists())
         || manifest_path(&args.output).exists()
         || (args.resume && args.checkpoint_dir.is_none())
+        || (args.factorization == FactorizationMode::PieceRelative
+            && (args.resume || args.checkpoint_dir.is_some()))
     {
         return Err(anyhow!("invalid arguments or output already exists"));
     }
@@ -341,7 +383,7 @@ fn initialize_training(
             return Err(anyhow!("checkpoint artifact hash mismatch"));
         }
         let flat = HalfKpFlatModel::decode(&fs::read(model_path)?)?;
-        let weights = Weights::from_flat(flat);
+        let weights = Weights::from_flat(flat, args.factorization);
         let optimizer = load_optimizer(&optimizer_path, weights.feature.len())?;
         Ok((
             weights,
@@ -357,8 +399,8 @@ fn initialize_training(
                 "scratch trainer requires target scale {TARGET_SCALE}"
             ));
         }
-        let weights = Weights::from_flat(flat);
-        let optimizer = Optimizer::zeros(weights.feature.len());
+        let weights = Weights::from_flat(flat, args.factorization);
+        let optimizer = Optimizer::zeros(&weights);
         Ok((weights, optimizer, 0, 0, f64::INFINITY))
     }
 }
@@ -378,6 +420,7 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "rank_temperature_cp": args.rank_temperature_cp,
         "rank_weight": args.rank_weight,
         "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
+        "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
         "seed": args.seed,
         "l2": args.l2,
     });
@@ -646,16 +689,48 @@ fn add_position_gradient(
         };
         gradient.hidden_b[h] += stm_hidden + nstm_hidden;
         for &feature in stm_features {
-            gradient
-                .feature
-                .entry(feature as usize)
-                .or_insert([0.0; HALFKP_HIDDEN])[h] += stm_hidden;
+            add_feature_gradient(
+                gradient,
+                feature as usize,
+                h,
+                stm_hidden,
+                weights.factors.is_some(),
+            );
         }
         for &feature in nstm_features {
+            add_feature_gradient(
+                gradient,
+                feature as usize,
+                h,
+                nstm_hidden,
+                weights.factors.is_some(),
+            );
+        }
+    }
+}
+
+fn add_feature_gradient(
+    gradient: &mut Gradient,
+    feature: usize,
+    hidden: usize,
+    value: f32,
+    factorized: bool,
+) {
+    gradient
+        .feature
+        .entry(feature)
+        .or_insert([0.0; HALFKP_HIDDEN])[hidden] += value;
+    if factorized {
+        let indices = factor_indices(feature).expect("validated feature");
+        gradient
+            .factor_piece
+            .entry(indices.piece)
+            .or_insert([0.0; HALFKP_HIDDEN])[hidden] += value;
+        if let Some(relative) = indices.relative {
             gradient
-                .feature
-                .entry(feature as usize)
-                .or_insert([0.0; HALFKP_HIDDEN])[h] += nstm_hidden;
+                .factor_relative
+                .entry(relative)
+                .or_insert([0.0; HALFKP_HIDDEN])[hidden] += value;
         }
     }
 }
@@ -677,6 +752,24 @@ fn apply_gradient(
             weights.feature[index] -=
                 args.learning_rate * g / (optimizer.feature[index].sqrt() + EPSILON);
         }
+    }
+    if let Some(factors) = &mut weights.factors {
+        apply_sparse_rows(
+            &mut factors.piece,
+            &mut optimizer.factor_piece,
+            &gradient.factor_piece,
+            inv,
+            args.learning_rate,
+            args.l2,
+        );
+        apply_sparse_rows(
+            &mut factors.relative,
+            &mut optimizer.factor_relative,
+            &gradient.factor_relative,
+            inv,
+            args.learning_rate,
+            args.l2,
+        );
     }
     for h in 0..HALFKP_HIDDEN {
         let g = gradient.hidden_b[h] * inv;
@@ -701,16 +794,39 @@ fn apply_gradient(
     *gradient = Gradient::default();
 }
 
+fn apply_sparse_rows(
+    weights: &mut [f32],
+    optimizer: &mut [f32],
+    gradient: &HashMap<usize, [f32; HALFKP_HIDDEN]>,
+    inv: f32,
+    learning_rate: f32,
+    l2: f32,
+) {
+    for (&row_index, row) in gradient {
+        let start = row_index * HALFKP_HIDDEN;
+        for h in 0..HALFKP_HIDDEN {
+            let index = start + h;
+            let g = row[h] * inv + l2 * weights[index];
+            optimizer[index] += g * g;
+            weights[index] -= learning_rate * g / (optimizer[index].sqrt() + EPSILON);
+        }
+    }
+}
+
 fn save_weights(weights: &Weights, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let temporary = PathBuf::from(format!("{}.tmp", path.display()));
     let mut writer = BufWriter::new(File::create(&temporary)?);
+    let mut feature = weights.feature.clone();
+    if let Some(factors) = &weights.factors {
+        factors.fold_into(&mut feature)?;
+    }
     HalfKpFlatModel::write_parts(
         &mut writer,
         HalfKpHeader::current(TARGET_SCALE)?,
-        &weights.feature,
+        &feature,
         &weights.hidden_b,
         &weights.out_w,
         weights.out_b,
@@ -820,6 +936,8 @@ fn load_optimizer(path: &Path, expected_features: usize) -> Result<Optimizer> {
         hidden_b,
         out_w,
         out_b,
+        factor_piece: vec![],
+        factor_relative: vec![],
     })
 }
 
@@ -904,6 +1022,7 @@ mod tests {
             rank_temperature_cp: 300.0,
             rank_weight: 1.0,
             stage: TrainingStage::Calibrated,
+            factorization: FactorizationMode::Direct,
             seed: 7,
             l2: 0.0,
             max_train_records: None,
@@ -921,6 +1040,7 @@ mod tests {
             hidden_b: [0.5; HALFKP_HIDDEN],
             out_w,
             out_b: 0.0,
+            factors: None,
         }
     }
 
@@ -969,7 +1089,7 @@ mod tests {
     #[test]
     fn repeated_updates_overfit_one_value_target() {
         let mut weights = test_weights();
-        let mut optimizer = Optimizer::zeros(weights.feature.len());
+        let mut optimizer = Optimizer::zeros(&weights);
         let args = test_args();
         let before = value_loss(&weights, 1.0, args.kappa_cp);
         for _ in 0..100 {
@@ -995,7 +1115,7 @@ mod tests {
             std::process::id()
         ));
         fs::remove_file(&path).ok();
-        let mut optimizer = Optimizer::zeros(3);
+        let mut optimizer = Optimizer::zeros(&test_weights());
         optimizer.feature = vec![1.0, 2.0, 3.0];
         optimizer.hidden_b[4] = 4.0;
         optimizer.out_w[5] = 5.0;
@@ -1025,7 +1145,7 @@ mod tests {
         fs::remove_file(&path).ok();
         let args = test_args();
         let mut uninterrupted = test_weights();
-        let mut uninterrupted_optimizer = Optimizer::zeros(uninterrupted.feature.len());
+        let mut uninterrupted_optimizer = Optimizer::zeros(&uninterrupted);
         let mut resumed = uninterrupted.clone();
         let mut resumed_optimizer = uninterrupted_optimizer.clone();
         for _ in 0..20 {

@@ -979,6 +979,18 @@ Phase 1の確定run `phase1-symmetry-v2c`はgenesis
 `caf2e9559028a674d762e4e2c587801cb5c907571e647adf8f5b7c666e27bd6b`をPhase 1 Gate合格としてregistryへ
 追加した。これ以前のdirty pilot `phase1-symmetry-v2`は昇格対象にしない。
 
+Phase 2のcapacity Gateとして、terminal childを含まない3手詰みrank pairを128独立family生成した。初回は
+128 record/22 familyだったため棄却し、pair採用ごとにrandom gameを終了するdiagnostic modeで128/128 familyへ
+再生成した。Phase 1 modelからのoverfitはbest epoch 2でtrain pair 128/128（100%）に到達し、`out_b=0`、
+material coefficient `=0`を維持した。このrunはcapacity確認専用で、trainをvalidにも指定しているため昇格modelや
+12kの親には使用しない。
+
+training-only factorizationをscratch trainerへ統合した。`direct`と`piece-relative`をCLIで選択でき、後者は
+direct rowに加えてpiece state共有factorと相対王位置factorへ同じgradientを流す。評価・export時にはfactorを
+direct HalfKP rowへfoldし、runtime model形式や探索時costを変更しない。初回pilotではcheckpoint resumeを
+factorized runに許可しない。factor状態を欠落させた不完全resumeを防ぐためであり、各runは短い3 epochを一度に
+完了させる。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

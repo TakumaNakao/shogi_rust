@@ -23,8 +23,6 @@ struct Args {
     dataset: Vec<PathBuf>,
     #[arg(long, default_value_t = 600.0)]
     kappa_cp: f32,
-    #[arg(long, default_value_t = 0.8)]
-    mate_target: f32,
     #[arg(long)]
     json: Option<PathBuf>,
 }
@@ -92,14 +90,7 @@ pub fn run() -> Result<()> {
             report.records += 1;
             let root_score = score(&model, &record.root);
             root_scores.push(root_score);
-            let target = record.result.or_else(|| {
-                record
-                    .proof
-                    .as_ref()
-                    .is_some_and(|proof| proof.status == ProofStatus::ProvenMate)
-                    .then_some(args.mate_target)
-            });
-            if let Some(target) = target {
+            if let Some(target) = record.result {
                 let probability = sigmoid(root_score / args.kappa_cp);
                 report.value_bce += -(target as f64 * probability.max(1e-7).ln() as f64
                     + (1.0 - target) as f64 * (1.0 - probability).max(1e-7).ln() as f64);
