@@ -38,6 +38,8 @@ struct Args {
     node_limit: u64,
     #[arg(long, default_value_t = 20260721)]
     seed: u64,
+    #[arg(long, default_value_t = false)]
+    require_rank_pair: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -59,9 +61,9 @@ impl SplitArg {
 
 pub fn run() -> Result<()> {
     let args = Args::parse();
-    if args.mate1 == 0 || args.mate3 == 0 || args.no_mate3 == 0 || args.node_limit == 0 {
+    if args.mate1 + args.mate3 + args.no_mate3 == 0 || args.node_limit == 0 {
         return Err(anyhow!(
-            "all category targets and node-limit must be non-zero"
+            "at least one target and node-limit must be non-zero"
         ));
     }
     if let Some(parent) = args.output.parent() {
@@ -84,6 +86,7 @@ pub fn run() -> Result<()> {
             "rule_version": RULE_VERSION,
             "attack_move_mode": "checking_only",
             "targets": {"mate1": args.mate1, "mate3": args.mate3, "no_mate3": args.no_mate3},
+            "require_rank_pair": args.require_rank_pair,
         }),
         teacher_model_sha256: None,
         teacher_lineage_id: None,
@@ -133,12 +136,22 @@ pub fn run() -> Result<()> {
                     &proof,
                     args.node_limit,
                 )?;
+                if args.require_rank_pair && record.preferences.is_empty() {
+                    continue;
+                }
                 writer.write_record(&record)?;
                 match (proof.root.status, proof.root.mate_distance) {
                     (MateProofStatus::ProvenMate, Some(1)) => mate1 += 1,
                     (MateProofStatus::ProvenMate, Some(3)) => mate3 += 1,
                     (MateProofStatus::ProvenNoMate, None) => no_mate3 += 1,
                     _ => unreachable!(),
+                }
+                if args.require_rank_pair {
+                    position = Position::default();
+                    game_ply = 0;
+                    game_index += 1;
+                    family = family_hash(args.seed, game_index);
+                    continue;
                 }
             }
         }
@@ -223,7 +236,13 @@ fn exact_preferences(
     proof: &shogi_ai::mate_proof::MateProof,
     node_limit: u64,
 ) -> Result<Vec<CurriculumPreference>> {
-    if proof.root.status != MateProofStatus::ProvenMate || proof.root.edges.len() != 1 {
+    if proof.root.status != MateProofStatus::ProvenMate
+        || proof
+            .root
+            .mate_distance
+            .is_none_or(|distance| distance <= 1)
+        || proof.root.edges.len() != 1
+    {
         return Ok(vec![]);
     }
     let good_move = proof.root.edges[0].mv;

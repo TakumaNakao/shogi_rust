@@ -1,10 +1,12 @@
 use anyhow::{anyhow, Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
 use shogi_ai::evaluation::{HalfKpFlatModel, HalfKpHeader, HALFKP_HIDDEN};
 use shogi_ai::halfkp_training::{
     CurriculumReader, CurriculumRecord, LabelSource, PackedHalfKpPosition, PreferenceKind,
-    ProofStatus,
 };
 use shogi_ai::training_data::{
     artifact_metadata, capture_run_environment, sha256_file, sha256_hex,
@@ -13,7 +15,7 @@ use shogi_ai::training_tools::scratch_lineage::{
     require_accepted_parent, DEFAULT_PROMOTION_REGISTRY,
 };
 use shogi_core::Color;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -51,10 +53,10 @@ struct Args {
     rank_temperature_cp: f32,
     #[arg(long, default_value_t = 1.0)]
     rank_weight: f32,
-    #[arg(long, default_value_t = 1.0)]
-    proof_weight: f32,
-    #[arg(long, default_value_t = 0.9)]
-    mate_target: f32,
+    #[arg(long, value_enum)]
+    stage: TrainingStage,
+    #[arg(long, default_value_t = 20260721)]
+    seed: u64,
     #[arg(long, default_value_t = 1e-6)]
     l2: f32,
     #[arg(long)]
@@ -65,6 +67,19 @@ struct Args {
     checkpoint_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     resume: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum TrainingStage {
+    Phase1,
+    Phase2,
+    Calibrated,
+}
+
+impl TrainingStage {
+    fn freezes_scale(self) -> bool {
+        matches!(self, Self::Phase1 | Self::Phase2)
+    }
 }
 
 #[derive(Deserialize)]
@@ -209,7 +224,7 @@ pub fn run() -> Result<()> {
     let parent_manifest_sha256 = sha256_file(&args.init_manifest)?;
     let parent_model_sha256 = parent.model.sha256;
     let manifest = OutputManifest {
-        schema: "halfkp_scratch_training_v1",
+        schema: "halfkp_scratch_training_v2",
         lineage_id: LINEAGE_ID,
         generation: parent.generation + 1,
         parent: ParentReference {
@@ -234,8 +249,8 @@ pub fn run() -> Result<()> {
             "epochs": args.epochs, "batch_size": args.batch_size,
             "learning_rate": args.learning_rate, "kappa_cp": args.kappa_cp,
             "rank_temperature_cp": args.rank_temperature_cp, "rank_weight": args.rank_weight,
-            "proof_weight": args.proof_weight, "l2": args.l2,
-            "mate_target": args.mate_target,
+            "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
+            "seed": args.seed, "l2": args.l2,
         }),
         best_epoch,
         best_valid_loss: best_loss,
@@ -295,8 +310,6 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.kappa_cp <= 0.0
         || args.rank_temperature_cp <= 0.0
         || args.rank_weight < 0.0
-        || args.proof_weight < 0.0
-        || !(0.5..1.0).contains(&args.mate_target)
         || args.l2 < 0.0
         || (!args.resume && args.output.exists())
         || manifest_path(&args.output).exists()
@@ -352,7 +365,7 @@ fn initialize_training(
 
 fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> {
     let value = serde_json::json!({
-        "schema": "halfkp_scratch_training_v1",
+        "schema": "halfkp_scratch_training_v2",
         "lineage_id": LINEAGE_ID,
         "parent_model_sha256": parent.model.sha256,
         "parent_gate_report_sha256": sha256_file(&args.parent_gate_report)?,
@@ -364,8 +377,8 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "kappa_cp": args.kappa_cp,
         "rank_temperature_cp": args.rank_temperature_cp,
         "rank_weight": args.rank_weight,
-        "proof_weight": args.proof_weight,
-        "mate_target": args.mate_target,
+        "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
+        "seed": args.seed,
         "l2": args.l2,
     });
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
@@ -413,25 +426,16 @@ fn train_epoch(
     weights: &mut Weights,
     optimizer: &mut Optimizer,
     args: &Args,
-    _epoch: usize,
+    epoch: usize,
 ) -> Result<Metrics> {
     let mut metrics = Metrics::default();
+    let mut families = BTreeMap::<[u8; 32], Vec<CurriculumRecord>>::new();
     let mut seen = 0usize;
-    let mut batch = Gradient::default();
-    let mut batch_records = 0usize;
     for path in &args.train {
         let mut reader = CurriculumReader::open(path)?;
         while let Some(record) = reader.read_record()? {
-            accumulate_record(weights, &record, args, &mut batch);
+            families.entry(record.family_hash).or_default().push(record);
             seen += 1;
-            batch_records += 1;
-            if batch_records == args.batch_size {
-                metrics.loss += batch.loss;
-                metrics.objectives += batch.objectives;
-                metrics.records += batch_records;
-                apply_gradient(weights, optimizer, &mut batch, batch_records, args);
-                batch_records = 0;
-            }
             if args.max_train_records.is_some_and(|limit| seen >= limit) {
                 break;
             }
@@ -440,11 +444,41 @@ fn train_epoch(
             break;
         }
     }
-    if batch_records > 0 {
+    let mut families = families.into_values().collect::<Vec<_>>();
+    let mut rng = ChaCha20Rng::seed_from_u64(args.seed ^ epoch as u64);
+    families.shuffle(&mut rng);
+    let mut batch = Gradient::default();
+    let mut batch_records = 0usize;
+    let mut batch_families = 0usize;
+    for family in families {
+        let objectives = family
+            .iter()
+            .map(|record| objective_count(record))
+            .sum::<usize>();
+        if objectives == 0 {
+            metrics.records += family.len();
+            continue;
+        }
+        let family_scale = 1.0 / objectives as f32;
+        for record in &family {
+            accumulate_record(weights, record, args, family_scale, &mut batch);
+            batch_records += 1;
+        }
+        batch_families += 1;
+        if batch_families == args.batch_size {
+            metrics.loss += batch.loss;
+            metrics.objectives += batch.objectives;
+            metrics.records += batch_records;
+            apply_gradient(weights, optimizer, &mut batch, batch_families, args);
+            batch_records = 0;
+            batch_families = 0;
+        }
+    }
+    if batch_families > 0 {
         metrics.loss += batch.loss;
         metrics.objectives += batch.objectives;
         metrics.records += batch_records;
-        apply_gradient(weights, optimizer, &mut batch, batch_records, args);
+        apply_gradient(weights, optimizer, &mut batch, batch_families, args);
     }
     Ok(metrics)
 }
@@ -460,7 +494,7 @@ fn evaluate(
     for path in paths {
         let mut reader = CurriculumReader::open(path)?;
         while let Some(record) = reader.read_record()? {
-            accumulate_record(weights, &record, args, &mut gradient);
+            accumulate_record(weights, &record, args, 1.0, &mut gradient);
             metrics.records += 1;
             if limit.is_some_and(|limit| metrics.records >= limit) {
                 break;
@@ -479,6 +513,7 @@ fn accumulate_record(
     weights: &Weights,
     record: &CurriculumRecord,
     args: &Args,
+    family_scale: f32,
     gradient: &mut Gradient,
 ) {
     if let Some(target) = record.result {
@@ -486,21 +521,7 @@ fn accumulate_record(
             weights,
             &record.root,
             target,
-            record.sample_weight,
-            args.kappa_cp,
-            gradient,
-        );
-    } else if record.source == LabelSource::ExactMate
-        && record
-            .proof
-            .as_ref()
-            .is_some_and(|proof| proof.status == ProofStatus::ProvenMate)
-    {
-        add_value_objective(
-            weights,
-            &record.root,
-            args.mate_target,
-            record.sample_weight * args.proof_weight,
+            record.sample_weight * family_scale,
             args.kappa_cp,
             gradient,
         );
@@ -510,7 +531,7 @@ fn accumulate_record(
         let bad = weights.forward(&preference.bad_child);
         if preference.kind == PreferenceKind::SymmetryEqual {
             let difference = good.raw - bad.raw;
-            let scale = record.sample_weight * args.rank_weight;
+            let scale = record.sample_weight * args.rank_weight * family_scale;
             gradient.loss += 0.5 * (difference * difference * scale) as f64;
             add_position_gradient(
                 weights,
@@ -528,15 +549,36 @@ fn accumulate_record(
             );
         } else {
             // Child values are from the opponent-to-move perspective.
-            let x = (bad.raw - good.raw) * TARGET_SCALE / args.rank_temperature_cp;
+            let margin_cp = margin_cp(record.source, preference.kind, preference.margin_class);
+            let x = ((bad.raw - good.raw) * TARGET_SCALE - margin_cp) / args.rank_temperature_cp;
             let probability = sigmoid(x);
-            let scale = record.sample_weight * args.rank_weight;
+            let scale = record.sample_weight * args.rank_weight * family_scale;
             gradient.loss += (softplus(-x) * scale) as f64;
             let common = (probability - 1.0) * TARGET_SCALE / args.rank_temperature_cp * scale;
             add_position_gradient(weights, &preference.good_child, &good, -common, gradient);
             add_position_gradient(weights, &preference.bad_child, &bad, common, gradient);
         }
         gradient.objectives += 1;
+    }
+}
+
+fn objective_count(record: &CurriculumRecord) -> usize {
+    usize::from(record.result.is_some()) + record.preferences.len()
+}
+
+fn margin_cp(source: LabelSource, kind: PreferenceKind, class: u8) -> f32 {
+    match (source, kind) {
+        (_, PreferenceKind::SymmetryEqual) => 0.0,
+        (LabelSource::ExactMate | LabelSource::ExactTactic, PreferenceKind::ProvenOutcome) => {
+            match class {
+                0 | 1 => 300.0,
+                2 | 3 => 200.0,
+                _ => 100.0,
+            }
+        }
+        (_, PreferenceKind::ExpertMove) => 50.0,
+        (_, PreferenceKind::Search) => 75.0,
+        _ => 100.0,
     }
 }
 
@@ -622,10 +664,10 @@ fn apply_gradient(
     weights: &mut Weights,
     optimizer: &mut Optimizer,
     gradient: &mut Gradient,
-    records: usize,
+    families: usize,
     args: &Args,
 ) {
-    let inv = 1.0 / records as f32;
+    let inv = 1.0 / families.max(1) as f32;
     for (&feature, row) in &gradient.feature {
         let start = feature * HALFKP_HIDDEN;
         for h in 0..HALFKP_HIDDEN {
@@ -641,14 +683,21 @@ fn apply_gradient(
         optimizer.hidden_b[h] += g * g;
         weights.hidden_b[h] -= args.learning_rate * g / (optimizer.hidden_b[h].sqrt() + EPSILON);
     }
-    for h in 0..HALFKP_HIDDEN * 2 + 1 {
+    let output_end = if args.stage.freezes_scale() {
+        HALFKP_HIDDEN * 2
+    } else {
+        HALFKP_HIDDEN * 2 + 1
+    };
+    for h in 0..output_end {
         let g = gradient.out_w[h] * inv + args.l2 * weights.out_w[h];
         optimizer.out_w[h] += g * g;
         weights.out_w[h] -= args.learning_rate * g / (optimizer.out_w[h].sqrt() + EPSILON);
     }
-    let g = gradient.out_b * inv;
-    optimizer.out_b += g * g;
-    weights.out_b -= args.learning_rate * g / (optimizer.out_b.sqrt() + EPSILON);
+    if !args.stage.freezes_scale() {
+        let g = gradient.out_b * inv;
+        optimizer.out_b += g * g;
+        weights.out_b -= args.learning_rate * g / (optimizer.out_b.sqrt() + EPSILON);
+    }
     *gradient = Gradient::default();
 }
 
@@ -854,8 +903,8 @@ mod tests {
             kappa_cp: 600.0,
             rank_temperature_cp: 300.0,
             rank_weight: 1.0,
-            proof_weight: 1.0,
-            mate_target: 0.9,
+            stage: TrainingStage::Calibrated,
+            seed: 7,
             l2: 0.0,
             max_train_records: None,
             max_valid_records: None,

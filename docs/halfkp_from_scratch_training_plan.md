@@ -966,6 +966,12 @@ test 1,000の計10,000 familyを`runs/halfkp64-scratch-v1/symmetry-10k-v2`へ生
 衝突0、network-input split衝突0である。preference内のgood/bad childもaudit対象に含めており、rootだけを
 検査して派生入力の漏洩を見逃すことはない。
 
+trainer v2ではexact mateの正例BCEを削除し、Phase 1～2の`out_b`とmaterial bypass係数を凍結した。
+`margin_class`はsource別のcp marginへ写像し、family IDでrecordを束ねてfamily内objective総数を正規化する。
+familyはhash順へ一度固定してから`seed ^ epoch`でshuffleするため、実行ごとのHashMap乱数に依存しない。
+gradientの分母はrecord数でなく有効family数とし、objectiveを持たないbounded non-mate recordがlearning rateを
+薄めない。1手詰みのterminal childもrank pairから除外した。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

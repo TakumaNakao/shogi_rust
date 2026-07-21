@@ -2,7 +2,9 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use shogi_ai::evaluation::HalfKpFlatModel;
-use shogi_ai::halfkp_training::{CurriculumReader, PackedHalfKpPosition, ProofStatus};
+use shogi_ai::halfkp_training::{
+    CurriculumReader, PackedHalfKpPosition, PreferenceKind, ProofStatus,
+};
 use shogi_ai::training_data::sha256_file;
 use shogi_core::Color;
 use std::fs;
@@ -40,12 +42,15 @@ struct ModelArtifact {
 
 #[derive(Default, Serialize)]
 struct Report {
+    model_sha256: String,
     records: usize,
     value_objectives: usize,
     value_bce: f64,
     pairs: usize,
     pair_correct: usize,
     pair_ties: usize,
+    symmetry_pairs: usize,
+    symmetry_rmse_cp: f64,
     mate1_records: usize,
     mate3_records: usize,
     mate1_pairs: usize,
@@ -55,6 +60,8 @@ struct Report {
     root_score_mean_cp: f64,
     root_score_stddev_cp: f64,
     root_score_abs_p99_cp: f32,
+    output_bias_cp: f32,
+    material_coefficient: f32,
 }
 
 pub fn run() -> Result<()> {
@@ -69,7 +76,12 @@ pub fn run() -> Result<()> {
         ));
     }
     let model = HalfKpFlatModel::decode(&fs::read(&args.model)?)?;
-    let mut report = Report::default();
+    let mut report = Report {
+        model_sha256: manifest.model.sha256,
+        output_bias_cp: model.out_b * 1000.0,
+        material_coefficient: model.out_w[model.out_w.len() - 1],
+        ..Report::default()
+    };
     let mut root_scores = Vec::new();
     for path in &args.dataset {
         let mut reader = CurriculumReader::open(path)?;
@@ -106,6 +118,11 @@ pub fn run() -> Result<()> {
             for preference in &record.preferences {
                 let good = score(&model, &preference.good_child);
                 let bad = score(&model, &preference.bad_child);
+                if preference.kind == PreferenceKind::SymmetryEqual {
+                    report.symmetry_pairs += 1;
+                    report.symmetry_rmse_cp += ((good - bad) as f64).powi(2);
+                    continue;
+                }
                 // Children are opponent-to-move: lower is better for root.
                 let correct = good < bad;
                 report.pairs += 1;
@@ -128,13 +145,18 @@ pub fn run() -> Result<()> {
     if report.value_objectives > 0 {
         report.value_bce /= report.value_objectives as f64;
     }
+    if report.symmetry_pairs > 0 {
+        report.symmetry_rmse_cp = (report.symmetry_rmse_cp / report.symmetry_pairs as f64).sqrt();
+    }
     finish_score_stats(&mut report, &mut root_scores);
     println!(
-        "records={} value_bce={:.8} pairs={} pair_accuracy={:.4} mate1={}/{} ({:.4}) mate3={}/{} ({:.4}) score_mean_cp={:.3} score_stddev_cp={:.3} score_abs_p99_cp={:.3}",
+        "records={} value_bce={:.8} pairs={} pair_accuracy={:.4} symmetry_pairs={} symmetry_rmse_cp={:.4} mate1={}/{} ({:.4}) mate3={}/{} ({:.4}) score_mean_cp={:.3} score_stddev_cp={:.3} score_abs_p99_cp={:.3} output_bias_cp={:.3} material_coefficient={:.6}",
         report.records,
         report.value_bce,
         report.pairs,
         ratio(report.pair_correct, report.pairs),
+        report.symmetry_pairs,
+        report.symmetry_rmse_cp,
         report.mate1_pair_correct,
         report.mate1_pairs,
         ratio(report.mate1_pair_correct, report.mate1_pairs),
@@ -144,6 +166,8 @@ pub fn run() -> Result<()> {
         report.root_score_mean_cp,
         report.root_score_stddev_cp,
         report.root_score_abs_p99_cp,
+        report.output_bias_cp,
+        report.material_coefficient,
     );
     if let Some(path) = args.json {
         if let Some(parent) = path.parent() {
