@@ -25,6 +25,14 @@
       "decision": "accepted_gate",
       "accepted_at": "2026-07-22T00:00:00+09:00",
       "decision_commit": "56e66ee"
+    },
+    {
+      "model_sha256": "5df1bcd9220d65c97456013938d9bd43331c6c8642bd321ee41768087594a58a",
+      "generation": 0,
+      "gate_report_sha256": "f63e4600563023993e979dcfd3139cd73bbc6daa8b66c09db640dfc127ce238e",
+      "decision": "accepted_genesis",
+      "accepted_at": "2026-07-22T00:00:00+09:00",
+      "decision_commit": "5b75235"
     }
   ],
   "rejected": [
