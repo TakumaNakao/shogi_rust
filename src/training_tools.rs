@@ -7,6 +7,7 @@ pub mod dataset_build;
 pub mod halfkp_dataset_shard;
 pub mod halfkp_kpp_train;
 pub mod halfkp_rank_dataset;
+pub mod halfkp_scratch_init;
 pub mod halfkp_search_teacher;
 pub mod halfkp_search_train;
 pub mod halfkp_train;

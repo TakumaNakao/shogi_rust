@@ -701,7 +701,7 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 
 | 順序 | 変更 | 完了条件 | 状態 |
 |---:|---|---|---|
-| 1 | scratch lineage/manifestとinitializer | genesis再現、外部model拒否 | 未着手 |
+| 1 | scratch lineage/manifestとinitializer | genesis再現、外部model拒否 | 完了（2026-07-21） |
 | 2 | HKCL codecとgolden fixture | round trip、corrupt拒否 | 未着手 |
 | 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 未着手 |
 | 4 | feature factorization | fold前後forward一致 | 未着手 |
@@ -729,6 +729,24 @@ docs: record scratch training experiments
 
 各実験は`runs/halfkp64-scratch-v1/<run-id>/`へ置き、追跡する結論だけを`report/`へ追加する。Phaseごとに
 この文書の進捗表、実測時間、採否、次の仮説を更新する。
+
+### 14.1 Phase 0実施記録（2026-07-21）
+
+`halfkp_scratch_init`を追加し、外部modelを受け取る引数を持たないgeneration 0専用initializerとした。
+manifestは`lineage_id=halfkp64-scratch-v1`、`generation=0`、`parent=null`を記録する。featureと
+STM/NSTM outputはseed固定のChaCha20正規乱数、hidden biasは0.5、material係数とoutput biasは0である。
+出力weightは各perspective内で中心化し、有限乱数標本による任意の定数offsetを除いた。
+
+`runs/halfkp64-scratch-v1/phase0-final-pilot/`で各10,000合法局面を検査した結果は次の通りである。
+
+| seed | model SHA-256 | mean cp | stddev cp | abs p99 cp | 飽和率 | reload最大差 |
+|---:|---|---:|---:|---:|---:|---:|
+| 20260721 | `a953b54da0d0c2f891ef94ebda81237ac4263b52f7addbc9bf3f383e540534c7` | -0.137 | 4.444 | 11.161 | 0% | 0 cp |
+| 20260722 | `18631b5b894152226b3680c516ac8a2866bcb884f89f96f8a01c4ee841ad52ee` | 0.395 | 4.194 | 10.769 | 0% | 0 cp |
+
+seed 20260721を別pathへ再生成したSHA-256も完全一致した。生成物はGit管理外の`runs/`に置き、現行重み、
+現行重み由来dataset、親checkpointは一切openしていない。Phase 0のGateを満たしたため採用し、次はHKCL
+codecの実装へ進む。
 
 ## 15. 最初に行うpilot
 
