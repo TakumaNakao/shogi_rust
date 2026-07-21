@@ -1010,6 +1010,13 @@ cp正規化後も20% anchor混合ではexact objectiveとのtrade-offが残り�
 canonical化済みである。export modelは通常HalfKP rowへfold済みなのでruntime形式・推論命令数・探索速度は変わらず、
 対称性をdataset weightとの綱引きにせず構造的に保証する。
 
+factor側の初回射影ではrelative factorだけを左右tieし、piece factorのpiece stateに盤上squareが含まれる点を
+見落としていたため、factorized modelだけ対称性が崩れた。piece factorのmirror square rowもtieする修正と
+回帰testを追加した。修正後pilotはsymmetry RMSE 0.0001 cp、train 97.41%、valid 78.75%となり、表現制約を
+守りながら旧pilotの75.5%を上回った。ただし90% Gateには未達なのでGateを緩めない。train-valid gapから
+pair family数不足を主因と仮定し、testを開かずにvalid 2,000/train 20,000 pairの中間learning-curve runを追加する。
+ここでも90%に届かなければ、50kへ盲目的に拡大せずlabel設計とmodel容量を再検討する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
