@@ -705,8 +705,8 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 | 2 | HKCL codecとgolden fixture | round trip、corrupt拒否 | 完了（2026-07-21） |
 | 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 実装完了、exact 128件pilot待ち |
 | 4 | feature factorization | fold前後forward一致 | mapping/fold完了、trainer統合待ち |
-| 5 | bounded exact mate solver | proof再検証、規則fixture | 未着手 |
-| 6 | exact curriculum generator | split/coverage manifest | 未着手 |
+| 5 | bounded exact mate solver | proof再検証、規則fixture | 1/3/5手reference完了、df-pn待ち |
+| 6 | exact curriculum generator | split/coverage manifest | 800件pilot完了、coverage拡大待ち |
 | 7 | opening stratum classifier | deterministic分類、report | 未着手 |
 | 8 | 棋譜rank/result pipeline | no-score provenance | 未着手 |
 | 9 | scratch-only search teacher | lineage強制、immutable teacher | 未着手 |
@@ -777,6 +777,29 @@ training-onlyの`E_piece`と`E_relative`のindex規約、accumulation、runtime 
 持ち駒がpiece factorだけを持つこと、king bucketが異なっても同じ相対配置を共有すること、fold前後の
 hidden accumulationがbit一致することをtestした。trainerのoptimizer/checkpointへfactor stateを統合し、
 factor有無のexact pilotを実行するまでは項目4を暫定状態とする。
+
+### 14.5 bounded exact solver・初回pilot（2026-07-21）
+
+評価関数を一切呼ばないAND/OR完全列挙solverを追加した。攻め方王手限定modeと全合法手mode、ply/node上限、
+proof tree、別走査でのproof再検証を持つ。node上限到達は`resource_limit`であり、不詰みへ変換しない。
+既存の合法手生成を使うため、打ち歩詰めを含む規則判定を重複実装していない。既知1手詰みfixtureの証明・
+再検証と、node capが`proven_no_mate`にならないtestを通過した。5手以上の大規模生成用df-pnは未実装である。
+
+合法なrandom playout局面だけを対象とする`halfkp_exact_generate`を追加し、3手以内の完全証明からHKCLを
+生成した。`exact-pilot-800-v3`は1手詰み200、3手詰み200、3手以内不詰み400で、train/valid/testは
+622/84/94、node cap到達は0だった。詰みrootでは、同じ上限内で証明済み不詰みの別王手がある場合だけ
+candidate pairを作った。bounded不詰みを敗北WDLへ変換していない。
+
+初回hyperparameter pilotのtest結果は次の通りである。全候補は同じscratch genesisから学習した。
+
+| lr | mate target | rank weight | pair accuracy | 1手pair | 3手pair | score abs p99 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.01 | 0.8 | 0.5 | 96.23% | 93.55% | 100.00% | 1,789 cp |
+| 0.02 | 0.8 | 0.5 | 90.57% | 90.32% | 90.91% | 1,648 cp |
+| 0.005 | 0.8 | 1.0 | 96.23% | 93.55% | 100.00% | 2,082 cp |
+
+`lr=0.01, mate_target=0.8, rank_weight=0.5`を次のexact拡大pilotの暫定候補とする。1手pairが初期Gateの
+100%へ届かないため、weight完成扱いにはせず、factor統合、coverage拡大、探索発見率測定へ進む。
 
 ## 15. 最初に行うpilot
 

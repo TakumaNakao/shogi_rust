@@ -6,6 +6,8 @@ pub mod benchmark_tools;
 pub mod evaluation;
 #[cfg(feature = "training-tools")]
 pub mod halfkp_training;
+#[cfg(feature = "training-tools")]
+pub mod mate_proof;
 pub mod move_ordering;
 pub mod position_hash;
 pub mod sennichite;

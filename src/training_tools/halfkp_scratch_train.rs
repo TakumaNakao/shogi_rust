@@ -46,6 +46,8 @@ struct Args {
     rank_weight: f32,
     #[arg(long, default_value_t = 1.0)]
     proof_weight: f32,
+    #[arg(long, default_value_t = 0.9)]
+    mate_target: f32,
     #[arg(long, default_value_t = 1e-6)]
     l2: f32,
     #[arg(long)]
@@ -222,6 +224,7 @@ pub fn run() -> Result<()> {
             "learning_rate": args.learning_rate, "kappa_cp": args.kappa_cp,
             "rank_temperature_cp": args.rank_temperature_cp, "rank_weight": args.rank_weight,
             "proof_weight": args.proof_weight, "l2": args.l2,
+            "mate_target": args.mate_target,
         }),
         best_epoch,
         best_valid_loss: best_loss,
@@ -282,6 +285,7 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.rank_temperature_cp <= 0.0
         || args.rank_weight < 0.0
         || args.proof_weight < 0.0
+        || !(0.5..1.0).contains(&args.mate_target)
         || args.l2 < 0.0
         || (!args.resume && args.output.exists())
         || manifest_path(&args.output).exists()
@@ -348,6 +352,7 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "rank_temperature_cp": args.rank_temperature_cp,
         "rank_weight": args.rank_weight,
         "proof_weight": args.proof_weight,
+        "mate_target": args.mate_target,
         "l2": args.l2,
     });
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
@@ -475,7 +480,7 @@ fn accumulate_record(
         add_value_objective(
             weights,
             &record.root,
-            1.0,
+            args.mate_target,
             record.sample_weight * args.proof_weight,
             args.kappa_cp,
             gradient,
@@ -829,6 +834,7 @@ mod tests {
             rank_temperature_cp: 300.0,
             rank_weight: 1.0,
             proof_weight: 1.0,
+            mate_target: 0.9,
             l2: 0.0,
             max_train_records: None,
             max_valid_records: None,
