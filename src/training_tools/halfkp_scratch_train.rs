@@ -67,6 +67,17 @@ struct Args {
     seed: u64,
     #[arg(long, default_value_t = 1e-6)]
     l2: f32,
+    /// Decoupled weight decay applied independently of AdaGrad state.
+    #[arg(long, default_value_t = 0.0)]
+    weight_decay: f32,
+    /// Keep the Phase 1 output head fixed while learning shared input factors.
+    #[arg(long, default_value_t = false)]
+    freeze_output_head: bool,
+    /// Zero-centered score RMS anchor applied to symmetry/legal-health roots.
+    #[arg(long, default_value_t = 0.0)]
+    score_anchor_weight: f32,
+    #[arg(long, default_value_t = 600.0)]
+    score_anchor_cp: f32,
     #[arg(long)]
     max_train_records: Option<usize>,
     #[arg(long)]
@@ -277,6 +288,10 @@ pub fn run() -> Result<()> {
             "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
             "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
             "seed": args.seed, "l2": args.l2,
+            "weight_decay": args.weight_decay,
+            "freeze_output_head": args.freeze_output_head,
+            "score_anchor_weight": args.score_anchor_weight,
+            "score_anchor_cp": args.score_anchor_cp,
         }),
         best_epoch,
         best_valid_loss: best_loss,
@@ -368,6 +383,9 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.symmetry_temperature_cp <= 0.0
         || args.rank_weight < 0.0
         || args.l2 < 0.0
+        || args.weight_decay < 0.0
+        || args.score_anchor_weight < 0.0
+        || args.score_anchor_cp <= 0.0
         || (!args.resume && args.output.exists())
         || manifest_path(&args.output).exists()
         || (args.resume && args.checkpoint_dir.is_none())
@@ -443,6 +461,10 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
         "seed": args.seed,
         "l2": args.l2,
+        "weight_decay": args.weight_decay,
+        "freeze_output_head": args.freeze_output_head,
+        "score_anchor_weight": args.score_anchor_weight,
+        "score_anchor_cp": args.score_anchor_cp,
     });
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
 }
@@ -516,7 +538,7 @@ fn train_epoch(
     for family in families {
         let objectives = family
             .iter()
-            .map(|record| objective_count(record))
+            .map(|record| objective_count(record, args))
             .sum::<usize>();
         if objectives == 0 {
             metrics.records += family.len();
@@ -579,6 +601,15 @@ fn accumulate_record(
     family_scale: f32,
     gradient: &mut Gradient,
 ) {
+    if record.source == LabelSource::SymmetryAnchor && args.score_anchor_weight > 0.0 {
+        let forward = weights.forward(&record.root);
+        let normalized = forward.raw * TARGET_SCALE / args.score_anchor_cp;
+        let scale = record.sample_weight * args.score_anchor_weight * family_scale;
+        gradient.loss += 0.5 * (normalized * normalized * scale) as f64;
+        let d_raw = normalized * TARGET_SCALE / args.score_anchor_cp * scale;
+        add_position_gradient(weights, &record.root, &forward, d_raw, gradient);
+        gradient.objectives += 1;
+    }
     if let Some(target) = record.result {
         add_value_objective(
             weights,
@@ -615,20 +646,18 @@ fn accumulate_record(
     }
 }
 
-fn objective_count(record: &CurriculumRecord) -> usize {
-    usize::from(record.result.is_some()) + record.preferences.len()
+fn objective_count(record: &CurriculumRecord, args: &Args) -> usize {
+    usize::from(record.result.is_some())
+        + record.preferences.len()
+        + usize::from(
+            record.source == LabelSource::SymmetryAnchor && args.score_anchor_weight > 0.0,
+        )
 }
 
-fn margin_cp(source: LabelSource, kind: PreferenceKind, class: u8) -> f32 {
+fn margin_cp(source: LabelSource, kind: PreferenceKind, _class: u8) -> f32 {
     match (source, kind) {
         (_, PreferenceKind::SymmetryEqual) => 0.0,
-        (LabelSource::ExactMate | LabelSource::ExactTactic, PreferenceKind::ProvenOutcome) => {
-            match class {
-                0 | 1 => 300.0,
-                2 | 3 => 200.0,
-                _ => 100.0,
-            }
-        }
+        (LabelSource::ExactMate | LabelSource::ExactTactic, PreferenceKind::ProvenOutcome) => 0.0,
         (_, PreferenceKind::ExpertMove) => 50.0,
         (_, PreferenceKind::Search) => 75.0,
         _ => 100.0,
@@ -758,6 +787,19 @@ fn apply_gradient(
     args: &Args,
 ) {
     let inv = 1.0 / families.max(1) as f32;
+    let decay = (1.0 - args.learning_rate * args.weight_decay).max(0.0);
+    if args.weight_decay > 0.0 {
+        if weights.train_direct {
+            weights.feature.iter_mut().for_each(|value| *value *= decay);
+        }
+        if let Some(factors) = &mut weights.factors {
+            factors.piece.iter_mut().for_each(|value| *value *= decay);
+            factors
+                .relative
+                .iter_mut()
+                .for_each(|value| *value *= decay);
+        }
+    }
     for (&feature, row) in &gradient.feature {
         let start = feature * HALFKP_HIDDEN;
         for h in 0..HALFKP_HIDDEN {
@@ -791,12 +833,17 @@ fn apply_gradient(
         optimizer.hidden_b[h] += g * g;
         weights.hidden_b[h] -= args.learning_rate * g / (optimizer.hidden_b[h].sqrt() + EPSILON);
     }
-    let output_end = if args.stage.freezes_scale() {
+    let output_end = if args.freeze_output_head {
+        0
+    } else if args.stage.freezes_scale() {
         HALFKP_HIDDEN * 2
     } else {
         HALFKP_HIDDEN * 2 + 1
     };
     for h in 0..output_end {
+        if args.weight_decay > 0.0 {
+            weights.out_w[h] *= decay;
+        }
         let g = gradient.out_w[h] * inv + args.l2 * weights.out_w[h];
         optimizer.out_w[h] += g * g;
         weights.out_w[h] -= args.learning_rate * g / (optimizer.out_w[h].sqrt() + EPSILON);
@@ -1071,6 +1118,10 @@ mod tests {
             factorization: FactorizationMode::Direct,
             seed: 7,
             l2: 0.0,
+            weight_decay: 0.0,
+            freeze_output_head: false,
+            score_anchor_weight: 0.0,
+            score_anchor_cp: 600.0,
             max_train_records: None,
             max_valid_records: None,
             checkpoint_dir: None,
