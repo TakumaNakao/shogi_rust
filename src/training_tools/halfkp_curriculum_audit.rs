@@ -195,15 +195,13 @@ fn revalidate_record(record: &CurriculumRecord) -> Result<bool> {
         let mut bad = position.clone();
         bad.do_move(bad_move);
         let bad_proof = solve_bounded_mate_for(&bad, attacker, limits)?;
+        verify_mate_proof(&good, &good_proof)?;
+        verify_mate_proof(&bad, &bad_proof)?;
         if good_proof.root.status != MateProofStatus::ProvenMate
             || bad_proof.root.status != MateProofStatus::ProvenNoMate
         {
             return Ok(false);
         }
-        // `verify_mate_proof` currently assumes the attacker moves at the
-        // proof root, while these child proofs intentionally start with the
-        // defender. Re-solving both children and checking their typed status
-        // is the independent witness here; the root proof is fully verified.
     }
     Ok(true)
 }

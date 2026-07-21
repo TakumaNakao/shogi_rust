@@ -234,10 +234,16 @@ impl Context {
 }
 
 pub fn verify_mate_proof(position: &Position, proof: &MateProof) -> Result<()> {
-    if position.side_to_move() != proof.attacker || proof.root.remaining_plies != proof.max_plies {
+    if proof.root.remaining_plies != proof.max_plies {
         return Err(anyhow!("mate proof root metadata mismatch"));
     }
-    verify_node(position, proof.attacker, proof.mode, &proof.root)
+    verify_node(
+        position,
+        proof.attacker,
+        proof.mode,
+        &proof.root,
+        &mut HashSet::new(),
+    )
 }
 
 fn verify_node(
@@ -245,6 +251,7 @@ fn verify_node(
     attacker: Color,
     mode: AttackMoveMode,
     node: &MateProofNode,
+    path: &mut HashSet<u64>,
 ) -> Result<()> {
     if node.position_key != position.key()
         || node.side_to_move != position.side_to_move()
@@ -253,6 +260,12 @@ fn verify_node(
         return Err(anyhow!("mate proof node does not match position"));
     }
     if node.status == MateProofStatus::ResourceLimit {
+        return Ok(());
+    }
+    if !path.insert(position.key()) {
+        if node.status != MateProofStatus::ProvenNoMate || !node.edges.is_empty() {
+            return Err(anyhow!("invalid repetition refutation"));
+        }
         return Ok(());
     }
     let legal = position.legal_moves();
@@ -265,6 +278,17 @@ fn verify_node(
         if node.status != expected || !node.edges.is_empty() {
             return Err(anyhow!("invalid terminal mate proof"));
         }
+        path.remove(&position.key());
+        return Ok(());
+    }
+    if node.remaining_plies == 0 {
+        if node.status != MateProofStatus::ProvenNoMate
+            || node.mate_distance.is_some()
+            || !node.edges.is_empty()
+        {
+            return Err(anyhow!("invalid horizon refutation"));
+        }
+        path.remove(&position.key());
         return Ok(());
     }
     let admissible = if node.attacker_to_move && mode == AttackMoveMode::CheckingOnly {
@@ -281,7 +305,7 @@ fn verify_node(
         }
         let mut child = position.clone();
         child.do_move(edge.mv);
-        verify_node(&child, attacker, mode, &edge.child)?;
+        verify_node(&child, attacker, mode, &edge.child, path)?;
     }
     let universal = (node.attacker_to_move && node.status == MateProofStatus::ProvenNoMate)
         || (!node.attacker_to_move && node.status == MateProofStatus::ProvenMate);
@@ -328,6 +352,7 @@ fn verify_node(
         }
         (_, MateProofStatus::ResourceLimit) => unreachable!(),
     }
+    path.remove(&position.key());
     Ok(())
 }
 
@@ -368,5 +393,21 @@ mod tests {
         )
         .expect("solve");
         assert_eq!(proof.root.status, MateProofStatus::ResourceLimit);
+    }
+
+    #[test]
+    fn revalidates_no_mate_children_at_the_horizon() {
+        let position = Position::default();
+        let proof = solve_bounded_mate(
+            &position,
+            MateLimits {
+                max_plies: 1,
+                max_nodes: 10_000,
+                mode: AttackMoveMode::AllLegal,
+            },
+        )
+        .expect("solve");
+        assert_eq!(proof.root.status, MateProofStatus::ProvenNoMate);
+        verify_mate_proof(&position, &proof).expect("verify");
     }
 }

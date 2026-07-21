@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const LINEAGE_ID: &str = "halfkp64-scratch-v1";
-const RULE_VERSION: u32 = 1;
+const RULE_VERSION: u32 = 2;
 
 #[derive(Parser, Debug)]
 #[command(about = "Generate evaluator-free bounded mate HKCL records from legal random games")]
