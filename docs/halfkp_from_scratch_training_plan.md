@@ -273,6 +273,25 @@ L_pair = softplus((u(b) - u(g) + margin) / temperature)
 証明済み詰みpair、棋譜手pair、自己探索pairを同じ数式で扱える。ただし`source_kind`ごとにconfidence
 とmarginを分ける。根拠の異なるpairを同じcp差と解釈しない。
 
+2026-07-21のexact pilot監査により、bounded mateへ任意の`mate_target`を与えるBCEは採用しないことに
+変更した。3手以内に詰むことは勝率80%などを意味せず、正例しかないBCEはoutput biasとscore尺度を
+押し上げるためである。Phase 2では次を固定する。
+
+- exact mateは原則pairwise lossだけで学習し、絶対WDL校正はPhase 4の実戦結果まで行わない。
+- `out_b`とmaterial bypass係数はPhase 1～2では凍結する。
+- terminal childはruntime探索で評価関数を呼ばないため、value networkの学習入力にしない。
+- familyごとのloss総量を正規化し、合法手数やproof treeの大きさで一問題のweightが増えないようにする。
+- exact pilotで使った`mate_target=0.8/0.9`は診断実験として記録だけ残し、後続modelの親にしない。
+
+trainer v2では次も修正する。
+
+- record数でなく有効objective weightとfamily数でgradientを正規化する。objective 0のbounded no-mate recordが
+  learning rateを薄めてはならない。
+- family単位でseed固定shuffleをepochごとに行い、常に同じ並びで学習しない。
+- `margin_class`をsource/horizon別marginへ明示的に写像する。使わないならschemaから削除する。
+- valid lossを一つに混ぜず、source・mate distance・move種別・king bucket別metricでbest modelを選ぶ。
+- sparse rowだけへL2を掛ける現実装を廃止し、lazy decayまたはexport時decayで未観測rowにも同じ意味を持たせる。
+
 ### 7.3 自己探索loss
 
 初期の自己探索では絶対cp回帰を使わない。新modelのleaf値で作ったroot scoreへ同じmodelを回帰する
@@ -364,6 +383,21 @@ record:
 - 2026年棋譜はout-of-time testとして凍結し、hyperparameter選択へ使わない。
 - exact test、opening test、general game test、self-play testを別manifestにする。
 
+追加の必須検査:
+
+- random playoutをsourceにする場合、各局面hashではなくplayout開始時に作る`game_family_id`でsplitする。
+- train/valid/testは別seed・別生成streamで作り、生成後にsplitする方式を標準経路にしない。
+- split衝突keyはSFEN文字列でなく、networkが実際に見る`PackedHalfKP + side-to-move + material`を正規化して
+  hash化する。手数表記の違い、左右mirror、色交換・180度回転後に同じ入力となる局面を同一視する。
+- canonical network-input hashをglobal indexへ登録し、split間衝突を0件にする。
+- proof root、全派生node、candidate childは同じfamilyへ所属させる。
+- manifestへfamily数、canonical重複除去数、split間衝突検査結果、カテゴリ別件数を記録する。
+- hyperparameter選択にはtrain/devだけを使う。frozen testは設定lock後に1回だけ開き、testを見て設定を
+  変えた時点でそのsplitをdevへ降格する。
+
+`halfkp_exact_generate` v1は局面SFEN hashをfamily hashとしていたため、同じrandom gameの隣接局面が別splitへ
+入る可能性がある。v1 corpusは実装smoke以外へ使用せず、上記を満たすv2へ置き換える。
+
 ### 9.2 label provenance
 
 全recordのlabel由来を検査可能にする。`self_search`は教師model hashを必須とし、そのmodelが同じ
@@ -413,6 +447,9 @@ dataset:
 
 規模は10k、50k、200kの順に増やす。10kをほぼ完全にoverfitできない場合は学習器bugとして停止する。
 
+Phase 2の初回pilotを先行してしまったが、これは順序違反である。以後はPhase 1の10k symmetry corpus、
+canonical split監査、128件rank overfitを完了するまでexact学習を再開しない。
+
 ### Phase 2: 証明済み詰み・短手数戦術
 
 #### 詰みsolver
@@ -429,15 +466,20 @@ dataset:
 
 #### curriculum
 
-1. 1手詰みと全合法応手の確認
-2. 3手詰みと詰み回避
-3. 5手詰み
+1. 1手詰みは合法手生成・探索発見のtest fixtureに使い、terminal childをvalue学習しない
+2. 3手詰みの非終端内部nodeと詰み回避
+3. 5手詰みの非終端leaf ordering
 4. node budget内で証明できた7手以上
 5. capture/promotion/dropを含む短手数の強制勝ち・強制回避
 
-終端局面は学習対象から除き、非終端rootへbounded WDL targetを与える。candidate順位は両候補の
-証明状態が確定したpairだけを使う。攻め方の短手数優先と受け方の長手数回避は、通常の勝敗順位が
+終端局面はrootにもcandidate childにも使わない。bounded mateへ絶対WDL targetを与えず、両候補の
+同一horizon内の証明状態が確定し、かつ両childが非終端であるpairだけを使う。攻め方だけでなく、受け方の
+「詰みを外す手 / 詰む手」も生成する。攻め方の短手数優先と受け方の長手数回避は、通常の勝敗順位が
 安定した後に小さい補助weightで追加する。
+
+`proven_no_mate`という名前は無期限の不詰みと誤読できるため、v2 schemaでは
+`no_forced_mate_within_horizon`とし、各recordに`horizon_plies`とsolver modeを必須化する。bad candidateは
+move generator順の最初の王手だけを採らず、全合法手を証明した上でmove種別・難度別に決定的samplingする。
 
 各カテゴリはking bucket、攻め駒、持ち駒、盤上/持ち駒からの打ち、成りの有無で均す。同一詰み筋を
 駒や盤位置だけ変えて大量複製しない。
@@ -450,6 +492,16 @@ Gateの初期目標:
 - 証明済み勝ち/非勝ちpair accuracy 95%以上
 - general legal-position score p99、activation飽和、material係数が安全範囲
 - Phase 1の対称性testに退行なし
+
+Gateは次の順で判定し、前段未達なら後段の数値を採用しない。
+
+1. dataset integrity: canonical split衝突0、family跨ぎ0、proof全件再検証、resource limitの誤label 0
+2. trainer: cleanな128 pairを100% overfitし、中断再開がbit一致
+3. static holdout: 全positive rootを分母にしたexact-best top-1、pair coverage、カテゴリ別pair accuracy
+4. search holdout: 評価関数を組み込んだ実際の探索で1/3/5手発見率を測る
+5. health holdout: exactとは独立した一般合法局面でscore分布、activation、material係数、色biasを測る
+
+従来のpair accuracyはpairを作れたrootだけが分母であり、search discoveryの代用にはしない。
 
 5手以上の閾値はsolver corpusの難度で再校正する。未達ならデータを増やす前に、表現能力と
 探索depthのどちらが原因かを分離する。
@@ -703,10 +755,10 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 |---:|---|---|---|
 | 1 | scratch lineage/manifestとinitializer | genesis再現、外部model拒否 | 完了（2026-07-21） |
 | 2 | HKCL codecとgolden fixture | round trip、corrupt拒否 | 完了（2026-07-21） |
-| 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 実装完了、exact 128件pilot待ち |
+| 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 実装完了、clean rank 128件pilot待ち |
 | 4 | feature factorization | fold前後forward一致 | mapping/fold完了、trainer統合待ち |
-| 5 | bounded exact mate solver | proof再検証、規則fixture | 1/3/5手reference完了、df-pn待ち |
-| 6 | exact curriculum generator | split/coverage manifest | 800件pilot完了、coverage拡大待ち |
+| 5 | bounded exact mate solver | proof再検証、規則fixture | 1/3手reference完了、全件再検証とdf-pn待ち |
+| 6 | exact curriculum generator | split/coverage manifest | v1棄却、family-safe v2再設計中 |
 | 7 | opening stratum classifier | deterministic分類、report | 未着手 |
 | 8 | 棋譜rank/result pipeline | no-score provenance | 未着手 |
 | 9 | scratch-only search teacher | lineage強制、immutable teacher | 未着手 |
@@ -806,23 +858,82 @@ candidate pairを作った。bounded不詰みを敗北WDLへ変換していな�
 独立seed 20260731で1手詰み4,000、3手詰み4,000、3手以内不詰み4,000を生成した。184,659局面を調べ、
 node cap到達0、family split後はtrain 9,636、valid 1,227、test 1,137となった。3 epochのlr比較では
 valid lossが0.005/0.01/0.02でそれぞれ0.3763/0.3647/0.3653だったが、独立testのpair accuracyは
-88.69%/87.21%/90.04%であり、小規模pilotの数値を再現しなかった。
+88.69%/87.21%/90.04%だった。後の監査でsplit独立性とtest運用に不備が判明したため、これを小規模pilot
+との差やlearning rate選択の根拠として扱わない。
 
 安定性を優先してlr 0.005を10 epochまで延長した結果、test pair accuracy 91.25%、1手93.78%、3手
-88.74%、score abs p99 1,963 cpだった。score範囲Gateは満たす一方、pair accuracy 95%と1手100%には
-未達である。したがってこのweightは中間artifactに留め、factorization統合と局面coverage改善後に再試験する。
+88.74%、score abs p99 1,963 cpだった。exact split内の暫定score閾値は満たしたが、一般合法局面Gateを
+測ったものではなく、pair accuracy 95%と1手100%にも未達だった。後述の監査により、このweightは棄却した。
+
+### 14.7 中間監査と計画修正（2026-07-21）
+
+#### 判定
+
+計画修正が必要である。800件と12kの結果はcodec、solver、trainerが端から端まで動くことを示す
+engineering smokeとしては有効だが、model選択の統計としては無効とする。生成weightを次世代の親へ昇格
+させない。
+
+| 成果物 | 判定 | 今後の扱い |
+|---|---|---|
+| scratch genesis 2 seed | 有効 | 新しいclean pilotの唯一の初期modelとして再利用 |
+| model codec/forward・optimizer unit test | 有効 | 実装基盤として維持 |
+| HKCL0001 | 汎用codecのengineering smokeとして有効 | exact corpusはHKCL0002で再生成 |
+| exact v1 800/12k corpus | model選択には無効 | 再学習・混合・評価へ使用禁止 |
+| v1から学習した全weight | 棄却 | lineage parent、探索教師、比較baselineへ使用禁止 |
+| 800/12kのloss・pair精度 | 診断値のみ | Gate達成の証拠として引用禁止 |
+
+理由は次の通りである。
+
+1. v1 generatorは各局面SFENをfamily hashにしたため、同じrandom playoutの隣接局面がsplitを跨ぎ得る。
+2. Phase 1のsymmetry/canonical split Gateを完了する前にPhase 2を実行した。
+3. bounded mate正例への任意BCE targetが絶対scoreを押し上げた。0.9 pilotではtest exact局面のp99が
+   2,947 cpだった。`kappa=600, target=0.8`の定数最適値は`600 * logit(0.8) = 831.8 cp`であり、
+   実測test平均855.9 cpとほぼ一致した。これは戦術知識でなく目的関数由来のbiasである。
+4. 1手詰みpairはterminal childを評価していたが、実際の探索はterminalで評価関数を呼ばないため、学習と
+   runtimeのleaf semanticsが一致しない。
+5. pair accuracyはpair生成に成功したrootだけを分母とし、計画のsearch discovery Gateを測っていない。
+6. 報告したp99はexact局面上であり、計画が要求する独立した一般合法局面のhealth checkではない。
+7. generatorはproofを返すが、書き出し前の全件再検証、canonical重複監査、カテゴリcoverage manifestがない。
+8. 現trainerはlineage一致だけを確認し、Gate未通過modelでも親に指定できる。計画したpromotion allowlistが
+   まだ強制されていない。
+
+12kのpair accuracyはtrain 6,070/6,131 = 99.01%、valid 694/787 = 88.18%、test 678/743 = 91.25%だった。
+trainをfitできているため、現時点でmodel容量やoptimizerの学習不能を主因とはしない。優先仮説はsparse rowの
+共有不足、source分布、split、教師/loss設計である。800件の51/53 = 96.23%はWilson 95%区間が
+87.25～98.96%と広く、12kとの統計的矛盾や「拡大で悪化」を主張しない。
+
+#### 修正後の直近手順
+
+1. immutable promotion registryを実装し、accepted model hash、Gate report hash、承認時刻を記録する。
+   genesis 2個だけを初期allowlistへ登録し、v1 weightを`diagnostic/rejected`として明示的にrejectする。
+2. `HKCL0002`へhorizon semanticsとgenerator family idを追加する。
+3. split別seed/stream、game-family固定、canonical重複0を保証するgenerator v2とaudit toolを作る。
+4. Phase 1 symmetry 10kを生成し、clean 128 pairの100% overfitを通す。
+5. exact lossを非終端childのrank-onlyへ変更し、Phase 1～2はoutput bias/material係数を凍結する。
+6. 全合法候補と攻守両側のproof nodeから、カテゴリを均したexact 12k v2を作る。
+7. direct/factorizedを同seed、3 learning rate、同じ3 epochで比較する。
+8. static top-1、実探索発見率、一般合法局面healthの全Gateを通った場合だけ50k/200kへ進む。
+9. df-pn、opening、棋譜導入は上記Gate後まで延期する。
+
+12k v2は開発Gateとしてtrain pair 99%以上、dev point estimate 90%以上、family bootstrap 95%下限88%以上を
+要求する。これはfactorization等の比較を続けるためのGateであり、Phase 2本Gateの95%以上を緩和しない。
+50k以上で95%を再要求し、3つのscratch seedで改善方向が一致してから次段階へ進む。
+
+この修正は「現行weightを使わず、exact -> opening -> game -> scratch search」の大枠を変えない。変更するのは
+Phase 1を飛ばさないこと、dataset独立性、exact label semantics、評価Gateの厳密化である。
 
 ## 15. 最初に行うpilot
 
-大規模学習前の最小実行単位は次とする。
+中間監査後の最小実行単位を次へ改訂する。v1 exact corpusを追加学習してこの手順を代替してはならない。
 
-1. 2つの独立seedでgenesis modelを作る。
-2. symmetry 2,000、mate 1/3手各4,000、非詰み4,000の約14,000 familyを作る。
-3. 128 recordを完全にoverfitする。
-4. 14kで3 learning rate、factorあり/なしを各3 epoch学習する。
-5. unseen exact test、score分布、activation、feature coverageで1候補を選ぶ。
-6. 20局の新系列内self-play smokeを行う。
-7. 成功した場合だけ50k/200k exact corpusへ進む。
+1. 作成済みの2つの独立genesis seedを再検証する。
+2. split別streamのsymmetry 10,000 familyを作り、canonical衝突0を確認する。
+3. `HKCL0002`で非終端exact rank pair 128 familyを作り、100% overfitする。
+4. 1/3手各4,000、horizon内非詰み4,000を別seedで生成し、全proofを再検証する。
+5. 12kで3 learning rate、direct/factorizedを各3 epoch学習する。
+6. 全root static top-1、実探索発見率、独立legal health set、activation、feature coverageで候補を選ぶ。
+7. 成功した場合だけ50k/200k exact corpusとdf-pn実装へ進む。
+8. self-play smokeはopening/general game Gate後へ延期する。
 
 このpilotでは棋譜、現行重み、自己探索scoreを一切使わない。ここで学習が成立しなければ、長時間run
 には進まず、initializer、loss、factorization、model容量を調査する。
