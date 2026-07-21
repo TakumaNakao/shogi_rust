@@ -938,6 +938,16 @@ Phase 1を飛ばさないこと、dataset独立性、exact label semantics、評
 このpilotでは棋譜、現行重み、自己探索scoreを一切使わない。ここで学習が成立しなければ、長時間run
 には進まず、initializer、loss、factorization、model容量を調査する。
 
+### 15.1 修正版計画の実施記録
+
+#### promotion registry（2026-07-21）
+
+trackedな`training/halfkp64-scratch-v1/promotion_registry.json`を追加した。初期allowlistは検証済みscratch
+genesis 2 seedだけであり、v1 exactから生成した10個のmodel hashを`exact_v1_diagnostic`として明示的に
+rejectした。trainerはparent model、parent manifest、Gate report、registry、generationの組を照合し、単に
+同じlineageであるだけのmodelを親として受け付けない。registry hashとGate report hashは新しいtraining
+manifestとrun fingerprintへ入る。hash不一致拒否testを通過した。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

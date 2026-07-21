@@ -20,3 +20,4 @@ pub mod kpp_learn;
 pub mod kpp_position_pool;
 pub mod kpp_self_learn;
 pub mod rank_stats;
+pub mod scratch_lineage;

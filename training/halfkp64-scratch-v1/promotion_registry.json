@@ -1,0 +1,34 @@
+{
+  "schema": "halfkp_scratch_promotion_registry_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "accepted": [
+    {
+      "model_sha256": "a953b54da0d0c2f891ef94ebda81237ac4263b52f7addbc9bf3f383e540534c7",
+      "generation": 0,
+      "gate_report_sha256": "e1ffae7653213755b987c89ce04651cf3bd15755d826303b93561f7ce2286d23",
+      "decision": "accepted_genesis",
+      "accepted_at": "2026-07-21T00:00:00+09:00",
+      "decision_commit": "a17a799"
+    },
+    {
+      "model_sha256": "18631b5b894152226b3680c516ac8a2866bcb884f89f96f8a01c4ee841ad52ee",
+      "generation": 0,
+      "gate_report_sha256": "f58fdcf0e609409fd10cb994de7f6a020f2bd4d771bb0df7f42c7287508d2dfc",
+      "decision": "accepted_genesis",
+      "accepted_at": "2026-07-21T00:00:00+09:00",
+      "decision_commit": "a17a799"
+    }
+  ],
+  "rejected": [
+    {"model_sha256": "6b97c93d46f8b607996f6dc4a607184ae15a55ba121eb60f385a3b892fb1494c", "reason": "exact_v1_diagnostic"},
+    {"model_sha256": "0f32c7965d83152811e398fe707d310b4477f3468463b4ea37b301bd8a304c0d", "reason": "exact_v1_diagnostic"},
+    {"model_sha256": "6b5c81afce62c37c23d445bb7d1c7fb8b4c3a501d29add65aacde1ed3edc8c37", "reason": "exact_v1_diagnostic"},
+    {"model_sha256": "e98bea629789a552417cf3c5ba2444795a906c7b9c0531989f5a28d844e76b82", "reason": "exact_v1_diagnostic"},
+    {"model_sha256": "60cae57c0ccc2b57560307eeca6c3c9b76744536256a9761a3764188df231cfe", "reason": "exact_v1_diagnostic"},
+    {"model_sha256": "e71946af4919b60b8b7f0976081c4aae3d6ab7b34543f7794d0213af9d56f03a", "reason": "exact_v1_diagnostic"},
+    {"model_sha256": "4778160e6755915cc847daacaa8458b8b9a53d62c9052b7ada2b786a57c6c03d", "reason": "exact_v1_diagnostic"},
+    {"model_sha256": "93fd405ed03fc536f1d01b7293b853dff624333b1cdbf0d182648a3f4aaf73aa", "reason": "exact_v1_diagnostic"},
+    {"model_sha256": "4eefbc177f62ed500f7a5e6f2f552614772721594f03207d76ad060d7a2a6cf1", "reason": "exact_v1_diagnostic"},
+    {"model_sha256": "a0b8ad5abb22780701321109d6338c5b02c915fd506f7cc8d91ca9b381e14246", "reason": "exact_v1_diagnostic"}
+  ]
+}

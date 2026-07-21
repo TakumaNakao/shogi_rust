@@ -9,6 +9,9 @@ use shogi_ai::halfkp_training::{
 use shogi_ai::training_data::{
     artifact_metadata, capture_run_environment, sha256_file, sha256_hex,
 };
+use shogi_ai::training_tools::scratch_lineage::{
+    require_accepted_parent, DEFAULT_PROMOTION_REGISTRY,
+};
 use shogi_core::Color;
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -30,6 +33,10 @@ struct Args {
     init: PathBuf,
     #[arg(long)]
     init_manifest: PathBuf,
+    #[arg(long)]
+    parent_gate_report: PathBuf,
+    #[arg(long, default_value = DEFAULT_PROMOTION_REGISTRY)]
+    promotion_registry: PathBuf,
     #[arg(long)]
     output: PathBuf,
     #[arg(long, default_value_t = 8)]
@@ -81,6 +88,8 @@ struct OutputManifest {
     parent: ParentReference,
     parent_model_sha256: String,
     parent_manifest_sha256: String,
+    parent_gate_report_sha256: String,
+    promotion_registry_sha256: String,
     train_dataset_sha256: Vec<String>,
     valid_dataset_sha256: Vec<String>,
     hyperparameters: serde_json::Value,
@@ -161,7 +170,7 @@ struct Metrics {
 pub fn run() -> Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
-    let parent = validate_parent(&args.init, &args.init_manifest)?;
+    let parent = validate_parent(&args)?;
     validate_datasets(&args.train, false)?;
     validate_datasets(&args.valid, false)?;
     let fingerprint = training_fingerprint(&args, &parent)?;
@@ -209,6 +218,8 @@ pub fn run() -> Result<()> {
         },
         parent_model_sha256,
         parent_manifest_sha256,
+        parent_gate_report_sha256: sha256_file(&args.parent_gate_report)?,
+        promotion_registry_sha256: sha256_file(&args.promotion_registry)?,
         train_dataset_sha256: args
             .train
             .iter()
@@ -344,6 +355,8 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "schema": "halfkp_scratch_training_v1",
         "lineage_id": LINEAGE_ID,
         "parent_model_sha256": parent.model.sha256,
+        "parent_gate_report_sha256": sha256_file(&args.parent_gate_report)?,
+        "promotion_registry_sha256": sha256_file(&args.promotion_registry)?,
         "train": args.train.iter().map(|path| sha256_file(path)).collect::<Result<Vec<_>>>()?,
         "valid": args.valid.iter().map(|path| sha256_file(path)).collect::<Result<Vec<_>>>()?,
         "batch_size": args.batch_size,
@@ -358,9 +371,9 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
 }
 
-fn validate_parent(model: &Path, manifest: &Path) -> Result<ParentManifest> {
-    let parent: ParentManifest = serde_json::from_slice(&fs::read(manifest)?)?;
-    if parent.lineage_id != LINEAGE_ID || parent.model.sha256 != sha256_file(model)? {
+fn validate_parent(args: &Args) -> Result<ParentManifest> {
+    let parent: ParentManifest = serde_json::from_slice(&fs::read(&args.init_manifest)?)?;
+    if parent.lineage_id != LINEAGE_ID || parent.model.sha256 != sha256_file(&args.init)? {
         return Err(anyhow!(
             "initial model is not the declared scratch-lineage artifact"
         ));
@@ -368,6 +381,12 @@ fn validate_parent(model: &Path, manifest: &Path) -> Result<ParentManifest> {
     if parent.generation == 0 && parent.parent.is_some() {
         return Err(anyhow!("generation zero must not have a parent"));
     }
+    require_accepted_parent(
+        &args.promotion_registry,
+        &args.init,
+        &args.parent_gate_report,
+        parent.generation,
+    )?;
     Ok(parent)
 }
 
@@ -826,6 +845,8 @@ mod tests {
             valid: vec![],
             init: PathBuf::new(),
             init_manifest: PathBuf::new(),
+            parent_gate_report: PathBuf::new(),
+            promotion_registry: PathBuf::new(),
             output: PathBuf::new(),
             epochs: 1,
             batch_size: 1,
