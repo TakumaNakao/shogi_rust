@@ -33,6 +33,7 @@
 
 ## HalfKP・学習
 
+- [`halfkp_from_scratch_training_plan.md`](halfkp_from_scratch_training_plan.md): 現行重みを完全に隔離したHalfKP-64ゼロスタート学習計画
 - [`halfkp64_training.md`](halfkp64_training.md)
 - [`halfkp_performance_training_design.md`](halfkp_performance_training_design.md)
 - [`halfkp_training_start_gate.md`](halfkp_training_start_gate.md)
