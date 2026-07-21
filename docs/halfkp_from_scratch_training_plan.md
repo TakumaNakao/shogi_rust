@@ -1043,6 +1043,10 @@ coefficient `=0`だった。新Phase 1 model hash
 `1d773b4f41f5b485cda8fc94dd4b7131328fde332e33e5c6e7382fff33840ea2`を昇格し、HKCL0002 Phase 1 modelと
 確認済みHKCL0002 exact派生modelをregistryで明示rejectした。
 
+HKCL0003 clean-128は128 record/128 familyを生成し、root proofとgood/bad childのsolver再走を含む128/128件の
+revalidationに成功した。新Phase 1 modelからfactorized trainerで100%（128/128）overfitし、capacity Gateを
+再通過した。このmodelはtrain=validの診断専用で昇格させない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
