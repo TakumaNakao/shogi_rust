@@ -534,7 +534,11 @@ Gateは次の順で判定し、前段未達なら後段の数値を採用しな�
 
 ### Phase 4: 棋譜手 + 最終結果の広域学習
 
-Phase 2と3のgateを通過してから、広い棋譜分布へ進む。
+Phase 1を通過し、Phase 2のexact dataset integrityとtrainer capacityを確認してから、広い棋譜分布へ進む。
+Phase 2のexact-only modelが単独でpair精度95%へ達することは、棋譜pipelineの実装開始条件にはしない。
+ただしPhase 2で棄却したmodelを親にせず、accepted Phase 1 modelからexact replayを混合して学習する。
+combined candidateを昇格する時点では、Phase 2 exact、Phase 3 opening、一般局面health、実探索の全Gateを
+同時に満たさなければならない。
 
 data候補:
 
@@ -758,7 +762,7 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 | 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 完了、HKCL0003 clean rank 128件を100% overfit |
 | 4 | feature factorization | fold前後forward一致 | direct/piece-relative/factor-onlyを実装、比較継続中 |
 | 5 | bounded exact mate solver | proof再検証、規則fixture | 1/3手referenceと完全検証器完了、df-pn待ち |
-| 6 | exact curriculum generator | split/coverage manifest | HKCL0003 rule v2の12k生成・全件監査完了 |
+| 6 | exact curriculum generator | split/coverage manifest | rule v2監査完了、全合法候補・攻守両側のrule v3へ改訂中 |
 | 7 | opening stratum classifier | deterministic分類、report | 未着手 |
 | 8 | 棋譜rank/result pipeline | no-score provenance | 未着手 |
 | 9 | scratch-only search teacher | lineage強制、immutable teacher | 未着手 |
@@ -904,6 +908,8 @@ trainをfitできているため、現時点でmodel容量やoptimizerの学習�
 
 #### 修正後の直近手順
 
+以下は2026-07-21時点の手順であり、実施結果を受けて15.2で再改訂した。今後は15.2を優先する。
+
 1. immutable promotion registryを実装し、accepted model hash、Gate report hash、承認時刻を記録する。
    genesis 2個だけを初期allowlistへ登録し、v1 weightを`diagnostic/rejected`として明示的にrejectする。
 2. `HKCL0002`へhorizon semanticsとgenerator family idを追加する。
@@ -922,7 +928,7 @@ trainをfitできているため、現時点でmodel容量やoptimizerの学習�
 この修正は「現行weightを使わず、exact -> opening -> game -> scratch search」の大枠を変えない。変更するのは
 Phase 1を飛ばさないこと、dataset独立性、exact label semantics、評価Gateの厳密化である。
 
-## 15. 最初に行うpilot
+## 15. 最初に行うpilot（完了済みの旧手順）
 
 中間監査後の最小実行単位を次へ改訂する。v1 exact corpusを追加学習してこの手順を代替してはならない。
 
@@ -1076,9 +1082,68 @@ validは80.00%へ改善したが、train 90.38%、p99 3,342 cpでGate未達か�
 p99 1,786 cpへ抑制できたがvalid 79.00%だった。したがって12k候補はすべてdiagnostic/rejectedとし、
 registryへ昇格しない。testは未開封のまま維持する。
 
-次はfamily bootstrapと全合法手static top-1を実装し、factor-onlyの改善がpair sampling固有でないことを
-devだけで確認する。その後、共有表現とscale制御を固定してから50k learning curveへ進む。90% Gateや
-95%本Gateは緩和しない。
+この時点では50kへ拡大しない。次節の中間監査で、record総数12kに対して実際のtrain rank familyが3.2kしか
+なく、generatorも計画した全合法候補・攻守両側を実装していないことが判明したためである。90%開発Gateと
+95%本Gateは緩和せず、dataset objectiveとscale制御を直してからlearning curveを取り直す。
+
+### 15.2 12k途中結果による計画改訂（2026-07-22）
+
+#### 判断
+
+大枠の`rule anchor -> exact tactics -> opening/game -> scratch search`と、現行weightを一切使わない方針は
+維持する。一方、Phase 2を現generatorのまま50kへ増やす直近手順と、exact-only Gateを棋譜pipeline実装の
+前提にする順序は修正する。
+
+根拠は次のとおりである。
+
+1. `exact-12k-v3b`の12,000 record中、順位学習へ渡したのはtrain 3,200 family、dev 400 familyだけである。
+   残りはmate/no-mate health recordであり、`12k学習`という呼び方は有効objective数を過大に見せる。
+2. 現generatorは攻め側の3手詰みrootから、proof moveと「最初に見つかった別の王手」1手だけをpairにする。
+   全合法候補、non-check negative、複数の正解手、防御側の詰み回避、moveカテゴリ均衡は未実装であり、
+   計画書のdataset仕様を満たしていない。
+3. 同じdev 400 familyでdirect 72.50%（Wilson 95%区間67.93～76.65%）、piece-relative 77.25%
+   （72.89～81.09%）、factor-only 80.00%（75.80～83.63%）だった。共有factorの方向は有望だが、同一familyの
+   paired差をまだ保存していないため、point estimateだけで方式を確定できない。
+4. piece-relativeはtrain 95.84% / dev 77.25%でsparse direct rowの記憶が強い。factor-onlyは
+   train 90.38% / dev 80.00%でgapを縮めたが、score p99が3,342 cpへ膨張した。`l2=0.01`ではp99を
+   1,786 cpへ抑えた一方dev 79.00%であり、表現共有と尺度制御を別々に解く必要がある。
+5. rank-only logistic objectiveは正しい順序に有限の絶対cpを定めず、現在の200 cp marginは分離可能なpairで
+   score normを押し上げる。通常局面の尺度を持たない段階で、exact-only lossへ任意のcp marginを課すべきでない。
+6. 現healthはmate statusで選別したrandom-walk局面であり、将来の一般探索分布から独立したlegal health setの
+   代用にはならない。
+
+#### 改訂後の直近手順
+
+1. 現在のPhase 2 model hashをregistryで`diagnostic/rejected`に固定し、accepted Phase 1 modelだけを親にする。
+2. evaluatorへfamilyごとの予測、move種別、king bucket、ply、feature coverageを出力するdev専用診断を追加する。
+   同じ400 family上の方式比較はpaired family bootstrapまたはMcNemar検定で行い、testは開かない。
+3. exact generatorをrule v3へ更新する。各rootの全合法childを同一horizon/node limitで再証明し、
+   `ProvenMate / NoForcedMateWithinHorizon / ResourceLimit`を分離する。複数goodと、checking/capture/promotion/
+   drop/quietから決定的に層化した複数badを1 familyへ保持する。resource-limit childを教師にしない。
+4. 攻め側だけでなく、王手後のdefender-to-move nodeから「詰みを外す応手 > 詰む応手」も生成する。
+   変換・派生nodeは同じfamily/splitに固定し、1 familyのobjective総weightを1へ正規化する。
+5. root sourceは、標準初期局面からの制約付き合法playoutと、capture/promotion/dropを均した手続き的mate templateを
+   別stratumにする。極端なrandom walkだけへ依存せず、template IDと変換元をfamily provenanceへ含める。
+6. mate statusで条件付けない独立legal health corpusを別seedで作る。score mean/std/p99、`|score| > 2,000`、
+   ClippedReLU飽和、手番・色bias、feature coverageを測る。
+7. exact rankは0 cp marginをbaselineにし、現在のAdaGrad勾配へ混ぜたL2とは別にdecoupled weight decayを実装する。
+   output head固定と、legal health上のscore RMS anchorをA/Bし、順位精度と尺度を同じ仕組みで調整しない。
+8. rule v3でtrain 4,000 root、dev 1,000 rootのpilotを3 scratch seedで行う。指標は全合法手中の
+   `any-proven-good top-1`、category別pair accuracy、paired 95%区間、p99、対称性である。
+9. 4kから16k rank rootへ増やし、paired区間で改善方向が一致し、一般healthが悪化しない場合だけ64kへ進む。
+   4倍化で2 point未満の改善または区間が重なる状態が2回続けばexact単独拡大を停止する。
+10. Phase 3のopening classifierと棋譜ingestは手順2～7と並行して実装してよい。棋譜はlicense/provenanceを固定し、
+    指し手と最終結果だけを用い、評価値・PV・現行weight由来datasetを禁止する。最初のcombined trainingは
+    accepted Phase 1から開始し、rule v3 exactをreplayとして混合する。
+11. exact-only modelを単独で昇格しない。combined candidateがexact regression、opening/game holdout、独立health、
+    fixed-node searchの全Gateを通った時点で初めてgeneration 2へ昇格する。exact 90%/95%閾値は最終昇格時まで
+    維持し、失敗を理由に閾値を下げない。
+12. df-pnと5手以上への拡張は、rule v3の3手learning curveが上向いた後に行う。現段階ではlabel数より
+    generator semanticsと一般化診断を優先する。
+
+この改訂により、現在の失敗modelから継続せず、Phase 1の安全なscratch parentを保持したまま、exact-onlyの
+局所課題で全体計画が停止することも避ける。棋譜pipelineを前倒しするのは旧weightへ戻ることではなく、
+ゼロ系列へ不足している広域分布と結果信号を追加するためである。
 
 ## 16. 参考資料と本計画への反映
 
