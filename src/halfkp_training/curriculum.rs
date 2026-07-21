@@ -3,16 +3,16 @@ use crate::evaluation::{HALFKP_HIDDEN, HALFKP_INPUTS};
 use crate::training_data::DatasetSplit;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use shogi_core::PartialPosition;
+use shogi_core::{Color, PartialPosition};
 use shogi_lib::Position;
 use shogi_usi_parser::FromUsi;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"HKCL0003";
-const VERSION: u32 = 3;
-const RECORD_MAGIC: u32 = 0x334c_4348;
+const MAGIC: &[u8; 8] = b"HKCL0004";
+const VERSION: u32 = 4;
+const RECORD_MAGIC: u32 = 0x344c_4348;
 const RECORD_COUNT_OFFSET: u64 = 20;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -80,6 +80,8 @@ impl OpeningStratum {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProofLabel {
+    /// Side whose forced mate is proved or refuted, independent of root STM.
+    pub attacker: Color,
     pub status: ProofStatus,
     pub mate_distance: Option<u16>,
     pub horizon_plies: u16,
@@ -397,7 +399,12 @@ fn write_record(writer: &mut impl Write, record: &CurriculumRecord) -> Result<()
     if let Some(proof) = &record.proof {
         writer.write_all(&proof.mate_distance.unwrap_or(u16::MAX).to_le_bytes())?;
         writer.write_all(&proof.horizon_plies.to_le_bytes())?;
-        writer.write_all(&[proof.solver_mode as u8, 0, 0, 0])?;
+        writer.write_all(&[
+            proof.solver_mode as u8,
+            u8::from(proof.attacker == Color::White),
+            0,
+            0,
+        ])?;
         writer.write_all(&proof.max_nodes.to_le_bytes())?;
         writer.write_all(&proof.nodes.to_le_bytes())?;
         writer.write_all(&proof.rule_version.to_le_bytes())?;
@@ -445,11 +452,13 @@ fn read_record(reader: &mut impl Read) -> Result<CurriculumRecord> {
         let mate_distance = read_u16(reader)?;
         let horizon_plies = read_u16(reader)?;
         let solver_mode = decode_proof_mode(read_u8(reader)?)?;
-        let mut reserved = [0; 3];
+        let attacker = decode_color(read_u8(reader)?)?;
+        let mut reserved = [0; 2];
         reader.read_exact(&mut reserved)?;
         let max_nodes = read_u64(reader)?;
         let nodes = read_u64(reader)?;
         Some(ProofLabel {
+            attacker,
             status,
             mate_distance: (mate_distance != u16::MAX).then_some(mate_distance),
             horizon_plies,
@@ -687,6 +696,13 @@ fn decode_proof_mode(value: u8) -> Result<ProofMode> {
         _ => Err(anyhow!("invalid HKCL proof mode")),
     }
 }
+fn decode_color(value: u8) -> Result<Color> {
+    match value {
+        0 => Ok(Color::Black),
+        1 => Ok(Color::White),
+        _ => Err(anyhow!("invalid HKCL proof attacker")),
+    }
+}
 fn decode_preference(value: u8) -> Result<PreferenceKind> {
     match value {
         0 => Ok(PreferenceKind::ProvenOutcome),
@@ -790,6 +806,7 @@ mod tests {
             root,
             result: Some(1.0),
             proof: Some(ProofLabel {
+                attacker: Color::Black,
                 status: ProofStatus::ProvenMate,
                 mate_distance: Some(3),
                 horizon_plies: 3,
@@ -815,7 +832,7 @@ mod tests {
         write_header(&mut bytes, &header(), 3).expect("header");
         assert_eq!(
             &bytes[..32],
-            b"HKCL0003\x03\0\0\0\x40\0\0\0\x08\x9c\x01\0\x03\0\0\0\0\0\0\0\xb5\0\0\0"
+            b"HKCL0004\x04\0\0\0\x40\0\0\0\x08\x9c\x01\0\x03\0\0\0\0\0\0\0\xb5\0\0\0"
         );
     }
 

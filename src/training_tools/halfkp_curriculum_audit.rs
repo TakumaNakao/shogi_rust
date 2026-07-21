@@ -3,8 +3,7 @@ use clap::Parser;
 use serde::Serialize;
 use shogi_ai::halfkp_training::{CurriculumReader, CurriculumRecord, ProofMode, ProofStatus};
 use shogi_ai::mate_proof::{
-    solve_bounded_mate, solve_bounded_mate_for, verify_mate_proof, AttackMoveMode, MateLimits,
-    MateProofStatus,
+    solve_bounded_mate_for, verify_mate_proof, AttackMoveMode, MateLimits, MateProofStatus,
 };
 use shogi_ai::training_data::DatasetSplit;
 use shogi_core::PartialPosition;
@@ -148,8 +147,9 @@ fn revalidate_record(record: &CurriculumRecord) -> Result<bool> {
         PartialPosition::from_usi(&format!("sfen {}", record.root_sfen))
             .map_err(|error| anyhow!("parse proof SFEN: {error:?}"))?,
     );
-    let proof = solve_bounded_mate(
+    let proof = solve_bounded_mate_for(
         &position,
+        expected.attacker,
         MateLimits {
             max_plies: expected.horizon_plies,
             max_nodes: expected.max_nodes,
@@ -179,10 +179,11 @@ fn revalidate_record(record: &CurriculumRecord) -> Result<bool> {
         ) else {
             continue;
         };
-        let attacker = position.side_to_move();
-        let good_move = shogi_ai::utils::parse_usi_move_for_color(good_text, attacker)
+        let root_side = position.side_to_move();
+        let attacker = expected.attacker;
+        let good_move = shogi_ai::utils::parse_usi_move_for_color(good_text, root_side)
             .ok_or_else(|| anyhow!("invalid good move"))?;
-        let bad_move = shogi_ai::utils::parse_usi_move_for_color(bad_text, attacker)
+        let bad_move = shogi_ai::utils::parse_usi_move_for_color(bad_text, root_side)
             .ok_or_else(|| anyhow!("invalid bad move"))?;
         let limits = MateLimits {
             max_plies: expected.horizon_plies.saturating_sub(1),
@@ -197,8 +198,13 @@ fn revalidate_record(record: &CurriculumRecord) -> Result<bool> {
         let bad_proof = solve_bounded_mate_for(&bad, attacker, limits)?;
         verify_mate_proof(&good, &good_proof)?;
         verify_mate_proof(&bad, &bad_proof)?;
-        if good_proof.root.status != MateProofStatus::ProvenMate
-            || bad_proof.root.status != MateProofStatus::ProvenNoMate
+        let expected_children = if root_side == attacker {
+            (MateProofStatus::ProvenMate, MateProofStatus::ProvenNoMate)
+        } else {
+            (MateProofStatus::ProvenNoMate, MateProofStatus::ProvenMate)
+        };
+        if good_proof.root.status != expected_children.0
+            || bad_proof.root.status != expected_children.1
         {
             return Ok(false);
         }
