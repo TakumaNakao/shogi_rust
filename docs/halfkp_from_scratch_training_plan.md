@@ -801,6 +801,17 @@ candidate pairを作った。bounded不詰みを敗北WDLへ変換していな�
 `lr=0.01, mate_target=0.8, rank_weight=0.5`を次のexact拡大pilotの暫定候補とする。1手pairが初期Gateの
 100%へ届かないため、weight完成扱いにはせず、factor統合、coverage拡大、探索発見率測定へ進む。
 
+### 14.6 exact 12k拡大pilot（2026-07-21）
+
+独立seed 20260731で1手詰み4,000、3手詰み4,000、3手以内不詰み4,000を生成した。184,659局面を調べ、
+node cap到達0、family split後はtrain 9,636、valid 1,227、test 1,137となった。3 epochのlr比較では
+valid lossが0.005/0.01/0.02でそれぞれ0.3763/0.3647/0.3653だったが、独立testのpair accuracyは
+88.69%/87.21%/90.04%であり、小規模pilotの数値を再現しなかった。
+
+安定性を優先してlr 0.005を10 epochまで延長した結果、test pair accuracy 91.25%、1手93.78%、3手
+88.74%、score abs p99 1,963 cpだった。score範囲Gateは満たす一方、pair accuracy 95%と1手100%には
+未達である。したがってこのweightは中間artifactに留め、factorization統合と局面coverage改善後に再試験する。
+
 ## 15. 最初に行うpilot
 
 大規模学習前の最小実行単位は次とする。
