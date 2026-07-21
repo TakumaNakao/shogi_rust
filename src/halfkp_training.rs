@@ -1,4 +1,10 @@
 mod codec;
+mod curriculum;
+
+pub use curriculum::{
+    CurriculumHeader, CurriculumPreference, CurriculumReader, CurriculumRecord, CurriculumWriter,
+    LabelSource, OpeningStratum, PreferenceKind, ProofLabel, ProofStatus,
+};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

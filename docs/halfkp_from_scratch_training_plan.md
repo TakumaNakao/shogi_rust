@@ -702,7 +702,7 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 | 順序 | 変更 | 完了条件 | 状態 |
 |---:|---|---|---|
 | 1 | scratch lineage/manifestとinitializer | genesis再現、外部model拒否 | 完了（2026-07-21） |
-| 2 | HKCL codecとgolden fixture | round trip、corrupt拒否 | 未着手 |
+| 2 | HKCL codecとgolden fixture | round trip、corrupt拒否 | 完了（2026-07-21） |
 | 3 | 汎用mini-batch trainer | gradient/resume/overfit test | 未着手 |
 | 4 | feature factorization | fold前後forward一致 | 未着手 |
 | 5 | bounded exact mate solver | proof再検証、規則fixture | 未着手 |
@@ -747,6 +747,17 @@ STM/NSTM outputはseed固定のChaCha20正規乱数、hidden biasは0.5、materi
 seed 20260721を別pathへ再生成したSHA-256も完全一致した。生成物はGit管理外の`runs/`に置き、現行重み、
 現行重み由来dataset、親checkpointは一切openしていない。Phase 0のGateを満たしたため採用し、次はHKCL
 codecの実装へ進む。
+
+### 14.2 HKCL0001 codec実施記録（2026-07-21）
+
+汎用curriculum datasetの`HKCL0001` writer/readerを追加した。headerはHalfKP次元、宣言record数、scratch
+lineage、feature profile、producer revision、seed、入力SHA-256、generator設定、任意の教師model hashを
+保持する。recordはlabel source、family/split、局面、WDL、proof、candidate preferenceを別fieldで保持する。
+
+proof statusは`unknown`、`not_proven`、`proven_mate`、`proven_no_mate`、`resource_limit`を別codeにした。
+exact labelに教師modelが付くこと、self-search labelに同一lineageの教師modelがないこと、非有限scalar、
+範囲外feature、record数不一致、trailing byteを拒否する。固定header golden prefix、record round trip、marker
+破損、provenance違反、file-level count patch/trailing byteの4 testを通過した。
 
 ## 15. 最初に行うpilot
 
