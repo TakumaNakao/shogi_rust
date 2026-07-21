@@ -998,6 +998,12 @@ exact-12k初回v2は12,000 record生成後のauditでfamily split衝突0、netwo
 root/childとの重複もgenerator内で拒否し、最後に全file横断auditを再実行する。これは中間監査用サブエージェント
 の助言とも一致する。
 
+v2bは12,000 record/12,000 family、rootとchildを合わせた20,000 unique network inputでsplit衝突0となった。
+初回6 pilotではfactorizedがdirectを上回ったが、最良でもtrain 93.1%、valid 75.5%で90% Gateに未達だった。
+さらにPhase 1 symmetry test RMSEが0.6228 cpから最大246 cpへ退行した。調査するとrank lossはcp/temperatureで
+正規化している一方、symmetry MSEだけがraw network unitのままで勾配尺度が不整合だった。Gateは緩和せず、
+symmetry differenceも`difference_cp / symmetry_temperature_cp`へ正規化するよう修正し、pilotを再実行する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

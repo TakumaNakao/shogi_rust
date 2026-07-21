@@ -52,6 +52,8 @@ struct Args {
     kappa_cp: f32,
     #[arg(long, default_value_t = 300.0)]
     rank_temperature_cp: f32,
+    #[arg(long, default_value_t = 30.0)]
+    symmetry_temperature_cp: f32,
     #[arg(long, default_value_t = 1.0)]
     rank_weight: f32,
     #[arg(long, value_enum)]
@@ -264,7 +266,9 @@ pub fn run() -> Result<()> {
         hyperparameters: serde_json::json!({
             "epochs": args.epochs, "batch_size": args.batch_size,
             "learning_rate": args.learning_rate, "kappa_cp": args.kappa_cp,
-            "rank_temperature_cp": args.rank_temperature_cp, "rank_weight": args.rank_weight,
+            "rank_temperature_cp": args.rank_temperature_cp,
+            "symmetry_temperature_cp": args.symmetry_temperature_cp,
+            "rank_weight": args.rank_weight,
             "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
             "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
             "seed": args.seed, "l2": args.l2,
@@ -349,6 +353,7 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.learning_rate <= 0.0
         || args.kappa_cp <= 0.0
         || args.rank_temperature_cp <= 0.0
+        || args.symmetry_temperature_cp <= 0.0
         || args.rank_weight < 0.0
         || args.l2 < 0.0
         || (!args.resume && args.output.exists())
@@ -418,6 +423,7 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "learning_rate": args.learning_rate,
         "kappa_cp": args.kappa_cp,
         "rank_temperature_cp": args.rank_temperature_cp,
+        "symmetry_temperature_cp": args.symmetry_temperature_cp,
         "rank_weight": args.rank_weight,
         "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
         "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
@@ -574,22 +580,12 @@ fn accumulate_record(
         let bad = weights.forward(&preference.bad_child);
         if preference.kind == PreferenceKind::SymmetryEqual {
             let difference = good.raw - bad.raw;
+            let normalized = difference * TARGET_SCALE / args.symmetry_temperature_cp;
             let scale = record.sample_weight * args.rank_weight * family_scale;
-            gradient.loss += 0.5 * (difference * difference * scale) as f64;
-            add_position_gradient(
-                weights,
-                &preference.good_child,
-                &good,
-                difference * scale,
-                gradient,
-            );
-            add_position_gradient(
-                weights,
-                &preference.bad_child,
-                &bad,
-                -difference * scale,
-                gradient,
-            );
+            gradient.loss += 0.5 * (normalized * normalized * scale) as f64;
+            let d_raw = normalized * TARGET_SCALE / args.symmetry_temperature_cp * scale;
+            add_position_gradient(weights, &preference.good_child, &good, d_raw, gradient);
+            add_position_gradient(weights, &preference.bad_child, &bad, -d_raw, gradient);
         } else {
             // Child values are from the opponent-to-move perspective.
             let margin_cp = margin_cp(record.source, preference.kind, preference.margin_class);
@@ -1020,6 +1016,7 @@ mod tests {
             learning_rate: 0.05,
             kappa_cp: 600.0,
             rank_temperature_cp: 300.0,
+            symmetry_temperature_cp: 30.0,
             rank_weight: 1.0,
             stage: TrainingStage::Calibrated,
             factorization: FactorizationMode::Direct,
