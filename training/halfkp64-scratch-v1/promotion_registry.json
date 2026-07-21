@@ -33,6 +33,22 @@
       "decision": "accepted_genesis",
       "accepted_at": "2026-07-22T00:00:00+09:00",
       "decision_commit": "5b75235"
+    },
+    {
+      "model_sha256": "2c90dfccd01d58158f93e6c355c5aa45cc28fa7d44823b35064a1e698749438f",
+      "generation": 1,
+      "gate_report_sha256": "87d4f61af61043d7e42d62ebafac07272757e51a96e8ef8b534d646a9421c2bb",
+      "decision": "accepted_gate",
+      "accepted_at": "2026-07-22T00:00:00+09:00",
+      "decision_commit": "bdde355"
+    },
+    {
+      "model_sha256": "809e434cefbf1f3f4ce902f4f14985d8765e77acb9a170fa9c390b8b79d06110",
+      "generation": 1,
+      "gate_report_sha256": "7e3148b56d82bbca5e1d08f9b9a6f5124ac6037e4affaf6f8f612e986771192e",
+      "decision": "accepted_gate",
+      "accepted_at": "2026-07-22T00:00:00+09:00",
+      "decision_commit": "bdde355"
     }
   ],
   "rejected": [
