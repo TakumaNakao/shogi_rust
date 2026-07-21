@@ -11,6 +11,7 @@ use shogi_ai::halfkp_training::{
 use shogi_ai::mate_proof::{
     solve_bounded_mate, solve_bounded_mate_for, AttackMoveMode, MateLimits, MateProofStatus,
 };
+use shogi_ai::training_data::sha256_file;
 use shogi_ai::training_data::{capture_run_environment, DatasetSplit, TrainingPhase};
 use shogi_lib::Position;
 use std::collections::HashSet;
@@ -40,6 +41,11 @@ struct Args {
     seed: u64,
     #[arg(long, default_value_t = false)]
     require_rank_pair: bool,
+    #[arg(long, default_value_t = false)]
+    one_record_per_family: bool,
+    /// HKCL datasets whose root and preference inputs must not appear here.
+    #[arg(long)]
+    exclude_dataset: Vec<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -66,18 +72,28 @@ pub fn run() -> Result<()> {
             "at least one target and node-limit must be non-zero"
         ));
     }
+    if !args.exclude_dataset.is_empty() && !args.one_record_per_family && !args.require_rank_pair {
+        return Err(anyhow!(
+            "exclusion-aware generation requires one-record-per-family"
+        ));
+    }
     if let Some(parent) = args.output.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let revision = capture_run_environment()
         .git_revision
         .unwrap_or_else(|| "unknown".to_string());
+    let excluded = load_excluded_inputs(&args.exclude_dataset)?;
     let header = CurriculumHeader {
         lineage_id: LINEAGE_ID.to_string(),
         feature_profile: "halfkp64-mirror-file-v1".to_string(),
         producer_revision: revision,
         seed: args.seed,
-        input_sha256: vec![],
+        input_sha256: args
+            .exclude_dataset
+            .iter()
+            .map(|path| sha256_file(path))
+            .collect::<Result<_>>()?,
         generator_config: serde_json::json!({
             "generator": "legal_random_play_bounded_mate_v2",
             "stream_split": format!("{:?}", args.split).to_ascii_lowercase(),
@@ -87,6 +103,8 @@ pub fn run() -> Result<()> {
             "attack_move_mode": "checking_only",
             "targets": {"mate1": args.mate1, "mate3": args.mate3, "no_mate3": args.no_mate3},
             "require_rank_pair": args.require_rank_pair,
+            "one_record_per_family": args.one_record_per_family || args.require_rank_pair,
+            "excluded_network_inputs": excluded.len(),
         }),
         teacher_model_sha256: None,
         teacher_lineage_id: None,
@@ -96,6 +114,7 @@ pub fn run() -> Result<()> {
     let mut position = Position::default();
     let mut game_ply = 0usize;
     let mut seen_inputs = HashSet::new();
+    let mut accepted_inputs = HashSet::new();
     let mut game_index = 0u64;
     let mut family = family_hash(args.seed, game_index);
     let mut mate1 = 0usize;
@@ -139,14 +158,22 @@ pub fn run() -> Result<()> {
                 if args.require_rank_pair && record.preferences.is_empty() {
                     continue;
                 }
+                let candidate_inputs = record_network_inputs(&record).collect::<Vec<_>>();
+                if candidate_inputs
+                    .iter()
+                    .any(|hash| excluded.contains(hash) || accepted_inputs.contains(hash))
+                {
+                    continue;
+                }
                 writer.write_record(&record)?;
+                accepted_inputs.extend(candidate_inputs);
                 match (proof.root.status, proof.root.mate_distance) {
                     (MateProofStatus::ProvenMate, Some(1)) => mate1 += 1,
                     (MateProofStatus::ProvenMate, Some(3)) => mate3 += 1,
                     (MateProofStatus::ProvenNoMate, None) => no_mate3 += 1,
                     _ => unreachable!(),
                 }
-                if args.require_rank_pair {
+                if args.require_rank_pair || args.one_record_per_family {
                     position = Position::default();
                     game_ply = 0;
                     game_index += 1;
@@ -178,6 +205,27 @@ pub fn run() -> Result<()> {
     // Re-open all outputs so the declared count and trailing-byte checks run.
     verify_dataset(&args.output)?;
     Ok(())
+}
+
+fn load_excluded_inputs(paths: &[PathBuf]) -> Result<HashSet<[u8; 32]>> {
+    let mut excluded = HashSet::new();
+    for path in paths {
+        let mut reader = CurriculumReader::open(path)?;
+        while let Some(record) = reader.read_record()? {
+            excluded.extend(record_network_inputs(&record));
+        }
+    }
+    Ok(excluded)
+}
+
+fn record_network_inputs(record: &CurriculumRecord) -> impl Iterator<Item = [u8; 32]> + '_ {
+    std::iter::once(record.network_input_hash).chain(
+        record
+            .preferences
+            .iter()
+            .flat_map(|preference| [&preference.good_child, &preference.bad_child])
+            .map(PackedHalfKpPosition::network_input_hash),
+    )
 }
 
 fn family_hash(seed: u64, game_index: u64) -> [u8; 32] {

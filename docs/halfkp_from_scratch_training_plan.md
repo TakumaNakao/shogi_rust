@@ -991,6 +991,13 @@ direct HalfKP rowへfoldし、runtime model形式や探索時costを変更しな
 factorized runに許可しない。factor状態を欠落させた不完全resumeを防ぐためであり、各runは短い3 epochを一度に
 完了させる。
 
+exact-12k初回v2は12,000 record生成後のauditでfamily split衝突0、network-input split衝突2となった。
+学習には一度も渡さず、audit-failed diagnosticとして固定する。再生成は固定優先順位`test > valid > train`とし、
+上位splitのroot/good/bad全network-input hashを下位split generatorのexclusionへ渡す。v2bでは1 recordを
+1 random-game familyへ固定するため、衝突recordの棄却が必ずfamily全体の棄却になる。同一split内の既採用
+root/childとの重複もgenerator内で拒否し、最後に全file横断auditを再実行する。これは中間監査用サブエージェント
+の助言とも一致する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
