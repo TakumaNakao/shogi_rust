@@ -3,13 +3,16 @@ use crate::evaluation::{HALFKP_HIDDEN, HALFKP_INPUTS};
 use crate::training_data::DatasetSplit;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
+use shogi_core::PartialPosition;
+use shogi_lib::Position;
+use shogi_usi_parser::FromUsi;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"HKCL0002";
-const VERSION: u32 = 2;
-const RECORD_MAGIC: u32 = 0x324c_4348;
+const MAGIC: &[u8; 8] = b"HKCL0003";
+const VERSION: u32 = 3;
+const RECORD_MAGIC: u32 = 0x334c_4348;
 const RECORD_COUNT_OFFSET: u64 = 20;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -81,6 +84,7 @@ pub struct ProofLabel {
     pub mate_distance: Option<u16>,
     pub horizon_plies: u16,
     pub solver_mode: ProofMode,
+    pub max_nodes: u64,
     pub nodes: u64,
     pub rule_version: u32,
 }
@@ -91,6 +95,8 @@ pub struct CurriculumPreference {
     pub bad_child: PackedHalfKpPosition,
     pub kind: PreferenceKind,
     pub margin_class: u8,
+    pub good_move_usi: Option<String>,
+    pub bad_move_usi: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +106,8 @@ pub struct CurriculumRecord {
     pub position_hash: u64,
     pub family_hash: [u8; 32],
     pub network_input_hash: [u8; 32],
+    /// Reconstructable root position for proof replay and search Gates.
+    pub root_sfen: String,
     pub split: DatasetSplit,
     pub ply: u16,
     pub phase: u8,
@@ -252,6 +260,14 @@ fn validate_record(header: &CurriculumHeader, record: &CurriculumRecord) -> Resu
             "HKCL network-input hash does not match root features"
         ));
     }
+    let parsed = PartialPosition::from_usi(&format!("sfen {}", record.root_sfen))
+        .map(Position::new)
+        .map_err(|_| anyhow!("invalid HKCL root SFEN"))?;
+    let parsed_root = PackedHalfKpPosition::from_position(&parsed)
+        .ok_or_else(|| anyhow!("HKCL root SFEN lacks a king"))?;
+    if parsed_root != record.root || parsed.key() != record.position_hash {
+        return Err(anyhow!("HKCL root SFEN does not match packed root"));
+    }
     if !record.confidence.is_finite()
         || !(0.0..=1.0).contains(&record.confidence)
         || !record.sample_weight.is_finite()
@@ -286,6 +302,9 @@ fn validate_record(header: &CurriculumHeader, record: &CurriculumRecord) -> Resu
         if proof.horizon_plies == 0 {
             return Err(anyhow!("proof horizon must be non-zero"));
         }
+        if proof.max_nodes == 0 || proof.nodes > proof.max_nodes {
+            return Err(anyhow!("invalid proof node bound"));
+        }
         if proof
             .mate_distance
             .is_some_and(|distance| distance > proof.horizon_plies)
@@ -302,6 +321,7 @@ fn validate_record(header: &CurriculumHeader, record: &CurriculumRecord) -> Resu
     for preference in &record.preferences {
         validate_position(&preference.good_child)?;
         validate_position(&preference.bad_child)?;
+        validate_preference_witness(record.source, &parsed, preference)?;
     }
     Ok(())
 }
@@ -353,6 +373,10 @@ fn write_record(writer: &mut impl Write, record: &CurriculumRecord) -> Result<()
     writer.write_all(&record.position_hash.to_le_bytes())?;
     writer.write_all(&record.family_hash)?;
     writer.write_all(&record.network_input_hash)?;
+    let sfen = record.root_sfen.as_bytes();
+    let sfen_len = u16::try_from(sfen.len()).map_err(|_| anyhow!("HKCL root SFEN too long"))?;
+    writer.write_all(&sfen_len.to_le_bytes())?;
+    writer.write_all(sfen)?;
     writer.write_all(&record.ply.to_le_bytes())?;
     writer.write_all(&record.opening_stratum.0.to_le_bytes())?;
     writer.write_all(&record.confidence.to_le_bytes())?;
@@ -366,12 +390,15 @@ fn write_record(writer: &mut impl Write, record: &CurriculumRecord) -> Result<()
         writer.write_all(&proof.mate_distance.unwrap_or(u16::MAX).to_le_bytes())?;
         writer.write_all(&proof.horizon_plies.to_le_bytes())?;
         writer.write_all(&[proof.solver_mode as u8, 0, 0, 0])?;
+        writer.write_all(&proof.max_nodes.to_le_bytes())?;
         writer.write_all(&proof.nodes.to_le_bytes())?;
         writer.write_all(&proof.rule_version.to_le_bytes())?;
     }
     write_position(writer, &record.root)?;
     for preference in &record.preferences {
         writer.write_all(&[preference.kind as u8, preference.margin_class, 0, 0])?;
+        write_optional_short_string(writer, preference.good_move_usi.as_deref())?;
+        write_optional_short_string(writer, preference.bad_move_usi.as_deref())?;
         write_position(writer, &preference.good_child)?;
         write_position(writer, &preference.bad_child)?;
     }
@@ -392,6 +419,10 @@ fn read_record(reader: &mut impl Read) -> Result<CurriculumRecord> {
     reader.read_exact(&mut family_hash)?;
     let mut network_input_hash = [0u8; 32];
     reader.read_exact(&mut network_input_hash)?;
+    let sfen_len = read_u16(reader)? as usize;
+    let mut sfen = vec![0; sfen_len];
+    reader.read_exact(&mut sfen)?;
+    let root_sfen = String::from_utf8(sfen).map_err(|_| anyhow!("invalid UTF-8 in HKCL SFEN"))?;
     let ply = read_u16(reader)?;
     let opening_stratum = OpeningStratum(read_u16(reader)?);
     let confidence = read_f32(reader)?;
@@ -404,16 +435,19 @@ fn read_record(reader: &mut impl Read) -> Result<CurriculumRecord> {
     } else {
         let status = decode_proof_status(proof_status)?;
         let mate_distance = read_u16(reader)?;
+        let horizon_plies = read_u16(reader)?;
+        let solver_mode = decode_proof_mode(read_u8(reader)?)?;
+        let mut reserved = [0; 3];
+        reader.read_exact(&mut reserved)?;
+        let max_nodes = read_u64(reader)?;
+        let nodes = read_u64(reader)?;
         Some(ProofLabel {
             status,
             mate_distance: (mate_distance != u16::MAX).then_some(mate_distance),
-            horizon_plies: read_u16(reader)?,
-            solver_mode: decode_proof_mode(read_u8(reader)?)?,
-            nodes: {
-                let mut reserved = [0; 3];
-                reader.read_exact(&mut reserved)?;
-                read_u64(reader)?
-            },
+            horizon_plies,
+            solver_mode,
+            max_nodes,
+            nodes,
             rule_version: read_u32(reader)?,
         })
     };
@@ -423,11 +457,15 @@ fn read_record(reader: &mut impl Read) -> Result<CurriculumRecord> {
         let kind = decode_preference(read_u8(reader)?)?;
         let margin_class = read_u8(reader)?;
         let _reserved = read_u16(reader)?;
+        let good_move_usi = read_optional_short_string(reader)?;
+        let bad_move_usi = read_optional_short_string(reader)?;
         preferences.push(CurriculumPreference {
             good_child: read_position(reader)?,
             bad_child: read_position(reader)?,
             kind,
             margin_class,
+            good_move_usi,
+            bad_move_usi,
         });
     }
     Ok(CurriculumRecord {
@@ -436,6 +474,7 @@ fn read_record(reader: &mut impl Read) -> Result<CurriculumRecord> {
         position_hash,
         family_hash,
         network_input_hash,
+        root_sfen,
         split,
         ply,
         phase,
@@ -515,6 +554,79 @@ fn validate_position(position: &PackedHalfKpPosition) -> Result<()> {
         return Err(anyhow!("invalid packed HalfKP position in HKCL record"));
     }
     Ok(())
+}
+
+fn validate_preference_witness(
+    source: LabelSource,
+    root: &Position,
+    preference: &CurriculumPreference,
+) -> Result<()> {
+    let exact = matches!(source, LabelSource::ExactMate | LabelSource::ExactTactic);
+    if exact && (preference.good_move_usi.is_none() || preference.bad_move_usi.is_none()) {
+        return Err(anyhow!("exact preference requires move witnesses"));
+    }
+    if preference.kind == PreferenceKind::SymmetryEqual
+        && (preference.good_move_usi.is_some() || preference.bad_move_usi.is_some())
+    {
+        return Err(anyhow!("symmetry preference must not carry move witnesses"));
+    }
+    let (Some(good_text), Some(bad_text)) = (
+        preference.good_move_usi.as_deref(),
+        preference.bad_move_usi.as_deref(),
+    ) else {
+        return Ok(());
+    };
+    let good = crate::utils::parse_usi_move_for_color(good_text, root.side_to_move())
+        .ok_or_else(|| anyhow!("invalid good-move witness"))?;
+    let bad = crate::utils::parse_usi_move_for_color(bad_text, root.side_to_move())
+        .ok_or_else(|| anyhow!("invalid bad-move witness"))?;
+    let legal = root.legal_moves();
+    if good == bad || !legal.contains(&good) || !legal.contains(&bad) {
+        return Err(anyhow!(
+            "preference move witnesses are not distinct legal moves"
+        ));
+    }
+    let mut good_position = root.clone();
+    good_position.do_move(good);
+    let mut bad_position = root.clone();
+    bad_position.do_move(bad);
+    if PackedHalfKpPosition::from_position(&good_position).as_ref() != Some(&preference.good_child)
+        || PackedHalfKpPosition::from_position(&bad_position).as_ref()
+            != Some(&preference.bad_child)
+    {
+        return Err(anyhow!(
+            "preference move witness does not match packed child"
+        ));
+    }
+    Ok(())
+}
+
+fn write_optional_short_string(writer: &mut impl Write, value: Option<&str>) -> Result<()> {
+    match value {
+        None => writer.write_all(&[u8::MAX])?,
+        Some(value) => {
+            let bytes = value.as_bytes();
+            let len = u8::try_from(bytes.len()).map_err(|_| anyhow!("HKCL witness too long"))?;
+            if len == u8::MAX {
+                return Err(anyhow!("HKCL witness too long"));
+            }
+            writer.write_all(&[len])?;
+            writer.write_all(bytes)?;
+        }
+    }
+    Ok(())
+}
+
+fn read_optional_short_string(reader: &mut impl Read) -> Result<Option<String>> {
+    let len = read_u8(reader)?;
+    if len == u8::MAX {
+        return Ok(None);
+    }
+    let mut bytes = vec![0; len as usize];
+    reader.read_exact(&mut bytes)?;
+    Ok(Some(
+        String::from_utf8(bytes).map_err(|_| anyhow!("invalid UTF-8 in HKCL witness"))?,
+    ))
 }
 
 fn encode_result(value: Option<f32>) -> Result<u8> {
@@ -641,23 +753,22 @@ mod tests {
             teacher_lineage_id: None,
         }
     }
-    fn position(side: Color) -> PackedHalfKpPosition {
-        PackedHalfKpPosition {
-            side_to_move: side,
-            features_black: vec![1, 2],
-            features_white: vec![3],
-            material_black: 100.0,
-            material_white: -100.0,
-        }
-    }
     fn record() -> CurriculumRecord {
-        let root = position(Color::Black);
+        let source = Position::default();
+        let root = PackedHalfKpPosition::from_position(&source).expect("start features");
+        let good_move = crate::utils::parse_usi_move_for_color("7g7f", Color::Black).unwrap();
+        let bad_move = crate::utils::parse_usi_move_for_color("2g2f", Color::Black).unwrap();
+        let mut good = source.clone();
+        good.do_move(good_move);
+        let mut bad = source.clone();
+        bad.do_move(bad_move);
         CurriculumRecord {
             source: LabelSource::ExactMate,
             group_id: 11,
-            position_hash: 12,
+            position_hash: source.key(),
             family_hash: [13; 32],
             network_input_hash: root.network_input_hash(),
+            root_sfen: source.to_sfen_owned(),
             split: DatasetSplit::Train,
             ply: 5,
             phase: 0,
@@ -671,14 +782,17 @@ mod tests {
                 mate_distance: Some(3),
                 horizon_plies: 3,
                 solver_mode: ProofMode::CheckingOnly,
+                max_nodes: 100,
                 nodes: 99,
                 rule_version: 1,
             }),
             preferences: vec![CurriculumPreference {
-                good_child: position(Color::White),
-                bad_child: position(Color::White),
+                good_child: PackedHalfKpPosition::from_position(&good).unwrap(),
+                bad_child: PackedHalfKpPosition::from_position(&bad).unwrap(),
                 kind: PreferenceKind::ProvenOutcome,
                 margin_class: 2,
+                good_move_usi: Some("7g7f".into()),
+                bad_move_usi: Some("2g2f".into()),
             }],
         }
     }
@@ -689,7 +803,7 @@ mod tests {
         write_header(&mut bytes, &header(), 3).expect("header");
         assert_eq!(
             &bytes[..32],
-            b"HKCL0002\x02\0\0\0\x40\0\0\0\x08\x9c\x01\0\x03\0\0\0\0\0\0\0\xb5\0\0\0"
+            b"HKCL0003\x03\0\0\0\x40\0\0\0\x08\x9c\x01\0\x03\0\0\0\0\0\0\0\xb5\0\0\0"
         );
     }
 

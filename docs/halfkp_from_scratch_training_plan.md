@@ -1017,6 +1017,22 @@ factor側の初回射影ではrelative factorだけを左右tieし、piece facto
 pair family数不足を主因と仮定し、testを開かずにvalid 2,000/train 20,000 pairの中間learning-curve runを追加する。
 ここでも90%に届かなければ、50kへ盲目的に拡大せずlabel設計とmodel容量を再検討する。
 
+20k train/2k validではvalid 81.55%まで改善したが90%未達で、score absolute p99も3,617 cpへ拡大したため
+Gate不合格とした。さらにHKCL0002が元局面を復元できず、proof再走と実探索Gateを独立実行できないことが判明した。
+sidecarによる救済は採用せず、codecを`HKCL0003`へbumpしてHKCL0002をfail-closedで拒否する。
+
+HKCL0003はcanonical root SFEN、preferenceごとのstable USI good/bad move、proofの`max_nodes`を必須情報へ
+追加する。readerはSFENから局面を再構築してposition key、PackedHalfKP、network-input hashを照合し、exact moveが
+相異なる合法手で、適用後のpacked childと完全一致することも検証する。auditの`--revalidate-proofs`はroot proofを
+同一horizon/mode/node boundで再走し、proof treeを検証したうえで、good childが同じattackerのmate、bad childが
+horizon内非詰みであることを全件再証明する。今回のexact GateはSFEN snapshotをstateless rootとして開始する。
+千日手履歴を使う将来のgame/search corpusではposition commandとmove historyを別途必須化する。
+
+HKCL0002 exact corpusとその派生modelはすべてdiagnostic-only/rejectとする。test metricは未開封だが旧schemaのtestは
+freezeせず破棄し、HKCL0003の独立seedで再生成する。Phase 1も安価にHKCL0003で再生成・再学習して旧Phase 1を
+supersedeし、trainerの標準経路へ旧schema例外を残さない。この方針は計画外事象に対するサブエージェント監査の
+推奨と一致する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

@@ -13,6 +13,7 @@ use shogi_ai::mate_proof::{
 };
 use shogi_ai::training_data::sha256_file;
 use shogi_ai::training_data::{capture_run_environment, DatasetSplit, TrainingPhase};
+use shogi_core::ToUsi;
 use shogi_lib::Position;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -257,6 +258,7 @@ fn make_record(
         position_hash: position.key(),
         family_hash,
         network_input_hash: root.network_input_hash(),
+        root_sfen: position.to_sfen_owned(),
         split,
         ply: position.ply(),
         phase: TrainingPhase::for_ply(position.ply() as usize).code(),
@@ -272,6 +274,7 @@ fn make_record(
             mate_distance: proof.root.mate_distance,
             horizon_plies: 3,
             solver_mode: ProofMode::CheckingOnly,
+            max_nodes: node_limit,
             nodes: proof.nodes,
             rule_version: RULE_VERSION,
         }),
@@ -321,6 +324,8 @@ fn exact_preferences(
                     bad_child,
                     kind: PreferenceKind::ProvenOutcome,
                     margin_class: proof.root.mate_distance.unwrap_or(0).min(u8::MAX as u16) as u8,
+                    good_move_usi: Some(good_move.to_usi_owned()),
+                    bad_move_usi: Some(bad_move.to_usi_owned()),
                 }]);
             }
         }

@@ -1,8 +1,15 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use serde::Serialize;
-use shogi_ai::halfkp_training::CurriculumReader;
+use shogi_ai::halfkp_training::{CurriculumReader, CurriculumRecord, ProofMode, ProofStatus};
+use shogi_ai::mate_proof::{
+    solve_bounded_mate, solve_bounded_mate_for, verify_mate_proof, AttackMoveMode, MateLimits,
+    MateProofStatus,
+};
 use shogi_ai::training_data::DatasetSplit;
+use shogi_core::PartialPosition;
+use shogi_lib::Position;
+use shogi_usi_parser::FromUsi;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -13,6 +20,8 @@ struct Args {
     inputs: Vec<PathBuf>,
     #[arg(long)]
     report: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    revalidate_proofs: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,6 +35,8 @@ struct AuditReport {
     family_split_collisions: u64,
     network_input_split_collisions: u64,
     records_by_split: [u64; 3],
+    proofs: u64,
+    proof_revalidation_failures: u64,
     passed: bool,
 }
 
@@ -38,6 +49,8 @@ pub fn run() -> Result<()> {
     let mut input_collisions = HashSet::<[u8; 32]>::new();
     let mut records = 0u64;
     let mut records_by_split = [0u64; 3];
+    let mut proofs = 0u64;
+    let mut proof_revalidation_failures = 0u64;
 
     for path in &args.inputs {
         let mut reader =
@@ -72,9 +85,17 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+            if record.proof.is_some() {
+                proofs += 1;
+                if args.revalidate_proofs && !revalidate_record(&record).unwrap_or(false) {
+                    proof_revalidation_failures += 1;
+                }
+            }
         }
     }
-    let passed = family_collisions.is_empty() && input_collisions.is_empty();
+    let passed = family_collisions.is_empty()
+        && input_collisions.is_empty()
+        && proof_revalidation_failures == 0;
     let report = AuditReport {
         schema: "halfkp_curriculum_audit_v1",
         files: args.inputs.len(),
@@ -85,6 +106,8 @@ pub fn run() -> Result<()> {
         family_split_collisions: family_collisions.len() as u64,
         network_input_split_collisions: input_collisions.len() as u64,
         records_by_split,
+        proofs,
+        proof_revalidation_failures,
         passed,
     };
     let bytes = serde_json::to_vec_pretty(&report)?;
@@ -102,6 +125,70 @@ pub fn run() -> Result<()> {
         return Err(anyhow!("HKCL split isolation audit failed"));
     }
     Ok(())
+}
+
+fn revalidate_record(record: &CurriculumRecord) -> Result<bool> {
+    let expected = record.proof.as_ref().ok_or_else(|| anyhow!("no proof"))?;
+    let position = Position::new(
+        PartialPosition::from_usi(&format!("sfen {}", record.root_sfen))
+            .map_err(|error| anyhow!("parse proof SFEN: {error:?}"))?,
+    );
+    let proof = solve_bounded_mate(
+        &position,
+        MateLimits {
+            max_plies: expected.horizon_plies,
+            max_nodes: expected.max_nodes,
+            mode: match expected.solver_mode {
+                ProofMode::CheckingOnly => AttackMoveMode::CheckingOnly,
+                ProofMode::AllLegal => AttackMoveMode::AllLegal,
+            },
+        },
+    )?;
+    verify_mate_proof(&position, &proof)?;
+    let status_matches = matches!(
+        (expected.status, proof.root.status),
+        (ProofStatus::ProvenMate, MateProofStatus::ProvenMate)
+            | (
+                ProofStatus::NoForcedMateWithinHorizon,
+                MateProofStatus::ProvenNoMate
+            )
+            | (ProofStatus::ResourceLimit, MateProofStatus::ResourceLimit)
+    );
+    if !status_matches || expected.mate_distance != proof.root.mate_distance {
+        return Ok(false);
+    }
+    for preference in &record.preferences {
+        let (Some(good_text), Some(bad_text)) = (
+            preference.good_move_usi.as_deref(),
+            preference.bad_move_usi.as_deref(),
+        ) else {
+            continue;
+        };
+        let attacker = position.side_to_move();
+        let good_move = shogi_ai::utils::parse_usi_move_for_color(good_text, attacker)
+            .ok_or_else(|| anyhow!("invalid good move"))?;
+        let bad_move = shogi_ai::utils::parse_usi_move_for_color(bad_text, attacker)
+            .ok_or_else(|| anyhow!("invalid bad move"))?;
+        let limits = MateLimits {
+            max_plies: expected.horizon_plies.saturating_sub(1),
+            max_nodes: expected.max_nodes,
+            mode: proof.mode,
+        };
+        let mut good = position.clone();
+        good.do_move(good_move);
+        let good_proof = solve_bounded_mate_for(&good, attacker, limits)?;
+        let mut bad = position.clone();
+        bad.do_move(bad_move);
+        let bad_proof = solve_bounded_mate_for(&bad, attacker, limits)?;
+        if good_proof.root.status != MateProofStatus::ProvenMate
+            || bad_proof.root.status != MateProofStatus::ProvenNoMate
+        {
+            return Ok(false);
+        }
+        verify_mate_proof(&good, &good_proof)?;
+        verify_mate_proof(&bad, &bad_proof)?;
+    }
+    Ok(true)
 }
 
 fn split_index(split: DatasetSplit) -> u8 {

@@ -104,6 +104,7 @@ pub fn run() -> Result<()> {
             position_hash: position.key(),
             family_hash,
             network_input_hash,
+            root_sfen: position.to_sfen_owned(),
             split: args.split.dataset(),
             ply: position.ply(),
             phase: TrainingPhase::for_ply(position.ply() as usize).code(),
@@ -118,6 +119,8 @@ pub fn run() -> Result<()> {
                 bad_child: mirror,
                 kind: PreferenceKind::SymmetryEqual,
                 margin_class: 0,
+                good_move_usi: None,
+                bad_move_usi: None,
             }],
         })?;
         written += 1;
