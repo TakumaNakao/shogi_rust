@@ -22,7 +22,7 @@
       "model_sha256": "caf2e9559028a674d762e4e2c587801cb5c907571e647adf8f5b7c666e27bd6b",
       "generation": 1,
       "gate_report_sha256": "b9f600d65a447df1b41fa373cfcb0a78a43755628ac5cdc02a87f9e3c32287ed",
-      "decision": "accepted_phase1_symmetry",
+      "decision": "accepted_gate",
       "accepted_at": "2026-07-22T00:00:00+09:00",
       "decision_commit": "6d656d6"
     }
