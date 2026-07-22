@@ -742,7 +742,7 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 
 - 現行または外部modelのlineage混入を検出した。
 - NaN/Inf、model file破損、resume不一致が発生した。
-- output norm、score p99、activation飽和が安全上限を超えた。
+- output normまたはscore p99が安全上限を超えた、あるいはactivation診断で非有限値・全channel崩壊を検出した。
 - exact metricだけ改善し、general holdoutとparent matchが2世代連続で悪化した。
 - 3世代連続でparentへ昇格できない。
 - datasetを4倍にしてもgame-family bootstrap区間で改善が確認できない。
@@ -764,7 +764,7 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 | 5 | bounded exact mate solver | proof再検証、規則fixture | 1/3手referenceと完全検証器完了、df-pn待ち |
 | 6 | exact curriculum generator | split/coverage manifest | HKCL0004 rule v3、攻守64k/全proof監査完了 |
 | 7 | opening stratum classifier | deterministic分類、report | bitfield v1とHKCL分布report完了 |
-| 8 | 棋譜rank/result pipeline | no-score provenance | builder v4完了、licensed CSA入力待ち |
+| 8 | 棋譜rank/result pipeline | no-score provenance | wdoor pilot完了、confidence/loss分離と250k拡張待ち |
 | 9 | scratch-only search teacher | lineage強制、immutable teacher | 未着手 |
 | 10 | self-play league | result semantics、resume | 未着手 |
 | 11 | promotion/report automation | CI外ローカルgate再現 | 未着手 |
@@ -1264,6 +1264,64 @@ confidence 0.6、sample weight 0.1のsoft preferenceに限定する。既知勝�
 初回HKCLはtrain/validの派生child 197件がsplitを跨いだため棄却した。train HKCL確定後、valid生成時にtrainの
 root/good/bad全network hashを除外し、派生入力を含むsplit衝突0を必須とする。pilot内部testは変換しない。
 
+### 15.4 Phase 3中間監査とGate再校正（2026-07-23）
+
+#### 結論
+
+scratch学習そのものは成立している。accepted Phase 1 parentに対し、exact family精度は47.42%から
+約90.0～90.4%、wdoor soft pair精度は50.29%から60.65～62.24%へ改善した。一方、wdoor勝敗BCEは
+0.69329から0.739前後へ悪化しており、棋譜の順位信号と勝敗信号を一括して「成功」とは判定できない。
+
+従来の「pre-ClippedReLU値が0未満または1超となる割合を、黒白各々1%未満」というGateは撤回する。
+ClippedReLUは非線形性を作る層であり、0側のclipは疎性でもある。全値を`[0.02, 0.98]`へ押し込むと、このrepoの
+1 hidden layer構成はほぼ線形化する。実測でもanchorはclip率だけを改善したが、offline品質の明確な改善を示して
+いない。これは安全Gateが厳しいというより、測っている量と品質リスクの対応付けが誤っていた。
+
+activationは次のように扱い直す。
+
+1. 全体clip率はhard Gateでなくdiagnosticとし、低側と高側を別に報告する。
+2. channel別のpreactivation分位点、分散、interior出現率、常時0側/1側にclipされるchannel数を追加する。
+3. health Gate v2をtest開封前に固定する。hard failureはNaN/Inf、forward不一致、量子化範囲違反、channel別崩壊、
+   異常score分布で判定し、全体率だけの閾値は使わない。旧上側1%は暫定alertとして残し、探索品質との相関を検証する。
+4. activation anchorは実験用optionとして残すが既定値0とし、clip率をGateへ合わせる目的では使わない。
+5. v4（2 epoch、anchorなし）とv5（1 epoch、anchorなし）を、v6/v7（anchorあり）と同じstatic/fixed-node
+   searchで比較し、clip率と実探索品質の関係を確認するまでは候補を昇格しない。
+
+exact開発Gateの`point >= 90%`は厳しすぎないため維持する。v4/v5/v7は同じvalidで既に通過し、v6の
+89.993%だけを丸めて救済する必要はない。family bootstrap下限88%以上、3 seedの方向一致、static/search非退行も
+同時に要求する。Phase 2本目標95%も維持するが、小数点境界を跨ぐためのhyperparameter探索は行わない。
+testを開いた後に基準を変えない。
+dataset integrity、proof再検証、split衝突0、lineage、NaN/InfのGateは従来どおりzero toleranceとする。
+
+#### 学習器・評価器で先に直す事項
+
+1. HKCLの`confidence`が現在trainerで使われていない。確実な最終結果用`result_weight`と、不確実な棋譜手用
+   `preference_weight * confidence`をschema/損失上で分離し、finite-differenceとweight 0/1のtestを追加する。
+   修正前のv4～v7候補はすべてdiagnostic/rejectedに限定する。
+2. 現在のbest epochはexact+gameの平均validation lossで選ばれ、healthを含まない。epochごとのmodelを保存し、
+   integrity/safety -> exact非劣性 -> game rank/BCEのPareto順で選ぶ。validationはtrainと異なりfamily正規化を
+   行っておらず、activation penaltyもloss分子だけに入るため、現scalar lossを候補間比較に使わない。
+3. game評価へresult prevalence baseline、Brier、ECE、phase/opening別BCEを追加する。BCEは少なくとも定数予測と
+   accepted parentを悪化させないことをpromotion条件にし、親との差をpaired game-family bootstrapで出す。
+4. 棋譜手対quiet 1手は証明済みの良悪ではないため、`bad`でなく`sampled alternative`と表記する。
+   rank-only、result-only、rank+resultを同じsplitでA/Bし、confidenceとsource weightを別々に校正する。
+5. 2,000局pilotを最終品質の判定に使わない。上記修正後、2023～2025 wdoorからopening/year/ratingを層化した
+   約250k positionへ拡張し、game-family bootstrapで学習曲線を測る。2026と最終testは引き続き開かない。
+6. 現在のfamily正規化後の名目量は概算でexact 64,000、health 5,000、game約152で、gameは約0.2%にすぎない。
+   source-stratified sampler/batchを導入し、実効weight、objective数、gradient norm、更新回数をsource別にmanifestへ
+   記録する。20/40/40は初期A/B比率であり、raw record数で達成したと見なさない。
+7. black/white集計だけでなくSTM/NSTM、hidden channel、king bucket、phase別activationを出し、親との差もpairedで
+   評価する。clip率を改善しただけのmodelを品質改善と呼ばない。
+
+#### 改訂後の直近手順
+
+1. activationのchannel別診断、weight/confidence分離、source-stratified sampling、目的別validation/epoch保存を実装してtestする。
+2. 実効source weightを事前固定し、同じpilotでrank-only/result-only/rank+resultを1 epoch、3 scratch seedで比較する。
+3. anchorなしv4/v5相当とanchorあり候補へstatic all-legalと200k fixed-node searchを実施する。
+4. exact point 90%以上かつbootstrap下限88%以上、health p99 2,000 cp未満、game rankがparentより改善、
+   game BCEが定数予測に非劣性、search非退行を同時に満たす構成だけを250kへ進める。
+5. 250kで改善区間が再現した後にのみgeneration 2 promotion matchへ進む。未達候補を教師にしない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
@@ -1297,11 +1355,12 @@ root/good/bad全network hashを除外し、派生入力を含むsplit衝突0を�
 
 ### 2026-07-22 Phase 3 combined pilot: activation anchor
 
+- 以下は当日の実験記録であり、Gate判断は翌日の15.4監査で改訂した。
 - anchorなし2 epoch候補はhealth activation範囲外率が下側約5.5%、上側約1.3%で不採用。
 - legal-health rootのpre-ClippedReLU値を`[0.02, 0.98]`へhinge anchorする実装を追加した。
 - weight 10・1 epochはhealthで下側0.42%以下、上側0.82%以下となりGate通過。exact family 89.99%、wdoor family 60.78%。
 - 2 epochはexact 90.33%、wdoor 62.24%へ改善したがhealthが下側約1.9%、上側約1.2%へ再悪化し不採用。
-- 次は1 epochを基準に小幅A/Bし、exact 90%以上とactivation各側1%未満を同時達成後、static/search Gateへ進む。testは未開封を維持する。
+- 当時は追加anchor A/Bを予定したが中止した。15.4のchannel別診断と目的別A/Bへ切り替え、testは未開封を維持する。
 
 ## 17. 最終判断
 
