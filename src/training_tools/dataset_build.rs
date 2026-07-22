@@ -4,6 +4,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
+use shogi_ai::halfkp_training::PackedHalfKpPosition;
 use shogi_ai::opening::classify_opening;
 use shogi_ai::training_data::{
     capture_run_environment, collect_csa_files, csa_color, game_content_id, parse_csa_metadata,
@@ -14,7 +15,7 @@ use shogi_ai::training_data::{
 use shogi_ai::utils::format_move_usi;
 use shogi_core::Color;
 use shogi_lib::Position;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -135,6 +136,7 @@ struct DatasetStats {
     games_filtered: usize,
     records_written: usize,
     records_filtered: usize,
+    records_split_collision_filtered: usize,
     phase: PhaseCounts,
     train: SplitCounts,
     valid: SplitCounts,
@@ -211,6 +213,12 @@ struct Writers {
     train: BufWriter<File>,
     valid: BufWriter<File>,
     test: BufWriter<File>,
+}
+
+struct CandidateRecord {
+    phase: Phase,
+    line: String,
+    network_input_hash: [u8; 32],
 }
 
 fn color_text(color: Color) -> &'static str {
@@ -401,6 +409,7 @@ fn process_game(
     args: &Args,
     writers: &mut Writers,
     stats: &mut DatasetStats,
+    network_splits: &mut HashMap<[u8; 32], Split>,
 ) -> Result<usize> {
     let text = std::str::from_utf8(bytes)?;
     let record = csa::parse_csa(&text)?;
@@ -412,7 +421,7 @@ fn process_game(
     let mut position = Position::default();
     let mut eligible_seen = 0usize;
     let game_key = game_id.to_string();
-    let mut candidates = Vec::<(Phase, String)>::new();
+    let mut candidates = Vec::<CandidateRecord>::new();
 
     for (ply_index, csa_move) in record.moves.iter().enumerate() {
         let ply = ply_index + 1;
@@ -474,7 +483,14 @@ fn process_game(
                 teacher_move: format_move_usi(mv),
             };
             let line = serde_json::to_string(&out)?;
-            candidates.push((phase, line));
+            let network_input_hash = PackedHalfKpPosition::from_position(&position)
+                .ok_or_else(|| anyhow!("game position lacks a king"))?
+                .network_input_hash();
+            candidates.push(CandidateRecord {
+                phase,
+                line,
+                network_input_hash,
+            });
         } else if ply >= args.min_ply {
             stats.records_filtered += 1;
         }
@@ -485,7 +501,7 @@ fn process_game(
     let mut selected = select_game_records(candidates, args, &game_key);
     stats.records_filtered += candidate_count.saturating_sub(selected.len());
     let mut written = 0usize;
-    for (phase, line) in selected.drain(..) {
+    for candidate in selected.drain(..) {
         if all_phase_targets_reached(args, stats)
             || args
                 .max_records
@@ -493,13 +509,22 @@ fn process_game(
         {
             break;
         }
-        if phase_target_reached(args, stats, phase) {
+        if phase_target_reached(args, stats, candidate.phase) {
             stats.records_filtered += 1;
             continue;
         }
-        write_record(writers, split, &line)?;
+        if network_splits
+            .get(&candidate.network_input_hash)
+            .is_some_and(|&previous| previous != split)
+        {
+            stats.records_filtered += 1;
+            stats.records_split_collision_filtered += 1;
+            continue;
+        }
+        network_splits.insert(candidate.network_input_hash, split);
+        write_record(writers, split, &candidate.line)?;
         increment_split_records(stats, split);
-        increment_phase_count(stats, phase);
+        increment_phase_count(stats, candidate.phase);
         stats.records_written += 1;
         written += 1;
     }
@@ -507,15 +532,15 @@ fn process_game(
 }
 
 fn select_game_records(
-    candidates: Vec<(Phase, String)>,
+    candidates: Vec<CandidateRecord>,
     args: &Args,
     game_key: &str,
-) -> Vec<(Phase, String)> {
+) -> Vec<CandidateRecord> {
     let mut rng = ChaCha8Rng::seed_from_u64(stable_hash(args.seed, game_key));
     if let Some(caps) = args.phase_records_per_game.as_deref() {
         let mut phases = [Vec::new(), Vec::new(), Vec::new()];
         for candidate in candidates {
-            let index = match candidate.0 {
+            let index = match candidate.phase {
                 Phase::Opening => 0,
                 Phase::Middlegame => 1,
                 Phase::Endgame => 2,
@@ -725,6 +750,7 @@ pub fn run() -> Result<()> {
         })
         .collect();
     let mut writers = create_writers(&args.output_dir)?;
+    let mut network_splits = HashMap::new();
 
     for (game_index, source) in sources.iter().enumerate() {
         if all_phase_targets_reached(&args, &stats) {
@@ -765,6 +791,7 @@ pub fn run() -> Result<()> {
             &args,
             &mut writers,
             &mut stats,
+            &mut network_splits,
         ) {
             Ok(0) => stats.games_filtered += 1,
             Ok(_) => {

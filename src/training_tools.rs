@@ -4,6 +4,7 @@ pub mod bonanza_pairwise_train;
 pub mod csa_policy_dump;
 pub mod csa_rate_stats;
 pub mod dataset_build;
+pub mod game_dataset_audit;
 pub mod halfkp_curriculum_audit;
 pub mod halfkp_dataset_shard;
 pub mod halfkp_exact_generate;

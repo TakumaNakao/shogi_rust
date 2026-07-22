@@ -1246,6 +1246,12 @@ opening/middle/late=15,048/21,765/5,935、train/valid/test=34,394/4,420/3,934だ
 非王手、合法手2以上で、1局24局面（phase別8/12/4）を上限とした。このpilotの`test`はpipeline内部splitであり、
 最終out-of-time testではない。builder変更をclean commit後に同設定を再生成してmanifestのdirty flagを除去する。
 
+game/family/provenance/教師手合法性/network inputを独立検査する`game_dataset_audit`を追加した。clean pilot v2は
+game split衝突0、opening-family split衝突0、違法教師手0、unknown/non-decisive 0だったが、異なるopening prefixから
+同一局面へ合流するtranspositionが403件splitを跨いだため棄却した。builderはselected recordのHalfKP network-input
+SHA-256を全gameで追跡し、先着splitと異なる候補を学習前に除外する。重複許容や閾値緩和は行わず、auditでcross-split
+network collision 0を必須とする。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
