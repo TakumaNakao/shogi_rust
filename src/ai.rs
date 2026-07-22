@@ -48,6 +48,7 @@ pub struct ShogiAI<E: Evaluator, const HISTORY_CAPACITY: usize> {
     killer_moves: [[Option<Move>; 2]; MAX_DEPTH],
     start_time: Option<Instant>,
     time_limit: Option<Duration>,
+    node_limit: Option<u64>,
     next_time_check_nodes: u64,
     nodes_searched: u64,
     quiescence_nodes_searched: u64,
@@ -81,6 +82,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             killer_moves: [[None; 2]; MAX_DEPTH],
             start_time: None,
             time_limit: None,
+            node_limit: None,
             next_time_check_nodes: 0,
             nodes_searched: 0,
             quiescence_nodes_searched: 0,
@@ -161,6 +163,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.clear();
         self.start_time = None;
         self.time_limit = None;
+        self.node_limit = None;
         self.next_time_check_nodes = 0;
         self.nodes_searched = 0;
         self.quiescence_nodes_searched = 0;
@@ -303,6 +306,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.begin_eval_context(position);
         self.start_time = None;
         self.time_limit = None;
+        self.node_limit = None;
         self.next_time_check_nodes = 0;
         self.last_completed_depth = 0;
         self.last_root_score = None;
@@ -348,6 +352,12 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     }
 
     fn is_time_up(&mut self) -> bool {
+        if self
+            .node_limit
+            .is_some_and(|node_limit| self.nodes_searched >= node_limit)
+        {
+            return true;
+        }
         if self.nodes_searched < self.next_time_check_nodes {
             return false;
         }
@@ -596,6 +606,81 @@ mod tests {
         assert_eq!(ai.search_stats(), outcome.stats);
         assert_eq!(Some(0.0), outcome.root.as_ref().and_then(|root| root.score));
         assert!(!outcome.failed);
+    }
+
+    #[test]
+    fn fixed_node_search_is_bounded_and_reproducible() {
+        let original = Position::default();
+        let limits = SearchLimits::new(8, None).with_max_nodes(256);
+        let mut fingerprints = Vec::new();
+
+        for _ in 0..2 {
+            let mut position = original.clone();
+            let mut ai = ShogiAI::<_, 256>::new(HashEvaluator);
+            ai.set_emit_info(false);
+            let outcome = ai.search(&mut position, limits);
+            assert!(outcome.stats.nodes <= 256);
+            assert_eq!(original.to_sfen_owned(), position.to_sfen_owned());
+            fingerprints.push((
+                outcome.best_move(),
+                ai.last_completed_depth(),
+                ai.last_root_score(),
+                ai.last_pv().to_vec(),
+                outcome.stats.nodes,
+            ));
+        }
+        assert_eq!(fingerprints[0], fingerprints[1]);
+    }
+
+    #[test]
+    fn fixed_node_search_does_not_commit_an_incomplete_iteration() {
+        let mut baseline_position = Position::default();
+        let mut baseline = ShogiAI::<_, 256>::new(HashEvaluator);
+        baseline.set_emit_info(false);
+        let completed = baseline.search(&mut baseline_position, SearchLimits::new(1, None));
+        let depth_one_nodes = completed.stats.nodes;
+        assert_eq!(1, baseline.last_completed_depth());
+
+        let mut limited_position = Position::default();
+        let mut limited = ShogiAI::<_, 256>::new(HashEvaluator);
+        limited.set_emit_info(false);
+        let limited_outcome = limited.search(
+            &mut limited_position,
+            SearchLimits::new(8, None).with_max_nodes(depth_one_nodes + 1),
+        );
+        assert!(limited_outcome.stats.nodes <= depth_one_nodes + 1);
+        assert_eq!(1, limited.last_completed_depth());
+        assert_eq!(completed.best_move(), limited_outcome.best_move());
+        assert_eq!(baseline.last_root_score(), limited.last_root_score());
+        assert_eq!(baseline.last_pv(), limited.last_pv());
+    }
+
+    #[test]
+    fn fixed_node_search_rejects_parallel_execution() {
+        let mut position = Position::default();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        let outcome = ai.search_parallel(
+            &mut position,
+            SearchLimits::new(4, None).with_max_nodes(100),
+            2,
+        );
+        assert!(outcome.failed);
+        assert!(outcome.best_move().is_none());
+        assert_eq!(0, outcome.stats.nodes);
+    }
+
+    #[test]
+    fn fixed_node_limit_applies_to_quiescence_nodes() {
+        let mut position = Position::default();
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.node_limit = Some(1);
+        let result = ai.quiescence_search(&mut position, f32::NEG_INFINITY, f32::INFINITY);
+        assert!(result.is_some());
+        assert_eq!(1, ai.nodes_searched());
+        assert!(ai
+            .quiescence_search(&mut position, f32::NEG_INFINITY, f32::INFINITY)
+            .is_none());
+        assert_eq!(1, ai.nodes_searched());
     }
 
     #[test]

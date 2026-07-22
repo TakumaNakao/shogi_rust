@@ -1184,6 +1184,19 @@ testを独立生成・SHA freezeした後、一度だけtestを開く。combined
 差を示す。最終exact 90%/95% Gateを緩和せず、このexact-only候補をaccepted/promotedにしない。次は同じdevで
 固定ノード探索発見率を測り、静的表現不足と探索による補完を分離する。独立testは未生成・未評価のまま維持する。
 
+既存探索はdepth/time制限だけだったため、`SearchLimits.max_nodes`を追加した。node制限はalpha-betaとquiescenceの
+各node進入前に判定し、time/stopの1,024 node間隔とは分離する。未完のiteration/aspiration再探索は採用せず、最後の
+完了depthだけを返す。node制限付き並列探索は全体予算が非決定的になるためfail-closedで拒否し、Gateは単一threadとした。
+上限、再現性、未完反復、quiescence、並列拒否のtestを追加した。
+
+seed 20260721で10k/50k/100k/200k nodeを開発用に校正した。全root成功率は55.4%/82.6%/89.9%/95.0%、
+depth 0は437/156/84/37だったため、閾値を変更せず200k nodeを固定した。200kでのseed 20260721/22/23の結果は、
+全root成功率95.0%/95.6%/95.3%、判定可能root内98.65%/98.56%/98.55%、depth 0は37/30/33、探索失敗は全seed 0。
+攻撃root成功は457/462/461（91.4%/92.4%/92.2%）、防御root成功は493/494/492（98.6%/98.8%/98.4%）だった。
+探索は静的top-1の攻撃側約39%を大きく補完したが、全攻撃root基準では初期3手目標98%に未達である。したがって
+exact-only候補は引き続き昇格不可とし、activation/feature coverageを確認後、all-legal hard negative/listwise改善と
+Phase 3 combined pipelineへ進む。独立testはまだ生成・評価しない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

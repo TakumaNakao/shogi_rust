@@ -8,6 +8,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             position,
             limits.max_depth,
             limits.time_limit_ms(),
+            limits.max_nodes,
             0,
             true,
         );
@@ -32,6 +33,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         position: &mut Position,
         max_depth: u8,
         time_limit_ms: Option<u64>,
+        node_limit: Option<u64>,
         root_offset: usize,
         primary_worker: bool,
     ) -> Option<Move> {
@@ -52,6 +54,7 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.clear_killer_moves();
         self.start_time = Some(Instant::now());
         self.time_limit = time_limit_ms.map(Duration::from_millis);
+        self.node_limit = node_limit;
         self.next_time_check_nodes = 0;
         self.nodes_searched = 0;
         self.quiescence_nodes_searched = 0;
