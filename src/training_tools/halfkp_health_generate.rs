@@ -42,6 +42,8 @@ struct Args {
     maximum_attempts_per_record: usize,
     #[arg(long, default_value_t = true)]
     require_all_king_buckets: bool,
+    #[arg(long, default_value_t = 1.0)]
+    sample_weight: f32,
     #[arg(long)]
     exclude: Vec<PathBuf>,
 }
@@ -69,6 +71,8 @@ pub fn run() -> Result<()> {
         || args.minimum_ply >= args.maximum_ply
         || args.king_move_weight == 0
         || args.quiet_move_weight == 0
+        || !(0.0..=1.0).contains(&args.sample_weight)
+        || args.sample_weight == 0.0
     {
         return Err(anyhow!("invalid generation limits"));
     }
@@ -93,6 +97,7 @@ pub fn run() -> Result<()> {
             "king_move_weight": args.king_move_weight,
             "quiet_move_weight": args.quiet_move_weight,
             "require_all_king_buckets": args.require_all_king_buckets,
+            "sample_weight": args.sample_weight,
         }),
         teacher_model_sha256: None,
         teacher_lineage_id: None,
@@ -160,7 +165,7 @@ pub fn run() -> Result<()> {
             phase: phase as u8,
             opening_stratum: OpeningStratum::UNKNOWN,
             confidence: 1.0,
-            sample_weight: 1.0,
+            sample_weight: args.sample_weight,
             root: root.clone(),
             result: None,
             proof: None,
