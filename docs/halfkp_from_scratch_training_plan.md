@@ -1206,6 +1206,21 @@ Phase 3 combined pipelineへ進む。独立testはまだ生成・評価しない
 盤上/持駒、game phaseで層化して拡張し、activation penaltyまたはanchorのA/Bは拡張validation上で行う。
 exact-only失敗modelから継続せず、combined候補はaccepted Phase 1 parentから開始する原則を維持する。
 
+上記1,000 root corpusのcoverage不足を解消するため、weightを一切読まない`legal_health_stratified_v1`を追加した。
+king moveとquiet moveを決定的にoversampleし、黒白king bucketとopening/middlegame/endgameに最低quotaを設ける。
+初回v5は独立seedだけでsplitを分けたためfamily 441件、network input 760件がsplitを跨ぎ、監査で棄却した。
+v5のtestは一度もmodel評価せず無効artifactとした。v6はtrainを確定し、validからtrain、testからtrain+validの
+root/mirror/family全hashを除外して順に生成した。auditは200,000 record/family、cross-record重複0、family/input
+split衝突0、黒白45/45を確認した。固定SHA-256はtrain `67b221a8...14e26`、valid `b62686e3...aa9e7`、
+未開封test `2f529828...4c641`である。
+
+v6 valid 50,000 rootは33,644/105,480 feature row（31.90%）と黒白45/45 bucketを観測した。seed 20260721/22/23の
+0未満activation率は黒1.26%/1.69%/0.74%、白1.28%/1.76%/0.78%、1超過率は全側0.55%以下だった。
+したがって旧1,000 rootだけによる「3 seedすべてhealth棄却」は過度に狭い分布の影響を含む。seed 20260723は
+拡張health activation Gateを通るが、全合法手static攻撃38.8%、200k search攻撃92.2%で最終Gate未達のため、
+結論（exact-onlyを昇格せず、失敗modelから継続しない）は変えない。今後のhealth判断はv6 validを正本とし、testは
+combined構成固定後まで開かない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

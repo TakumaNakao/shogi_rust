@@ -115,6 +115,11 @@ path = "src/bin/halfkp_symmetry_generate.rs"
 required-features = ["halfkp64", "training-tools"]
 
 [[bin]]
+name = "halfkp_health_generate"
+path = "src/bin/halfkp_health_generate.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
 name = "halfkp_scratch_eval"
 path = "src/bin/halfkp_scratch_eval.rs"
 required-features = ["halfkp64", "training-tools"]

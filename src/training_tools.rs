@@ -8,6 +8,7 @@ pub mod halfkp_curriculum_audit;
 pub mod halfkp_dataset_shard;
 pub mod halfkp_exact_generate;
 pub mod halfkp_factorization;
+pub mod halfkp_health_generate;
 pub mod halfkp_kpp_train;
 pub mod halfkp_prediction_compare;
 pub mod halfkp_rank_dataset;

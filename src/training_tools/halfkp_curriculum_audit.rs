@@ -65,19 +65,15 @@ pub fn run() -> Result<()> {
                     family_collisions.insert(record.family_hash);
                 }
             }
-            if let Some(previous) = input_splits.insert(record.network_input_hash, record.split) {
-                if previous != record.split {
-                    input_collisions.insert(record.network_input_hash);
-                } else {
-                    duplicate_inputs.insert((record.network_input_hash, split_index));
-                }
-            }
+            let mut record_inputs = HashSet::from([record.network_input_hash]);
             for position in record
                 .preferences
                 .iter()
                 .flat_map(|preference| [&preference.good_child, &preference.bad_child])
             {
-                let hash = position.network_input_hash();
+                record_inputs.insert(position.network_input_hash());
+            }
+            for hash in record_inputs {
                 if let Some(previous) = input_splits.insert(hash, record.split) {
                     if previous != record.split {
                         input_collisions.insert(hash);
