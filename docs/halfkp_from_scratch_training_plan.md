@@ -763,7 +763,7 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 | 4 | feature factorization | fold前後forward一致 | factor-onlyを3 seedで選定、尺度付き64k Gate通過 |
 | 5 | bounded exact mate solver | proof再検証、規則fixture | 1/3手referenceと完全検証器完了、df-pn待ち |
 | 6 | exact curriculum generator | split/coverage manifest | HKCL0004 rule v3、攻守64k/全proof監査完了 |
-| 7 | opening stratum classifier | deterministic分類、report | 未着手 |
+| 7 | opening stratum classifier | deterministic分類、report | bitfield v1とHKCL分布report完了 |
 | 8 | 棋譜rank/result pipeline | no-score provenance | 未着手 |
 | 9 | scratch-only search teacher | lineage強制、immutable teacher | 未着手 |
 | 10 | self-play league | result semantics、resume | 未着手 |
@@ -1220,6 +1220,13 @@ v6 valid 50,000 rootは33,644/105,480 feature row（31.90%）と黒白45/45 buck
 拡張health activation Gateを通るが、全合法手static攻撃38.8%、200k search攻撃92.2%で最終Gate未達のため、
 結論（exact-onlyを昇格せず、失敗modelから継続しない）は変えない。今後のhealth判断はv6 validを正本とし、testは
 combined構成固定後まで開かない。
+
+Phase 3のsampling keyとして`opening bitfield v1`を実装した。先後を各々の視点へ向け、rookを
+`none/home/ranging/shifted`、king fileを`left/center/right`、初期rankから進んだ歩数を`0/1-2/3+`へ分類し、
+12 bitの安定IDへ符号化する。表示aliasはreport専用で、戦型名を教師labelにはしない。初期局面IDのgolden testと
+HKCL root用の決定的分布reportを追加した。v6 valid 50,000 rootでは638 stratumを観測した。これはhealth random
+playoutの多様性診断であり、棋譜splitの代用ではない。次はlicense/provenanceを固定した棋譜ingestでgame単位splitと
+opening-family holdoutを構築し、このIDをsampling/上限管理にだけ使用する。
 
 ## 16. 参考資料と本計画への反映
 
