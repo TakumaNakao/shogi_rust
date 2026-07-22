@@ -69,9 +69,9 @@ struct Args {
     #[arg(long, default_value_t = 0.0)]
     source_mix_exact: f32,
     #[arg(long, default_value_t = 0.0)]
-    source_mix_health: f32,
+    source_mix_expert: f32,
     #[arg(long, default_value_t = 0.0)]
-    source_mix_game: f32,
+    source_mix_result: f32,
     #[arg(long, value_enum)]
     stage: TrainingStage,
     #[arg(long, value_enum, default_value_t = FactorizationMode::Direct)]
@@ -240,14 +240,13 @@ struct Metrics {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SourceGroup {
+enum ObjectiveGroup {
     Exact = 0,
-    Health = 1,
-    Game = 2,
+    Expert = 1,
+    Result = 2,
 }
 
 struct RecordFamily {
-    source: SourceGroup,
     records: Vec<CurriculumRecord>,
 }
 
@@ -323,8 +322,8 @@ pub fn run() -> Result<()> {
             "expert_preference_weight": args.expert_preference_weight,
             "game_result_weight": args.game_result_weight,
             "source_mix_exact": args.source_mix_exact,
-            "source_mix_health": args.source_mix_health,
-            "source_mix_game": args.source_mix_game,
+            "source_mix_expert": args.source_mix_expert,
+            "source_mix_result": args.source_mix_result,
             "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
             "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
             "seed": args.seed, "l2": args.l2,
@@ -450,8 +449,8 @@ fn validate_args(args: &Args) -> Result<()> {
 fn valid_source_mix(args: &Args) -> bool {
     let values = [
         args.source_mix_exact,
-        args.source_mix_health,
-        args.source_mix_game,
+        args.source_mix_expert,
+        args.source_mix_result,
     ];
     if values
         .iter()
@@ -526,8 +525,8 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "expert_preference_weight": args.expert_preference_weight,
         "game_result_weight": args.game_result_weight,
         "source_mix_exact": args.source_mix_exact,
-        "source_mix_health": args.source_mix_health,
-        "source_mix_game": args.source_mix_game,
+        "source_mix_expert": args.source_mix_expert,
+        "source_mix_result": args.source_mix_result,
         "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
         "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
         "seed": args.seed,
@@ -606,18 +605,9 @@ fn train_epoch(
     }
     let mut families = families
         .into_values()
-        .map(|records| {
-            let source = source_group(records[0].source);
-            if records
-                .iter()
-                .any(|record| source_group(record.source) != source)
-            {
-                return Err(anyhow!("one family contains multiple source groups"));
-            }
-            Ok(RecordFamily { source, records })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let source_multipliers = source_multipliers(&families, args)?;
+        .map(|records| RecordFamily { records })
+        .collect::<Vec<_>>();
+    let objective_multipliers = objective_multipliers(&families, args)?;
     let mut rng = ChaCha20Rng::seed_from_u64(args.seed ^ epoch as u64);
     families.shuffle(&mut rng);
     let mut batch = Gradient::default();
@@ -633,9 +623,16 @@ fn train_epoch(
             metrics.records += family.records.len();
             continue;
         }
-        let family_scale = source_multipliers[family.source as usize] / objectives as f32;
+        let family_scale = 1.0 / objectives as f32;
         for record in &family.records {
-            accumulate_record(weights, record, args, family_scale, &mut batch);
+            accumulate_record(
+                weights,
+                record,
+                args,
+                family_scale,
+                objective_multipliers,
+                &mut batch,
+            );
             batch_records += 1;
         }
         batch_families += 1;
@@ -657,71 +654,59 @@ fn train_epoch(
     Ok(metrics)
 }
 
-fn source_group(source: LabelSource) -> SourceGroup {
-    match source {
-        LabelSource::ExactMate | LabelSource::ExactTactic => SourceGroup::Exact,
-        LabelSource::SymmetryAnchor => SourceGroup::Health,
-        LabelSource::ExpertMove
-        | LabelSource::GameResult
-        | LabelSource::SelfSearch
-        | LabelSource::SelfPlay => SourceGroup::Game,
-    }
-}
-
-fn family_nominal_weight(family: &RecordFamily, args: &Args) -> f64 {
+fn family_nominal_weights(family: &RecordFamily, args: &Args) -> [f64; 3] {
     let objectives = family
         .records
         .iter()
         .map(|record| objective_count(record, args))
         .sum::<usize>();
     if objectives == 0 {
-        return 0.0;
+        return [0.0; 3];
     }
-    let weight = family
-        .records
-        .iter()
-        .map(|record| {
-            let result = record
-                .result
-                .map_or(0.0, |_| result_objective_weight(record, args));
-            let preferences =
-                record.preferences.len() as f32 * preference_objective_weight(record, args);
-            let score_anchor = if record.source == LabelSource::SymmetryAnchor {
-                record.sample_weight * args.score_anchor_weight
-            } else {
-                0.0
-            };
-            result + preferences + score_anchor
-        })
-        .sum::<f32>();
-    (weight / objectives as f32) as f64
+    let mut weights = [0.0f64; 3];
+    for record in &family.records {
+        if record.result.is_some() {
+            weights[ObjectiveGroup::Result as usize] +=
+                result_objective_weight(record, args) as f64;
+        }
+        let preference_group = if record.source == LabelSource::ExpertMove {
+            ObjectiveGroup::Expert
+        } else {
+            ObjectiveGroup::Exact
+        };
+        weights[preference_group as usize] +=
+            record.preferences.len() as f64 * preference_objective_weight(record, args) as f64;
+        if record.source == LabelSource::SymmetryAnchor {
+            weights[ObjectiveGroup::Exact as usize] +=
+                (record.sample_weight * args.score_anchor_weight) as f64;
+        }
+    }
+    weights.map(|weight| weight / objectives as f64)
 }
 
-fn source_multipliers(families: &[RecordFamily], args: &Args) -> Result<[f32; 3]> {
+fn objective_multipliers(families: &[RecordFamily], args: &Args) -> Result<[f32; 3]> {
     if args.source_mix_exact == 0.0 {
         return Ok([1.0; 3]);
     }
     let mut nominal = [0.0f64; 3];
-    let mut counts = [0usize; 3];
     for family in families {
-        nominal[family.source as usize] += family_nominal_weight(family, args);
-        counts[family.source as usize] += 1;
+        for (total, weight) in nominal.iter_mut().zip(family_nominal_weights(family, args)) {
+            *total += weight;
+        }
     }
     if nominal.iter().any(|value| *value <= 0.0) {
         return Err(anyhow!(
-            "source mix requested but one source has no enabled objective"
+            "objective mix requested but one objective group has no enabled loss"
         ));
     }
     let targets = [
         args.source_mix_exact as f64,
-        args.source_mix_health as f64,
-        args.source_mix_game as f64,
+        args.source_mix_expert as f64,
+        args.source_mix_result as f64,
     ];
     let total = nominal.iter().sum::<f64>();
     let multipliers = std::array::from_fn(|index| (total * targets[index] / nominal[index]) as f32);
-    println!(
-        "source_mix families={counts:?} nominal={nominal:?} target={targets:?} multipliers={multipliers:?}"
-    );
+    println!("objective_mix nominal={nominal:?} target={targets:?} multipliers={multipliers:?}");
     Ok(multipliers)
 }
 
@@ -736,7 +721,7 @@ fn evaluate(
     for path in paths {
         let mut reader = CurriculumReader::open(path)?;
         while let Some(record) = reader.read_record()? {
-            accumulate_record(weights, &record, args, 1.0, &mut gradient);
+            accumulate_record(weights, &record, args, 1.0, [1.0; 3], &mut gradient);
             metrics.records += 1;
             if limit.is_some_and(|limit| metrics.records >= limit) {
                 break;
@@ -756,12 +741,16 @@ fn accumulate_record(
     record: &CurriculumRecord,
     args: &Args,
     family_scale: f32,
+    objective_multipliers: [f32; 3],
     gradient: &mut Gradient,
 ) {
     if record.source == LabelSource::SymmetryAnchor && args.score_anchor_weight > 0.0 {
         let forward = weights.forward(&record.root);
         let normalized = forward.raw * TARGET_SCALE / args.score_anchor_cp;
-        let scale = record.sample_weight * args.score_anchor_weight * family_scale;
+        let scale = record.sample_weight
+            * args.score_anchor_weight
+            * family_scale
+            * objective_multipliers[ObjectiveGroup::Exact as usize];
         gradient.loss += 0.5 * (normalized * normalized * scale) as f64;
         let d_raw = normalized * TARGET_SCALE / args.score_anchor_cp * scale;
         add_position_gradient(weights, &record.root, &forward, d_raw, gradient);
@@ -769,7 +758,10 @@ fn accumulate_record(
     }
     if record.source == LabelSource::SymmetryAnchor && args.activation_anchor_weight > 0.0 {
         let forward = weights.forward(&record.root);
-        let scale = record.sample_weight * args.activation_anchor_weight * family_scale;
+        let scale = record.sample_weight
+            * args.activation_anchor_weight
+            * family_scale
+            * objective_multipliers[ObjectiveGroup::Exact as usize];
         add_activation_anchor(
             weights,
             &record.root,
@@ -784,13 +776,21 @@ fn accumulate_record(
             weights,
             &record.root,
             target,
-            result_objective_weight(record, args) * family_scale,
+            result_objective_weight(record, args)
+                * family_scale
+                * objective_multipliers[ObjectiveGroup::Result as usize],
             args.kappa_cp,
             gradient,
         );
     }
     for preference in &record.preferences {
-        let preference_weight = preference_objective_weight(record, args);
+        let preference_group = if record.source == LabelSource::ExpertMove {
+            ObjectiveGroup::Expert
+        } else {
+            ObjectiveGroup::Exact
+        };
+        let preference_weight = preference_objective_weight(record, args)
+            * objective_multipliers[preference_group as usize];
         if preference_weight == 0.0 {
             continue;
         }
@@ -1365,8 +1365,8 @@ mod tests {
             expert_preference_weight: 1.0,
             game_result_weight: 1.0,
             source_mix_exact: 0.0,
-            source_mix_health: 0.0,
-            source_mix_game: 0.0,
+            source_mix_expert: 0.0,
+            source_mix_result: 0.0,
             stage: TrainingStage::Calibrated,
             factorization: FactorizationMode::Direct,
             seed: 7,
@@ -1457,8 +1457,8 @@ mod tests {
     fn source_mix_scales_effective_nominal_loss() {
         let mut args = test_args();
         args.source_mix_exact = 0.2;
-        args.source_mix_health = 0.4;
-        args.source_mix_game = 0.4;
+        args.source_mix_expert = 0.4;
+        args.source_mix_result = 0.4;
         args.score_anchor_weight = 2.0;
         let game = expert_record();
         let mut exact = game.clone();
@@ -1472,22 +1472,27 @@ mod tests {
         health.preferences[0].kind = PreferenceKind::SymmetryEqual;
         let families = vec![
             RecordFamily {
-                source: SourceGroup::Exact,
                 records: vec![exact],
             },
             RecordFamily {
-                source: SourceGroup::Health,
                 records: vec![health],
             },
             RecordFamily {
-                source: SourceGroup::Game,
                 records: vec![game],
             },
         ];
-        let multipliers = source_multipliers(&families, &args).expect("mix");
-        let effective: [f64; 3] = std::array::from_fn(|index| {
-            family_nominal_weight(&families[index], &args) * multipliers[index] as f64
-        });
+        let multipliers = objective_multipliers(&families, &args).expect("mix");
+        let mut nominal = [0.0f64; 3];
+        for family in &families {
+            for (total, weight) in nominal
+                .iter_mut()
+                .zip(family_nominal_weights(family, &args))
+            {
+                *total += weight;
+            }
+        }
+        let effective: [f64; 3] =
+            std::array::from_fn(|index| nominal[index] * multipliers[index] as f64);
         let total = effective.iter().sum::<f64>();
         for (actual, expected) in effective
             .iter()

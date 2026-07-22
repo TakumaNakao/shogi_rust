@@ -1308,14 +1308,14 @@ dataset integrity、proof再検証、split衝突0、lineage、NaN/InfのGateは�
 5. 2,000局pilotを最終品質の判定に使わない。上記修正後、2023～2025 wdoorからopening/year/ratingを層化した
    約250k positionへ拡張し、game-family bootstrapで学習曲線を測る。2026と最終testは引き続き開かない。
 6. 現在のfamily正規化後の名目量は概算でexact 64,000、health 5,000、game約152で、gameは約0.2%にすぎない。
-   source-stratified sampler/batchを導入し、実効weight、objective数、gradient norm、更新回数をsource別にmanifestへ
+   objective-stratified weightingを導入し、実効weight、objective数、gradient norm、更新回数を種類別にmanifestへ
    記録する。20/40/40は初期A/B比率であり、raw record数で達成したと見なさない。
 7. black/white集計だけでなくSTM/NSTM、hidden channel、king bucket、phase別activationを出し、親との差もpairedで
    評価する。clip率を改善しただけのmodelを品質改善と呼ばない。
 
 #### 改訂後の直近手順
 
-1. activationのchannel別診断、weight/confidence分離、source-stratified sampling、目的別validation/epoch保存を実装してtestする。
+1. activationのchannel別診断、weight/confidence分離、objective-stratified weighting、目的別validation/epoch保存を実装してtestする。
 2. 実効source weightを事前固定し、同じpilotでrank-only/result-only/rank+resultを1 epoch、3 scratch seedで比較する。
 3. anchorなしv4/v5相当とanchorあり候補へstatic all-legalと200k fixed-node searchを実施する。
 4. exact point 90%以上かつbootstrap下限88%以上、health p99 2,000 cp未満、game rankがparentより改善、
@@ -1325,8 +1325,9 @@ dataset integrity、proof再検証、split衝突0、lineage、NaN/InfのGateは�
 #### 実施記録（2026-07-23）
 
 - trainerで棋譜の`preference_weight * confidence`と`result_weight`を分離し、各々を0にしたA/Bを可能にした。
-- exact/health/gameの実効nominal lossを事前指定比へ正規化するsource mixを追加した。family数でなく、family内objective
-  正規化、sample weight、confidence、score anchorを反映した量から倍率を計算し、run logとmanifestへ残す。
+- exact/symmetry、棋譜手preference、最終resultの実効nominal lossを事前指定比へ正規化するobjective mixを追加した。
+  family数でなく、family内objective正規化、sample weight、confidence、score anchorを反映して倍率を計算し、
+  run logとmanifestへ残す。
 - 異種scalar validation lossで親modelが選ばれるのを避けるため、診断run用のfinal epoch保存を追加した。
 - evaluatorへ勝率prevalence、定数予測BCE、Brier、10-bin ECEと、black/white/STM/NSTM別の64 channel診断を追加した。
 - wdoor validの勝率は52.25%、定数予測BCEは0.69213、accepted Phase 1 parentは0.69329だった。
