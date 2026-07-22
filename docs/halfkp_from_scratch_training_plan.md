@@ -1257,6 +1257,13 @@ network collision 0を必須とする。
 split内外を問わず先着network inputだけを保持する。cross-split除外とsame-split重複除外を別counterでmanifestへ残し、
 最終pilotは両方0をauditで確認する。
 
+pilot v4は39,712 unique network input、game/opening-family/network split衝突0、split内重複0、教師手合法性・
+provenance全件一致でaudit合格した。ここから評価器を呼ばない`game_soft_expert_v1` generatorを追加した。棋譜手を
+good、棋譜手以外のquiet legal moveをroot hashとseedで1手決定しbadとするが、棋譜手が常に最善とは仮定せず
+confidence 0.6、sample weight 0.1のsoft preferenceに限定する。既知勝敗はroot手番視点の0/1補助targetとして保持する。
+初回HKCLはtrain/validの派生child 197件がsplitを跨いだため棄却した。train HKCL確定後、valid生成時にtrainの
+root/good/bad全network hashを除外し、派生入力を含むsplit衝突0を必須とする。pilot内部testは変換しない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

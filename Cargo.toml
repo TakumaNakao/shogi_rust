@@ -130,6 +130,11 @@ path = "src/bin/game_dataset_audit.rs"
 required-features = ["halfkp64", "training-tools"]
 
 [[bin]]
+name = "halfkp_game_generate"
+path = "src/bin/halfkp_game_generate.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
 name = "halfkp_scratch_eval"
 path = "src/bin/halfkp_scratch_eval.rs"
 required-features = ["halfkp64", "training-tools"]
