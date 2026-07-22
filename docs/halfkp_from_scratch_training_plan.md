@@ -1177,6 +1177,13 @@ score anchor、output head低速更新を分離してA/Bした。directに対す
 testを独立生成・SHA freezeした後、一度だけtestを開く。combined opening/game Gate前にexact-only modelを
 探索教師や次世代parentへ使わない。
 
+全合法手static gateを実装し、dev 1,000 rootの全43,952合法childをstored attackerと同じsolver条件で再証明した。
+全rootに少なくとも1つのproven-goodがあり、resource limitは0、coverageは100%だった。seed 20260721/22/23の
+`any-proven-good top-1`はそれぞれ68.6%/68.4%/68.1%、内訳は攻撃root 39.4%/39.6%/38.8%、防御root
+97.8%/97.2%/97.4%である。3 seedで安定しているため偶然の失敗ではなく、sampled pair精度90%と全合法手選択能力の
+差を示す。最終exact 90%/95% Gateを緩和せず、このexact-only候補をaccepted/promotedにしない。次は同じdevで
+固定ノード探索発見率を測り、静的表現不足と探索による補完を分離する。独立testは未生成・未評価のまま維持する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
