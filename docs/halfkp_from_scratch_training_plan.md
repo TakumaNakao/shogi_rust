@@ -764,7 +764,7 @@ confidence intervalは局面単位でなくgame/problem family単位bootstrapで
 | 5 | bounded exact mate solver | proof再検証、規則fixture | 1/3手referenceと完全検証器完了、df-pn待ち |
 | 6 | exact curriculum generator | split/coverage manifest | HKCL0004 rule v3、攻守64k/全proof監査完了 |
 | 7 | opening stratum classifier | deterministic分類、report | bitfield v1とHKCL分布report完了 |
-| 8 | 棋譜rank/result pipeline | no-score provenance | 未着手 |
+| 8 | 棋譜rank/result pipeline | no-score provenance | builder v4完了、licensed CSA入力待ち |
 | 9 | scratch-only search teacher | lineage強制、immutable teacher | 未着手 |
 | 10 | self-play league | result semantics、resume | 未着手 |
 | 11 | promotion/report automation | CI外ローカルgate再現 | 未着手 |
@@ -1227,6 +1227,12 @@ Phase 3のsampling keyとして`opening bitfield v1`を実装した。先後を�
 HKCL root用の決定的分布reportを追加した。v6 valid 50,000 rootでは638 stratumを観測した。これはhealth random
 playoutの多様性診断であり、棋譜splitの代用ではない。次はlicense/provenanceを固定した棋譜ingestでgame単位splitと
 opening-family holdoutを構築し、このIDをsampling/上限管理にだけ使用する。
+
+既存CSA dataset builderをv4へ更新し、`license-id`と`source-uri`を必須化した。両値はstage fingerprintとmanifest、
+各JSONL recordへ保存し、空値を拒否する。各局面には棋譜手を指す前のpositionからopening stratum ID/aliasを付与する。
+入力内容hashによるgame単位split、棋譜手、既知終局、rate/filter情報だけを扱い、評価値・PV・既存weightは入力schemaに
+存在しない。現workspaceには出典とlicenseを確認できるCSA棋譜がないため、無出典の既存SFENを棋譜教師へ転用しない。
+licensed CSA sourceを固定するまではPhase 3学習を開始せず、pipeline実装とfixture検証だけを進める。
 
 ## 16. 参考資料と本計画への反映
 

@@ -4,6 +4,7 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
+use shogi_ai::opening::classify_opening;
 use shogi_ai::training_data::{
     capture_run_environment, collect_csa_files, csa_color, game_content_id, parse_csa_metadata,
     parse_csa_move, sha256_file, sha256_hex, split_for_game_content, CsaMetadata,
@@ -27,6 +28,10 @@ struct Args {
     input: Vec<PathBuf>,
     #[arg(long)]
     output_dir: PathBuf,
+    #[arg(long)]
+    license_id: String,
+    #[arg(long)]
+    source_uri: String,
     #[arg(long, default_value_t = false)]
     reuse_if_matches: bool,
     #[arg(long, default_value_t = 9601)]
@@ -83,11 +88,15 @@ struct Args {
 struct DatasetRecord {
     schema: &'static str,
     source: String,
+    license_id: String,
+    source_uri: String,
     game_index: usize,
     game_key: String,
     split: &'static str,
     ply: usize,
     phase: &'static str,
+    opening_stratum: u16,
+    opening_alias: String,
     side_to_move: &'static str,
     player_rate: Option<i32>,
     opponent_rate: Option<i32>,
@@ -140,6 +149,8 @@ struct DatasetManifest {
     command: Vec<String>,
     input: Vec<String>,
     output_dir: String,
+    license_id: String,
+    source_uri: String,
     seed: u64,
     phase_policy_version: u32,
     split_policy_version: u32,
@@ -428,16 +439,21 @@ fn process_game(
                 continue;
             }
             let phase = phase_for_ply(ply);
+            let opening = classify_opening(&position);
             let opponent = move_color.flip();
             let is_winner_move = metadata.winner.map(|winner| winner == move_color);
             let out = DatasetRecord {
-                schema: "rank_value_dataset_v2_position",
+                schema: "rank_value_dataset_v3_position",
                 source: format!("sha256:{game_id}"),
+                license_id: args.license_id.clone(),
+                source_uri: args.source_uri.clone(),
                 game_index,
                 game_key: game_key.clone(),
                 split: split_text(split),
                 ply,
                 phase: phase_text(ply),
+                opening_stratum: opening.stratum_id(),
+                opening_alias: opening.alias(),
                 side_to_move: color_text(move_color),
                 player_rate: player_rate(&metadata, move_color),
                 opponent_rate: player_rate(&metadata, opponent),
@@ -546,6 +562,8 @@ fn dataset_stage_fingerprint(args: &Args, sources: &[GameSource]) -> Result<Stri
         "phase_policy_version": PHASE_POLICY_VERSION,
         "split_policy_version": SPLIT_POLICY_VERSION,
         "configuration": {
+            "license_id": args.license_id,
+            "source_uri": args.source_uri,
             "shuffle_games": args.shuffle_games,
             "valid_percent": args.valid_percent,
             "test_percent": args.test_percent,
@@ -601,6 +619,9 @@ fn reusable_output(output_dir: &Path, expected_fingerprint: &str) -> Result<bool
 
 pub fn run() -> Result<()> {
     let args = Args::parse();
+    if args.license_id.trim().is_empty() || args.source_uri.trim().is_empty() {
+        return Err(anyhow!("--license-id and --source-uri must be non-empty"));
+    }
     if args.valid_percent + args.test_percent > 100 {
         return Err(anyhow!("--valid-percent + --test-percent must be <= 100"));
     }
@@ -725,8 +746,8 @@ pub fn run() -> Result<()> {
     .collect::<Result<Vec<_>>>()?;
 
     let manifest = DatasetManifest {
-        schema_version: 3,
-        schema: "rank_value_dataset_v3_manifest",
+        schema_version: 4,
+        schema: "rank_value_dataset_v4_manifest",
         stage_fingerprint,
         environment: capture_run_environment(),
         created_unix_secs: unix_secs(),
@@ -738,6 +759,8 @@ pub fn run() -> Result<()> {
             .map(|path| path.to_string_lossy().to_string())
             .collect(),
         output_dir: args.output_dir.to_string_lossy().to_string(),
+        license_id: args.license_id.clone(),
+        source_uri: args.source_uri.clone(),
         seed: args.seed,
         phase_policy_version: PHASE_POLICY_VERSION,
         split_policy_version: SPLIT_POLICY_VERSION,
