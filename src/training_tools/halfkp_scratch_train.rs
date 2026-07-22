@@ -80,6 +80,11 @@ struct Args {
     score_anchor_weight: f32,
     #[arg(long, default_value_t = 600.0)]
     score_anchor_cp: f32,
+    /// Keep pre-ClippedReLU activations inside a safe interior range on legal-health roots.
+    #[arg(long, default_value_t = 0.0)]
+    activation_anchor_weight: f32,
+    #[arg(long, default_value_t = 0.02)]
+    activation_anchor_margin: f32,
     #[arg(long)]
     max_train_records: Option<usize>,
     #[arg(long)]
@@ -295,6 +300,8 @@ pub fn run() -> Result<()> {
             "output_learning_rate_scale": args.output_learning_rate_scale,
             "score_anchor_weight": args.score_anchor_weight,
             "score_anchor_cp": args.score_anchor_cp,
+            "activation_anchor_weight": args.activation_anchor_weight,
+            "activation_anchor_margin": args.activation_anchor_margin,
         }),
         best_epoch,
         best_valid_loss: best_loss,
@@ -389,6 +396,8 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.weight_decay < 0.0
         || args.score_anchor_weight < 0.0
         || args.score_anchor_cp <= 0.0
+        || args.activation_anchor_weight < 0.0
+        || !(0.0..0.5).contains(&args.activation_anchor_margin)
         || args.output_learning_rate_scale < 0.0
         || (!args.resume && args.output.exists())
         || manifest_path(&args.output).exists()
@@ -470,6 +479,8 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "output_learning_rate_scale": args.output_learning_rate_scale,
         "score_anchor_weight": args.score_anchor_weight,
         "score_anchor_cp": args.score_anchor_cp,
+        "activation_anchor_weight": args.activation_anchor_weight,
+        "activation_anchor_margin": args.activation_anchor_margin,
     });
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
 }
@@ -615,6 +626,18 @@ fn accumulate_record(
         add_position_gradient(weights, &record.root, &forward, d_raw, gradient);
         gradient.objectives += 1;
     }
+    if record.source == LabelSource::SymmetryAnchor && args.activation_anchor_weight > 0.0 {
+        let forward = weights.forward(&record.root);
+        let scale = record.sample_weight * args.activation_anchor_weight * family_scale;
+        add_activation_anchor(
+            weights,
+            &record.root,
+            &forward,
+            args.activation_anchor_margin,
+            scale,
+            gradient,
+        );
+    }
     if let Some(target) = record.result {
         add_value_objective(
             weights,
@@ -657,6 +680,47 @@ fn objective_count(record: &CurriculumRecord, args: &Args) -> usize {
         + usize::from(
             record.source == LabelSource::SymmetryAnchor && args.score_anchor_weight > 0.0,
         )
+}
+
+fn add_activation_anchor(
+    weights: &Weights,
+    position: &PackedHalfKpPosition,
+    forward: &Forward,
+    margin: f32,
+    scale: f32,
+    gradient: &mut Gradient,
+) {
+    let normalization = scale / (2 * HALFKP_HIDDEN) as f32;
+    for (hidden, features) in [
+        (&forward.black, &position.features_black),
+        (&forward.white, &position.features_white),
+    ] {
+        for h in 0..HALFKP_HIDDEN {
+            let residual = if hidden[h] < margin {
+                hidden[h] - margin
+            } else if hidden[h] > 1.0 - margin {
+                hidden[h] - (1.0 - margin)
+            } else {
+                0.0
+            };
+            if residual == 0.0 {
+                continue;
+            }
+            gradient.loss += (0.5 * residual * residual * normalization) as f64;
+            let value = residual * normalization;
+            gradient.hidden_b[h] += value;
+            for &feature in features {
+                add_feature_gradient(
+                    gradient,
+                    feature as usize,
+                    h,
+                    value,
+                    weights.factors.is_some(),
+                    weights.train_direct,
+                );
+            }
+        }
+    }
 }
 
 fn margin_cp(source: LabelSource, kind: PreferenceKind, _class: u8) -> f32 {
@@ -1132,6 +1196,8 @@ mod tests {
             output_learning_rate_scale: 1.0,
             score_anchor_weight: 0.0,
             score_anchor_cp: 600.0,
+            activation_anchor_weight: 0.0,
+            activation_anchor_margin: 0.02,
             max_train_records: None,
             max_valid_records: None,
             checkpoint_dir: None,

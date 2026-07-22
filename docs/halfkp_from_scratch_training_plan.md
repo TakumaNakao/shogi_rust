@@ -1295,6 +1295,14 @@ root/good/bad全network hashを除外し、派生入力を含むsplit衝突0を�
     [df-pnアルゴリズムの詰将棋を解くプログラムへの応用](https://ipsj.ixsq.nii.ac.jp/records/32069)
     詰み・不詰みをproof/disproof numberで解く方法を、Phase 2のbounded exact solverへ反映。
 
+### 2026-07-22 Phase 3 combined pilot: activation anchor
+
+- anchorなし2 epoch候補はhealth activation範囲外率が下側約5.5%、上側約1.3%で不採用。
+- legal-health rootのpre-ClippedReLU値を`[0.02, 0.98]`へhinge anchorする実装を追加した。
+- weight 10・1 epochはhealthで下側0.42%以下、上側0.82%以下となりGate通過。exact family 89.99%、wdoor family 60.78%。
+- 2 epochはexact 90.33%、wdoor 62.24%へ改善したがhealthが下側約1.9%、上側約1.2%へ再悪化し不採用。
+- 次は1 epochを基準に小幅A/Bし、exact 90%以上とactivation各側1%未満を同時達成後、static/search Gateへ進む。testは未開封を維持する。
+
 ## 17. 最終判断
 
 提案された「型から始める」方針は採用する。ただし、型を人手の絶対評価値として注入するのではなく、
