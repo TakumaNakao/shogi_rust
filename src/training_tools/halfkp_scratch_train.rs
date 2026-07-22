@@ -459,7 +459,7 @@ fn valid_source_mix(args: &Args) -> bool {
         return false;
     }
     let sum = values.iter().sum::<f32>();
-    sum == 0.0 || ((sum - 1.0).abs() <= 1e-6 && values.iter().all(|value| *value > 0.0))
+    sum == 0.0 || (sum - 1.0).abs() <= 1e-6
 }
 
 fn initialize_training(
@@ -694,18 +694,28 @@ fn objective_multipliers(families: &[RecordFamily], args: &Args) -> Result<[f32;
             *total += weight;
         }
     }
-    if nominal.iter().any(|value| *value <= 0.0) {
-        return Err(anyhow!(
-            "objective mix requested but one objective group has no enabled loss"
-        ));
-    }
     let targets = [
         args.source_mix_exact as f64,
         args.source_mix_expert as f64,
         args.source_mix_result as f64,
     ];
+    if nominal
+        .iter()
+        .zip(targets)
+        .any(|(value, target)| target > 0.0 && *value <= 0.0)
+    {
+        return Err(anyhow!(
+            "objective mix requested but one targeted group has no enabled loss"
+        ));
+    }
     let total = nominal.iter().sum::<f64>();
-    let multipliers = std::array::from_fn(|index| (total * targets[index] / nominal[index]) as f32);
+    let multipliers = std::array::from_fn(|index| {
+        if targets[index] == 0.0 {
+            0.0
+        } else {
+            (total * targets[index] / nominal[index]) as f32
+        }
+    });
     println!("objective_mix nominal={nominal:?} target={targets:?} multipliers={multipliers:?}");
     Ok(multipliers)
 }
