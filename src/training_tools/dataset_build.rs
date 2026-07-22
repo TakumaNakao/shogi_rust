@@ -137,6 +137,7 @@ struct DatasetStats {
     records_written: usize,
     records_filtered: usize,
     records_split_collision_filtered: usize,
+    records_duplicate_input_filtered: usize,
     phase: PhaseCounts,
     train: SplitCounts,
     valid: SplitCounts,
@@ -513,12 +514,13 @@ fn process_game(
             stats.records_filtered += 1;
             continue;
         }
-        if network_splits
-            .get(&candidate.network_input_hash)
-            .is_some_and(|&previous| previous != split)
-        {
+        if let Some(&previous) = network_splits.get(&candidate.network_input_hash) {
             stats.records_filtered += 1;
-            stats.records_split_collision_filtered += 1;
+            if previous != split {
+                stats.records_split_collision_filtered += 1;
+            } else {
+                stats.records_duplicate_input_filtered += 1;
+            }
             continue;
         }
         network_splits.insert(candidate.network_input_hash, split);

@@ -1252,6 +1252,11 @@ game split衝突0、opening-family split衝突0、違法教師手0、unknown/non
 SHA-256を全gameで追跡し、先着splitと異なる候補を学習前に除外する。重複許容や閾値緩和は行わず、auditでcross-split
 network collision 0を必須とする。
 
+修正後pilot v3は41,913 record、game/family/network split衝突0、違法手0、provenance不一致0でauditに合格した。
+ただし同一split内に同一network inputが903件あり、同じ局面を複数棋譜由来で過重に数えるため、最終builderでは
+split内外を問わず先着network inputだけを保持する。cross-split除外とsame-split重複除外を別counterでmanifestへ残し、
+最終pilotは両方0をauditで確認する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
