@@ -42,6 +42,8 @@ struct Args {
     valid_percent: u8,
     #[arg(long, default_value_t = 5)]
     test_percent: u8,
+    #[arg(long, default_value_t = 16)]
+    opening_prefix_plies: usize,
     #[arg(long)]
     max_games: Option<usize>,
     #[arg(long)]
@@ -92,6 +94,7 @@ struct DatasetRecord {
     source_uri: String,
     game_index: usize,
     game_key: String,
+    opening_family: String,
     split: &'static str,
     ply: usize,
     phase: &'static str,
@@ -157,6 +160,7 @@ struct DatasetManifest {
     shuffle_games: bool,
     valid_percent: u8,
     test_percent: u8,
+    opening_prefix_plies: usize,
     max_games: Option<usize>,
     max_records: Option<usize>,
     target_opening_records: usize,
@@ -199,6 +203,7 @@ struct OutputFileManifest {
 struct GameSource {
     path: PathBuf,
     game_id: String,
+    opening_family: String,
     bytes: u64,
 }
 
@@ -391,6 +396,7 @@ fn process_game(
     game_index: usize,
     bytes: &[u8],
     game_id: &str,
+    opening_family: &str,
     split: Split,
     args: &Args,
     writers: &mut Writers,
@@ -449,6 +455,7 @@ fn process_game(
                 source_uri: args.source_uri.clone(),
                 game_index,
                 game_key: game_key.clone(),
+                opening_family: opening_family.to_string(),
                 split: split_text(split),
                 ply,
                 phase: phase_text(ply),
@@ -549,6 +556,32 @@ fn unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn opening_family_id(bytes: &[u8], prefix_plies: usize) -> Result<String> {
+    if prefix_plies == 0 {
+        return Err(anyhow!("opening prefix plies must be positive"));
+    }
+    let text = std::str::from_utf8(bytes)?;
+    let record = csa::parse_csa(text)?;
+    let mut position = Position::default();
+    let mut prefix = Vec::new();
+    for csa_move in record.moves.iter().take(prefix_plies) {
+        let mv = parse_csa_move(&position, &csa_move.action)
+            .ok_or_else(|| anyhow!("invalid CSA move in opening prefix"))?;
+        if !position.legal_moves().contains(&mv) {
+            return Err(anyhow!("illegal CSA move in opening prefix"));
+        }
+        prefix.extend_from_slice(format_move_usi(mv).as_bytes());
+        prefix.push(0);
+        position.do_move(mv);
+    }
+    if prefix.is_empty() {
+        return Err(anyhow!("game has no opening moves"));
+    }
+    let mut canonical = b"opening-family-v1\0".to_vec();
+    canonical.extend_from_slice(&prefix);
+    Ok(sha256_hex(&canonical))
+}
+
 fn dataset_stage_fingerprint(args: &Args, sources: &[GameSource]) -> Result<String> {
     let inputs = sources
         .iter()
@@ -567,6 +600,7 @@ fn dataset_stage_fingerprint(args: &Args, sources: &[GameSource]) -> Result<Stri
             "shuffle_games": args.shuffle_games,
             "valid_percent": args.valid_percent,
             "test_percent": args.test_percent,
+            "opening_prefix_plies": args.opening_prefix_plies,
             "max_games": args.max_games,
             "max_records": args.max_records,
             "target_opening_records": args.target_opening_records,
@@ -628,6 +662,9 @@ pub fn run() -> Result<()> {
     if args.sample_every == 0 {
         return Err(anyhow!("--sample-every must be greater than zero"));
     }
+    if args.opening_prefix_plies == 0 {
+        return Err(anyhow!("--opening-prefix-plies must be positive"));
+    }
     if !(1..=100).contains(&args.target_minimum_percent) {
         return Err(anyhow!("--target-minimum-percent must be in 1..=100"));
     }
@@ -652,9 +689,17 @@ pub fn run() -> Result<()> {
             }
         };
         let game_id = game_content_id(&bytes);
+        let opening_family = match opening_family_id(&bytes, args.opening_prefix_plies) {
+            Ok(value) => value,
+            Err(_) => {
+                stats.games_skipped_parse += 1;
+                continue;
+            }
+        };
         let source = GameSource {
             path,
             game_id: game_id.clone(),
+            opening_family,
             bytes: bytes.len() as u64,
         };
         if sources_by_id.insert(game_id, source).is_some() {
@@ -706,7 +751,7 @@ pub fn run() -> Result<()> {
             }
         };
         let split = split_for_game_content(
-            &source.game_id,
+            &source.opening_family,
             args.seed,
             args.valid_percent,
             args.test_percent,
@@ -715,6 +760,7 @@ pub fn run() -> Result<()> {
             game_index,
             &bytes,
             &source.game_id,
+            &source.opening_family,
             split,
             &args,
             &mut writers,
@@ -767,6 +813,7 @@ pub fn run() -> Result<()> {
         shuffle_games: args.shuffle_games,
         valid_percent: args.valid_percent,
         test_percent: args.test_percent,
+        opening_prefix_plies: args.opening_prefix_plies,
         max_games: args.max_games,
         max_records: args.max_records,
         target_opening_records: args.target_opening_records,

@@ -1234,6 +1234,18 @@ opening-family holdoutを構築し、このIDをsampling/上限管理にだけ�
 存在しない。現workspaceには出典とlicenseを確認できるCSA棋譜がないため、無出典の既存SFENを棋譜教師へ転用しない。
 licensed CSA sourceを固定するまではPhase 3学習を開始せず、pipeline実装とfixture検証だけを進める。
 
+ユーザー指定によりPhase 3の棋譜sourceをwdoor/floodgate公式archiveへ固定した。workspaceには2023～2026年の
+421,453 CSA局が既に展開済みであり、2023/2024/2025 archive SHA-256は公式掲載値
+`d10ba4a2...fd5b9` / `4847d98c...f4e3e9` / `42350490...d09baa`と一致した。2026 archiveは公式ページに
+現在SHAが掲載されていないためout-of-time候補として隔離し、学習・開発には使わない。provenance IDは
+`user-authorized:wdoor-public-archive`、source URIは`https://wdoor.c.u-tokyo.ac.jp/shogi/`とする。
+
+game contentだけでなく最初の16 plyをcanonical USI列へしたopening-family SHA-256を追加し、同じprefix familyを
+必ず同一splitへ送るようbuilder v4を拡張した。2023年から2,000局を処理したpilotは1,881局、42,748 record、
+opening/middle/late=15,048/21,765/5,935、train/valid/test=34,394/4,420/3,934だった。全recordは既知の決着、
+非王手、合法手2以上で、1局24局面（phase別8/12/4）を上限とした。このpilotの`test`はpipeline内部splitであり、
+最終out-of-time testではない。builder変更をclean commit後に同設定を再生成してmanifestのdirty flagを除去する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
