@@ -3,7 +3,7 @@ use clap::Parser;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
-use shogi_ai::evaluation::{HalfKpFlatModel, HALFKP_INPUTS, HALFKP_PIECE_STATES};
+use shogi_ai::evaluation::{HalfKpFlatModel, HALFKP_HIDDEN, HALFKP_INPUTS, HALFKP_PIECE_STATES};
 use shogi_ai::halfkp_training::{
     CurriculumReader, PackedHalfKpPosition, PreferenceKind, ProofStatus,
 };
@@ -56,6 +56,10 @@ struct Report {
     records: usize,
     value_objectives: usize,
     value_bce: f64,
+    value_brier: f64,
+    value_positive_rate: f64,
+    value_constant_bce: f64,
+    value_ece_10: f64,
     pairs: usize,
     pair_correct: usize,
     pair_ties: usize,
@@ -83,6 +87,14 @@ struct Report {
     black_activation_above_one_rate: f64,
     white_activation_below_zero_rate: f64,
     white_activation_above_one_rate: f64,
+    black_activation_channels: Vec<ActivationChannelReport>,
+    white_activation_channels: Vec<ActivationChannelReport>,
+    stm_activation_channels: Vec<ActivationChannelReport>,
+    nstm_activation_channels: Vec<ActivationChannelReport>,
+    black_channels_never_interior: usize,
+    white_channels_never_interior: usize,
+    stm_channels_never_interior: usize,
+    nstm_channels_never_interior: usize,
     feature_rows_seen: usize,
     feature_row_coverage: f64,
     black_king_buckets_seen: usize,
@@ -100,6 +112,61 @@ struct HealthDiagnostics {
     feature_rows: Vec<bool>,
     black_king_buckets: [bool; 45],
     white_king_buckets: [bool; 45],
+    black_channels: [ActivationChannelStats; HALFKP_HIDDEN],
+    white_channels: [ActivationChannelStats; HALFKP_HIDDEN],
+    stm_channels: [ActivationChannelStats; HALFKP_HIDDEN],
+    nstm_channels: [ActivationChannelStats; HALFKP_HIDDEN],
+}
+
+#[derive(Clone, Copy)]
+struct ActivationChannelStats {
+    count: usize,
+    below: usize,
+    above: usize,
+    interior: usize,
+    sum: f64,
+    sum_sq: f64,
+    min: f32,
+    max: f32,
+}
+
+impl Default for ActivationChannelStats {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            below: 0,
+            above: 0,
+            interior: 0,
+            sum: 0.0,
+            sum_sq: 0.0,
+            min: f32::INFINITY,
+            max: f32::NEG_INFINITY,
+        }
+    }
+}
+
+impl ActivationChannelStats {
+    fn observe(&mut self, value: f32) {
+        self.count += 1;
+        self.below += usize::from(value < 0.0);
+        self.above += usize::from(value > 1.0);
+        self.interior += usize::from((0.0..=1.0).contains(&value));
+        self.sum += value as f64;
+        self.sum_sq += (value as f64).powi(2);
+        self.min = self.min.min(value);
+        self.max = self.max.max(value);
+    }
+}
+
+#[derive(Default, Serialize)]
+struct ActivationChannelReport {
+    below_zero_rate: f64,
+    above_one_rate: f64,
+    interior_rate: f64,
+    mean: f64,
+    stddev: f64,
+    min: f32,
+    max: f32,
 }
 
 impl Default for HealthDiagnostics {
@@ -115,6 +182,10 @@ impl Default for HealthDiagnostics {
             feature_rows: vec![false; HALFKP_INPUTS],
             black_king_buckets: [false; 45],
             white_king_buckets: [false; 45],
+            black_channels: [ActivationChannelStats::default(); HALFKP_HIDDEN],
+            white_channels: [ActivationChannelStats::default(); HALFKP_HIDDEN],
+            stm_channels: [ActivationChannelStats::default(); HALFKP_HIDDEN],
+            nstm_channels: [ActivationChannelStats::default(); HALFKP_HIDDEN],
         }
     }
 }
@@ -173,6 +244,8 @@ pub fn run() -> Result<()> {
     };
     let mut root_scores = Vec::new();
     let mut health = HealthDiagnostics::default();
+    let mut value_target_sum = 0.0f64;
+    let mut value_bins = [(0usize, 0.0f64, 0.0f64); 10];
     let mut family_pairs = BTreeMap::<[u8; 32], (usize, usize)>::new();
     let mut predictions = match &args.predictions_jsonl {
         Some(path) => {
@@ -200,6 +273,14 @@ pub fn run() -> Result<()> {
                 report.value_bce += -(target as f64 * probability.max(1e-7).ln() as f64
                     + (1.0 - target) as f64 * (1.0 - probability).max(1e-7).ln() as f64);
                 report.value_objectives += 1;
+                let target = target as f64;
+                let probability = probability as f64;
+                value_target_sum += target;
+                report.value_brier += (probability - target).powi(2);
+                let bin = ((probability * 10.0).floor() as usize).min(9);
+                value_bins[bin].0 += 1;
+                value_bins[bin].1 += probability;
+                value_bins[bin].2 += target;
             }
             let distance = record
                 .proof
@@ -280,6 +361,19 @@ pub fn run() -> Result<()> {
     }
     if report.value_objectives > 0 {
         report.value_bce /= report.value_objectives as f64;
+        report.value_brier /= report.value_objectives as f64;
+        report.value_positive_rate = value_target_sum / report.value_objectives as f64;
+        let prevalence = report.value_positive_rate.clamp(1e-7, 1.0 - 1e-7);
+        report.value_constant_bce = -(report.value_positive_rate * prevalence.ln()
+            + (1.0 - report.value_positive_rate) * (1.0 - prevalence).ln());
+        report.value_ece_10 = value_bins
+            .iter()
+            .filter(|bin| bin.0 > 0)
+            .map(|bin| {
+                let count = bin.0 as f64;
+                count / report.value_objectives as f64 * ((bin.1 - bin.2) / count).abs()
+            })
+            .sum();
     }
     if report.symmetry_pairs > 0 {
         report.symmetry_rmse_cp = (report.symmetry_rmse_cp / report.symmetry_pairs as f64).sqrt();
@@ -352,13 +446,24 @@ fn score_and_observe(
         position.side_to_move == Color::Black,
         model.header.target_scale,
     );
-    for value in &forward.black {
+    for (channel, value) in forward.black.iter().enumerate() {
         diagnostics.black_below_zero += usize::from(*value < 0.0);
         diagnostics.black_above_one += usize::from(*value > 1.0);
+        diagnostics.black_channels[channel].observe(*value);
     }
-    for value in &forward.white {
+    for (channel, value) in forward.white.iter().enumerate() {
         diagnostics.white_below_zero += usize::from(*value < 0.0);
         diagnostics.white_above_one += usize::from(*value > 1.0);
+        diagnostics.white_channels[channel].observe(*value);
+    }
+    let (stm, nstm) = if position.side_to_move == Color::Black {
+        (&forward.black, &forward.white)
+    } else {
+        (&forward.white, &forward.black)
+    };
+    for channel in 0..HALFKP_HIDDEN {
+        diagnostics.stm_channels[channel].observe(stm[channel]);
+        diagnostics.nstm_channels[channel].observe(nstm[channel]);
     }
     for value in forward.black.iter().chain(forward.white.iter()) {
         diagnostics.below_zero += usize::from(*value < 0.0);
@@ -390,6 +495,30 @@ fn finish_health_diagnostics(report: &mut Report, diagnostics: &HealthDiagnostic
     report.black_activation_above_one_rate = ratio(diagnostics.black_above_one, side_activations);
     report.white_activation_below_zero_rate = ratio(diagnostics.white_below_zero, side_activations);
     report.white_activation_above_one_rate = ratio(diagnostics.white_above_one, side_activations);
+    report.black_channels_never_interior = diagnostics
+        .black_channels
+        .iter()
+        .filter(|channel| channel.interior == 0)
+        .count();
+    report.white_channels_never_interior = diagnostics
+        .white_channels
+        .iter()
+        .filter(|channel| channel.interior == 0)
+        .count();
+    report.stm_channels_never_interior = diagnostics
+        .stm_channels
+        .iter()
+        .filter(|channel| channel.interior == 0)
+        .count();
+    report.nstm_channels_never_interior = diagnostics
+        .nstm_channels
+        .iter()
+        .filter(|channel| channel.interior == 0)
+        .count();
+    report.black_activation_channels = channel_reports(&diagnostics.black_channels);
+    report.white_activation_channels = channel_reports(&diagnostics.white_channels);
+    report.stm_activation_channels = channel_reports(&diagnostics.stm_channels);
+    report.nstm_activation_channels = channel_reports(&diagnostics.nstm_channels);
     report.feature_rows_seen = diagnostics
         .feature_rows
         .iter()
@@ -406,6 +535,30 @@ fn finish_health_diagnostics(report: &mut Report, diagnostics: &HealthDiagnostic
         .iter()
         .filter(|&&seen| seen)
         .count();
+}
+
+fn channel_reports(
+    channels: &[ActivationChannelStats; HALFKP_HIDDEN],
+) -> Vec<ActivationChannelReport> {
+    channels
+        .iter()
+        .map(|channel| {
+            if channel.count == 0 {
+                return ActivationChannelReport::default();
+            }
+            let count = channel.count as f64;
+            let mean = channel.sum / count;
+            ActivationChannelReport {
+                below_zero_rate: channel.below as f64 / count,
+                above_one_rate: channel.above as f64 / count,
+                interior_rate: channel.interior as f64 / count,
+                mean,
+                stddev: (channel.sum_sq / count - mean * mean).max(0.0).sqrt(),
+                min: channel.min,
+                max: channel.max,
+            }
+        })
+        .collect()
 }
 
 fn finish_score_stats(report: &mut Report, scores: &mut [f32]) {

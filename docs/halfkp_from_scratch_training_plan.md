@@ -1322,6 +1322,16 @@ dataset integrity、proof再検証、split衝突0、lineage、NaN/InfのGateは�
    game BCEが定数予測に非劣性、search非退行を同時に満たす構成だけを250kへ進める。
 5. 250kで改善区間が再現した後にのみgeneration 2 promotion matchへ進む。未達候補を教師にしない。
 
+#### 実施記録（2026-07-23）
+
+- trainerで棋譜の`preference_weight * confidence`と`result_weight`を分離し、各々を0にしたA/Bを可能にした。
+- exact/health/gameの実効nominal lossを事前指定比へ正規化するsource mixを追加した。family数でなく、family内objective
+  正規化、sample weight、confidence、score anchorを反映した量から倍率を計算し、run logとmanifestへ残す。
+- 異種scalar validation lossで親modelが選ばれるのを避けるため、診断run用のfinal epoch保存を追加した。
+- evaluatorへ勝率prevalence、定数予測BCE、Brier、10-bin ECEと、black/white/STM/NSTM別の64 channel診断を追加した。
+- wdoor validの勝率は52.25%、定数予測BCEは0.69213、accepted Phase 1 parentは0.69329だった。
+- scratch training関連12 testと全lib 85 testが合格した。次は同一pilotの3 objective構成・3 seed A/Bである。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

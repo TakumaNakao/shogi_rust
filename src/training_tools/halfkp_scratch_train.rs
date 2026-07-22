@@ -59,6 +59,19 @@ struct Args {
     symmetry_temperature_cp: f32,
     #[arg(long, default_value_t = 1.0)]
     rank_weight: f32,
+    /// Additional weight for uncertain recorded-move preferences only.
+    #[arg(long, default_value_t = 1.0)]
+    expert_preference_weight: f32,
+    /// Additional weight for game-result objectives only.
+    #[arg(long, default_value_t = 1.0)]
+    game_result_weight: f32,
+    /// Target effective loss share for exact objectives; all three shares must sum to one.
+    #[arg(long, default_value_t = 0.0)]
+    source_mix_exact: f32,
+    #[arg(long, default_value_t = 0.0)]
+    source_mix_health: f32,
+    #[arg(long, default_value_t = 0.0)]
+    source_mix_game: f32,
     #[arg(long, value_enum)]
     stage: TrainingStage,
     #[arg(long, value_enum, default_value_t = FactorizationMode::Direct)]
@@ -93,6 +106,9 @@ struct Args {
     checkpoint_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     resume: bool,
+    /// Save the final epoch instead of selecting by heterogeneous scalar validation loss.
+    #[arg(long, default_value_t = false)]
+    save_last_epoch: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -223,6 +239,18 @@ struct Metrics {
     records: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceGroup {
+    Exact = 0,
+    Health = 1,
+    Game = 2,
+}
+
+struct RecordFamily {
+    source: SourceGroup,
+    records: Vec<CurriculumRecord>,
+}
+
 pub fn run() -> Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
@@ -245,7 +273,7 @@ pub fn run() -> Result<()> {
         let valid = evaluate(&weights, &args.valid, args.max_valid_records, &args)?;
         print_metrics("valid", epoch, &valid);
         let loss = mean_loss(&valid);
-        if loss < best_loss {
+        if args.save_last_epoch || loss < best_loss {
             best_loss = loss;
             best_epoch = epoch;
             save_weights(&weights, &args.output)?;
@@ -292,6 +320,11 @@ pub fn run() -> Result<()> {
             "rank_temperature_cp": args.rank_temperature_cp,
             "symmetry_temperature_cp": args.symmetry_temperature_cp,
             "rank_weight": args.rank_weight,
+            "expert_preference_weight": args.expert_preference_weight,
+            "game_result_weight": args.game_result_weight,
+            "source_mix_exact": args.source_mix_exact,
+            "source_mix_health": args.source_mix_health,
+            "source_mix_game": args.source_mix_game,
             "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
             "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
             "seed": args.seed, "l2": args.l2,
@@ -302,6 +335,7 @@ pub fn run() -> Result<()> {
             "score_anchor_cp": args.score_anchor_cp,
             "activation_anchor_weight": args.activation_anchor_weight,
             "activation_anchor_margin": args.activation_anchor_margin,
+            "save_last_epoch": args.save_last_epoch,
         }),
         best_epoch,
         best_valid_loss: best_loss,
@@ -392,6 +426,9 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.rank_temperature_cp <= 0.0
         || args.symmetry_temperature_cp <= 0.0
         || args.rank_weight < 0.0
+        || args.expert_preference_weight < 0.0
+        || args.game_result_weight < 0.0
+        || !valid_source_mix(args)
         || args.l2 < 0.0
         || args.weight_decay < 0.0
         || args.score_anchor_weight < 0.0
@@ -408,6 +445,22 @@ fn validate_args(args: &Args) -> Result<()> {
         return Err(anyhow!("invalid arguments or output already exists"));
     }
     Ok(())
+}
+
+fn valid_source_mix(args: &Args) -> bool {
+    let values = [
+        args.source_mix_exact,
+        args.source_mix_health,
+        args.source_mix_game,
+    ];
+    if values
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return false;
+    }
+    let sum = values.iter().sum::<f32>();
+    sum == 0.0 || ((sum - 1.0).abs() <= 1e-6 && values.iter().all(|value| *value > 0.0))
 }
 
 fn initialize_training(
@@ -470,6 +523,11 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "rank_temperature_cp": args.rank_temperature_cp,
         "symmetry_temperature_cp": args.symmetry_temperature_cp,
         "rank_weight": args.rank_weight,
+        "expert_preference_weight": args.expert_preference_weight,
+        "game_result_weight": args.game_result_weight,
+        "source_mix_exact": args.source_mix_exact,
+        "source_mix_health": args.source_mix_health,
+        "source_mix_game": args.source_mix_game,
         "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
         "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
         "seed": args.seed,
@@ -481,6 +539,7 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "score_anchor_cp": args.score_anchor_cp,
         "activation_anchor_weight": args.activation_anchor_weight,
         "activation_anchor_margin": args.activation_anchor_margin,
+        "save_last_epoch": args.save_last_epoch,
     });
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
 }
@@ -545,7 +604,20 @@ fn train_epoch(
             break;
         }
     }
-    let mut families = families.into_values().collect::<Vec<_>>();
+    let mut families = families
+        .into_values()
+        .map(|records| {
+            let source = source_group(records[0].source);
+            if records
+                .iter()
+                .any(|record| source_group(record.source) != source)
+            {
+                return Err(anyhow!("one family contains multiple source groups"));
+            }
+            Ok(RecordFamily { source, records })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let source_multipliers = source_multipliers(&families, args)?;
     let mut rng = ChaCha20Rng::seed_from_u64(args.seed ^ epoch as u64);
     families.shuffle(&mut rng);
     let mut batch = Gradient::default();
@@ -553,15 +625,16 @@ fn train_epoch(
     let mut batch_families = 0usize;
     for family in families {
         let objectives = family
+            .records
             .iter()
             .map(|record| objective_count(record, args))
             .sum::<usize>();
         if objectives == 0 {
-            metrics.records += family.len();
+            metrics.records += family.records.len();
             continue;
         }
-        let family_scale = 1.0 / objectives as f32;
-        for record in &family {
+        let family_scale = source_multipliers[family.source as usize] / objectives as f32;
+        for record in &family.records {
             accumulate_record(weights, record, args, family_scale, &mut batch);
             batch_records += 1;
         }
@@ -582,6 +655,74 @@ fn train_epoch(
         apply_gradient(weights, optimizer, &mut batch, batch_families, args);
     }
     Ok(metrics)
+}
+
+fn source_group(source: LabelSource) -> SourceGroup {
+    match source {
+        LabelSource::ExactMate | LabelSource::ExactTactic => SourceGroup::Exact,
+        LabelSource::SymmetryAnchor => SourceGroup::Health,
+        LabelSource::ExpertMove
+        | LabelSource::GameResult
+        | LabelSource::SelfSearch
+        | LabelSource::SelfPlay => SourceGroup::Game,
+    }
+}
+
+fn family_nominal_weight(family: &RecordFamily, args: &Args) -> f64 {
+    let objectives = family
+        .records
+        .iter()
+        .map(|record| objective_count(record, args))
+        .sum::<usize>();
+    if objectives == 0 {
+        return 0.0;
+    }
+    let weight = family
+        .records
+        .iter()
+        .map(|record| {
+            let result = record
+                .result
+                .map_or(0.0, |_| result_objective_weight(record, args));
+            let preferences =
+                record.preferences.len() as f32 * preference_objective_weight(record, args);
+            let score_anchor = if record.source == LabelSource::SymmetryAnchor {
+                record.sample_weight * args.score_anchor_weight
+            } else {
+                0.0
+            };
+            result + preferences + score_anchor
+        })
+        .sum::<f32>();
+    (weight / objectives as f32) as f64
+}
+
+fn source_multipliers(families: &[RecordFamily], args: &Args) -> Result<[f32; 3]> {
+    if args.source_mix_exact == 0.0 {
+        return Ok([1.0; 3]);
+    }
+    let mut nominal = [0.0f64; 3];
+    let mut counts = [0usize; 3];
+    for family in families {
+        nominal[family.source as usize] += family_nominal_weight(family, args);
+        counts[family.source as usize] += 1;
+    }
+    if nominal.iter().any(|value| *value <= 0.0) {
+        return Err(anyhow!(
+            "source mix requested but one source has no enabled objective"
+        ));
+    }
+    let targets = [
+        args.source_mix_exact as f64,
+        args.source_mix_health as f64,
+        args.source_mix_game as f64,
+    ];
+    let total = nominal.iter().sum::<f64>();
+    let multipliers = std::array::from_fn(|index| (total * targets[index] / nominal[index]) as f32);
+    println!(
+        "source_mix families={counts:?} nominal={nominal:?} target={targets:?} multipliers={multipliers:?}"
+    );
+    Ok(multipliers)
 }
 
 fn evaluate(
@@ -643,18 +784,22 @@ fn accumulate_record(
             weights,
             &record.root,
             target,
-            record.sample_weight * family_scale,
+            result_objective_weight(record, args) * family_scale,
             args.kappa_cp,
             gradient,
         );
     }
     for preference in &record.preferences {
+        let preference_weight = preference_objective_weight(record, args);
+        if preference_weight == 0.0 {
+            continue;
+        }
         let good = weights.forward(&preference.good_child);
         let bad = weights.forward(&preference.bad_child);
         if preference.kind == PreferenceKind::SymmetryEqual {
             let difference = good.raw - bad.raw;
             let normalized = difference * TARGET_SCALE / args.symmetry_temperature_cp;
-            let scale = record.sample_weight * args.rank_weight * family_scale;
+            let scale = preference_weight * family_scale;
             gradient.loss += 0.5 * (normalized * normalized * scale) as f64;
             let d_raw = normalized * TARGET_SCALE / args.symmetry_temperature_cp * scale;
             add_position_gradient(weights, &preference.good_child, &good, d_raw, gradient);
@@ -664,7 +809,7 @@ fn accumulate_record(
             let margin_cp = margin_cp(record.source, preference.kind, preference.margin_class);
             let x = ((bad.raw - good.raw) * TARGET_SCALE - margin_cp) / args.rank_temperature_cp;
             let probability = sigmoid(x);
-            let scale = record.sample_weight * args.rank_weight * family_scale;
+            let scale = preference_weight * family_scale;
             gradient.loss += (softplus(-x) * scale) as f64;
             let common = (probability - 1.0) * TARGET_SCALE / args.rank_temperature_cp * scale;
             add_position_gradient(weights, &preference.good_child, &good, -common, gradient);
@@ -674,9 +819,37 @@ fn accumulate_record(
     }
 }
 
+fn result_objective_weight(record: &CurriculumRecord, args: &Args) -> f32 {
+    let source_weight = if matches!(
+        record.source,
+        LabelSource::ExpertMove | LabelSource::GameResult
+    ) {
+        args.game_result_weight
+    } else {
+        1.0
+    };
+    record.sample_weight * source_weight
+}
+
+fn preference_objective_weight(record: &CurriculumRecord, args: &Args) -> f32 {
+    let source_weight = if record.source == LabelSource::ExpertMove {
+        args.expert_preference_weight
+    } else {
+        1.0
+    };
+    record.sample_weight * record.confidence * args.rank_weight * source_weight
+}
+
 fn objective_count(record: &CurriculumRecord, args: &Args) -> usize {
-    usize::from(record.result.is_some())
-        + record.preferences.len()
+    let result_enabled = !matches!(
+        record.source,
+        LabelSource::ExpertMove | LabelSource::GameResult
+    ) || args.game_result_weight > 0.0;
+    let preference_enabled = args.rank_weight > 0.0
+        && (record.source != LabelSource::ExpertMove
+            || (args.expert_preference_weight > 0.0 && record.confidence > 0.0));
+    usize::from(record.result.is_some() && result_enabled)
+        + usize::from(preference_enabled) * record.preferences.len()
         + usize::from(
             record.source == LabelSource::SymmetryAnchor && args.score_anchor_weight > 0.0,
         )
@@ -1167,6 +1340,8 @@ fn print_metrics(label: &str, epoch: usize, metrics: &Metrics) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shogi_ai::halfkp_training::{CurriculumPreference, OpeningStratum};
+    use shogi_ai::training_data::DatasetSplit;
     use shogi_core::PartialPosition;
     use shogi_lib::Position;
     use shogi_usi_parser::FromUsi;
@@ -1187,6 +1362,11 @@ mod tests {
             rank_temperature_cp: 300.0,
             symmetry_temperature_cp: 30.0,
             rank_weight: 1.0,
+            expert_preference_weight: 1.0,
+            game_result_weight: 1.0,
+            source_mix_exact: 0.0,
+            source_mix_health: 0.0,
+            source_mix_game: 0.0,
             stage: TrainingStage::Calibrated,
             factorization: FactorizationMode::Direct,
             seed: 7,
@@ -1202,6 +1382,7 @@ mod tests {
             max_valid_records: None,
             checkpoint_dir: None,
             resume: false,
+            save_last_epoch: false,
         }
     }
 
@@ -1225,6 +1406,95 @@ mod tests {
             features_white: vec![1],
             material_black: 0.0,
             material_white: 0.0,
+        }
+    }
+
+    fn expert_record() -> CurriculumRecord {
+        let root = test_position();
+        CurriculumRecord {
+            source: LabelSource::ExpertMove,
+            group_id: 1,
+            position_hash: 1,
+            family_hash: [1; 32],
+            network_input_hash: root.network_input_hash(),
+            root_sfen: "test-only".to_string(),
+            split: DatasetSplit::Train,
+            ply: 1,
+            phase: 0,
+            opening_stratum: OpeningStratum::UNKNOWN,
+            confidence: 0.6,
+            sample_weight: 0.1,
+            root: root.clone(),
+            result: Some(1.0),
+            proof: None,
+            preferences: vec![CurriculumPreference {
+                good_child: root.clone(),
+                bad_child: root,
+                kind: PreferenceKind::ExpertMove,
+                margin_class: 0,
+                good_move_usi: None,
+                bad_move_usi: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn expert_confidence_only_scales_preference_objective() {
+        let record = expert_record();
+        let mut args = test_args();
+        args.expert_preference_weight = 2.0;
+        args.game_result_weight = 3.0;
+        assert!((preference_objective_weight(&record, &args) - 0.12).abs() < 1e-7);
+        assert!((result_objective_weight(&record, &args) - 0.3).abs() < 1e-7);
+        args.expert_preference_weight = 0.0;
+        args.game_result_weight = 0.0;
+        assert_eq!(preference_objective_weight(&record, &args), 0.0);
+        assert_eq!(result_objective_weight(&record, &args), 0.0);
+        assert_eq!(objective_count(&record, &args), 0);
+    }
+
+    #[test]
+    fn source_mix_scales_effective_nominal_loss() {
+        let mut args = test_args();
+        args.source_mix_exact = 0.2;
+        args.source_mix_health = 0.4;
+        args.source_mix_game = 0.4;
+        args.score_anchor_weight = 2.0;
+        let game = expert_record();
+        let mut exact = game.clone();
+        exact.source = LabelSource::ExactTactic;
+        exact.confidence = 1.0;
+        exact.sample_weight = 1.0;
+        exact.result = None;
+        let mut health = exact.clone();
+        health.source = LabelSource::SymmetryAnchor;
+        health.sample_weight = 0.05;
+        health.preferences[0].kind = PreferenceKind::SymmetryEqual;
+        let families = vec![
+            RecordFamily {
+                source: SourceGroup::Exact,
+                records: vec![exact],
+            },
+            RecordFamily {
+                source: SourceGroup::Health,
+                records: vec![health],
+            },
+            RecordFamily {
+                source: SourceGroup::Game,
+                records: vec![game],
+            },
+        ];
+        let multipliers = source_multipliers(&families, &args).expect("mix");
+        let effective: [f64; 3] = std::array::from_fn(|index| {
+            family_nominal_weight(&families[index], &args) * multipliers[index] as f64
+        });
+        let total = effective.iter().sum::<f64>();
+        for (actual, expected) in effective
+            .iter()
+            .map(|value| value / total)
+            .zip([0.2, 0.4, 0.4])
+        {
+            assert!((actual - expected).abs() < 1e-6, "actual={actual}");
         }
     }
 
