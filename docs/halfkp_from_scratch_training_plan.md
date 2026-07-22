@@ -1197,6 +1197,15 @@ depth 0は437/156/84/37だったため、閾値を変更せず200k nodeを固定
 exact-only候補は引き続き昇格不可とし、activation/feature coverageを確認後、all-legal hard negative/listwise改善と
 Phase 3 combined pipelineへ進む。独立testはまだ生成・評価しない。
 
+一般合法validation 1,000 rootでroot accumulatorの128,000 activationを測定した。seed 20260721/22/23の
+0未満率は黒1.21%/2.31%/1.16%、白2.06%/2.65%/1.91%、1超過率は黒0.30%/0.51%/0.78%、
+白0.42%/0.85%/1.31%だった。各側1%未満Gateに対し、下側は全seed、上側はseed 20260723の白側が未達である。
+さらにvalidationで観測したfeature rowは3,780/105,480（3.58%）、king bucketは黒13/45、白18/45に留まった。
+これはmodel飽和だけでなく、random legal health corpusが標準初期局面近傍へ偏り、coverage Gateとして不足していることを
+示す。よって3候補はhealth Gateでも棄却し、独立testを開かない。次の学習前にhealth generatorを45 king bucket、
+盤上/持駒、game phaseで層化して拡張し、activation penaltyまたはanchorのA/Bは拡張validation上で行う。
+exact-only失敗modelから継続せず、combined候補はaccepted Phase 1 parentから開始する原則を維持する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

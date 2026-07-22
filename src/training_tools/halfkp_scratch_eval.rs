@@ -3,7 +3,7 @@ use clap::Parser;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
-use shogi_ai::evaluation::{HalfKpFlatModel, HALFKP_PIECE_STATES};
+use shogi_ai::evaluation::{HalfKpFlatModel, HALFKP_INPUTS, HALFKP_PIECE_STATES};
 use shogi_ai::halfkp_training::{
     CurriculumReader, PackedHalfKpPosition, PreferenceKind, ProofStatus,
 };
@@ -76,6 +76,47 @@ struct Report {
     root_score_abs_p99_cp: f32,
     output_bias_cp: f32,
     material_coefficient: f32,
+    activation_values: usize,
+    activation_below_zero_rate: f64,
+    activation_above_one_rate: f64,
+    black_activation_below_zero_rate: f64,
+    black_activation_above_one_rate: f64,
+    white_activation_below_zero_rate: f64,
+    white_activation_above_one_rate: f64,
+    feature_rows_seen: usize,
+    feature_row_coverage: f64,
+    black_king_buckets_seen: usize,
+    white_king_buckets_seen: usize,
+}
+
+struct HealthDiagnostics {
+    activations: usize,
+    below_zero: usize,
+    above_one: usize,
+    black_below_zero: usize,
+    black_above_one: usize,
+    white_below_zero: usize,
+    white_above_one: usize,
+    feature_rows: Vec<bool>,
+    black_king_buckets: [bool; 45],
+    white_king_buckets: [bool; 45],
+}
+
+impl Default for HealthDiagnostics {
+    fn default() -> Self {
+        Self {
+            activations: 0,
+            below_zero: 0,
+            above_one: 0,
+            black_below_zero: 0,
+            black_above_one: 0,
+            white_below_zero: 0,
+            white_above_one: 0,
+            feature_rows: vec![false; HALFKP_INPUTS],
+            black_king_buckets: [false; 45],
+            white_king_buckets: [false; 45],
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -131,6 +172,7 @@ pub fn run() -> Result<()> {
         ..Report::default()
     };
     let mut root_scores = Vec::new();
+    let mut health = HealthDiagnostics::default();
     let mut family_pairs = BTreeMap::<[u8; 32], (usize, usize)>::new();
     let mut predictions = match &args.predictions_jsonl {
         Some(path) => {
@@ -151,7 +193,7 @@ pub fn run() -> Result<()> {
         }
         while let Some(record) = reader.read_record()? {
             report.records += 1;
-            let root_score = score(&model, &record.root);
+            let root_score = score_and_observe(&model, &record.root, &mut health);
             root_scores.push(root_score);
             if let Some(target) = record.result {
                 let probability = sigmoid(root_score / args.kappa_cp);
@@ -243,6 +285,7 @@ pub fn run() -> Result<()> {
         report.symmetry_rmse_cp = (report.symmetry_rmse_cp / report.symmetry_pairs as f64).sqrt();
     }
     finish_score_stats(&mut report, &mut root_scores);
+    finish_health_diagnostics(&mut report, &health);
     finish_family_stats(&mut report, &family_pairs, &args);
     println!(
         "records={} value_bce={:.8} pairs={} pair_accuracy={:.4} family_accuracy={:.4} ci95=[{:.4},{:.4}] symmetry_pairs={} symmetry_rmse_cp={:.4} mate1={}/{} ({:.4}) mate3={}/{} ({:.4}) score_mean_cp={:.3} score_stddev_cp={:.3} score_abs_p99_cp={:.3} output_bias_cp={:.3} material_coefficient={:.6}",
@@ -290,6 +333,79 @@ fn score(model: &HalfKpFlatModel, position: &PackedHalfKpPosition) -> f32 {
         model.header.target_scale,
     )
     .raw * model.header.target_scale
+}
+
+fn score_and_observe(
+    model: &HalfKpFlatModel,
+    position: &PackedHalfKpPosition,
+    diagnostics: &mut HealthDiagnostics,
+) -> f32 {
+    let forward = HalfKpFlatModel::forward_parts(
+        &model.feature_emb,
+        &model.hidden_b,
+        &model.out_w,
+        model.out_b,
+        position.features_black.iter().map(|&value| value as usize),
+        position.features_white.iter().map(|&value| value as usize),
+        position.material_black,
+        position.material_white,
+        position.side_to_move == Color::Black,
+        model.header.target_scale,
+    );
+    for value in &forward.black {
+        diagnostics.black_below_zero += usize::from(*value < 0.0);
+        diagnostics.black_above_one += usize::from(*value > 1.0);
+    }
+    for value in &forward.white {
+        diagnostics.white_below_zero += usize::from(*value < 0.0);
+        diagnostics.white_above_one += usize::from(*value > 1.0);
+    }
+    for value in forward.black.iter().chain(forward.white.iter()) {
+        diagnostics.below_zero += usize::from(*value < 0.0);
+        diagnostics.above_one += usize::from(*value > 1.0);
+        diagnostics.activations += 1;
+    }
+    for &feature in position
+        .features_black
+        .iter()
+        .chain(position.features_white.iter())
+    {
+        diagnostics.feature_rows[feature as usize] = true;
+    }
+    if let Some(bucket) = king_bucket(&position.features_black) {
+        diagnostics.black_king_buckets[bucket] = true;
+    }
+    if let Some(bucket) = king_bucket(&position.features_white) {
+        diagnostics.white_king_buckets[bucket] = true;
+    }
+    forward.raw * model.header.target_scale
+}
+
+fn finish_health_diagnostics(report: &mut Report, diagnostics: &HealthDiagnostics) {
+    report.activation_values = diagnostics.activations;
+    report.activation_below_zero_rate = ratio(diagnostics.below_zero, diagnostics.activations);
+    report.activation_above_one_rate = ratio(diagnostics.above_one, diagnostics.activations);
+    let side_activations = diagnostics.activations / 2;
+    report.black_activation_below_zero_rate = ratio(diagnostics.black_below_zero, side_activations);
+    report.black_activation_above_one_rate = ratio(diagnostics.black_above_one, side_activations);
+    report.white_activation_below_zero_rate = ratio(diagnostics.white_below_zero, side_activations);
+    report.white_activation_above_one_rate = ratio(diagnostics.white_above_one, side_activations);
+    report.feature_rows_seen = diagnostics
+        .feature_rows
+        .iter()
+        .filter(|&&seen| seen)
+        .count();
+    report.feature_row_coverage = ratio(report.feature_rows_seen, HALFKP_INPUTS);
+    report.black_king_buckets_seen = diagnostics
+        .black_king_buckets
+        .iter()
+        .filter(|&&seen| seen)
+        .count();
+    report.white_king_buckets_seen = diagnostics
+        .white_king_buckets
+        .iter()
+        .filter(|&&seen| seen)
+        .count();
 }
 
 fn finish_score_stats(report: &mut Report, scores: &mut [f32]) {
