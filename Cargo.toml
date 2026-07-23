@@ -155,6 +155,11 @@ path = "src/bin/halfkp_search_gate.rs"
 required-features = ["halfkp64", "training-tools"]
 
 [[bin]]
+name = "halfkp_promotion_match"
+path = "src/bin/halfkp_promotion_match.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
 name = "halfkp_scratch_train"
 path = "src/bin/halfkp_scratch_train.rs"
 required-features = ["halfkp64", "training-tools"]
