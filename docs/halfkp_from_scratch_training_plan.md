@@ -1378,6 +1378,28 @@ model `9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`をgener
 `accepted_promotion_match`登録した。以後の探索教師生成は、このaccepted modelからのみ開始できる。残る2 seedは
 再現性確認用diagnosticであり、個別のpromotion matchなしにacceptedとはしない。
 
+#### Phase 5生成性能監査と段階規模の修正（2026-07-23）
+
+generation 2からdepth 2 search teacherを100局面生成するスモークは5分超で完了せず、CPU使用率も約1 coreに
+低下したため中断し、不完全な一時artifactを破棄した。Rayon自体の無効化ではなく、1 rootにつき全合法手の独立
+full-window探索と最大12候補の再探索を行い、各回TTを消去する構造、およびchunk barrier末尾のheavy-tail rootが原因である。
+このthroughputで250kを直接開始しない。
+
+Phase 5は次の順へ修正する。
+
+1. 各探索へdeterministic fixed-node上限を設け、cap到達rootは部分scoreを教師にせず全体を除外して集計する。
+2. rootごとのsearch call、nodes/qnodes、wall timeのp50/p95/maxを記録し、固定size shardをatomic保存・resume可能にする。
+3. 64 rootのphase・opening family・legal-move数層化profile、128 rootの候補recall比較を先に行う。
+4. 初期候補はselection depth 1、teacher depth 2、candidate top 4とし、game/tactical/random候補を保持する。
+5. jobs 1/2/4で同一seedのbyte一致を確認後、train 1,024 / valid 256、4k/1k、16k/2kのlearning curveへ進む。
+6. 64kで改善と全Gateを再現した場合だけ250kを再検討する。規模拡大を成功条件にしない。
+7. 初回学習はparentのabsolute search cp回帰を無効化し、search順位signalだけを既存70/15/15 replayへ追加する。
+
+正式生成前に、search teacherとsearch trainerはaccepted model・Gate report・generationのregistry照合に加え、実model
+manifestのlineage、model SHA、generation、parent chainをparse検証する。clean commitからrelease binaryを再buildし、
+engine binary SHAも固定する。候補は従来のexact、game rank/BCE、health、static、200k searchをすべて再通過し、
+parentとのpromotion matchに勝った場合だけ次の教師にできる。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
