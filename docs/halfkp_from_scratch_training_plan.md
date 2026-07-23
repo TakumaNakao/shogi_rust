@@ -1333,6 +1333,32 @@ dataset integrity、proof再検証、split衝突0、lineage、NaN/InfのGateは�
 - wdoor validの勝率は52.25%、定数予測BCEは0.69213、accepted Phase 1 parentは0.69329だった。
 - scratch training関連12 testと全lib 85 testが合格した。次は同一pilotの3 objective構成・3 seed A/Bである。
 
+#### objective A/Bとwdoor 250k結果（2026-07-23）
+
+2,000局pilotでrank-only/result-only/combinedを分離した。20/40/40 combinedはwdoor順位80.28%、BCE 0.63496へ
+改善したがexact 87.06%へ退行した。比率を限定A/Bし、exact/symmetry 70%、棋譜手15%、result 15%、2 epochで
+3 seedすべてがpilot Gateを通った。exact 90.01～90.32%、wdoor順位78.66～79.25%、BCE 0.62367～0.62832、
+health p99 1,485～1,534 cpだった。200k searchは全体98.2～98.7%、攻撃96.4～97.4%、防御100%で、旧exact-onlyを上回った。
+
+wdoor 2023～2025から12,237局、241,177 unique position（train 193,070 / valid 25,057 / 未開封test 23,050）へ
+拡張した。game/opening-family/network split衝突、split内重複、違法教師手、provenance不一致はすべて0だった。
+HKCL変換後はvalidからtrainおよびexact/healthのroot/good/badを除外し、合同432,124 recordでもfamily/network
+split衝突0、proof再検証失敗0を確認した。
+
+250k、70/15/15、2 epochの3 seed結果は次のとおりである。
+
+| seed | model SHA-256 | exact family | 95%下限 | wdoor family | BCE | health p99 | static | search 200k |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 20260721 | `9a1bfc9b...b3db6` | 90.81% | 89.62% | 80.56% | 0.59728 | 1,673 cp | 70.0% | 98.6% |
+| 20260722 | `74d4cc6c...6d93c` | 90.41% | 89.20% | 81.09% | 0.58840 | 1,539 cp | 70.1% | 98.6% |
+| 20260723 | `f30a9d85...fdd3c` | 90.86% | 89.69% | 81.02% | 0.59202 | 1,607 cp | 69.5% | 98.6% |
+
+全seedでexact point 90%以上、bootstrap下限88%以上、wdoor定数BCE 0.69265より改善、health p99 2,000 cp未満、
+search非退行を満たした。activationは全channelがinteriorを使用しNaN/Inf・channel崩壊はないが、一部channelの
+上側clip集中が進むため診断値として継続監視する。1 epochは集中が少ない一方seed 20260722のexactが89.76%で、
+固定3 seed Gateを満たさなかった。したがって2 epoch構成をpromotion match候補として固定するが、match完了前に
+generation 2へaccepted登録せず、探索教師にも使わない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

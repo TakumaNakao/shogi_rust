@@ -94,6 +94,10 @@
     {"model_sha256": "6a7a7b0a97ed95cb1a5b84a8631c5adae88ba2add8a1ba0d7349bae22d34bbfe", "reason": "hkcl_v3b_exact_gate_failed"},
     {"model_sha256": "3096d0b27acdf4b74df49c3b1746a09e528142405ef6f1885f2fede0349d8563", "reason": "hkcl_v3b_exact_gate_failed"},
     {"model_sha256": "5b2088a0f18c8b5620a9bbff643acdf5e32965d1a2624b2a5939088b177cd72f", "reason": "hkcl_v3b_exact_gate_failed_scale"},
-    {"model_sha256": "6fe5d1807593442b30e619b04c1a5f756bf279b9646a4d9b02aabb8464101acf", "reason": "hkcl_v3b_exact_gate_failed"}
+    {"model_sha256": "6fe5d1807593442b30e619b04c1a5f756bf279b9646a4d9b02aabb8464101acf", "reason": "hkcl_v3b_exact_gate_failed"},
+    {"model_sha256": "6072991f7a9acd5da9a02ed7587e76fb87705f9f6f27040127e26183199f798d", "reason": "phase3_pre_confidence_semantics_diagnostic"},
+    {"model_sha256": "25c5645b2968d813577ef604189fc555da36cb7fac5adb40978c67c966186f15", "reason": "phase3_pre_confidence_semantics_diagnostic"},
+    {"model_sha256": "967bade10bb7ed7c7549abdfc326c5bbaa2f3901b1097fa671aed696d6d28096", "reason": "phase3_activation_metric_tuning_diagnostic"},
+    {"model_sha256": "3a3808dc95fa8fa252604ffb611a97de2c71d0e351200fe23ed838f51c32c9f9", "reason": "phase3_activation_metric_tuning_diagnostic"}
   ]
 }
