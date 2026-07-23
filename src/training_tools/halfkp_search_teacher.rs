@@ -16,6 +16,7 @@ use shogi_ai::training_data::{
     artifact_metadata, capture_run_environment, line_artifact_metadata, sha256_file, TrainingPhase,
     PHASE_POLICY_VERSION, SPLIT_POLICY_VERSION,
 };
+use shogi_ai::training_tools::scratch_lineage::require_accepted_parent;
 use shogi_ai::utils::{parse_usi_move_for_color, position_from_sfen_or_usi};
 use shogi_core::{Color, Move};
 use shogi_lib::Position;
@@ -37,6 +38,12 @@ struct Args {
     input: Vec<PathBuf>,
     #[arg(long)]
     parent_manifest: Vec<PathBuf>,
+    #[arg(long)]
+    promotion_registry: PathBuf,
+    #[arg(long)]
+    gate_report: PathBuf,
+    #[arg(long)]
+    parent_generation: u32,
     #[arg(long)]
     output: PathBuf,
     #[arg(long, default_value_t = false)]
@@ -165,6 +172,12 @@ pub fn run() -> Result<()> {
             "depth, candidate-top, and chunk-size must be positive"
         ));
     }
+    require_accepted_parent(
+        &args.promotion_registry,
+        &args.weights,
+        &args.gate_report,
+        args.parent_generation,
+    )?;
     let evaluator = Arc::new(EngineEvaluator::new(&args.weights, 0.0)?);
     if evaluator.name() != "halfkp" {
         return Err(anyhow!("--weights must be a HalfKP model"));

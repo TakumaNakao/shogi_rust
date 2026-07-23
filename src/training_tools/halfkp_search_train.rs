@@ -14,6 +14,7 @@ use shogi_ai::training_data::{
     artifact_metadata, capture_run_environment, sha256_file, sha256_hex, ArtifactMetadata,
     RunEnvironment, PHASE_POLICY_VERSION, SPLIT_POLICY_VERSION,
 };
+use shogi_ai::training_tools::scratch_lineage::require_accepted_parent;
 use shogi_core::Color;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
@@ -33,6 +34,12 @@ struct Args {
     test: Vec<PathBuf>,
     #[arg(long)]
     init: PathBuf,
+    #[arg(long)]
+    promotion_registry: PathBuf,
+    #[arg(long)]
+    gate_report: PathBuf,
+    #[arg(long)]
+    parent_generation: u32,
     #[arg(long)]
     output: PathBuf,
     #[arg(long, default_value_t = 5)]
@@ -371,6 +378,12 @@ impl Weights {
 pub fn run() -> Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
+    require_accepted_parent(
+        &args.promotion_registry,
+        &args.init,
+        &args.gate_report,
+        args.parent_generation,
+    )?;
     let pool = if args.threads > 0 {
         Some(
             rayon::ThreadPoolBuilder::new()
