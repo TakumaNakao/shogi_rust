@@ -49,6 +49,14 @@
       "decision": "accepted_gate",
       "accepted_at": "2026-07-22T00:00:00+09:00",
       "decision_commit": "bdde355"
+    },
+    {
+      "model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+      "generation": 2,
+      "gate_report_sha256": "d006cc7a8d43a6ba22e4e8b8ede179707d43436f1296651e8bf3f7874ad3b18a",
+      "decision": "accepted_promotion_match",
+      "accepted_at": "2026-07-23T00:00:00+09:00",
+      "decision_commit": "3ca455b"
     }
   ],
   "rejected": [

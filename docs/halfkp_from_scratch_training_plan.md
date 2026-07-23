@@ -1359,6 +1359,25 @@ search非退行を満たした。activationは全channelがinteriorを使用しN
 固定3 seed Gateを満たさなかった。したがって2 epoch構成をpromotion match候補として固定するが、match完了前に
 generation 2へaccepted登録せず、探索教師にも使わない。
 
+#### generation 2 promotion match（2026-07-23）
+
+事前固定したseed 20260721候補を、同seedのaccepted Phase 1 parentと比較した。対局器はmodel manifestの
+scratch lineageと実ファイルSHA-256を照合し、parentがimmutable promotion registryにaccepted登録済みであることを
+必須とする。openingは未開封testを使わず、wdoor validからply 8～40のunique opening familyを入力順に選んだ。
+各openingは同一SFENでcandidateの先後を入れ替え、双方を20,000 fixed nodes/手、最大256手で探索させた。
+千日手・連続王手、合法手、探索失敗、root欠落、非有限scoreを対局器内で判定・記録する。
+
+20局smokeはcandidate 19勝 / parent 1勝、100局screenは95勝 / 5勝だった。最終100 opening pair・200局は
+candidate 192勝 / parent 8勝 / 引分0、score 96.0%、Wilson 95%下限92.31%だった。candidate先手97勝、後手95勝で、
+探索失敗、root欠落、違法手、NaN/Inf、最大手数引分、千日手はいずれも0だった。事前Gateのpoint score 50%以上、
+実用非劣性下限47.5%以上、安全異常0をすべて満たした。
+
+全200局を含む最終report SHA-256は`9557bfc78e9470689c93a96b480b9144bca7421ce83d0ef947741a71bb76a2b7`、
+Git管理するdecision report SHA-256は`d006cc7a8d43a6ba22e4e8b8ede179707d43436f1296651e8bf3f7874ad3b18a`である。
+model `9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`をgeneration 2としてregistryへ
+`accepted_promotion_match`登録した。以後の探索教師生成は、このaccepted modelからのみ開始できる。残る2 seedは
+再現性確認用diagnosticであり、個別のpromotion matchなしにacceptedとはしない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

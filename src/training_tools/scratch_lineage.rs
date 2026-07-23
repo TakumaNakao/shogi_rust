@@ -95,7 +95,10 @@ fn validate_registry(registry: &PromotionRegistry) -> Result<()> {
     for entry in &registry.accepted {
         validate_sha256(&entry.model_sha256)?;
         validate_sha256(&entry.gate_report_sha256)?;
-        if entry.decision != "accepted_genesis" && entry.decision != "accepted_gate" {
+        if entry.decision != "accepted_genesis"
+            && entry.decision != "accepted_gate"
+            && entry.decision != "accepted_promotion_match"
+        {
             return Err(anyhow!("invalid promotion decision"));
         }
         if entry.accepted_at.is_empty() || entry.decision_commit.is_empty() {
@@ -147,7 +150,7 @@ mod tests {
                 "model_sha256": model_hash,
                 "generation": 0,
                 "gate_report_sha256": report_hash,
-                "decision": "accepted_genesis",
+                "decision": "accepted_promotion_match",
                 "accepted_at": "2026-07-21T00:00:00+09:00",
                 "decision_commit": "test"
             }],
