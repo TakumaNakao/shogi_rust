@@ -14,7 +14,9 @@ use shogi_ai::training_data::{
     artifact_metadata, capture_run_environment, sha256_file, sha256_hex, ArtifactMetadata,
     RunEnvironment, PHASE_POLICY_VERSION, SPLIT_POLICY_VERSION,
 };
-use shogi_ai::training_tools::scratch_lineage::require_accepted_parent;
+use shogi_ai::training_tools::scratch_lineage::{
+    require_accepted_parent, require_scratch_model_manifest,
+};
 use shogi_core::Color;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
@@ -35,6 +37,8 @@ struct Args {
     #[arg(long)]
     init: PathBuf,
     #[arg(long)]
+    model_manifest: PathBuf,
+    #[arg(long)]
     promotion_registry: PathBuf,
     #[arg(long)]
     gate_report: PathBuf,
@@ -54,6 +58,9 @@ struct Args {
     kappa_cp: f32,
     #[arg(long, default_value_t = 0.5)]
     search_mix: f32,
+    /// Weight of absolute root value regression. Use zero for rank-only bootstrap.
+    #[arg(long, default_value_t = 1.0)]
+    value_weight: f32,
     #[arg(long)]
     search_mix_end: Option<f32>,
     #[arg(long, default_value_t = 2.5)]
@@ -280,6 +287,7 @@ impl Default for Metrics {
 struct TrainOptions {
     kappa_cp: f32,
     search_mix: f32,
+    value_weight: f32,
     loss_power: f32,
     rank_weight: f32,
     game_rank_weight: f32,
@@ -384,6 +392,7 @@ pub fn run() -> Result<()> {
         &args.gate_report,
         args.parent_generation,
     )?;
+    require_scratch_model_manifest(&args.model_manifest, &args.init, args.parent_generation)?;
     let pool = if args.threads > 0 {
         Some(
             rayon::ThreadPoolBuilder::new()
@@ -436,6 +445,7 @@ pub fn run() -> Result<()> {
     let base_options = TrainOptions {
         kappa_cp: args.kappa_cp,
         search_mix: args.search_mix,
+        value_weight: args.value_weight,
         loss_power: args.loss_power,
         rank_weight: args.rank_weight,
         game_rank_weight: args.game_rank_weight,
@@ -467,7 +477,7 @@ pub fn run() -> Result<()> {
     let mut completed_epoch = start_epoch;
     print_metrics("initial_valid", 0, &initial);
     if start_epoch == 0 {
-        best = validation_score(&initial);
+        best = validation_score(&initial, args.value_weight);
         initial_weights.save(&args.output)?;
         println!(
             "initial checkpoint score={best:.8} output={}",
@@ -556,7 +566,7 @@ pub fn run() -> Result<()> {
         )?;
         final_valid_metrics = valid_metrics.clone();
         print_metrics("valid", epoch, &valid_metrics);
-        let mut score = validation_score(&valid_metrics);
+        let mut score = validation_score(&valid_metrics, args.value_weight);
         let mut selected = &eval_weights;
         if let Some(state) = &swa {
             let swa_metrics = evaluate_datasets(
@@ -568,7 +578,7 @@ pub fn run() -> Result<()> {
                 &options,
             )?;
             print_metrics("swa_valid", epoch, &swa_metrics);
-            let swa_score = validation_score(&swa_metrics);
+            let swa_score = validation_score(&swa_metrics, args.value_weight);
             if swa_score < score {
                 score = swa_score;
                 selected = &state.average;
@@ -651,6 +661,7 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.output_learning_rate <= 0.0
         || args.kappa_cp <= 0.0
         || !(0.0..=1.0).contains(&args.search_mix)
+        || args.value_weight < 0.0
         || args
             .search_mix_end
             .is_some_and(|value| !(0.0..=1.0).contains(&value))
@@ -842,6 +853,7 @@ fn training_fingerprint(args: &Args) -> Result<String> {
             "output_learning_rate": args.output_learning_rate,
             "kappa_cp": args.kappa_cp,
             "search_mix": args.search_mix,
+            "value_weight": args.value_weight,
             "search_mix_end": args.search_mix_end,
             "loss_power": args.loss_power,
             "rank_weight": args.rank_weight,
@@ -934,6 +946,7 @@ fn write_training_manifest(
             "output_learning_rate": args.output_learning_rate,
             "kappa_cp": args.kappa_cp,
             "search_mix": args.search_mix,
+            "value_weight": args.value_weight,
             "search_mix_end": args.search_mix_end,
             "loss_power": args.loss_power,
             "rank_weight": args.rank_weight,
@@ -1238,11 +1251,14 @@ fn compute_record_gradient(
         .unwrap_or(search_p);
     let error = model_p - target;
     let absolute_error = error.abs().max(1e-8);
-    gradient.value_loss = (absolute_error.powf(options.loss_power) * record.sample_weight) as f64;
+    gradient.value_loss = (absolute_error.powf(options.loss_power)
+        * record.sample_weight
+        * options.value_weight) as f64;
     let d_probability = options.loss_power
         * error.signum()
         * absolute_error.powf(options.loss_power - 1.0)
-        * record.sample_weight;
+        * record.sample_weight
+        * options.value_weight;
     let d_score_cp = d_probability * model_p * (1.0 - model_p) / options.kappa_cp;
     add_position_gradient(
         weights,
@@ -1830,11 +1846,11 @@ fn merge_metrics(mut lhs: Metrics, rhs: Metrics) -> Metrics {
     lhs
 }
 
-fn validation_score(metrics: &Metrics) -> f64 {
+fn validation_score(metrics: &Metrics, value_weight: f32) -> f64 {
     let brier = metrics.value_loss / metrics.records.max(1) as f64;
     let pair_error = 1.0 - metrics.pair_correct as f64 / metrics.pairs.max(1) as f64;
     let regret = metrics.regret_sum / metrics.records.max(1) as f64;
-    brier + 0.02 * pair_error + regret / 10_000.0
+    f64::from(value_weight) * brier + 0.02 * pair_error + regret / 10_000.0
 }
 
 fn regret_percentile(metrics: &Metrics, percentile: f64) -> f64 {
@@ -2009,6 +2025,14 @@ mod tests {
             "valid.hkst",
             "--init",
             "init.binary",
+            "--model-manifest",
+            "model.manifest.json",
+            "--promotion-registry",
+            "promotion_registry.json",
+            "--gate-report",
+            "gate_report.json",
+            "--parent-generation",
+            "2",
             "--output",
             "output.binary",
             "--checkpoint-dir",
@@ -2036,6 +2060,7 @@ mod tests {
         let options = TrainOptions {
             kappa_cp: 600.0,
             search_mix: 1.0,
+            value_weight: 1.0,
             loss_power: 2.0,
             rank_weight: 0.0,
             game_rank_weight: 0.0,
@@ -2119,6 +2144,14 @@ mod tests {
             "valid.hkst",
             "--init",
             "init.binary",
+            "--model-manifest",
+            "model.manifest.json",
+            "--promotion-registry",
+            "promotion_registry.json",
+            "--gate-report",
+            "gate_report.json",
+            "--parent-generation",
+            "2",
             "--output",
             "output.binary",
             "--checkpoint-dir",
@@ -2207,6 +2240,7 @@ mod tests {
         let options = TrainOptions {
             kappa_cp: 600.0,
             search_mix: 1.0,
+            value_weight: 1.0,
             loss_power: 2.0,
             rank_weight: 0.0,
             game_rank_weight: 0.0,

@@ -1,6 +1,33 @@
 use super::*;
 
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
+    /// Runs one direct alpha-beta query with a deterministic total-node cap.
+    ///
+    /// Unlike [`Self::search`], this does not clear the caller-provided game
+    /// history. An interrupted result must not be used as a teacher score.
+    pub fn alpha_beta_search_with_max_nodes(
+        &mut self,
+        position: &mut Position,
+        depth: u8,
+        alpha: f32,
+        beta: f32,
+        max_nodes: u64,
+    ) -> (Option<(f32, Vec<Move>)>, SearchStats, bool) {
+        assert!(max_nodes > 0, "max_nodes must be positive");
+        self.start_time = None;
+        self.time_limit = None;
+        self.node_limit = Some(max_nodes);
+        self.next_time_check_nodes = 0;
+        self.nodes_searched = 0;
+        self.quiescence_nodes_searched = 0;
+        self.eval_context = None;
+        let result = self.alpha_beta_search(position, depth, alpha, beta);
+        let stats = self.search_stats();
+        let resource_limited = result.is_none() && stats.nodes >= max_nodes;
+        self.node_limit = None;
+        (result, stats, resource_limited)
+    }
+
     pub fn alpha_beta_search(
         &mut self,
         position: &mut Position,

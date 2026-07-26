@@ -39,6 +39,50 @@ pub struct PromotionDecision {
     pub gate_report_sha256: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ScratchModelManifest {
+    lineage_id: String,
+    generation: u32,
+    model: ScratchModelArtifact,
+    #[serde(default)]
+    parent_model_sha256: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScratchModelArtifact {
+    sha256: String,
+}
+
+pub fn require_scratch_model_manifest(
+    manifest_path: &Path,
+    model_path: &Path,
+    declared_generation: u32,
+) -> Result<String> {
+    let manifest: ScratchModelManifest = serde_json::from_slice(
+        &std::fs::read(manifest_path)
+            .with_context(|| format!("read model manifest {}", manifest_path.display()))?,
+    )
+    .with_context(|| format!("parse model manifest {}", manifest_path.display()))?;
+    let model_sha256 = sha256_file(model_path)?;
+    if manifest.lineage_id != SCRATCH_LINEAGE_ID
+        || manifest.generation != declared_generation
+        || manifest.model.sha256 != model_sha256
+    {
+        return Err(anyhow!("model manifest does not match scratch artifact"));
+    }
+    if declared_generation > 0 {
+        let parent = manifest
+            .parent_model_sha256
+            .as_deref()
+            .ok_or_else(|| anyhow!("non-genesis model manifest has no parent"))?;
+        validate_sha256(parent)?;
+        if parent == model_sha256 {
+            return Err(anyhow!("scratch model cannot be its own parent"));
+        }
+    }
+    Ok(model_sha256)
+}
+
 pub fn require_accepted_parent(
     registry_path: &Path,
     model_path: &Path,
@@ -162,6 +206,29 @@ mod tests {
         assert!(require_accepted_parent(&registry, &model, &report, 0).is_ok());
         std::fs::write(&report, b"changed").expect("changed report");
         assert!(require_accepted_parent(&registry, &model, &report, 0).is_err());
+        std::fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn model_manifest_binds_generation_lineage_and_parent() {
+        let directory =
+            std::env::temp_dir().join(format!("shogi-ai-model-manifest-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("directory");
+        let model = directory.join("model.bin");
+        let manifest = directory.join("model.manifest.json");
+        std::fs::write(&model, b"scratch-generation-two").expect("model");
+        let model_hash = sha256_file(&model).expect("model hash");
+        let value = serde_json::json!({
+            "lineage_id": SCRATCH_LINEAGE_ID,
+            "generation": 2,
+            "parent_model_sha256": "1d773b4f41f5b485cda8fc94dd4b7131328fde332e33e5c6e7382fff33840ea2",
+            "model": {"sha256": model_hash}
+        });
+        std::fs::write(&manifest, serde_json::to_vec(&value).expect("json")).expect("manifest");
+        assert!(require_scratch_model_manifest(&manifest, &model, 2).is_ok());
+        assert!(require_scratch_model_manifest(&manifest, &model, 1).is_err());
+        std::fs::write(&model, b"changed").expect("changed model");
+        assert!(require_scratch_model_manifest(&manifest, &model, 2).is_err());
         std::fs::remove_dir_all(directory).ok();
     }
 }

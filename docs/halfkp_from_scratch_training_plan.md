@@ -1400,6 +1400,14 @@ manifestのlineage、model SHA、generation、parent chainをparse検証する�
 engine binary SHAも固定する。候補は従来のexact、game rank/BCE、health、static、200k searchをすべて再通過し、
 parentとのpromotion matchに勝った場合だけ次の教師にできる。
 
+実装後のprofileでは、train全域をstride samplingした64 rootをselection depth 1 / teacher depth 2 /
+top 4 / 5,000 nodesで約1.2秒処理し、50件を書き、cap到達14件を教師から除外した。128 rootの全合法手比較では
+top 4＋補助候補のdeep-best recallが61.45%、top 8で75.90%、top 16でも86.75%に留まったため、depth 1
+preselectionは採用しない。fixed-node化後はselection depth 2とteacher depth 2を同一にして全合法手のscoreを
+再利用でき、128 rootを約1.7秒で処理できた。これをPhase 5初期構成とする。jobs 1/4で同じ32 rootから生成した
+HKST SHA-256はともに`7e84edb78f2918b21693e09ca64a875e16344c830b3a6aa1dd8c86dbc2dbdf50`で、
+dataset byte一致を確認した。正式pilotではcandidate top 8、5,000 nodes/探索、cap root全体除外を用いる。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
