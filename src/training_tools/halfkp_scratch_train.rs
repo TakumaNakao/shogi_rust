@@ -468,7 +468,7 @@ fn validate_args(args: &Args) -> Result<()> {
         || !(0.0..0.5).contains(&args.activation_anchor_margin)
         || args.output_learning_rate_scale < 0.0
         || (!args.resume && args.output.exists())
-        || manifest_path(&args.output).exists()
+        || (!args.resume && manifest_path(&args.output).exists())
         || (args.resume && args.checkpoint_dir.is_none())
         || (args.factorization != FactorizationMode::Direct
             && (args.resume || args.checkpoint_dir.is_some()))
@@ -1864,6 +1864,24 @@ mod tests {
         drop(file);
         assert!(load_optimizer(&path, 3).is_err());
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn resume_allows_replacing_an_existing_output_manifest() {
+        let directory = std::env::temp_dir().join(format!(
+            "shogi-ai-scratch-resume-args-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("temporary directory");
+        let output = directory.join("model.bin");
+        fs::write(manifest_path(&output), b"previous manifest").expect("previous manifest");
+        let mut args = test_args();
+        args.output = output.clone();
+        args.resume = true;
+        args.checkpoint_dir = Some(directory.clone());
+        assert!(validate_args(&args).is_ok());
+        fs::remove_file(manifest_path(&output)).ok();
+        fs::remove_dir(directory).ok();
     }
 
     #[test]
