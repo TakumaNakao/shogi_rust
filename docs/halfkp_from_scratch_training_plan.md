@@ -1491,6 +1491,26 @@ SHA固定した比較相手としてのみ使った。
 次に再検討する対象は、既に保留していたsearch rankと70/15/15 replayの同時更新である。ただし、rank-only pilotの
 退行を避ける最小実装と小規模A/Bを先に行い、直接対局へ届かない大規模教師生成や追加Gateへは広げない。
 
+#### search rank/replay同時更新の実装（2026-07-26）
+
+`halfkp_scratch_train`へ`--search-train`、`--search-valid`と第4目的`source_mix_search`を追加した。
+HKSTのroot絶対値とgame resultは使用せず、探索候補のscore差が15 cp以上の最善手対劣後手を最大4 pairだけ
+rank lossへ変換する。exact/expert/result/searchは同一family shuffleと同一batch更新へ混在し、指定した
+4要素の実効目的比率へ校正する。search教師manifestはHKST0002の現行意味論に加え、教師model SHA-256が
+宣言されたaccepted scratch parentと一致しなければ拒否する。このため現行KPP由来重みや別系列の探索教師は
+混入できない。
+
+単体10件とlibrary全89件はすべて合格した。既存search pilot train 1,001件とreplay 1,000件を使った
+統合スモークは1 epochを完走し、合同valid lossは0.32571746から0.32431975へ低下した。同一seed・条件の
+2実行はmodel SHA-256 `5332508daec1dd131f288c53e841a2f5b1e7b54203503fd0627d29e8fbdf5f81`で
+byte一致した。
+
+search 0%の70/15/15 controlと、replay比を保ったままsearchを5%にした66.5/14.25/14.25/5の小規模A/Bでは、
+exact familyは90.51%対90.55%、health p99は1,688対1,690 cpで維持した。一方、広域WDoor familyは
+80.53%対80.06%でsearch混合側が0.47 point低かった。したがって統合実装そのものは採用するが、5%配分modelは
+昇格候補にせず教師にも使わない。次は既存1k/247 search教師のまま、search比率を1～2%へ下げた1 epoch pilotを
+1候補だけ行い、search holdout改善とWDoor非退行を両立した場合だけ安全Gateと直接対局へ進める。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

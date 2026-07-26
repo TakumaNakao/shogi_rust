@@ -40,6 +40,11 @@ production buildではtraining/research targetと、それらだけが使う`csa
 cargo build --release --features halfkp64,training-tools --bin halfkp_search_teacher --bin halfkp_search_train
 ```
 
+`halfkp_scratch_train`は通常のHKCL replayに加え、`--search-train`と`--search-valid`で
+accepted scratch parent自身が生成したHKST0002を受け取れる。`--source-mix-search`で
+exact/expert/result/search-rankの第4実効比率を指定する。search入力は順位だけに使われ、
+教師model SHA-256が`--init`と一致しない場合は拒否される。
+
 ## Benchmark and profile
 
 - `benchmark`, `eval_profile`, `halfkp_trace_bench`, `movegen_profile`, `perft`,

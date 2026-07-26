@@ -9,7 +9,9 @@ use shogi_ai::evaluation::{
     NUM_BOARD_PIECE_KINDS, NUM_SQUARES,
 };
 use shogi_ai::halfkp_training::{
-    CurriculumReader, CurriculumRecord, LabelSource, PackedHalfKpPosition, PreferenceKind,
+    read_search_teacher_manifest, CurriculumReader, CurriculumRecord, LabelSource,
+    PackedHalfKpPosition, PreferenceKind, SearchTeacherReader, SearchTeacherRecord,
+    SEARCH_TEACHER_SEMANTICS_ID, SEARCH_TEACHER_SEMANTICS_VERSION,
 };
 use shogi_ai::training_data::{
     artifact_metadata, capture_run_environment, sha256_file, sha256_hex,
@@ -35,6 +37,11 @@ struct Args {
     train: Vec<PathBuf>,
     #[arg(long, required = true)]
     valid: Vec<PathBuf>,
+    /// Own-search HKST inputs used only for rank objectives.
+    #[arg(long)]
+    search_train: Vec<PathBuf>,
+    #[arg(long)]
+    search_valid: Vec<PathBuf>,
     #[arg(long)]
     init: PathBuf,
     #[arg(long)]
@@ -72,6 +79,16 @@ struct Args {
     source_mix_expert: f32,
     #[arg(long, default_value_t = 0.0)]
     source_mix_result: f32,
+    #[arg(long, default_value_t = 0.0)]
+    source_mix_search: f32,
+    #[arg(long, default_value_t = 0.0)]
+    search_rank_weight: f32,
+    #[arg(long, default_value_t = 20.0)]
+    search_rank_margin_cp: f32,
+    #[arg(long, default_value_t = 15.0)]
+    search_min_rank_gap_cp: f32,
+    #[arg(long, default_value_t = 4)]
+    search_max_pairs_per_record: usize,
     #[arg(long, value_enum)]
     stage: TrainingStage,
     #[arg(long, value_enum, default_value_t = FactorizationMode::Direct)]
@@ -244,10 +261,12 @@ enum ObjectiveGroup {
     Exact = 0,
     Expert = 1,
     Result = 2,
+    Search = 3,
 }
 
-struct RecordFamily {
-    records: Vec<CurriculumRecord>,
+enum TrainingFamily {
+    Replay(Vec<CurriculumRecord>),
+    Search(SearchTeacherRecord),
 }
 
 pub fn run() -> Result<()> {
@@ -256,6 +275,9 @@ pub fn run() -> Result<()> {
     let parent = validate_parent(&args)?;
     validate_datasets(&args.train, false)?;
     validate_datasets(&args.valid, false)?;
+    let parent_model_sha256 = sha256_file(&args.init)?;
+    validate_search_datasets(&args.search_train, &parent_model_sha256)?;
+    validate_search_datasets(&args.search_valid, &parent_model_sha256)?;
     let fingerprint = training_fingerprint(&args, &parent)?;
     let (mut weights, mut optimizer, start_epoch, mut best_epoch, mut best_loss) =
         initialize_training(&args, &fingerprint)?;
@@ -306,11 +328,13 @@ pub fn run() -> Result<()> {
         train_dataset_sha256: args
             .train
             .iter()
+            .chain(&args.search_train)
             .map(|path| sha256_file(path))
             .collect::<Result<_>>()?,
         valid_dataset_sha256: args
             .valid
             .iter()
+            .chain(&args.search_valid)
             .map(|path| sha256_file(path))
             .collect::<Result<_>>()?,
         hyperparameters: serde_json::json!({
@@ -324,6 +348,11 @@ pub fn run() -> Result<()> {
             "source_mix_exact": args.source_mix_exact,
             "source_mix_expert": args.source_mix_expert,
             "source_mix_result": args.source_mix_result,
+            "source_mix_search": args.source_mix_search,
+            "search_rank_weight": args.search_rank_weight,
+            "search_rank_margin_cp": args.search_rank_margin_cp,
+            "search_min_rank_gap_cp": args.search_min_rank_gap_cp,
+            "search_max_pairs_per_record": args.search_max_pairs_per_record,
             "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
             "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
             "seed": args.seed, "l2": args.l2,
@@ -427,6 +456,9 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.rank_weight < 0.0
         || args.expert_preference_weight < 0.0
         || args.game_result_weight < 0.0
+        || args.search_rank_weight < 0.0
+        || args.search_min_rank_gap_cp < 0.0
+        || args.search_max_pairs_per_record == 0
         || !valid_source_mix(args)
         || args.l2 < 0.0
         || args.weight_decay < 0.0
@@ -451,6 +483,7 @@ fn valid_source_mix(args: &Args) -> bool {
         args.source_mix_exact,
         args.source_mix_expert,
         args.source_mix_result,
+        args.source_mix_search,
     ];
     if values
         .iter()
@@ -516,6 +549,8 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "promotion_registry_sha256": sha256_file(&args.promotion_registry)?,
         "train": args.train.iter().map(|path| sha256_file(path)).collect::<Result<Vec<_>>>()?,
         "valid": args.valid.iter().map(|path| sha256_file(path)).collect::<Result<Vec<_>>>()?,
+        "search_train": args.search_train.iter().map(|path| sha256_file(path)).collect::<Result<Vec<_>>>()?,
+        "search_valid": args.search_valid.iter().map(|path| sha256_file(path)).collect::<Result<Vec<_>>>()?,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
         "kappa_cp": args.kappa_cp,
@@ -527,6 +562,11 @@ fn training_fingerprint(args: &Args, parent: &ParentManifest) -> Result<String> 
         "source_mix_exact": args.source_mix_exact,
         "source_mix_expert": args.source_mix_expert,
         "source_mix_result": args.source_mix_result,
+        "source_mix_search": args.source_mix_search,
+        "search_rank_weight": args.search_rank_weight,
+        "search_rank_margin_cp": args.search_rank_margin_cp,
+        "search_min_rank_gap_cp": args.search_min_rank_gap_cp,
+        "search_max_pairs_per_record": args.search_max_pairs_per_record,
         "stage": format!("{:?}", args.stage).to_ascii_lowercase(),
         "factorization": format!("{:?}", args.factorization).to_ascii_lowercase(),
         "seed": args.seed,
@@ -581,6 +621,30 @@ fn validate_datasets(paths: &[PathBuf], allow_teacher: bool) -> Result<()> {
     Ok(())
 }
 
+fn validate_search_datasets(paths: &[PathBuf], parent_model_sha256: &str) -> Result<()> {
+    for path in paths {
+        let manifest = read_search_teacher_manifest(path)?
+            .ok_or_else(|| anyhow!("{} has no search teacher manifest", path.display()))?;
+        if manifest.format != "HKST0002"
+            || manifest.teacher_semantics_version != SEARCH_TEACHER_SEMANTICS_VERSION
+            || manifest.teacher_semantics_id != SEARCH_TEACHER_SEMANTICS_ID
+        {
+            return Err(anyhow!(
+                "{} has incompatible search teacher semantics",
+                path.display()
+            ));
+        }
+        if manifest.model.as_ref().map(|model| model.sha256.as_str()) != Some(parent_model_sha256) {
+            return Err(anyhow!(
+                "{} was not generated by the declared scratch parent",
+                path.display()
+            ));
+        }
+        SearchTeacherReader::open(path)?;
+    }
+    Ok(())
+}
+
 fn train_epoch(
     weights: &mut Weights,
     optimizer: &mut Optimizer,
@@ -605,8 +669,14 @@ fn train_epoch(
     }
     let mut families = families
         .into_values()
-        .map(|records| RecordFamily { records })
+        .map(TrainingFamily::Replay)
         .collect::<Vec<_>>();
+    for path in &args.search_train {
+        let mut reader = SearchTeacherReader::open(path)?;
+        while let Some(record) = reader.read_record()? {
+            families.push(TrainingFamily::Search(record));
+        }
+    }
     let objective_multipliers = objective_multipliers(&families, args)?;
     let mut rng = ChaCha20Rng::seed_from_u64(args.seed ^ epoch as u64);
     families.shuffle(&mut rng);
@@ -614,26 +684,36 @@ fn train_epoch(
     let mut batch_records = 0usize;
     let mut batch_families = 0usize;
     for family in families {
-        let objectives = family
-            .records
-            .iter()
-            .map(|record| objective_count(record, args))
-            .sum::<usize>();
+        let objectives = family_objective_count(&family, args);
         if objectives == 0 {
-            metrics.records += family.records.len();
+            metrics.records += family_record_count(&family);
             continue;
         }
         let family_scale = 1.0 / objectives as f32;
-        for record in &family.records {
-            accumulate_record(
-                weights,
-                record,
-                args,
-                family_scale,
-                objective_multipliers,
-                &mut batch,
-            );
-            batch_records += 1;
+        match &family {
+            TrainingFamily::Replay(records) => {
+                for record in records {
+                    accumulate_record(
+                        weights,
+                        record,
+                        args,
+                        family_scale,
+                        objective_multipliers,
+                        &mut batch,
+                    );
+                    batch_records += 1;
+                }
+            }
+            TrainingFamily::Search(record) => {
+                accumulate_search_record(
+                    weights,
+                    record,
+                    args,
+                    family_scale * objective_multipliers[ObjectiveGroup::Search as usize],
+                    &mut batch,
+                );
+                batch_records += 1;
+            }
         }
         batch_families += 1;
         if batch_families == args.batch_size {
@@ -654,41 +734,67 @@ fn train_epoch(
     Ok(metrics)
 }
 
-fn family_nominal_weights(family: &RecordFamily, args: &Args) -> [f64; 3] {
-    let objectives = family
-        .records
-        .iter()
-        .map(|record| objective_count(record, args))
-        .sum::<usize>();
-    if objectives == 0 {
-        return [0.0; 3];
+fn family_record_count(family: &TrainingFamily) -> usize {
+    match family {
+        TrainingFamily::Replay(records) => records.len(),
+        TrainingFamily::Search(_) => 1,
     }
-    let mut weights = [0.0f64; 3];
-    for record in &family.records {
-        if record.result.is_some() {
-            weights[ObjectiveGroup::Result as usize] +=
-                result_objective_weight(record, args) as f64;
+}
+
+fn family_objective_count(family: &TrainingFamily, args: &Args) -> usize {
+    match family {
+        TrainingFamily::Replay(records) => records
+            .iter()
+            .map(|record| objective_count(record, args))
+            .sum(),
+        TrainingFamily::Search(record) => search_pairs(record, args).len(),
+    }
+}
+
+fn family_nominal_weights(family: &TrainingFamily, args: &Args) -> [f64; 4] {
+    let objectives = family_objective_count(family, args);
+    if objectives == 0 {
+        return [0.0; 4];
+    }
+    let mut weights = [0.0f64; 4];
+    match family {
+        TrainingFamily::Replay(records) => {
+            for record in records {
+                if record.result.is_some() {
+                    weights[ObjectiveGroup::Result as usize] +=
+                        result_objective_weight(record, args) as f64;
+                }
+                let group = if record.source == LabelSource::ExpertMove {
+                    ObjectiveGroup::Expert
+                } else {
+                    ObjectiveGroup::Exact
+                };
+                weights[group as usize] += record.preferences.len() as f64
+                    * preference_objective_weight(record, args) as f64;
+                if record.source == LabelSource::SymmetryAnchor {
+                    weights[ObjectiveGroup::Exact as usize] +=
+                        (record.sample_weight * args.score_anchor_weight) as f64;
+                }
+            }
         }
-        let preference_group = if record.source == LabelSource::ExpertMove {
-            ObjectiveGroup::Expert
-        } else {
-            ObjectiveGroup::Exact
-        };
-        weights[preference_group as usize] +=
-            record.preferences.len() as f64 * preference_objective_weight(record, args) as f64;
-        if record.source == LabelSource::SymmetryAnchor {
-            weights[ObjectiveGroup::Exact as usize] +=
-                (record.sample_weight * args.score_anchor_weight) as f64;
+        TrainingFamily::Search(record) => {
+            weights[ObjectiveGroup::Search as usize] = search_pairs(record, args).len() as f64
+                * record.sample_weight as f64
+                * args.search_rank_weight as f64;
         }
     }
     weights.map(|weight| weight / objectives as f64)
 }
 
-fn objective_multipliers(families: &[RecordFamily], args: &Args) -> Result<[f32; 3]> {
-    if args.source_mix_exact == 0.0 {
-        return Ok([1.0; 3]);
+fn objective_multipliers(families: &[TrainingFamily], args: &Args) -> Result<[f32; 4]> {
+    if args.source_mix_exact == 0.0
+        && args.source_mix_expert == 0.0
+        && args.source_mix_result == 0.0
+        && args.source_mix_search == 0.0
+    {
+        return Ok([1.0; 4]);
     }
-    let mut nominal = [0.0f64; 3];
+    let mut nominal = [0.0f64; 4];
     for family in families {
         for (total, weight) in nominal.iter_mut().zip(family_nominal_weights(family, args)) {
             *total += weight;
@@ -698,6 +804,7 @@ fn objective_multipliers(families: &[RecordFamily], args: &Args) -> Result<[f32;
         args.source_mix_exact as f64,
         args.source_mix_expert as f64,
         args.source_mix_result as f64,
+        args.source_mix_search as f64,
     ];
     if nominal
         .iter()
@@ -731,7 +838,7 @@ fn evaluate(
     for path in paths {
         let mut reader = CurriculumReader::open(path)?;
         while let Some(record) = reader.read_record()? {
-            accumulate_record(weights, &record, args, 1.0, [1.0; 3], &mut gradient);
+            accumulate_record(weights, &record, args, 1.0, [1.0; 4], &mut gradient);
             metrics.records += 1;
             if limit.is_some_and(|limit| metrics.records >= limit) {
                 break;
@@ -741,9 +848,85 @@ fn evaluate(
             break;
         }
     }
+    for path in &args.search_valid {
+        let mut reader = SearchTeacherReader::open(path)?;
+        while let Some(record) = reader.read_record()? {
+            accumulate_search_record(weights, &record, args, 1.0, &mut gradient);
+            metrics.records += 1;
+        }
+    }
     metrics.loss = gradient.loss;
     metrics.objectives = gradient.objectives;
     Ok(metrics)
+}
+
+fn search_pairs(record: &SearchTeacherRecord, args: &Args) -> Vec<(usize, usize)> {
+    if args.search_rank_weight == 0.0 || record.candidates.len() < 2 {
+        return Vec::new();
+    }
+    let Some((best, best_candidate)) = record
+        .candidates
+        .iter()
+        .enumerate()
+        .max_by(|lhs, rhs| lhs.1.score_cp.total_cmp(&rhs.1.score_cp))
+    else {
+        return Vec::new();
+    };
+    record
+        .candidates
+        .iter()
+        .enumerate()
+        .filter(|(index, candidate)| {
+            *index != best
+                && best_candidate.score_cp - candidate.score_cp >= args.search_min_rank_gap_cp
+        })
+        .take(args.search_max_pairs_per_record)
+        .map(|(bad, _)| (best, bad))
+        .collect()
+}
+
+fn accumulate_search_record(
+    weights: &Weights,
+    record: &SearchTeacherRecord,
+    args: &Args,
+    family_scale: f32,
+    gradient: &mut Gradient,
+) {
+    let pairs = search_pairs(record, args);
+    if pairs.is_empty() {
+        return;
+    }
+    let forwards = record
+        .candidates
+        .iter()
+        .map(|candidate| weights.forward(&candidate.child))
+        .collect::<Vec<_>>();
+    for (good_index, bad_index) in pairs {
+        let good = &forwards[good_index];
+        let bad = &forwards[bad_index];
+        // Children are from the opponent-to-move perspective, so the teacher's
+        // preferred child must have the lower model score.
+        let x = ((good.raw - bad.raw) * TARGET_SCALE + args.search_rank_margin_cp)
+            / args.rank_temperature_cp;
+        let scale = record.sample_weight * args.search_rank_weight * family_scale;
+        gradient.loss += (softplus(x) * scale) as f64;
+        let derivative = sigmoid(x) * TARGET_SCALE / args.rank_temperature_cp * scale;
+        add_position_gradient(
+            weights,
+            &record.candidates[good_index].child,
+            good,
+            derivative,
+            gradient,
+        );
+        add_position_gradient(
+            weights,
+            &record.candidates[bad_index].child,
+            bad,
+            -derivative,
+            gradient,
+        );
+        gradient.objectives += 1;
+    }
 }
 
 fn accumulate_record(
@@ -751,7 +934,7 @@ fn accumulate_record(
     record: &CurriculumRecord,
     args: &Args,
     family_scale: f32,
-    objective_multipliers: [f32; 3],
+    objective_multipliers: [f32; 4],
     gradient: &mut Gradient,
 ) {
     if record.source == LabelSource::SymmetryAnchor && args.score_anchor_weight > 0.0 {
@@ -1360,6 +1543,8 @@ mod tests {
         Args {
             train: vec![],
             valid: vec![],
+            search_train: vec![],
+            search_valid: vec![],
             init: PathBuf::new(),
             init_manifest: PathBuf::new(),
             parent_gate_report: PathBuf::new(),
@@ -1377,6 +1562,11 @@ mod tests {
             source_mix_exact: 0.0,
             source_mix_expert: 0.0,
             source_mix_result: 0.0,
+            source_mix_search: 0.0,
+            search_rank_weight: 0.0,
+            search_rank_margin_cp: 20.0,
+            search_min_rank_gap_cp: 15.0,
+            search_max_pairs_per_record: 4,
             stage: TrainingStage::Calibrated,
             factorization: FactorizationMode::Direct,
             seed: 7,
@@ -1481,18 +1671,12 @@ mod tests {
         health.sample_weight = 0.05;
         health.preferences[0].kind = PreferenceKind::SymmetryEqual;
         let families = vec![
-            RecordFamily {
-                records: vec![exact],
-            },
-            RecordFamily {
-                records: vec![health],
-            },
-            RecordFamily {
-                records: vec![game],
-            },
+            TrainingFamily::Replay(vec![exact]),
+            TrainingFamily::Replay(vec![health]),
+            TrainingFamily::Replay(vec![game]),
         ];
         let multipliers = objective_multipliers(&families, &args).expect("mix");
-        let mut nominal = [0.0f64; 3];
+        let mut nominal = [0.0f64; 4];
         for family in &families {
             for (total, weight) in nominal
                 .iter_mut()
@@ -1507,7 +1691,7 @@ mod tests {
         for (actual, expected) in effective
             .iter()
             .map(|value| value / total)
-            .zip([0.2, 0.4, 0.4])
+            .zip([0.2, 0.4, 0.4, 0.0])
         {
             assert!((actual - expected).abs() < 1e-6, "actual={actual}");
         }
@@ -1608,6 +1792,50 @@ mod tests {
         }
         let after = value_loss(&weights, 1.0, args.kappa_cp);
         assert!(after < before * 0.25, "before={before} after={after}");
+    }
+
+    #[test]
+    fn combined_search_rank_update_prefers_teacher_best_child() {
+        let mut weights = test_weights();
+        weights.feature[0] = 0.4;
+        weights.feature[HALFKP_HIDDEN] = -0.2;
+        let mut good = test_position();
+        good.features_black = vec![0];
+        let mut bad = test_position();
+        bad.features_black = vec![1];
+        let record = SearchTeacherRecord {
+            position_hash: 1,
+            ply: 1,
+            phase: 0,
+            teacher_depth: 2,
+            result: None,
+            root_search_score_cp: 0.0,
+            sample_weight: 1.0,
+            root: test_position(),
+            candidates: vec![
+                shogi_ai::halfkp_training::SearchTeacherCandidate {
+                    flags: 1,
+                    score_cp: 100.0,
+                    child: good.clone(),
+                },
+                shogi_ai::halfkp_training::SearchTeacherCandidate {
+                    flags: 0,
+                    score_cp: 0.0,
+                    child: bad.clone(),
+                },
+            ],
+        };
+        let mut args = test_args();
+        args.search_rank_weight = 1.0;
+        let before = weights.forward(&good).raw - weights.forward(&bad).raw;
+        let mut optimizer = Optimizer::zeros(&weights);
+        for _ in 0..20 {
+            let mut gradient = Gradient::default();
+            accumulate_search_record(&weights, &record, &args, 1.0, &mut gradient);
+            apply_gradient(&mut weights, &mut optimizer, &mut gradient, 1, &args);
+        }
+        let after = weights.forward(&good).raw - weights.forward(&bad).raw;
+        assert!(after < before, "before={before} after={after}");
     }
 
     #[test]
