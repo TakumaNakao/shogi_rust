@@ -1511,6 +1511,23 @@ exact familyは90.51%対90.55%、health p99は1,688対1,690 cpで維持した。
 昇格候補にせず教師にも使わない。次は既存1k/247 search教師のまま、search比率を1～2%へ下げた1 epoch pilotを
 1候補だけ行い、search holdout改善とWDoor非退行を両立した場合だけ安全Gateと直接対局へ進める。
 
+#### search 1%単一候補の結果（2026-07-26）
+
+accepted generation 2のmanifestに記録された5 train / 2 valid replay集合をそのまま使い、既存search教師
+train 1,001 / valid 247件を追加した。replay内70/15/15を保つ69.3/14.85/14.85/1、1 epoch、learning rate
+0.001、seed 20260721の1候補だけを学習した。合同valid lossは0.07221626から0.07148750へ改善した。
+
+model `06d88946384926be72d4f9917bd56fbf0f4db6f07140e56c15ed8bcddc3b8442`はexact family
+90.68%（95%下限89.48%）、WDoor family 81.00% / BCE 0.59452、health p99 1,738 cp、static 70.4%で、
+親のWDoor 80.56% / BCE 0.59728、static 70.0%を改善した。しかし200k searchは98.5%で親98.6%を
+1 root下回り、事前固定した親非退行Gateを満たさなかった。
+
+この候補はregistryへrejected登録し、v2.5.0との直接対局、教師生成、次世代の初期値には使わない。
+5%小規模A/Bと1%正式pilotの双方で探索順位signalによる明確な総合改善を示せなかったため、同じ1k教師で
+2%などの比率探索は行わない。次の改善には比率微調整ではなく、探索教師の候補recall・深さ・対象局面の
+情報量を上げる必要がある。ただしCPU制約下で大規模生成を始める前に、既存教師の失敗rootを分析して
+小さな再生成条件を決める。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
