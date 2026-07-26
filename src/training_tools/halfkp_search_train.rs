@@ -178,6 +178,12 @@ struct CheckpointMeta {
 #[derive(Serialize)]
 struct TrainingRunManifest {
     schema_version: u32,
+    lineage_id: &'static str,
+    generation: u32,
+    parent_model_sha256: String,
+    parent_manifest_sha256: String,
+    parent_gate_report_sha256: String,
+    promotion_registry_sha256: String,
     stage: &'static str,
     stage_fingerprint: String,
     environment: RunEnvironment,
@@ -198,8 +204,9 @@ struct TrainingRunManifest {
     best_validation_score: f64,
     final_validation: serde_json::Value,
     final_test: Option<serde_json::Value>,
+    model: ArtifactMetadata,
     output: ArtifactMetadata,
-    parent_manifest_sha256: Vec<String>,
+    teacher_manifest_sha256: Vec<String>,
 }
 
 struct DenseGradient {
@@ -906,7 +913,7 @@ fn write_training_manifest(
     inputs.insert("train".to_string(), dataset_artifacts(&args.train)?);
     inputs.insert("valid".to_string(), dataset_artifacts(&args.valid)?);
     inputs.insert("test".to_string(), dataset_artifacts(&args.test)?);
-    let parent_manifest_sha256 = args
+    let teacher_manifest_sha256 = args
         .train
         .iter()
         .chain(&args.valid)
@@ -920,6 +927,12 @@ fn write_training_manifest(
         .and_then(|path| artifact_metadata(&path, None).ok());
     let manifest = TrainingRunManifest {
         schema_version: 1,
+        lineage_id: shogi_ai::training_tools::scratch_lineage::SCRATCH_LINEAGE_ID,
+        generation: args.parent_generation + 1,
+        parent_model_sha256: sha256_file(&args.init)?,
+        parent_manifest_sha256: sha256_file(&args.model_manifest)?,
+        parent_gate_report_sha256: sha256_file(&args.gate_report)?,
+        promotion_registry_sha256: sha256_file(&args.promotion_registry)?,
         stage: "halfkp_search_train",
         stage_fingerprint: run_fingerprint.to_string(),
         environment: capture_run_environment(),
@@ -974,8 +987,9 @@ fn write_training_manifest(
         best_validation_score,
         final_validation: metrics_json(final_validation),
         final_test: final_test.map(metrics_json),
+        model: artifact_metadata(&args.output, None)?,
         output: artifact_metadata(&args.output, None)?,
-        parent_manifest_sha256,
+        teacher_manifest_sha256,
     };
     let path = append_path_suffix(&args.output, ".manifest.json");
     let temporary = append_path_suffix(&path, ".tmp");
