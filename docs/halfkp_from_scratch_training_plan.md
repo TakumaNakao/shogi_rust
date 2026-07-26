@@ -1408,6 +1408,15 @@ preselectionは採用しない。fixed-node化後はselection depth 2とteacher 
 HKST SHA-256はともに`7e84edb78f2918b21693e09ca64a875e16344c830b3a6aa1dd8c86dbc2dbdf50`で、
 dataset byte一致を確認した。正式pilotではcandidate top 8、5,000 nodes/探索、cap root全体除外を用いる。
 
+最初のrank-only pipeline pilotはtrain 1,001 / valid 247 recordを生成した。探索失敗は0で、5,000-node capへ
+到達したrootはtrain 599、valid 153を丸ごと除外した。accepted generation 2から`value_weight=0`、search rank
+のみ、低学習率、1 epochで学習した結果、search valid pairは67.20%から69.30%、top-1は16.19%から17.81%へ
+改善した。exactは90.50%（95%下限89.28%）、BCEは0.59718、health p99は1,093 cpだった。一方、wdoor順位は
+80.56%から79.58%、staticは70.0%から68.6%、200k searchは98.6%から97.9%へ退行した。このmodel
+`b61484ecf2a5caf7d1763f50ab30087ccd5b23a266007e2390bd52e6cd3909d8`はGate失敗としてregistryへrejected登録し、
+教師にも初期値にも使わない。次のpilotはaccepted generation 2へ戻り、search rankを単独fine-tuneせず、
+70/15/15 replay objectiveと同一更新内で混合できるtrainerへ統合してから行う。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
