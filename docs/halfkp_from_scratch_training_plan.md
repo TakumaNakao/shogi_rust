@@ -1417,6 +1417,55 @@ dataset byte一致を確認した。正式pilotではcandidate top 8、5,000 nod
 教師にも初期値にも使わない。次のpilotはaccepted generation 2へ戻り、search rankを単独fine-tuneせず、
 70/15/15 replay objectiveと同一更新内で混合できるtrainerへ統合してから行う。
 
+### 15.5 現行v2.5.0重みを上回るための短縮計画（2026-07-26）
+
+#### 判断
+
+計画を修正する。直前の「search rankと70/15/15 replayを統合するtrainerを先に実装する」という方針は停止する。
+実装可能性ではなく、`policy_weights_halfkp64_kpp_distilled_v2.5.0.binary`を実対局で上回るまでの距離を
+最優先する。
+
+accepted generation 2はPhase 1 parentには200局で192勝したが、これは目標重みとの比較ではなかった。
+同一engine、同一opening、先後交換、100 ms/手、Threads 1でv2.5.0重みと20局screenを行った結果は7勝13敗、
+score 35.0%（95%区間14.1～55.9%）だった。20局だけで差を確定はできないが、現時点で「現行重みより強い」
+という証拠はなく、少なくとも昇格親との勝率を目標達成の代理にはできない。
+
+Phase 5のrank-only pilotもsearch教師上のpair/top-1だけを改善し、wdoor順位、static、200k searchを悪化させた。
+弱い世代自身のdepth 2順位を増やす前に、人間が設計した追加基盤なしで利用できる高品質棋譜を使い切る。
+
+2023～2025 WDoorには両対局者のrateが判明した282,492局があり、両者3,500以上は107,951局、4,000以上は
+51,791局ある。一方、generation 2に使った241k datasetにはrate下限がなかった。したがって、次の一手は
+データ量の無条件拡大でもsearch bootstrapでもなく、既存`dataset_build`による高rate棋譜への選別である。
+
+#### 最短実行順
+
+1. 現行重みは初期値にも教師にも使わず、比較相手としてだけ固定する。SHA-256は
+   `91784d6f03f70580468a1509f968cbaaf598fbce084c22a739cb870344fb7c00`である。
+2. 2023～2025 WDoorから両対局者rate 4,000以上、既知の決着局、1局最大24局面、opening/middle/lateを
+   8/12/4、ply 8～160、合法手2以上、非王手局面を条件に約1M局面を作る。敗者のply 80以降は除外する。
+   content-hash 80/10/10 splitを維持し、2026とtestは開かない。
+3. accepted generation 2から、既に3 seedで検証済みの70/15/15、2 epoch、seed 20260721を1候補だけ学習する。
+   exact/symmetry replayを残し、KPP由来model・score・探索結果は一切入力しない。
+4. integrity、NaN/Inf、exact 90%かつ95%下限88%、health p99 2,000 cp未満、static/200k searchの親非退行だけを
+   安全Gateとする。offline値だけで棋力改善とは判定しない。
+5. 安全Gateを通った候補を、v2.5.0重みと20局・100 ms/手でscreenする。score 45%未満なら直ちに棄却する。
+6. screen通過時だけ100局・300 ms/手へ進み、score 48%未満なら棄却する。通過時だけ1,000 ms/手の
+   200局batchを行う。最大800局まで事前条件を変えずに追加し、scoreの95%下限が50%を超えた時点で
+   「現行重みより強い」を達成とする。95%上限が50%未満なら停止する。
+7. 最初の候補が安全Gateを通るが対局screenに失敗した場合だけ、同じdatasetでexpert比率を増やす
+   60/25/15を1回だけ試す。これも失敗した場合に限り、search rankとreplayのtrainer統合を再検討する。
+
+#### 当面実施しないもの
+
+- depth 3～5 search teacherの大量生成
+- search/replay統合trainerの先行実装
+- self-play、TD、league、SWA
+- 3M dataset、複数seedの全組合せ
+- 新しいschema、dashboard、追加Gate、activation閾値調整
+
+これらは1M高rate棋譜の最大2候補が直接対局で失敗するまで保留する。最終目標に寄与する証拠がない工程を、
+完全性や将来拡張性だけを理由に追加しない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
