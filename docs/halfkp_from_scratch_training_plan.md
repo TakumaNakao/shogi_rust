@@ -1600,6 +1600,35 @@ offline Gateは棋力の代理ではない。最終判断はv2.5.0との同一en
 最短経路は、既に動作確認済みのscratch目的をHalfKP全容量へ十分な回数適用し、learning curveと直接対局を
 観測することである。教師方式の追加は、この単一長時間runで学習量不足を除外してから判断する。
 
+### 15.7 長時間direct学習 epoch 4～16 評価記録（2026-07-27）
+
+accepted generation 2を初期値とする`phase6-long-direct-v1-seed20260721`はepoch 16まで正常完了した。
+validation lossはepoch 4の0.04662774、epoch 8の0.04613198、epoch 16の0.04574677と一貫して改善し、
+NaN/Inf、checkpoint破損、探索失敗は発生していない。epoch 16 model SHA-256は
+`6e5d3727c414409dd189717669067e943cabd3b978b272f57e1990fb325a0bee`である。
+
+同一holdoutによるmilestone比較は次のとおり。
+
+| 指標 | epoch 4 | epoch 8 | epoch 16 | 判定 |
+|---|---:|---:|---:|---|
+| exact family accuracy | 90.76% | 91.12% | 91.17% | 改善、候補基準通過 |
+| exact 95% CI lower | 89.57% | 89.96% | 90.01% | 改善、候補基準通過 |
+| WDoor high-rate family accuracy | 84.68% | 85.25% | 85.72% | 改善 |
+| WDoor broad family accuracy | 83.03% | 83.42% | 83.83% | 改善 |
+| health score abs p99 | 1999.65 cp | 2068.66 cp | 2130.83 cp | 候補基準外、継続基準内 |
+| static exact top-1 | 70.9% | 71.4% | 70.8% | 候補基準通過、横ばい |
+| search 200k | 98.8% | 98.9% | 99.0% | 改善、候補基準通過 |
+| v2.5.0対20局score | 10% | 25% | 10% | 診断のみ、未成熟 |
+
+WDoor broad BCEはepoch 8の0.67099からepoch 16の0.67852へ悪化しており、順位正解率の改善と確率校正が
+一致していない。health p99も上昇しているため監視を続ける。一方、停止基準の3000 cpには余裕があり、
+exact、high-rate順位、broad順位、searchは改善している。20局screenはepoch 4と16が10%、epoch 8が25%で
+信頼区間が広く、学習曲線の単調性を判定できない。
+
+したがって計画は変更せず、同じoptimizerとhyperparameterでepoch 32まで継続する。epoch 32では全offline
+評価に加えて40局・100 ms screenを行う。health p99が3000 cpへ到達する、数値異常が出る、または探索が
+明確に崩壊する場合を除き、それ以前に短い対局結果だけで停止しない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
