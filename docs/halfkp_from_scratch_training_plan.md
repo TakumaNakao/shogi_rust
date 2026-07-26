@@ -1528,6 +1528,78 @@ model `06d88946384926be72d4f9917bd56fbf0f4db6f07140e56c15ed8bcddc3b8442`はexact
 情報量を上げる必要がある。ただしCPU制約下で大規模生成を始める前に、既存教師の失敗rootを分析して
 小さな再生成条件を決める。
 
+### 15.6 学習量監査と長時間direct学習への修正（2026-07-26）
+
+#### 結論
+
+計画を修正する。15.5末尾の「次は探索教師の情報量を上げる」という判断は保留し、既存データによる
+長時間direct学習を先に行う。短時間pilotは実装、目的関数、scale、安全性を検証する役割は果たしたが、
+現行v2.5.0を上回るための学習量比較が欠けていた。
+
+`data/halfkp64_kpp_training.csv`によると、v2.5.0は1 epochあたり32,117,302 sampleを12 epoch、
+合計385,407,624 sample提示で学習している。これに対し、accepted scratch generation 2へ至る主要な
+Phase 2～3は68,000 + 357,070 x 2 = 782,140 record提示にすぎず、約493分の1である。高rate Phase 4を
+含む最長の不採用系列でも2,185,586 recordで約176分の1しかない。小規模exact等を加えても桁は変わらない。
+
+さらに、これまでの正式scratch候補は`factor-only`だった。runtimeのdirect feature embeddingは
+6,750,720 parameterだが、piece/relative factorは667,904 parameterで約10分の1である。factorizationは
+sparse featureへ初期知識を広げる土台として有効だったが、最終性能を目指す全容量学習ではない。
+
+したがって「数分～十数分、1～2 epochのfactor-only候補が50時間超のdirect modelへ届かなかった」ことから、
+棋譜教師やscratch方針そのものを否定することはできない。単純な学習量不足は可能性の一つではなく、
+現時点で最初に解消すべき主要因である。
+
+#### Gate運用の修正
+
+これまでGateを早期実験の打ち切り条件として使いすぎた。1000 root中986対985という1 root差には、
+棋力非退行を断定する分解能がない。20局screenも信頼区間が広く、未成熟checkpointを棄却する根拠には弱い。
+
+以後、Gateを次の2種類に分ける。
+
+1. 学習継続を止める安全異常はNaN/Inf、違法出力、明確なscale崩壊、health p99 3,000 cp以上などに限定する。
+2. 対局候補にできるmilestoneはexact 90%以上かつ95%下限88%以上、health p99 2,000 cp未満、
+   static 68%以上、200k search 98.0%以上とする。親との差1 rootだけでは棄却しない。
+
+offline Gateは棋力の代理ではない。最終判断はv2.5.0との同一engine・先後交換対局で行う。
+
+#### 最短の長時間学習計画
+
+新しいtrainer、schema、探索教師、self-playは作らず、既に監査済みのデータとcheckpoint機能を使う。
+
+1. 初期値はaccepted generation 2
+   `9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`へ戻す。
+   rejected Phase 4/5 modelとv2.5.0重みは初期値・教師・targetに使わない。
+2. trainは既存high-rate 4,000 WDoor 537,723件とexact/symmetry/health replayを使う。
+   2候補screenで相対的に良かったexact/expert/result 60/25/15を固定し、search rankは混ぜない。
+3. `factorization=direct`、learning rate 0.001、既存weight decay 0.01、output LR scale 0.4、
+   score anchor 2を固定する。hyperparameter sweepは行わない。
+4. 同じoptimizerを保持して最大256 epochまでresumeする。milestoneは4、8、16、32、64、128、256 epochとし、
+   発散しない限り最低32 epochまでは短い対局結果だけで停止しない。
+5. 1 epochは701,723 record、約1,541,548 objectiveである。32 epochでrecord約22.5M /
+   objective約49.3M、128 epochで約89.8M / 197.3M、256 epochで約179.6M / 394.6Mとなる。
+   256 epochのobjective提示量はv2.5.0のsample提示量と同程度であり、この上限で初めて学習量について
+   比較可能になる。現在の約8分/epochを基準にすると上限は約34時間だが、時間そのものではなく提示量と
+   learning curveを管理する。
+6. 各milestoneでtrain/valid loss、exact、WDoor順位/BCE、health、static、200k searchを保存する。
+   epoch 4～16の20局・100 ms対局は傾向診断にだけ使い、棄却判定には使わない。
+7. epoch 32以降で安全Gateを通るcheckpointを40局・100 msで比較する。scoreが前milestoneから改善中なら
+   次へ進む。validationと対局scoreが2 milestone連続で改善せず、かつv2.5.0との差が残る場合だけ停止する。
+8. 成熟checkpointが40局screenで40%以上なら100局・300 msへ進み、48%以上なら1,000 ms・200局batchへ
+   進む。最大800局で95%下限が50%を超えた場合のみ「v2.5.0より強い」とする。
+9. 32～64 epochで明確にplateauし、direct容量を使っても40%screenへ近付かない場合に限り、
+   WDoor rate 3,500以上へ2～3M局面まで拡張する。探索教師再設計はその後であり、先に実施しない。
+
+#### 当面実施しないもの
+
+- search rank比率1～5%の追加探索
+- depth 3～5教師の大量生成
+- self-play、TD、league、SWA
+- 新しいdataset schema、dashboard、追加Gate
+- 複数seed・複数learning rateの総当たり
+
+最短経路は、既に動作確認済みのscratch目的をHalfKP全容量へ十分な回数適用し、learning curveと直接対局を
+観測することである。教師方式の追加は、この単一長時間runで学習量不足を除外してから判断する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
