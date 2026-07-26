@@ -1466,6 +1466,31 @@ Phase 5のrank-only pilotもsearch教師上のpair/top-1だけを改善し、wdo
 これらは1M高rate棋譜の最大2候補が直接対局で失敗するまで保留する。最終目標に寄与する証拠がない工程を、
 完全性や将来拡張性だけを理由に追加しない。
 
+#### 実行結果（2026-07-26）
+
+WDoor 2023～2025から両対局者rate 4,000以上の44,228局を採用し、723,867局面を生成した。
+content-hash splitはtrain 570,875、valid 90,759、未開封test 62,233である。既存exact、health、
+旧WDoor train/validを除外してHKCLへ変換した結果はtrain 537,723、valid 80,807だった。合同1,050,654
+recordの監査でopening family/network inputのsplit衝突は0、proof再検証失敗も0だった。最初に異なる
+split seedで作ったdiagnostic datasetには旧集合とのnetwork input衝突3,790件があったため使用せず、
+既存splitと同じseedで再構築した上でHKCL変換時のcontent exclusionにより衝突を解消した。testは開いていない。
+
+事前計画の2候補を同じaccepted generation 2から学習した。結果は次のとおりである。
+
+| 配分 exact/expert/result | model SHA-256 | exact family | 95%下限 | high-rate family | broad WDoor family | health p99 | static | search 200k | v2.5.0 20局 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 70/15/15 | `23c2a650...a4319` | 91.01% | 89.85% | 85.24% | 83.22% | 1,754 cp | 71.5% | 98.7% | 4勝16敗、20% |
+| 60/25/15 | `1db4dc2b...76bc5` | 90.84% | 89.65% | 87.68% | 85.10% | 1,943 cp | 70.6% | 98.8% | 6勝14敗、30% |
+
+両候補ともintegrity、exact、health、static、searchの安全Gateを通過した。expert比率増加は未使用WDoorの
+順位精度と直接対局を改善したが、事前固定したscreen条件45%（9/20）には達しなかった。両modelをregistryへ
+rejected登録し、教師・初期値・accepted generationには使用しない。現行v2.5.0重みは学習入力に一切使用せず、
+SHA固定した比較相手としてのみ使った。
+
+この結果により15.5の高rate棋譜最大2候補は完了した。棋譜の選別と目的配分だけをさらに微調整する経路は停止する。
+次に再検討する対象は、既に保留していたsearch rankと70/15/15 replayの同時更新である。ただし、rank-only pilotの
+退行を避ける最小実装と小規模A/Bを先に行い、直接対局へ届かない大規模教師生成や追加Gateへは広げない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

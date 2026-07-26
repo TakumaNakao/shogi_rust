@@ -107,6 +107,8 @@
     {"model_sha256": "25c5645b2968d813577ef604189fc555da36cb7fac5adb40978c67c966186f15", "reason": "phase3_pre_confidence_semantics_diagnostic"},
     {"model_sha256": "967bade10bb7ed7c7549abdfc326c5bbaa2f3901b1097fa671aed696d6d28096", "reason": "phase3_activation_metric_tuning_diagnostic"},
     {"model_sha256": "3a3808dc95fa8fa252604ffb611a97de2c71d0e351200fe23ed838f51c32c9f9", "reason": "phase3_activation_metric_tuning_diagnostic"},
-    {"model_sha256": "b61484ecf2a5caf7d1763f50ab30087ccd5b23a266007e2390bd52e6cd3909d8", "reason": "phase5_rank_only_pilot_static_search_game_rank_regression"}
+    {"model_sha256": "b61484ecf2a5caf7d1763f50ab30087ccd5b23a266007e2390bd52e6cd3909d8", "reason": "phase5_rank_only_pilot_static_search_game_rank_regression"},
+    {"model_sha256": "23c2a650aac1217567442619b455a52eecbdff869cab7c795b9d2225974a4319", "reason": "phase4_highrate4000_v250_screen_4_16_below_45_percent"},
+    {"model_sha256": "1db4dc2b019786badea297fbd5bad94e3965644ab4c56f32f3d11f3b73576bc5", "reason": "phase4_highrate4000_mix60_v250_screen_6_14_below_45_percent"}
   ]
 }
