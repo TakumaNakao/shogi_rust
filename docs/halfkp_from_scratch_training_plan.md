@@ -1629,6 +1629,12 @@ exact、high-rate順位、broad順位、searchは改善している。20局scree
 評価に加えて40局・100 ms screenを行う。health p99が3000 cpへ到達する、数値異常が出る、または探索が
 明確に崩壊する場合を除き、それ以前に短い対局結果だけで停止しない。
 
+epoch 32は正常完了し、valid lossは`0.04543033`まで改善した。exact familyは90.63%（95%下限89.42%）へ
+低下した一方、WDoor high-rateは86.10%、broadは84.13%へ改善した。health p99は2155.18 cp、staticは
+69.7%、200k searchは98.9%であり、継続停止基準には該当しない。40局・100 ms診断は9勝31敗（22.5%、
+95% CI 9.56～35.44%）で、v2.5.0超えは確認できなかった。ただしこの診断は中間checkpointの傾向観測用
+であり、offline指標の一部が改善中でhealthも安全範囲内のため、計画を変更せずepoch 64へ進める。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
