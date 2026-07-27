@@ -1,0 +1,44 @@
+{
+  "schema": "halfkp_long_direct_milestone_report_v1",
+  "date": "2026-07-27",
+  "run": "phase6-long-direct-v1-seed20260721",
+  "milestone_epoch": 64,
+  "model_sha256": "e059a24a3e29a6408e0afbd5d16554379f0bd87af397801777f41634291daa7c",
+  "best_valid_loss": 0.04533218384456846,
+  "metrics": {
+    "exact_family_accuracy": 0.9009,
+    "exact_family_ci95_lower": 0.8884,
+    "highrate_family_accuracy": 0.8640,
+    "highrate_value_bce": 0.55400506,
+    "broad_family_accuracy": 0.8453,
+    "broad_value_bce": 0.68574133,
+    "health_score_abs_p99_cp": 2086.050,
+    "static_top1_accuracy": 0.691,
+    "search_200k_success_rate": 0.989
+  },
+  "diagnostic_match": {
+    "baseline": "v2.5.0 KPP-distilled HalfKP-64",
+    "games": 40,
+    "time_limit_ms": 100,
+    "depth": 32,
+    "seed": 20260726,
+    "candidate_wins": 6,
+    "baseline_wins": 34,
+    "draws": 0,
+    "candidate_score": 0.15,
+    "candidate_score_ci95_lower": 0.0393,
+    "candidate_score_ci95_upper": 0.2607,
+    "usage": "diagnostic_only"
+  },
+  "gate": {
+    "catastrophic_stop": false,
+    "match_eligible": false,
+    "match_eligibility_failure": "exact_family_ci95_lower_and_health_p99"
+  },
+  "decision": "continue_to_epoch_128",
+  "notes": [
+    "High-rate and broad ranking continued to improve and health p99 decreased.",
+    "Exact, static, and short-match scores remain below promotion criteria.",
+    "Search success remains stable at 98.9%; no catastrophic stop condition occurred."
+  ]
+}

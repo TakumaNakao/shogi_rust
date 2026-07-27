@@ -1635,6 +1635,12 @@ epoch 32は正常完了し、valid lossは`0.04543033`まで改善した。exact
 95% CI 9.56～35.44%）で、v2.5.0超えは確認できなかった。ただしこの診断は中間checkpointの傾向観測用
 であり、offline指標の一部が改善中でhealthも安全範囲内のため、計画を変更せずepoch 64へ進める。
 
+epoch 64も正常完了し、valid lossは`0.04533218`となった。exact familyは90.09%（95%下限88.84%）へ
+さらに低下したが、WDoor high-rateは86.40%、broadは84.53%へ改善し、health p99は2086.05 cpへ低下した。
+staticは69.1%、200k searchは98.9%である。40局・100 ms診断は6勝34敗（15.0%、95% CI 3.93～26.07%）で、
+短時間対局の改善は確認できない。offlineの一部改善と停止基準未該当を理由にepoch 128まで進めるが、
+epoch 128でexact/static/対局が改善しない場合は、単純な追加epochだけでの打開を再検討する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
