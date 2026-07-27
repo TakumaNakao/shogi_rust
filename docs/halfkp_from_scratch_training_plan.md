@@ -1652,6 +1652,110 @@ staticが最良のepoch 16、40局診断が最良のepoch 32であり、いず�
 乖離を解析し、(2) direct評価と実対局の不一致を解消するデータ・目的関数の変更を小規模に検証し、
 (3) その変更が確認できてから新しい長時間学習へ進むこととする。
 
+### 15.8 長期学習後の戦略改訂: WDoor MMTO-lite（2026-07-28）
+
+#### 結論
+
+同じHKCLをepoch 256まで反復する計画は中止する。次は、WDoor棋譜手とscratch探索が実際に競合する手を
+探索木のleafで直接比較するMMTO-liteを実施する。現行v2.5.0は引き続き対局比較だけに使い、初期値、
+教師score、negative mining、anchorには一切使わない。
+
+次の初期値はpromotion済みgeneration 2
+`9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`へ戻す。epoch 16/32/64/128は
+原因解析用に保存するが、未昇格であり次世代parentにはしない。
+
+#### 失敗原因の優先順位
+
+1. 現行`game_soft_expert_v1`は、棋譜手に対して「決定論的に選んだ静かな合法手」1手だけをalternativeに
+   している。quiet手が存在すると捕獲、王手、駒打ち、成りをnegative候補に含めない。そのためWDoor pair
+   accuracyは上げられても、探索中にモデルが過大評価して実際に選ぶhard negativeを矯正できない。
+2. epoch 16から128でhigh-rate familyは85.72%から86.53%へ改善した一方、static attacker top-1は
+   44.2%から38.6%、40局scoreは10%から7.5%へ悪化した。代理課題と棋力の不一致は統計不足ではなく、
+   方向の不一致である。
+3. 128 epochで約89.8M record / 約197.3M objectiveを提示した。v2.5.0の総提示量には届かないが、
+   valid lossはepoch 64以降悪化し、exact/static/対局も同時に悪化した。同じ537,723局面の反復を増やす
+   だけでは、新しい意思決定情報は増えない。
+4. result BCEは改善しても対局へ転移しなかった。最終勝敗の絶対値回帰は補助信号としては使えるが、
+   次の主目的にはしない。
+
+Bonanza/MMTOの要点は、静的なランダム手pairではなく、現在の探索が選ぶ手と棋譜手の不一致を探索leaf上で
+最小化することにある。本repoの`halfkp_search_teacher`は既に全合法手の浅いpreselection、上位候補、
+tactical候補、棋譜手、深いPV leaf、`CANDIDATE_GAME_MOVE`と`CANDIDATE_SEARCH_BEST`をHKSTへ保存できる。
+不足しているのは、この2候補を直接比較する損失だけである。
+
+#### 実装範囲
+
+新しいbinary、dataset schema、optimizer、dashboardは作らない。`halfkp_search_train`へ次だけ追加する。
+
+1. `--game-vs-search-weight`（既定0）を追加する。
+2. 棋譜手とscratch search-bestが異なり、parent探索でのregretが上限内のrecordについて、棋譜手のPV leafを
+   good、search-bestのPV leafをbadとするrank lossを1 pair追加する。
+3. このlossが有効なrecordでは、通常のsearch-best対劣後手lossから棋譜手を除外し、同じpairを逆向きにも
+   学ぶ相殺を防ぐ。その他のhard negativeには従来のsearch rankを残す。
+4. manifest/logへgame/search不一致数、regret 50/150/300/600 cp以下の件数、適用pair数、pair accuracyを
+   記録する。
+5. weight 0互換、gradient符号、regret上限、game move除外、決定性、resumeをunit testする。
+
+これは既存HKST codecと候補探索をそのまま使う局所変更であり、過剰な基盤追加は行わない。
+
+#### 実行計画
+
+##### Step 1: 10k root pilot
+
+- source: 既存のrate 4000以上WDoor train/valid JSONL
+- parent/teacher: accepted generation 2のみ
+- train 10,000 root、valid 2,000 rootを固定strideで抽出
+- selection depth 2、teacher depth 4、1探索最大20,000 node
+- candidate top 8、tactical candidate 2、棋譜手を必ずcandidateへ追加
+- 別の1,000 rootだけall-legal recallを監査し、depth 4 bestの候補recall 95%以上を要求
+- test splitと2026年out-of-time splitは開かない
+
+同じHKSTで次の2候補だけを1 epoch比較する。
+
+1. control: search rankのみ（既存実装）
+2. treatment: search rank + game-vs-search。value/result lossは0、旧game-rank lossも0
+
+初期値、seed、shuffle、learning rate `1e-5`、output learning rate `1e-6`を固定する。regret上限は
+300 cpを基本とし、事前監査で適用recordが20%未満の場合だけ600 cpへ上げる。weight sweep、複数seed、
+epoch sweepは行わない。
+
+##### Step 2: pilot Gate
+
+treatmentを次へ進めるには、以下をすべて満たす。
+
+- NaN/Inf、違法手、provenance/split衝突0
+- exact family point 90%以上、95%下限88%以上
+- health p99 2,500 cp未満
+- static top-1 69%以上、200k search 98.5%以上
+- 固定HKST validのgame-move top-1がcontrolより3 point以上改善、またはgame/search mismatch regretが
+  10%以上減少
+- accepted generation 2との100局・100 ms先後交換対局でscore 50%以上
+- v2.5.0との同一100局で、generation 2を同じ条件で再測定したscoreより5 point以上改善
+
+ここで失敗した場合、比率やepochを微調整せず、このloss仮説を棄却する。
+
+##### Step 3: 50k、250kへの段階拡張
+
+10k pilot通過時だけ、同じ設定で50k train / 5k validへ拡張する。50k候補がv2.5.0に40%以上なら250kへ
+進め、40%未満なら停止する。250kでも学習は最大2 epoch、各epochを保存して早い方をGateで選ぶ。
+100 msで45%以上になった場合だけ300 ms・200局へ進み、48%以上で1,000 ms評価へ進む。
+
+候補がgeneration 2と全安全Gateを通過し、親子対局で明確に非退行となった場合だけpromotion registryへ
+登録する。昇格後に限り、その新parentからHKSTを1回再生成して第2世代MMTO-liteを行う。最大2世代で
+v2.5.0との差が縮まらなければ停止し、self-play/TDではなく表現能力と探索leaf教師の再監査へ戻る。
+
+#### 当面実施しないもの
+
+- epoch 256への継続、同じHKCLの追加反復
+- rate 3,500 WDoorを2～3M局面へ先に拡大すること
+- exact/expert/result比率の細かな再探索
+- 現行v2.5.0やepoch 128を教師・初期値に使うこと
+- self-play、TDLeaf、SWA、league
+- 新しいpolicy head、dataset schema、trainerの新設
+
+最短経路は、既にある探索教師pipelineで「scratch engineが選びたがる手」をhard negativeとしてWDoor棋譜手へ
+直接合わせ、その変更が実対局へ転移するかを10k rootで先に確認することである。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

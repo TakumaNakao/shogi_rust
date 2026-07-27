@@ -1,0 +1,79 @@
+{
+  "schema": "halfkp_scratch_strategy_review_v1",
+  "date": "2026-07-28",
+  "decision": "replace_repeated_hkcl_training_with_wdoor_mmto_lite",
+  "primary_diagnosis": "the_random_quiet_alternative_proxy_does_not_match_search_decisions",
+  "evidence": {
+    "epoch16": {
+      "highrate_family_accuracy": 0.8572,
+      "static_attacker_accuracy": 0.442,
+      "diagnostic_match_score": 0.10
+    },
+    "epoch128": {
+      "highrate_family_accuracy": 0.8653,
+      "static_attacker_accuracy": 0.386,
+      "diagnostic_match_score": 0.075
+    },
+    "training_volume_at_epoch128": {
+      "record_presentations": 89820544,
+      "objective_presentations": 197318144
+    },
+    "current_game_teacher": {
+      "positive": "recorded WDoor move",
+      "negative": "one deterministic quiet legal alternative",
+      "tactical_alternatives_excluded_when_quiet_exists": true
+    }
+  },
+  "parent": {
+    "model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "generation": 2,
+    "accepted": true
+  },
+  "release_baseline_usage": "comparison_only",
+  "minimal_implementation": {
+    "binary": "halfkp_search_train",
+    "new_option": "game-vs-search-weight",
+    "new_schema": false,
+    "new_trainer": false,
+    "objective": "rank the recorded WDoor move PV leaf above the accepted scratch parent's search-best PV leaf",
+    "exclude_game_move_from_opposite_search_rank_pair": true,
+    "required_metrics": [
+      "game_search_mismatch_count",
+      "game_move_regret_threshold_counts",
+      "game_vs_search_pairs",
+      "game_vs_search_pair_accuracy"
+    ]
+  },
+  "pilot": {
+    "train_roots": 10000,
+    "valid_roots": 2000,
+    "selection_depth": 2,
+    "teacher_depth": 4,
+    "max_nodes_per_search": 20000,
+    "candidate_top": 8,
+    "tactical_candidate_limit": 2,
+    "epochs": 1,
+    "learning_rate": 0.00001,
+    "output_learning_rate": 0.000001,
+    "value_weight": 0.0,
+    "legacy_game_rank_weight": 0.0,
+    "regret_cap_cp": 300,
+    "regret_cap_fallback_cp": 600
+  },
+  "scale_only_after_transfer": {
+    "stages": [10000, 50000, 250000],
+    "minimum_v250_score_to_scale_50k_to_250k": 0.40,
+    "maximum_epochs_at_250k": 2,
+    "maximum_promoted_generations_before_review": 2
+  },
+  "explicitly_deferred": [
+    "epoch_256_on_the_same_hkcl",
+    "three_million_position_expansion",
+    "source_mix_sweep",
+    "self_play",
+    "td_leaf",
+    "swa",
+    "new_policy_head",
+    "new_dataset_schema"
+  ]
+}
