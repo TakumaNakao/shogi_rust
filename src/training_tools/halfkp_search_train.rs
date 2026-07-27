@@ -69,6 +69,9 @@ struct Args {
     rank_weight: f32,
     #[arg(long, default_value_t = 0.025)]
     game_rank_weight: f32,
+    /// Rank the recorded game move's searched leaf above the scratch search-best leaf.
+    #[arg(long, default_value_t = 0.0)]
+    game_vs_search_weight: f32,
     #[arg(long, default_value_t = 20.0)]
     rank_margin_cp: f32,
     #[arg(long, default_value_t = 100.0)]
@@ -263,6 +266,11 @@ struct Metrics {
     top1_matches: usize,
     game_moves: usize,
     game_move_top1: usize,
+    game_search_mismatches: usize,
+    game_regret_threshold_counts: [usize; 4],
+    game_vs_search_eligible: usize,
+    game_vs_search_pairs: usize,
+    game_vs_search_pair_correct: usize,
     regret_sum: f64,
     regret_histogram: [u64; 121],
     log_loss: f64,
@@ -282,6 +290,11 @@ impl Default for Metrics {
             top1_matches: 0,
             game_moves: 0,
             game_move_top1: 0,
+            game_search_mismatches: 0,
+            game_regret_threshold_counts: [0; 4],
+            game_vs_search_eligible: 0,
+            game_vs_search_pairs: 0,
+            game_vs_search_pair_correct: 0,
             regret_sum: 0.0,
             regret_histogram: [0; 121],
             log_loss: 0.0,
@@ -298,6 +311,7 @@ struct TrainOptions {
     loss_power: f32,
     rank_weight: f32,
     game_rank_weight: f32,
+    game_vs_search_weight: f32,
     rank_margin_cp: f32,
     rank_temperature_cp: f32,
     min_rank_gap_cp: f32,
@@ -456,6 +470,7 @@ pub fn run() -> Result<()> {
         loss_power: args.loss_power,
         rank_weight: args.rank_weight,
         game_rank_weight: args.game_rank_weight,
+        game_vs_search_weight: args.game_vs_search_weight,
         rank_margin_cp: args.rank_margin_cp,
         rank_temperature_cp: args.rank_temperature_cp,
         min_rank_gap_cp: args.min_rank_gap_cp,
@@ -594,7 +609,7 @@ pub fn run() -> Result<()> {
         if let Some(writer) = log.as_mut() {
             writeln!(
                 writer,
-                "{epoch},{seen},{:.8},{:.8},{:.6},{:.6},{:.6},{:.6},{:.3},{:.8}",
+                "{epoch},{seen},{:.8},{:.8},{:.6},{:.6},{:.6},{:.6},{:.3},{},{:.6},{:.8}",
                 epoch_value_loss / seen.max(1) as f64,
                 epoch_rank_loss / epoch_pairs.max(1) as f64,
                 valid_metrics.value_loss / valid_metrics.records.max(1) as f64,
@@ -602,6 +617,9 @@ pub fn run() -> Result<()> {
                 valid_metrics.top1_matches as f64 / valid_metrics.records.max(1) as f64,
                 valid_metrics.pair_correct as f64 / valid_metrics.pairs.max(1) as f64,
                 valid_metrics.regret_sum / valid_metrics.records.max(1) as f64,
+                valid_metrics.game_vs_search_pairs,
+                valid_metrics.game_vs_search_pair_correct as f64
+                    / valid_metrics.game_vs_search_eligible.max(1) as f64,
                 score
             )?;
             writer.flush()?;
@@ -675,6 +693,7 @@ fn validate_args(args: &Args) -> Result<()> {
         || !(1.0..=4.0).contains(&args.loss_power)
         || args.rank_weight < 0.0
         || args.game_rank_weight < 0.0
+        || args.game_vs_search_weight < 0.0
         || args.rank_temperature_cp <= 0.0
         || args.gradient_clip_norm <= 0.0
         || args.output_limit <= 0.0
@@ -805,7 +824,7 @@ fn create_log(path: Option<&Path>) -> Result<Option<BufWriter<File>>> {
     if !exists {
         writeln!(
             writer,
-            "epoch,train_records,train_value_loss,train_rank_loss,valid_value_loss,valid_search_mae,valid_top1,valid_pair_accuracy,valid_regret_cp,score"
+            "epoch,train_records,train_value_loss,train_rank_loss,valid_value_loss,valid_search_mae,valid_top1,valid_pair_accuracy,valid_regret_cp,valid_game_vs_search_pairs,valid_game_vs_search_accuracy,score"
         )?;
     }
     Ok(Some(writer))
@@ -835,7 +854,7 @@ fn training_fingerprint(args: &Args) -> Result<String> {
             .collect()
     }
 
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "schema_version": 1,
         "stage": "halfkp_search_train",
         "target": format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
@@ -887,6 +906,8 @@ fn training_fingerprint(args: &Args) -> Result<String> {
             "allow_legacy_teacher_semantics": args.allow_legacy_teacher_semantics,
         },
     });
+    value["hyperparameters"]["game_vs_search_weight"] =
+        serde_json::json!(args.game_vs_search_weight);
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
 }
 
@@ -964,6 +985,7 @@ fn write_training_manifest(
             "loss_power": args.loss_power,
             "rank_weight": args.rank_weight,
             "game_rank_weight": args.game_rank_weight,
+            "game_vs_search_weight": args.game_vs_search_weight,
             "rank_margin_cp": args.rank_margin_cp,
             "rank_temperature_cp": args.rank_temperature_cp,
             "min_rank_gap_cp": args.min_rank_gap_cp,
@@ -1013,6 +1035,16 @@ fn metrics_json(metrics: &Metrics) -> serde_json::Value {
         "top1_matches": metrics.top1_matches,
         "game_moves": metrics.game_moves,
         "game_move_top1": metrics.game_move_top1,
+        "game_search_mismatches": metrics.game_search_mismatches,
+        "game_regret_threshold_counts": {
+            "le_50_cp": metrics.game_regret_threshold_counts[0],
+            "le_150_cp": metrics.game_regret_threshold_counts[1],
+            "le_300_cp": metrics.game_regret_threshold_counts[2],
+            "le_600_cp": metrics.game_regret_threshold_counts[3],
+        },
+        "game_vs_search_eligible": metrics.game_vs_search_eligible,
+        "game_vs_search_pairs": metrics.game_vs_search_pairs,
+        "game_vs_search_pair_correct": metrics.game_vs_search_pair_correct,
         "regret_sum": metrics.regret_sum,
         "log_loss": metrics.log_loss,
         "phase_records": metrics.phase_records,
@@ -1298,9 +1330,21 @@ fn compute_record_gradient(
         .max_by(|lhs, rhs| lhs.1.score_cp.total_cmp(&rhs.1.score_cp))
         .map(|(index, _)| index)
         .unwrap_or(0);
+    let game_index = record
+        .candidates
+        .iter()
+        .position(|candidate| candidate.flags & CANDIDATE_GAME_MOVE != 0);
+    let game_vs_search_eligible = game_index.is_some_and(|game_index| {
+        game_index != teacher_best
+            && record.candidates[teacher_best].score_cp - record.candidates[game_index].score_cp
+                <= options.game_regret_cap_cp
+    });
     let mut bad = (0..record.candidates.len())
         .filter(|&index| {
             index != teacher_best
+                && !(options.game_vs_search_weight > 0.0
+                    && game_vs_search_eligible
+                    && Some(index) == game_index)
                 && record.candidates[teacher_best].score_cp - record.candidates[index].score_cp
                     >= options.min_rank_gap_cp
         })
@@ -1320,12 +1364,23 @@ fn compute_record_gradient(
         );
     }
 
+    if options.game_vs_search_weight > 0.0 && game_vs_search_eligible {
+        let game_index = game_index.expect("eligible game move");
+        add_rank_pair(
+            weights,
+            record,
+            &forwards,
+            &utilities,
+            game_index,
+            teacher_best,
+            options.game_vs_search_weight * record.sample_weight,
+            options,
+            &mut gradient,
+        );
+    }
+
     if options.game_rank_weight > 0.0 {
-        if let Some(game_index) = record
-            .candidates
-            .iter()
-            .position(|candidate| candidate.flags & CANDIDATE_GAME_MOVE != 0)
-        {
+        if let Some(game_index) = game_index {
             let regret =
                 record.candidates[teacher_best].score_cp - record.candidates[game_index].score_cp;
             if regret <= options.game_regret_cap_cp {
@@ -1834,6 +1889,20 @@ fn evaluate_record(
     {
         metrics.game_moves = 1;
         metrics.game_move_top1 = usize::from(game_index == model_best);
+        if game_index != teacher_best {
+            metrics.game_search_mismatches = 1;
+            let regret =
+                record.candidates[teacher_best].score_cp - record.candidates[game_index].score_cp;
+            for (index, threshold) in [50.0, 150.0, 300.0, 600.0].into_iter().enumerate() {
+                metrics.game_regret_threshold_counts[index] = usize::from(regret <= threshold);
+            }
+            if regret <= options.game_regret_cap_cp {
+                metrics.game_vs_search_eligible = 1;
+                metrics.game_vs_search_pair_correct =
+                    usize::from(utilities[game_index] > utilities[teacher_best]);
+                metrics.game_vs_search_pairs = usize::from(options.game_vs_search_weight > 0.0);
+            }
+        }
     }
     metrics
 }
@@ -1848,6 +1917,13 @@ fn merge_metrics(mut lhs: Metrics, rhs: Metrics) -> Metrics {
     lhs.top1_matches += rhs.top1_matches;
     lhs.game_moves += rhs.game_moves;
     lhs.game_move_top1 += rhs.game_move_top1;
+    lhs.game_search_mismatches += rhs.game_search_mismatches;
+    for index in 0..lhs.game_regret_threshold_counts.len() {
+        lhs.game_regret_threshold_counts[index] += rhs.game_regret_threshold_counts[index];
+    }
+    lhs.game_vs_search_eligible += rhs.game_vs_search_eligible;
+    lhs.game_vs_search_pairs += rhs.game_vs_search_pairs;
+    lhs.game_vs_search_pair_correct += rhs.game_vs_search_pair_correct;
     lhs.regret_sum += rhs.regret_sum;
     lhs.log_loss += rhs.log_loss;
     for index in 0..lhs.regret_histogram.len() {
@@ -1881,7 +1957,7 @@ fn regret_percentile(metrics: &Metrics, percentile: f64) -> f64 {
 
 fn print_metrics(label: &str, epoch: usize, metrics: &Metrics) {
     println!(
-        "{label} epoch={epoch} records={} known_results={} brier={:.8} logloss={:.6} search_mae={:.3} top1={:.4} pair={:.4} regret_mean={:.2} regret_p95={:.1} game_top1={:.4} phase_brier={:.8}/{:.8}/{:.8}",
+        "{label} epoch={epoch} records={} known_results={} brier={:.8} logloss={:.6} search_mae={:.3} top1={:.4} pair={:.4} regret_mean={:.2} regret_p95={:.1} game_top1={:.4} game_search_mismatch={} game_regret_le=50:{}/150:{}/300:{}/600:{} game_vs_search_eligible={} game_vs_search_pairs={} game_vs_search_accuracy={:.4} phase_brier={:.8}/{:.8}/{:.8}",
         metrics.records,
         metrics.known_results,
         metrics.value_loss / metrics.records.max(1) as f64,
@@ -1892,6 +1968,15 @@ fn print_metrics(label: &str, epoch: usize, metrics: &Metrics) {
         metrics.regret_sum / metrics.records.max(1) as f64,
         regret_percentile(metrics, 0.95),
         metrics.game_move_top1 as f64 / metrics.game_moves.max(1) as f64,
+        metrics.game_search_mismatches,
+        metrics.game_regret_threshold_counts[0],
+        metrics.game_regret_threshold_counts[1],
+        metrics.game_regret_threshold_counts[2],
+        metrics.game_regret_threshold_counts[3],
+        metrics.game_vs_search_eligible,
+        metrics.game_vs_search_pairs,
+        metrics.game_vs_search_pair_correct as f64
+            / metrics.game_vs_search_eligible.max(1) as f64,
         metrics.phase_brier[0] / metrics.phase_records[0].max(1) as f64,
         metrics.phase_brier[1] / metrics.phase_records[1].max(1) as f64,
         metrics.phase_brier[2] / metrics.phase_records[2].max(1) as f64,
@@ -2078,6 +2163,7 @@ mod tests {
             loss_power: 2.0,
             rank_weight: 0.0,
             game_rank_weight: 0.0,
+            game_vs_search_weight: 0.0,
             rank_margin_cp: 20.0,
             rank_temperature_cp: 100.0,
             min_rank_gap_cp: 15.0,
@@ -2258,6 +2344,7 @@ mod tests {
             loss_power: 2.0,
             rank_weight: 0.0,
             game_rank_weight: 0.0,
+            game_vs_search_weight: 0.0,
             rank_margin_cp: 20.0,
             rank_temperature_cp: 100.0,
             min_rank_gap_cp: 15.0,
@@ -2283,5 +2370,96 @@ mod tests {
             (analytic - numerical).abs() < 1e-4,
             "analytic={analytic} numerical={numerical}"
         );
+    }
+
+    fn game_vs_search_fixture() -> (Weights, SearchTeacherRecord, TrainOptions) {
+        let position = Position::default();
+        let root = PackedHalfKpPosition::from_position(&position).expect("start position");
+        let mut search_child = root.clone();
+        search_child.features_black = vec![0];
+        let mut game_child = root.clone();
+        game_child.features_black = vec![1];
+        let weights = Weights {
+            feature_emb: vec![0.0; HALFKP_INPUTS * HALFKP_HIDDEN],
+            hidden_b: [0.5; HALFKP_HIDDEN],
+            out_w: [0.01; HALFKP_HIDDEN * 2 + 1],
+            out_b: 0.0,
+        };
+        let record = SearchTeacherRecord {
+            position_hash: PositionHasher::calculate_hash(&position),
+            ply: 0,
+            phase: 0,
+            teacher_depth: 4,
+            result: None,
+            root_search_score_cp: 100.0,
+            sample_weight: 1.0,
+            root,
+            candidates: vec![
+                SearchTeacherCandidate {
+                    flags: 0,
+                    score_cp: 100.0,
+                    child: search_child,
+                },
+                SearchTeacherCandidate {
+                    flags: CANDIDATE_GAME_MOVE,
+                    score_cp: 0.0,
+                    child: game_child,
+                },
+            ],
+        };
+        let options = TrainOptions {
+            kappa_cp: 600.0,
+            search_mix: 1.0,
+            value_weight: 0.0,
+            loss_power: 2.0,
+            rank_weight: 1.0,
+            game_rank_weight: 0.0,
+            game_vs_search_weight: 1.0,
+            rank_margin_cp: 20.0,
+            rank_temperature_cp: 100.0,
+            min_rank_gap_cp: 15.0,
+            game_regret_cap_cp: 300.0,
+            max_pairs_per_record: 4,
+        };
+        (weights, record, options)
+    }
+
+    #[test]
+    fn game_vs_search_adds_one_forward_pair_and_excludes_the_reverse_pair() {
+        let (weights, record, options) = game_vs_search_fixture();
+        let gradient = compute_record_gradient(&weights, &record, &options);
+        assert_eq!(1, gradient.pairs);
+        assert_eq!(3, gradient.positions.len());
+        assert!(gradient.positions[1].black_hidden[0] > 0.0);
+        assert!(gradient.positions[2].black_hidden[0] < 0.0);
+    }
+
+    #[test]
+    fn game_vs_search_weight_zero_preserves_existing_behavior() {
+        let (weights, record, mut options) = game_vs_search_fixture();
+        options.rank_weight = 0.0;
+        options.game_vs_search_weight = 0.0;
+        assert_eq!(
+            0,
+            compute_record_gradient(&weights, &record, &options).pairs
+        );
+    }
+
+    #[test]
+    fn game_vs_search_respects_regret_cap_and_reports_thresholds() {
+        let (weights, record, mut options) = game_vs_search_fixture();
+        options.rank_weight = 0.0;
+        options.game_regret_cap_cp = 50.0;
+        assert_eq!(
+            0,
+            compute_record_gradient(&weights, &record, &options).pairs
+        );
+
+        options.game_regret_cap_cp = 300.0;
+        let metrics = evaluate_record(&weights, &record, &options);
+        assert_eq!(1, metrics.game_search_mismatches);
+        assert_eq!([0, 1, 1, 1], metrics.game_regret_threshold_counts);
+        assert_eq!(1, metrics.game_vs_search_eligible);
+        assert_eq!(1, metrics.game_vs_search_pairs);
     }
 }
