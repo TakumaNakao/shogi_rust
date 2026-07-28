@@ -1,6 +1,6 @@
 # HalfKP-64 重みゼロスタート学習方針
 
-- Status: **in progress / generation 2 accepted / next: search-trainer hardening and corrected Direct-only WDoor MMTO-lite**
+- Status: **corrected 9k MMTO-lite stopped at primary Gate / generation 2 remains accepted / next strategy review required**
 - 作成日: 2026-07-21
 - 対象: v2.6.0以降のHalfKP-64評価関数
 - 前提計算機: AMD Ryzen 7 PRO 4750U、8 core / 16 thread、RAM 14 GiB、GPUなし
@@ -2225,7 +2225,8 @@ PV leaf保存へ変えるとteacher semanticsとcodecの変更が必要になる
 
 #### Step 0: search trainerの最小hardening
 
-corrected pilotより前に、`halfkp_search_train`だけへ次を実装する。新optimizer、新schema、新binaryは作らない。
+corrected pilotより前に、`halfkp_search_train`へ次を実装する。新optimizer、新schema、新trainerは作らない。
+全candidateを含むsplit衝突を再現可能に除去するための小さな専用filter CLIだけは追加する。
 
 1. 王file 5のdirect mirror pairへ同じ有効gradientを与え、対応するAdaGrad stateも同期する。
    非中央王のrowは追加tieしない。全gradient 0ではmodelをbyte単位で変えない。
@@ -2368,18 +2369,64 @@ corrected MMTO本線より実装範囲が広い。今回は先行実装も自動
 | runtime/trainerの符号、scale、fold、incremental eval監査 | 完了 |
 | factor symmetry過剰制約とscratch validation不一致の特定 | 完了 |
 | accepted generation 2と既存HKST provenance固定 | 完了 |
-| search trainer center symmetry、last artifact、非競合metric、SHA/split hardening | 未着手 |
-| hardening回帰testとzero-loss復旧Gate | hardening後 |
-| corrected 9k MMTO-lite control/treatment | hardening後 |
-| full WDoor HKST生成 | Step 1通過時のみ |
-| full Direct-only epoch 1 / 2 | Step 2通過時のみ |
-| 固定400局親子・paired v2.5.0評価 | full候補通過時のみ |
-| generation 3教師再生成 | promotion時のみ |
-| 300 ms中間評価 | 100 ms通過時のみ |
-| 1,000 ms最終評価 | 最終候補のみ |
+| search trainer center symmetry、last artifact、非競合metric、SHA/split hardening | 完了（`e568b31`） |
+| hardening回帰testとzero-loss復旧Gate | 完了 |
+| corrected 9k MMTO-lite control/treatment | 完了、主Gate不合格 |
+| full WDoor HKST生成 | Step 1不合格のため対象外 |
+| full Direct-only epoch 1 / 2 | Step 1不合格のため対象外 |
+| 固定400局親子・paired v2.5.0評価 | Step 1不合格のため対象外 |
+| generation 3教師再生成 | Step 1不合格のため対象外 |
+| 300 ms中間評価 | Step 1不合格のため対象外 |
+| 1,000 ms最終評価 | Step 1不合格のため対象外 |
 
 機械可読な判断・Gate・進捗は
 `training/halfkp64-scratch-v1/strategy_review_corrected_mmto_20260729.json`に保存する。
+
+### 15.13 corrected Direct-only MMTO-lite実行結果（2026-07-29）
+
+#### 実装と正当性Gate
+
+Step 0を`e568b31`で実装した。中央王direct rowだけに正しいmirror gradient projectionを適用し、
+両rowのAdaGrad stateを同一に保つようにした。非対称な初期modelまたはoptimizer stateは暗黙修正せず拒否する。
+また、`--save-last-epoch`と選択modelに対応するmanifest metric、非競合search pair metric、HKSTの
+teacher/output SHA照合、rootと全candidate childを含むsplit非重複検査を追加した。
+
+既存valid 1,840件のうち、trainのnetwork input集合と衝突する31件をrecord単位で決定論的に除外した。
+filtered validは1,809件、全inputの残存重複は0、出力SHA-256は
+`eb2ccc0aa0e840f0c1a841879dd4c3cbdd941b913b980a2a4f6a0524f18e8ad6`である。
+専用filter CLIの追加は、このsplitを再現可能なartifactにする最小限の修正であり、trainerやschemaの追加ではない。
+
+targeted test 18件、library test 102件、release buildはすべて成功した。9,311件を使ったzero-loss 1 epochでは
+出力SHAがaccepted generation 2の
+`9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`と一致し、byte identity、
+selected/initial validation一致、中央王mirror symmetry維持を確認した。
+
+#### 9k control/treatment
+
+事前固定した条件のまま、filtered valid 1,809件でcontrolとtreatmentを各1 epoch実行した。
+
+| 指標 | control（game-vs 0.0） | treatment（game-vs 0.1） | treatment - control |
+|---|---:|---:|---:|
+| game-vs-search accuracy | 36.9547% | 36.9547% | 0.0000 point |
+| mean regret | 312.6771 cp | 312.8555 cp | +0.1784 cp |
+| mean regret reduction | - | - | -0.0570% |
+| non-conflicting pair accuracy | 64.0030% | 63.9977% | -0.0053 point |
+
+主Gateはgame-vs-search accuracyを0.5 point以上改善、またはmean regretを1%以上削減することであった。
+accuracyは不変でregretはわずかに悪化したため、両方とも不合格である。非競合pairの退行は0.0053 pointに留まり、
+許容上限1 point以内だった。
+
+安全Gateはすべて通過した。exact family accuracyは90.8078%、95%下限89.6243%、
+health score absolute p99は1,674.3004 cp、static top-1は69.9%、200k fixed-node searchは98.6%だった。
+従って実装破損や壊滅的退行ではなく、追加した目的がheld-outの対象指標を動かさなかったことが棄却理由である。
+
+#### 判断
+
+Step 1の事前登録済み停止条件を発動する。weight、learning rate、seed、epochを調整せず、
+9～10時間のfull WDoor教師生成、full学習、対局評価、promotionへは進まない。
+accepted generation 2を引き続き現lineageの採用weightとする。次の戦略はこの不合格結果を改めて監査してから
+別計画として決める。詳細な機械可読結果は
+`training/halfkp64-scratch-v1/corrected_mmto_lite_pilot_execution_report_20260729.json`に保存した。
 
 ## 16. 参考資料と本計画への反映
 

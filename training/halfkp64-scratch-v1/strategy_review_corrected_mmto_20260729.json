@@ -3,7 +3,8 @@
   "date": "2026-07-29",
   "scope": "Post-recovery HalfKP-64 scratch result audit and shortest next training strategy",
   "decision": "harden_search_trainer_then_run_corrected_direct_only_wdoor_mmto_lite",
-  "status": "planned",
+  "status": "stopped_after_corrected_9k_mmto_lite_primary_gate_failure",
+  "execution_result_report": "training/halfkp64-scratch-v1/corrected_mmto_lite_pilot_execution_report_20260729.json",
   "lineage": {
     "lineage_id": "halfkp64-scratch-v1",
     "accepted_parent_generation": 2,
@@ -182,7 +183,7 @@
     {
       "step": 0,
       "name": "harden_search_trainer_and_pass_correctness_gate",
-      "status": "pending",
+      "status": "completed",
       "requirements": [
         "Use accepted generation 2 as both init and teacher.",
         "Use v2.5.0 for matches only.",
@@ -199,12 +200,12 @@
     {
       "step": 1,
       "name": "corrected_9k_mmto_lite_control_treatment",
-      "status": "blocked_on_step_0",
+      "status": "failed_primary_gate",
       "dataset": {
         "train_records": 9311,
         "raw_valid_records": 1840,
-        "valid_records_after_filter": null,
-        "valid_filter_status": "fixed by step 0 after removing every cross-split root-or-candidate network-input collision"
+        "valid_records_after_filter": 1809,
+        "valid_filter_status": "completed: removed 31 colliding records; residual all-network-input overlap is zero"
       },
       "common": {
         "epochs": 1,
@@ -242,7 +243,7 @@
     {
       "step": 2,
       "name": "generate_full_rate_4000_wdoor_mmto_lite_teacher",
-      "status": "blocked_on_step_1",
+      "status": "not_eligible_after_step_1_failure",
       "source_train_roots": 556820,
       "source_valid_roots": 99660,
       "selection_depth": 2,
@@ -270,7 +271,7 @@
     {
       "step": 3,
       "name": "train_full_direct_only_mmto_lite",
-      "status": "blocked_on_step_2",
+      "status": "not_eligible_after_step_1_failure",
       "epochs_saved": [
         1,
         2
@@ -295,7 +296,7 @@
     {
       "step": 4,
       "name": "parent_and_release_baseline_matches",
-      "status": "blocked_on_step_3",
+      "status": "not_eligible_after_step_1_failure",
       "parent_match": {
         "games": 400,
         "limit": "20000 fixed nodes",
@@ -315,7 +316,7 @@
     {
       "step": 5,
       "name": "promote_and_repeat_one_teacher_generation",
-      "status": "blocked_on_step_4",
+      "status": "not_eligible_after_step_1_failure",
       "maximum_full_generations": 2,
       "promotion_rule": "Promote solely on the clear parent-match gate; do not promote on a one-win directional change against v2.5.0.",
       "after_generation_3": {
@@ -332,7 +333,7 @@
     {
       "step": 6,
       "name": "intermediate_300ms_match",
-      "status": "blocked_on_step_5",
+      "status": "not_eligible_after_step_1_failure",
       "time_ms": 300,
       "games": 200,
       "score_min": 0.48
@@ -340,7 +341,7 @@
     {
       "step": 7,
       "name": "final_release_acceptance",
-      "status": "blocked_on_step_6",
+      "status": "not_eligible_after_step_1_failure",
       "time_ms": 1000,
       "games": 800,
       "operational_record_interval_games": 200,
@@ -352,6 +353,8 @@
   "failure_policy": {
     "trigger": "corrected 9k MMTO-lite step 1 fails",
     "action": "Stop the plan, record the evidence, and conduct a new strategy review without changing the weight, epoch count, seed, or optimizer.",
+    "triggered": true,
+    "result": "The treatment changed game-vs-search accuracy by 0.0 and worsened mean regret by 0.0570%; all safety gates passed, but neither preregistered primary scale signal passed.",
     "deferred_candidate": "parent-static hard-negative WDoor",
     "reason_deferred": "It requires generator changes, all-legal child evaluation, and scratch-validation repair, so it is broader than the current single-route plan."
   },
