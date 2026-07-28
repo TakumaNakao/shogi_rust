@@ -1904,6 +1904,37 @@ test確認後にparameter、epoch、比率を変更しない。
 既存teacherのvalue-only分岐一つであり、棋力へ転移した世代だけにCPU時間を使える。機械可読計画は
 `training/halfkp64-scratch-v1/strategy_review_post_mmto_20260728.json`に保存する。
 
+#### 2026-07-28 Phase A実行結果: search-value bootstrapは拡張前に棄却
+
+計画どおり`halfkp_search_train`へ、modelとscratch teacherそれぞれの最終結果Brier/log-lossを全体・phase別に
+出す診断だけを追加した。損失とoptimizerは変更していない。targeted 10 testとlibrary全94 testが合格し、
+実装commitは`cf55bd9`である。
+
+既存valid 1,840 recordの初期監査では、generation 2のresult Brier 0.261441に対してdepth 4 teacherは
+0.254313で、相対2.73%改善した。openingは0.253901から0.251900、middleは0.264801から0.254952、
+lateは0.340637から0.297542となり、全3 phaseで非退行だった。事前Gateの相対2%以上、3 phase中2 phase以上
+非退行を満たしたため、既存train 9,311 recordでPhase Aを実行した。
+
+50/50 search/result target、value weight 1、すべてのrank weight 0、固定learning rateで8 epoch学習した結果は
+次のとおりである。
+
+| 指標 | 初期値 | epoch 8 | Gate |
+|---|---:|---:|---:|
+| blended valid Brier | 0.070247 | 0.063079 | 相対10.20%改善、5%基準通過 |
+| root search MAE | 153.46 cp | 150.04 cp | 相対2.23%改善、10%基準未達 |
+| exact family / 95%下限 | - | 90.11% / 88.87% | 通過 |
+| health p99 | - | 1,107.8 cp | 通過 |
+| static top-1 | - | 68.3% | 通過 |
+| search 200k | - | 98.3% | 通過 |
+
+model SHA-256は`d9d352fadf6573d95ea0a7f9450128e79ed0cfeeea6e880622a5d1bb36c4924d`である。
+数値・安全Gateは維持したが、改善の大部分はgame result側であり、主目的のsearch value圧縮は事前基準へ
+届かなかった。全条件必須としていたため、後付けでGateを緩めずここで棄却する。既に不合格が確定したので
+generation 2との40局診断は行わず、`--value-only`実装、250k/750k教師生成、v2.5.0対局、promotionも開始しない。
+50/50比率、learning rate、rank loss、seed、epochの追加探索は行わない。詳細は
+`training/halfkp64-scratch-v1/search_value_phase_a_report.json`に保存した。v2.5.0は学習に使用しておらず、
+test splitも未開封である。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

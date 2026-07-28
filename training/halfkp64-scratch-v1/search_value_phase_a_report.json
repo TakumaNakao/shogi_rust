@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "experiment": "phase8-search-value-bootstrap-v1-phase-a",
+  "date": "2026-07-28",
+  "decision": "reject_before_value_only_teacher_and_phase_b",
+  "lineage": {
+    "parent_generation": 2,
+    "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "v2_5_0_used_for_training": false,
+    "test_split_opened": false
+  },
+  "diagnostic_implementation": {
+    "commit": "cf55bd9",
+    "metrics": [
+      "model_result_brier",
+      "teacher_result_brier",
+      "model_result_log_loss",
+      "teacher_result_log_loss",
+      "phase_model_result_brier",
+      "phase_teacher_result_brier"
+    ],
+    "training_behavior_changed": false,
+    "targeted_tests_passed": 10,
+    "full_library_tests_passed": 94
+  },
+  "teacher_pre_gate": {
+    "valid_records": 1840,
+    "known_results": 1840,
+    "parent_result_brier": 0.26144125,
+    "teacher_result_brier": 0.25431308,
+    "relative_improvement": 0.027265,
+    "required_relative_improvement": 0.02,
+    "phase_parent_result_brier": [
+      0.25390082,
+      0.26480069,
+      0.34063673
+    ],
+    "phase_teacher_result_brier": [
+      0.25190033,
+      0.25495173,
+      0.29754173
+    ],
+    "nonregressing_phases": 3,
+    "required_nonregressing_phases": 2,
+    "passed": true
+  },
+  "training": {
+    "train_records": 9311,
+    "valid_records": 1840,
+    "epochs": 8,
+    "batch_size": 128,
+    "learning_rate": 0.0003,
+    "output_learning_rate": 0.00003,
+    "value_weight": 1.0,
+    "search_mix": 0.5,
+    "loss_power": 2.5,
+    "rank_weight": 0.0,
+    "game_rank_weight": 0.0,
+    "game_vs_search_weight": 0.0,
+    "seed": 20260728,
+    "model_sha256": "d9d352fadf6573d95ea0a7f9450128e79ed0cfeeea6e880622a5d1bb36c4924d"
+  },
+  "primary_gates": {
+    "initial_blended_valid_brier": 0.07024652,
+    "final_blended_valid_brier": 0.06307923,
+    "blended_valid_brier_relative_improvement": 0.102031,
+    "required_blended_valid_brier_relative_improvement": 0.05,
+    "blended_valid_brier_passed": true,
+    "initial_search_mae_cp": 153.458,
+    "final_search_mae_cp": 150.035006,
+    "search_mae_relative_improvement": 0.022306,
+    "required_search_mae_relative_improvement": 0.10,
+    "search_mae_passed": false
+  },
+  "safety_gates": {
+    "exact_family_accuracy": 0.9011,
+    "exact_family_ci95_lower": 0.8887,
+    "health_score_abs_p99_cp": 1107.833,
+    "static_top1_accuracy": 0.683,
+    "search_200k_success_rate": 0.983,
+    "exact_passed": true,
+    "health_passed": true,
+    "static_passed": true,
+    "search_200k_passed": true,
+    "nan_or_inf": 0,
+    "search_failures": 0
+  },
+  "stopped_actions": {
+    "generation_2_40_game_diagnostic": "not_run_because_primary_offline_gate_already_failed",
+    "value_only_teacher_implementation": "not_started",
+    "phase_b_250k_teacher_generation": "not_started",
+    "phase_b_training": "not_started",
+    "v2_5_0_match": "not_run",
+    "promotion": "not_eligible"
+  },
+  "conclusion": [
+    "The depth-4 teacher was a better WDoor outcome predictor than the parent and the blended target trained safely.",
+    "Most of the improvement followed the game-result component; the model reduced root search MAE by only 2.23 percent against the preregistered 10 percent requirement.",
+    "Per the fixed plan, do not add value-only generation, scale the dataset, or tune the blend, learning rate, rank loss, seed, or epoch count."
+  ]
+}
