@@ -261,6 +261,10 @@ struct Metrics {
     known_results: usize,
     value_loss: f64,
     search_abs_error: f64,
+    model_result_brier: f64,
+    teacher_result_brier: f64,
+    model_result_log_loss: f64,
+    teacher_result_log_loss: f64,
     pairs: usize,
     pair_correct: usize,
     top1_matches: usize,
@@ -276,6 +280,9 @@ struct Metrics {
     log_loss: f64,
     phase_records: [usize; 3],
     phase_brier: [f64; 3],
+    phase_result_records: [usize; 3],
+    phase_model_result_brier: [f64; 3],
+    phase_teacher_result_brier: [f64; 3],
 }
 
 impl Default for Metrics {
@@ -285,6 +292,10 @@ impl Default for Metrics {
             known_results: 0,
             value_loss: 0.0,
             search_abs_error: 0.0,
+            model_result_brier: 0.0,
+            teacher_result_brier: 0.0,
+            model_result_log_loss: 0.0,
+            teacher_result_log_loss: 0.0,
             pairs: 0,
             pair_correct: 0,
             top1_matches: 0,
@@ -300,6 +311,9 @@ impl Default for Metrics {
             log_loss: 0.0,
             phase_records: [0; 3],
             phase_brier: [0.0; 3],
+            phase_result_records: [0; 3],
+            phase_model_result_brier: [0.0; 3],
+            phase_teacher_result_brier: [0.0; 3],
         }
     }
 }
@@ -1030,6 +1044,10 @@ fn metrics_json(metrics: &Metrics) -> serde_json::Value {
         "known_results": metrics.known_results,
         "value_loss": metrics.value_loss,
         "search_abs_error": metrics.search_abs_error,
+        "model_result_brier": metrics.model_result_brier,
+        "teacher_result_brier": metrics.teacher_result_brier,
+        "model_result_log_loss": metrics.model_result_log_loss,
+        "teacher_result_log_loss": metrics.teacher_result_log_loss,
         "pairs": metrics.pairs,
         "pair_correct": metrics.pair_correct,
         "top1_matches": metrics.top1_matches,
@@ -1049,6 +1067,9 @@ fn metrics_json(metrics: &Metrics) -> serde_json::Value {
         "log_loss": metrics.log_loss,
         "phase_records": metrics.phase_records,
         "phase_brier": metrics.phase_brier,
+        "phase_result_records": metrics.phase_result_records,
+        "phase_model_result_brier": metrics.phase_model_result_brier,
+        "phase_teacher_result_brier": metrics.phase_teacher_result_brier,
     })
 }
 
@@ -1872,6 +1893,23 @@ fn evaluate_record(
     let phase = (record.phase as usize).min(2);
     metrics.phase_records[phase] = 1;
     metrics.phase_brier[phase] = metrics.value_loss;
+    if let Some(result) = record.result {
+        let model_probability = model_p.clamp(1e-7, 1.0 - 1e-7);
+        let teacher_probability = search_p.clamp(1e-7, 1.0 - 1e-7);
+        let sample_weight = record.sample_weight as f64;
+        metrics.model_result_brier = ((model_p - result).powi(2) * record.sample_weight) as f64;
+        metrics.teacher_result_brier = ((search_p - result).powi(2) * record.sample_weight) as f64;
+        metrics.model_result_log_loss = -(f64::from(result) * f64::from(model_probability).ln()
+            + f64::from(1.0 - result) * f64::from(1.0 - model_probability).ln())
+            * sample_weight;
+        metrics.teacher_result_log_loss = -(f64::from(result)
+            * f64::from(teacher_probability).ln()
+            + f64::from(1.0 - result) * f64::from(1.0 - teacher_probability).ln())
+            * sample_weight;
+        metrics.phase_result_records[phase] = 1;
+        metrics.phase_model_result_brier[phase] = metrics.model_result_brier;
+        metrics.phase_teacher_result_brier[phase] = metrics.teacher_result_brier;
+    }
     for bad_index in 0..record.candidates.len() {
         if bad_index == teacher_best
             || record.candidates[teacher_best].score_cp - record.candidates[bad_index].score_cp
@@ -1912,6 +1950,10 @@ fn merge_metrics(mut lhs: Metrics, rhs: Metrics) -> Metrics {
     lhs.known_results += rhs.known_results;
     lhs.value_loss += rhs.value_loss;
     lhs.search_abs_error += rhs.search_abs_error;
+    lhs.model_result_brier += rhs.model_result_brier;
+    lhs.teacher_result_brier += rhs.teacher_result_brier;
+    lhs.model_result_log_loss += rhs.model_result_log_loss;
+    lhs.teacher_result_log_loss += rhs.teacher_result_log_loss;
     lhs.pairs += rhs.pairs;
     lhs.pair_correct += rhs.pair_correct;
     lhs.top1_matches += rhs.top1_matches;
@@ -1932,6 +1974,9 @@ fn merge_metrics(mut lhs: Metrics, rhs: Metrics) -> Metrics {
     for phase in 0..3 {
         lhs.phase_records[phase] += rhs.phase_records[phase];
         lhs.phase_brier[phase] += rhs.phase_brier[phase];
+        lhs.phase_result_records[phase] += rhs.phase_result_records[phase];
+        lhs.phase_model_result_brier[phase] += rhs.phase_model_result_brier[phase];
+        lhs.phase_teacher_result_brier[phase] += rhs.phase_teacher_result_brier[phase];
     }
     lhs
 }
@@ -1957,12 +2002,16 @@ fn regret_percentile(metrics: &Metrics, percentile: f64) -> f64 {
 
 fn print_metrics(label: &str, epoch: usize, metrics: &Metrics) {
     println!(
-        "{label} epoch={epoch} records={} known_results={} brier={:.8} logloss={:.6} search_mae={:.3} top1={:.4} pair={:.4} regret_mean={:.2} regret_p95={:.1} game_top1={:.4} game_search_mismatch={} game_regret_le=50:{}/150:{}/300:{}/600:{} game_vs_search_eligible={} game_vs_search_pairs={} game_vs_search_accuracy={:.4} phase_brier={:.8}/{:.8}/{:.8}",
+        "{label} epoch={epoch} records={} known_results={} brier={:.8} logloss={:.6} search_mae={:.3} result_brier=model:{:.8}/teacher:{:.8} result_logloss=model:{:.6}/teacher:{:.6} top1={:.4} pair={:.4} regret_mean={:.2} regret_p95={:.1} game_top1={:.4} game_search_mismatch={} game_regret_le=50:{}/150:{}/300:{}/600:{} game_vs_search_eligible={} game_vs_search_pairs={} game_vs_search_accuracy={:.4} phase_brier={:.8}/{:.8}/{:.8} phase_result_brier=model:{:.8}/{:.8}/{:.8}|teacher:{:.8}/{:.8}/{:.8}",
         metrics.records,
         metrics.known_results,
         metrics.value_loss / metrics.records.max(1) as f64,
         metrics.log_loss / metrics.records.max(1) as f64,
         metrics.search_abs_error / metrics.records.max(1) as f64,
+        metrics.model_result_brier / metrics.known_results.max(1) as f64,
+        metrics.teacher_result_brier / metrics.known_results.max(1) as f64,
+        metrics.model_result_log_loss / metrics.known_results.max(1) as f64,
+        metrics.teacher_result_log_loss / metrics.known_results.max(1) as f64,
         metrics.top1_matches as f64 / metrics.records.max(1) as f64,
         metrics.pair_correct as f64 / metrics.pairs.max(1) as f64,
         metrics.regret_sum / metrics.records.max(1) as f64,
@@ -1980,6 +2029,15 @@ fn print_metrics(label: &str, epoch: usize, metrics: &Metrics) {
         metrics.phase_brier[0] / metrics.phase_records[0].max(1) as f64,
         metrics.phase_brier[1] / metrics.phase_records[1].max(1) as f64,
         metrics.phase_brier[2] / metrics.phase_records[2].max(1) as f64,
+        metrics.phase_model_result_brier[0] / metrics.phase_result_records[0].max(1) as f64,
+        metrics.phase_model_result_brier[1] / metrics.phase_result_records[1].max(1) as f64,
+        metrics.phase_model_result_brier[2] / metrics.phase_result_records[2].max(1) as f64,
+        metrics.phase_teacher_result_brier[0]
+            / metrics.phase_result_records[0].max(1) as f64,
+        metrics.phase_teacher_result_brier[1]
+            / metrics.phase_result_records[1].max(1) as f64,
+        metrics.phase_teacher_result_brier[2]
+            / metrics.phase_result_records[2].max(1) as f64,
     );
 }
 
@@ -2461,5 +2519,50 @@ mod tests {
         assert_eq!([0, 1, 1, 1], metrics.game_regret_threshold_counts);
         assert_eq!(1, metrics.game_vs_search_eligible);
         assert_eq!(1, metrics.game_vs_search_pairs);
+    }
+
+    #[test]
+    fn result_diagnostics_compare_model_and_search_teacher_by_phase() {
+        let (weights, mut record, options) = game_vs_search_fixture();
+        record.result = Some(1.0);
+        record.phase = 2;
+        record.sample_weight = 0.5;
+        let model_p = sigmoid(weights.forward(&record.root).raw * TARGET_SCALE / options.kappa_cp);
+        let teacher_p = sigmoid(record.root_search_score_cp / options.kappa_cp);
+
+        let metrics = evaluate_record(&weights, &record, &options);
+        assert_eq!(1, metrics.known_results);
+        assert_eq!([0, 0, 1], metrics.phase_result_records);
+        assert!(
+            (metrics.model_result_brier - f64::from((model_p - 1.0).powi(2) * 0.5)).abs() < 1e-8
+        );
+        assert!(
+            (metrics.teacher_result_brier - f64::from((teacher_p - 1.0).powi(2) * 0.5)).abs()
+                < 1e-8
+        );
+        assert_eq!(
+            metrics.model_result_brier,
+            metrics.phase_model_result_brier[2]
+        );
+        assert_eq!(
+            metrics.teacher_result_brier,
+            metrics.phase_teacher_result_brier[2]
+        );
+        assert!(metrics.model_result_log_loss.is_finite());
+        assert!(metrics.teacher_result_log_loss.is_finite());
+
+        let json = metrics_json(&metrics);
+        assert_eq!(
+            metrics.teacher_result_brier,
+            json["teacher_result_brier"]
+                .as_f64()
+                .expect("teacher Brier")
+        );
+        assert_eq!(
+            metrics.phase_teacher_result_brier[2],
+            json["phase_teacher_result_brier"][2]
+                .as_f64()
+                .expect("phase teacher Brier")
+        );
     }
 }
