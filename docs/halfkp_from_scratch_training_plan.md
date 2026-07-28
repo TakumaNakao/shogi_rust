@@ -2072,11 +2072,54 @@ v2.5.0は引き続き対局相手としてのみ使い、そのweight、score、
 | output clamp再現、parameter差分、Gate影響測定 | 完了 |
 | 手番符号、scale、scratch optimizer、checkpoint監査 | 完了 |
 | 既往実験の有効性再分類 | 完了 |
-| search trainer最小修正と回帰test | 未着手 |
-| zero-loss byte-identity復旧Gate | 未着手 |
-| 既存1%候補のpaired screen | 未着手 |
-| 修正版Phase A | 未着手 |
-| 勝った単一経路の250k拡張 | 条件待ち |
+| search trainer最小修正と回帰test | 完了 |
+| zero-loss byte-identity復旧Gate | 完了 |
+| 既存1%候補のpaired screen | 完了、棄却 |
+| 修正版Phase A | 完了、主要Gate失敗 |
+| depth 6 / 100k value-only fallback | 完了不能を確認、停止 |
+| 勝った単一経路の250k拡張 | 対象なし |
+
+### 15.11 復旧計画の実行結果とown-search bootstrap停止（2026-07-28）
+
+`halfkp_search_train`の修正後、9,311件を全loss weight 0で1 epoch通したmodelはaccepted generation 2と
+byte単位で一致し、SHA-256も`9a1bfc9b...b3db6`のままだった。初期値の最大絶対値はfeature
+0.296937、hidden bias 0.541307、output 0.174387で、`--output-limit 0.20`を明示した正常な再学習が
+可能になった。targeted 14 test、library全98 testも合格した。
+
+#### 二候補のscreen
+
+全対局は`taya36.sfen`、先後交換、40局、100 ms、seed 20260729で揃えた。
+
+| 対局 | 候補側勝敗 | score |
+|---|---:|---:|
+| 既存1% replay候補 vs generation 2 | 22勝18敗 | 55.0% |
+| generation 2 vs v2.5.0 | 12勝28敗 | 30.0% |
+| 既存1% replay候補 vs v2.5.0 | 11勝29敗 | 27.5% |
+
+1%候補は親対局45%以上を満たしたが、v2.5.0へのpaired改善は`-2.5 point`であり、必要な
+`+5 point`を満たさなかった。この候補を250kへ拡張しない。
+
+修正版Phase Aはgeneration 2から8 epochを完走し、model SHA-256は
+`5737a78d...e480`となった。blended valid Brierは0.070247から0.065088へ相対7.34%改善した一方、
+root search MAEは153.46 cpから166.36 cpへ12.90 cp悪化した。従ってBrier 5%条件は通るが、
+search MAE親非退行条件を失敗する。安全Gateはexact family 90.73%（95%下限89.53%）、health p99
+1,677 cp、static top-1 70.1%、search 200k 98.6%で全て通った。壊れたmodelではないが、
+探索値を保持しながら学ぶ目的には失敗したため、40局screenへ進めない。
+
+#### 一度だけのfallback
+
+既存`halfkp_search_teacher`へ`--value-only`だけを追加した。rootを反復深化で1回探索し、指定depthを
+完遂した場合だけroot scoreとPV先頭の子局面1件を既存HKST0002へ保存する。node上限で中断したscoreは
+保存しない。jobs 1と4で生成binaryがbyte一致すること、depth 4 / 20kの小規模生成を確認した。
+
+計画固定のdepth 6 / 100k nodesをWDoor valid 100局面で事前実測したところ、完遂0件、上限到達100件だった。
+合計1,000万nodeを探索して有効な教師recordが0であり、この条件のまま20k局面を処理しても学習入力を
+構成できない。node上限、depth、mix、learning rateをここで変更するのは固定した一回限りのfallbackを
+別実験へ変えるため行わない。
+
+従って停止規則どおり、own-search bootstrapを終了する。250k生成、fallback学習、promotion、未開封test、
+最終対局は実施しない。v2.5.0は対局相手にのみ使用し、重みや探索結果を教師へ使用していない。詳細値は
+`training/halfkp64-scratch-v1/search_trainer_recovery_execution_report_20260728.json`に保存した。
 
 ## 16. 参考資料と本計画への反映
 

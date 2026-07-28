@@ -2,7 +2,7 @@
   "schema_version": 1,
   "date": "2026-07-28",
   "scope": "HalfKP-64 scratch training critical-path audit and minimal recovery plan",
-  "decision": "invalidate_search_trainer_finetunes_and_repair_before_one_fixed_rerun",
+  "decision": "recovery_completed_and_own_search_bootstrap_stopped",
   "lineage": {
     "lineage_id": "halfkp64-scratch-v1",
     "accepted_parent_generation": 2,
@@ -122,12 +122,12 @@
     {
       "step": 1,
       "name": "repair_and_identity_gate",
-      "status": "pending"
+      "status": "completed"
     },
     {
       "step": 2,
       "name": "screen_existing_valid_one_percent_search_replay_candidate",
-      "status": "pending",
+      "status": "failed_screen",
       "candidate_model_sha256": "06d88946384926be72d4f9917bd56fbf0f4db6f07140e56c15ed8bcddc3b8442",
       "screen": {
         "games_each_pair": 40,
@@ -139,7 +139,7 @@
     {
       "step": 3,
       "name": "rerun_corrected_search_value_phase_a_once",
-      "status": "pending",
+      "status": "failed_primary_gate",
       "train_records": 9311,
       "valid_records": 1840,
       "epochs": 8,
@@ -159,13 +159,13 @@
     {
       "step": 4,
       "name": "select_only_one_training_path",
-      "status": "conditional",
+      "status": "not_eligible",
       "rule": "Choose only the path with the larger paired score improvement against v2.5.0; do not combine objectives."
     },
     {
       "step": 5,
       "name": "scale_selected_path_to_250k",
-      "status": "conditional",
+      "status": "not_eligible",
       "milestone_epochs": [
         8,
         16,
@@ -176,7 +176,7 @@
     {
       "step": 6,
       "name": "final_release_match",
-      "status": "conditional",
+      "status": "not_eligible",
       "time_ms": 1000,
       "batch_games": 200,
       "max_games": 800,
@@ -188,7 +188,12 @@
     "max_nodes_per_root": 100000,
     "pilot_roots": 20000,
     "reruns": 1,
-    "stop_rule": "Stop own-search bootstrap if teacher result Brier and the paired 40-game screen do not improve."
+    "stop_rule": "Stop own-search bootstrap if teacher result Brier and the paired 40-game screen do not improve.",
+    "status": "stopped_as_infeasible",
+    "feasibility_sample_inputs": 100,
+    "completed_teacher_records": 0,
+    "resource_limited_records": 100,
+    "result_report": "training/halfkp64-scratch-v1/search_trainer_recovery_execution_report_20260728.json"
   },
   "explicitly_deferred": [
     "game-vs-search weight retry",
