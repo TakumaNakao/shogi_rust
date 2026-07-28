@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-28",
+  "scope": "HalfKP-64 scratch training critical-path audit and minimal recovery plan",
+  "decision": "invalidate_search_trainer_finetunes_and_repair_before_one_fixed_rerun",
+  "lineage": {
+    "lineage_id": "halfkp64-scratch-v1",
+    "accepted_parent_generation": 2,
+    "accepted_parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "v2_5_0_used_for_training": false,
+    "test_split_opened": false
+  },
+  "critical_finding": {
+    "severity": "critical",
+    "component": "halfkp_search_train",
+    "cause": "Every dense output scalar was clamped after every optimizer call even when its gradient was zero.",
+    "configured_output_limit": 0.06,
+    "parent_output_weight_count": 129,
+    "parent_output_weight_max_abs": 0.17438705265522003,
+    "parent_output_weights_outside_limit": 104,
+    "zero_loss_output_model_sha256": "c8a37a3efd61fddee0c4a540f13eb6225a817a349b0fa335b046da55a203fc4e",
+    "changed_parameters": {
+      "feature_embedding": 0,
+      "hidden_bias": 0,
+      "output_weights": 104,
+      "output_bias": 0
+    },
+    "all_changed_output_weights_equal_clipped_parent": true,
+    "wide_limit_noop_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "wide_limit_noop_byte_identical_to_parent": true
+  },
+  "projection_only_metrics": {
+    "parent": {
+      "blended_valid_brier": 0.07024652,
+      "search_mae_cp": 153.458,
+      "exact_family_accuracy": 0.9081,
+      "health_score_abs_p99_cp": 1673.0,
+      "static_top1_accuracy": 0.700,
+      "search_200k_success_rate": 0.986
+    },
+    "zero_loss_clamped": {
+      "blended_valid_brier": 0.06783915472153003,
+      "search_mae_cp": 148.03913332327554,
+      "model_result_brier": 0.2572238500584322,
+      "exact_family_accuracy": 0.9049873015873016,
+      "exact_family_ci95_lower": 0.8927861111111112,
+      "health_score_abs_p99_cp": 1093.2554,
+      "static_top1_accuracy": 0.686,
+      "search_200k_success_rate": 0.979
+    },
+    "phase_a_epoch8": {
+      "blended_valid_brier": 0.06307923399726069,
+      "search_mae_cp": 150.0350055028563,
+      "model_result_brier": 0.24755738440840303,
+      "exact_family_accuracy": 0.9010674603174603,
+      "exact_family_ci95_lower": 0.8886817460317468,
+      "health_score_abs_p99_cp": 1107.8325,
+      "static_top1_accuracy": 0.683,
+      "search_200k_success_rate": 0.983
+    },
+    "interpretation": [
+      "The prior parent-relative search MAE improvement was entirely explained by projection.",
+      "Actual Phase A updates worsened search MAE by 1.996 cp relative to the clamped starting state.",
+      "Brier, scale-health, static, and fixed-node metrics were all confounded by the projection."
+    ]
+  },
+  "experiment_validity": [
+    {
+      "experiment": "accepted_generation_2",
+      "trainer": "halfkp_scratch_train",
+      "status": "valid_parent"
+    },
+    {
+      "experiment": "phase5_integrated_search_replay_1pct_06d88946",
+      "trainer": "halfkp_scratch_train",
+      "status": "valid_unmatched_candidate"
+    },
+    {
+      "experiment": "phase6_long_direct_epochs_4_to_128",
+      "trainer": "halfkp_scratch_train",
+      "status": "valid_negative_result"
+    },
+    {
+      "experiment": "phase5_rank_only_b61484ec",
+      "trainer": "halfkp_search_train",
+      "status": "invalid_due_to_projection"
+    },
+    {
+      "experiment": "phase7_mmto_lite",
+      "trainer": "halfkp_search_train",
+      "status": "inconclusive_due_to_common_projection"
+    },
+    {
+      "experiment": "phase8_search_value_phase_a",
+      "trainer": "halfkp_search_train",
+      "status": "invalid_due_to_projection"
+    }
+  ],
+  "other_audit_results": {
+    "fatal_sign_or_scale_error_found": false,
+    "runtime_and_trainer_forward_semantics_match": true,
+    "teacher_child_score_is_negated_once": true,
+    "search_train_child_utility_sign_is_correct": true,
+    "scratch_integrated_search_rank_sign_is_correct": true,
+    "game_result_side_to_move_conversion_is_correct": true,
+    "targeted_tests_passed": 21,
+    "secondary_findings": [
+      "halfkp_search_train validation_score includes pair error and regret even when every rank objective is disabled.",
+      "halfkp_scratch_train save-last mode reports last epoch values through fields named best_epoch and best_valid_loss.",
+      "Long-direct feature RMS fell from 0.0403532 to 0.0174372 while max output weight rose from 0.174387 to 0.274904; do not resume the same data and weight-decay run."
+    ]
+  },
+  "minimal_implementation": [
+    "Make zero-gradient AdaGrad and schedule-free scalar updates exact no-ops.",
+    "Reject an init model before training when any parameter is outside its configured absolute limit; never project it silently.",
+    "Use an explicit output limit of 0.20 for the generation-2 recovery experiment.",
+    "Build checkpoint selection only from active objectives.",
+    "Add no-op identity, init-limit rejection, unrelated-scalar, active-selection, and both-optimizer regression tests.",
+    "Require a 9,311-record zero-loss epoch to reproduce the accepted parent byte for byte before retraining."
+  ],
+  "recovery_order": [
+    {
+      "step": 1,
+      "name": "repair_and_identity_gate",
+      "status": "pending"
+    },
+    {
+      "step": 2,
+      "name": "screen_existing_valid_one_percent_search_replay_candidate",
+      "status": "pending",
+      "candidate_model_sha256": "06d88946384926be72d4f9917bd56fbf0f4db6f07140e56c15ed8bcddc3b8442",
+      "screen": {
+        "games_each_pair": 40,
+        "time_ms": 100,
+        "candidate_vs_parent_min_score": 0.45,
+        "candidate_vs_v2_5_0_improvement_over_parent_points": 5.0
+      }
+    },
+    {
+      "step": 3,
+      "name": "rerun_corrected_search_value_phase_a_once",
+      "status": "pending",
+      "train_records": 9311,
+      "valid_records": 1840,
+      "epochs": 8,
+      "seed": 20260728,
+      "search_mix": 0.5,
+      "output_limit": 0.2,
+      "rank_weights": 0.0,
+      "gates": {
+        "blended_valid_brier_relative_improvement_min": 0.05,
+        "search_mae_parent_nonregression": true,
+        "exact_ci95_lower_min": 0.88,
+        "health_score_abs_p99_cp_max": 3000.0,
+        "static_top1_min": 0.68,
+        "search_200k_min": 0.98
+      }
+    },
+    {
+      "step": 4,
+      "name": "select_only_one_training_path",
+      "status": "conditional",
+      "rule": "Choose only the path with the larger paired score improvement against v2.5.0; do not combine objectives."
+    },
+    {
+      "step": 5,
+      "name": "scale_selected_path_to_250k",
+      "status": "conditional",
+      "milestone_epochs": [
+        8,
+        16,
+        32
+      ],
+      "epoch_64_only_if_improving": true
+    },
+    {
+      "step": 6,
+      "name": "final_release_match",
+      "status": "conditional",
+      "time_ms": 1000,
+      "batch_games": 200,
+      "max_games": 800,
+      "required_wilson_ci95_lower": 0.5
+    }
+  ],
+  "single_fallback_if_both_screens_fail": {
+    "teacher_depth": 6,
+    "max_nodes_per_root": 100000,
+    "pilot_roots": 20000,
+    "reruns": 1,
+    "stop_rule": "Stop own-search bootstrap if teacher result Brier and the paired 40-game screen do not improve."
+  },
+  "explicitly_deferred": [
+    "game-vs-search weight retry",
+    "loss-weight, seed, epoch, or learning-rate grid search",
+    "resume of the epoch-128 long-direct run",
+    "new optimizer or dataset schema",
+    "policy head",
+    "self-play league",
+    "TDLeaf",
+    "SWA"
+  ]
+}

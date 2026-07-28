@@ -1,6 +1,6 @@
 # HalfKP-64 重みゼロスタート学習方針
 
-- Status: **proposed / implementation not started**
+- Status: **in progress / generation 2 accepted / search fine-tune blocked by critical trainer defect**
 - 作成日: 2026-07-21
 - 対象: v2.6.0以降のHalfKP-64評価関数
 - 前提計算機: AMD Ryzen 7 PRO 4750U、8 core / 16 thread、RAM 14 GiB、GPUなし
@@ -1934,6 +1934,149 @@ generation 2との40局診断は行わず、`--value-only`実装、250k/750k教�
 50/50比率、learning rate、rank loss、seed、epochの追加探索は行わない。詳細は
 `training/halfkp64-scratch-v1/search_value_phase_a_report.json`に保存した。v2.5.0は学習に使用しておらず、
 test splitも未開封である。
+
+### 15.10 search trainer実装監査と最短復旧計画（2026-07-28）
+
+#### 結論
+
+計画を修正する。`halfkp_search_train`をaccepted generation 2のfine-tuneへ使用した実験には、学習仮説を
+判定できなくする重大な実装不整合があった。既定`--output-limit 0.06`に対し、generation 2の出力重みは
+最大絶対値0.174387で、129個中104個が範囲外だった。optimizerは勾配が0でも全出力重みへ`clamp`を適用するため、
+最初のbatchでこの104個を一斉に`-0.06`または`+0.06`へ置換していた。
+
+全loss weightを0にした1 epoch監査で、親model
+`9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`が
+`c8a37a3efd61fddee0c4a540f13eb6225a817a349b0fa335b046da55a203fc4e`へ変化した。binary比較では、
+feature embedding 6,750,720個、hidden bias 64個、output bias 1個はbit一致し、変化したのは範囲外だった
+output weight 104個だけである。変化後の104個は、親を`[-0.06, 0.06]`へclipした値と全てbit一致した。
+同じ監査を`--output-limit 1`で行うと、出力SHA-256は親と完全一致した。したがって、乱数、並列化、
+dataset順序による差ではなく、absolute clampが原因である。
+
+影響はoffline Gateでも再現した。
+
+| 指標 | generation 2 | zero-loss clampのみ | Phase A epoch 8 |
+|---|---:|---:|---:|
+| blended valid Brier | 0.070247 | 0.067839 | 0.063079 |
+| root search MAE | 153.46 cp | 148.04 cp | 150.04 cp |
+| exact family | 90.81% | 90.50% | 90.11% |
+| health p99 | 1,673 cp | 1,093 cp | 1,108 cp |
+| static top-1 | 70.0% | 68.6% | 68.3% |
+| search 200k | 98.6% | 97.9% | 98.3% |
+
+Phase Aで親比3.42 cp改善と解釈していたsearch MAEは、clampだけで5.42 cp改善していた。その後の実際の
+学習更新はclamp model比で1.996 cp悪化させている。Brier改善にもclampによるscale圧縮が混在する。
+従って15.9の「search-valueは10% MAE Gateへ届かなかった」という判定は撤回し、**実験無効**へ変更する。
+Gateを後付けで通すのではなく、正常な初期値を保つ実装で再実験する。
+
+#### 既往実験の有効性分類
+
+| 実験 | trainer | 監査後の扱い | 理由 |
+|---|---|---|---|
+| accepted generation 2 | `halfkp_scratch_train` | 有効、親として維持 | absolute output clampを使用しない |
+| 1% search-replay統合候補 `06d88946...b8442` | `halfkp_scratch_train` | 有効、対局screen未実施 | static 70.4%、search 98.5%。1 root差だけで棄却していた |
+| Phase 6 long-direct epoch 4～128 | `halfkp_scratch_train` | 有効な否定結果 | 今回のbugの影響外。同一データ反復は棋力へ転移しなかった |
+| Phase 5 rank-only `b61484ec...9d8` | `halfkp_search_train` | 無効 | static 68.6%、search 97.9%はclamp-only modelと一致 |
+| Phase 7 MMTO-lite control/treatment | `halfkp_search_train` | 不確定、再開しない | 両群が同じ破壊的projection後に学習され、親からの効果を判定不能 |
+| Phase 8 search-value Phase A | `halfkp_search_train` | 無効、修正後に1回だけ再実行 | 初期値と比較基準が学習開始時に変化 |
+
+Phase 7はcontrolとtreatmentが共通のprojectionを受けたため、群間差0.06 pointという観測自体は保存する。
+ただし、出力層を約4割以下へ圧縮した局所状態での差を、generation 2からの正常なfine-tuneへ一般化しない。
+同じgame-vs-search lossを先に再試行せず、教師品質の事前Gateを通っているsearch-valueを優先する。
+
+#### その他のcritical path監査
+
+今回の範囲で、手番符号、score scale、model codec、scratch trainerの更新に別の致命的誤りは確認しなかった。
+
+- runtimeと各trainerは、STM/非STMのClippedReLU 64+64、STM側material、target scale 1,000という同じforwardを使う。
+- search teacherは子局面を探索したscoreをroot視点へ1回だけ反転する。
+- `halfkp_search_train`は子局面model scoreを`utility = -child_score`として比較する。
+- `halfkp_scratch_train`のsearch統合も、教師最善手の子局面scoreを下げる方向へ更新する。
+- 棋譜結果は各rootの手番側から1.0/0.0へ変換される。
+- value gradient finite-difference、search順位の更新方向、resume一致を含むtargeted 21 testは合格した。
+- `halfkp_scratch_train`には今回のabsolute clampがなく、generation 2とlong-directの結果は本bugで説明しない。
+
+一方、次の二点は復旧時に同時修正する。
+
+1. `halfkp_search_train`のcheckpoint選択scoreは、rank lossが0でもpair errorとregretを常に加える。
+   zero-loss監査では、これがclamp modelを「改善checkpoint」として保存する原因になった。active objectiveだけで
+   選択scoreを構成する。
+2. `halfkp_scratch_train --save-last-epoch`は毎epochのmodelを意図どおり保存するが、manifestの
+   `best_epoch` / `best_valid_loss`もlast値へ上書きする。学習結果は無効にならないが、名称と意味を合わせる。
+
+long-directではfeature RMSがgeneration 2の0.04035からepoch 128の0.01744へ56.8%縮小し、output weight最大値は
+0.1744から0.2749へ増えた。これはdirect全体へ毎batch適用したweight decayと出力層のscale補償に整合し、
+即座に実装bugとは断定しない。ただしvalid lossはepoch 64以降悪化しており、同じweight decay・同じdatasetで
+long-directを再開しないという既存判断を維持する。
+
+#### 最小修正
+
+新optimizer、新schema、新binaryは追加しない。
+
+1. AdaGradとschedule-freeのscalar updateは、gradientが0ならweight、accumulator、補助stateを変更しない。
+2. 学習開始前に、init modelのfeature、hidden、output各最大絶対値を検査する。指定limit外なら自動projectionせず
+   errorで停止する。generation 2からの再実験では`--output-limit 0.20`を明示し、開始値0.174387を保持する。
+3. validation checkpoint scoreをactive objectiveへ一致させる。value-onlyではheld-out value lossだけを使い、
+   通常rankではpair/regret、game-vs-searchでは対応pair accuracyを使う。全weight 0なら初期checkpointを保持する。
+4. 次の回帰testを追加する。
+   - generation 2相当の0.174出力重みで、全gradient 0の1 batchがbyte identityになる。
+   - init最大値がlimitを超えた場合にtraining前に拒否する。
+   - 非0 gradient更新で、gradient 0のscalarを巻き添えprojectionしない。
+   - value-only checkpoint選択へrank/regretが混入しない。
+   - AdaGradとschedule-freeの両方でno-op identityを満たす。
+5. targeted test、library全test、release build後、同じ9,311/1,840 HKSTでzero-loss 1 epochを実行し、
+   model SHA、全validation指標がgeneration 2と完全一致することを復旧Gateとする。
+
+#### 最短の再実行順
+
+修正後も複数weight、seed、epochのgrid searchは行わない。次の二候補だけを同じopeningで比較し、勝った経路だけを
+拡張する。
+
+1. **既存1% search-replay候補のscreen**
+   - `halfkp_scratch_train`製で今回のbugの影響がない`06d88946...b8442`を再学習せず使う。
+   - generation 2との40局、generation 2と候補それぞれのv2.5.0との40局を、同一opening・先後交換・100 msで行う。
+   - 候補が親対局45%以上、かつv2.5.0 scoreが同じopeningの親より5 point以上高い場合だけ、
+     1% search-replay経路を拡張候補とする。これはscreenでありpromotion判定ではない。
+2. **修正版search-value Phase A**
+   - generation 2、既存train 9,311 / valid 1,840、50/50 search/result、8 epoch、seed 20260728を固定する。
+   - rank系weightは全て0、`--output-limit 0.20`、value-only checkpoint選択を使う。
+   - blended valid Brierを5%以上改善、search MAE親非退行、exact 95%下限88%以上、health p99 3,000 cp未満、
+     static 68%以上、search 200k 98.0%以上を満たした場合に40局screenへ進む。
+   - 旧10% search MAE必須条件は使わない。50/50 targetを学ぶpilotに純search MAE 10%を要求するのは目的と一致せず、
+     棋力への転移を対局前に遮断するためである。
+3. **経路選択**
+   - 両方がscreenを通った場合、v2.5.0に対するpaired改善が大きい一方だけを選ぶ。二つのlossを混ぜない。
+   - どちらか一方だけが通れば、その経路だけを250kへ拡張する。
+   - 両方失敗ならweightやmixを微調整しない。同じrootをdepth 6 / 100k nodesのroot-valueだけで再labelする
+     20k pilotを一度だけ行い、teacher result Brierと40局screenが改善しなければown-search bootstrapを停止する。
+4. **250k拡張**
+   - search-valueが選ばれた場合だけ、既存`halfkp_search_teacher`へ候補列を作らないvalue-only分岐を追加する。
+     train 250k / valid 25kをphase-balancedに生成し、teacherはgeneration 2で凍結する。
+   - 1% search-replayが選ばれた場合は既存`halfkp_scratch_train`を使い、同じ250k root集合のsearch順位を
+     1%だけ既存replayへ混ぜる。新trainerは作らない。
+   - 8 / 16 / 32 epochだけをmilestoneとし、32で改善中の場合だけ64へ進む。各milestoneで安全Gateと
+     親/v2.5.0 paired screenを行う。
+5. **promotionと最終目標**
+   - generation 2への100局・300 msで48%以上、かつ同一openingでのv2.5.0 scoreがgeneration 2より
+     5 point以上改善した候補だけをgeneration 3候補にする。
+   - 最終的にはv2.5.0との1,000 ms・200局batchを最大800局まで行い、Wilson 95%下限が50%を超えた場合だけ
+     置換可能とする。
+
+v2.5.0は引き続き対局相手としてのみ使い、そのweight、score、PV、対局結果をtraining targetへ戻さない。
+未開封testも最終構成freezeまで開かない。機械可読な監査・復旧計画は
+`training/halfkp64-scratch-v1/implementation_audit_recovery_plan_20260728.json`に保存する。
+
+#### 進捗表
+
+| 作業 | 状態 |
+|---|---|
+| output clamp再現、parameter差分、Gate影響測定 | 完了 |
+| 手番符号、scale、scratch optimizer、checkpoint監査 | 完了 |
+| 既往実験の有効性再分類 | 完了 |
+| search trainer最小修正と回帰test | 未着手 |
+| zero-loss byte-identity復旧Gate | 未着手 |
+| 既存1%候補のpaired screen | 未着手 |
+| 修正版Phase A | 未着手 |
+| 勝った単一経路の250k拡張 | 条件待ち |
 
 ## 16. 参考資料と本計画への反映
 
