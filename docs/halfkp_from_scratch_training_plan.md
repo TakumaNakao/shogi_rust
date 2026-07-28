@@ -1,6 +1,6 @@
 # HalfKP-64 重みゼロスタート学習方針
 
-- Status: **in progress / generation 2 accepted / search fine-tune blocked by critical trainer defect**
+- Status: **in progress / generation 2 accepted / next: search-trainer hardening and corrected Direct-only WDoor MMTO-lite**
 - 作成日: 2026-07-21
 - 対象: v2.6.0以降のHalfKP-64評価関数
 - 前提計算機: AMD Ryzen 7 PRO 4750U、8 core / 16 thread、RAM 14 GiB、GPUなし
@@ -2121,6 +2121,266 @@ search MAE親非退行条件を失敗する。安全Gateはexact family 90.73%�
 最終対局は実施しない。v2.5.0は対局相手にのみ使用し、重みや探索結果を教師へ使用していない。詳細値は
 `training/halfkp64-scratch-v1/search_trainer_recovery_execution_report_20260728.json`に保存した。
 
+### 15.12 全結果の再監査と次戦略: corrected Direct-only MMTO-lite（2026-07-29）
+
+#### 結論
+
+計画を修正する。次の主経路は、accepted generation 2を初期値と教師にした
+**corrected Direct-only WDoor MMTO-lite**とする。既存9,311件で正常な初期値から損失が働くことを一度だけ
+確認し、通過時に限ってrate 4,000以上のWDoor固有局面を全件処理する。同じ537,723局面への追加epoch、
+search-value回帰、factor-only学習、loss weight探索は再開しない。
+
+「ここまでうまく行かないのはおかしい」という疑問への回答は、次のようになる。
+
+- HalfKPのforward全体が逆向き、手番符号が逆、factor foldが壊れている、という単一の致命的bugは
+  見つからなかった。runtime、trainer、teacherの符号とscaleは整合している。
+- 一方で、旧search fine-tuneには初期modelのoutput 104/129個を無言でclampする重大な不具合が実在し、
+  rank-only、旧MMTO、旧Phase Aの判断を汚染した。旧MMTOは正常なgeneration 2から一度も試せていない。
+- factor-only学習には、canonical化済みの左右対称性をfactor componentへさらに課す過剰制約があった。
+  これは符号反転ではないが、generation 2までの学習容量を落とした可能性がある。棋力への影響を分離した
+  A/B結果はないため、確定した失敗原因とは扱わない。
+- long-directは十分な更新回数を持つが、情報量の弱い同一教師を反復しながら、全direct rowをweight decayで
+  縮小した。従って「学習量が十分だった」のは同じproxyへの反復回数であり、固有かつ良質な意思決定教師の量
+  ではない。
+- 40局で5 point差を要求したGateは1勝差を判定しており、微小差を選別できない。40局は大崩れのscreenにだけ
+  使い、promotionには使わない。
+
+したがって、失敗の連続は不自然な一現象ではなく、無効なsearch実験、弱い教師、過剰なfactor制約、
+step数依存のdecay、低分解能の対局Gateが重なった結果である。ただし、これらを除いた学習経路が
+v2.5.0を超えられることはまだ証明されていない。次の計画は、その可能性を最小実装で検証するものである。
+
+#### 結果の有効性再分類
+
+| 系列 | 主な結果 | 現在の判断 |
+|---|---|---|
+| accepted generation 2 | exact 90.81%、static 70.0%、search 98.6%、v2.5.0へ12勝28敗 | 有効。次の固定parent |
+| high-rate WDoor | offline改善、v2.5.0へ最大30% | 選別とmix変更だけでは不足 |
+| long-direct epoch 32 | valid 0.045430、v2.5.0へ9勝31敗 | 固定構成中の対局上の最良点 |
+| long-direct epoch 64 | valid最良0.045332、v2.5.0へ6勝34敗 | validationと棋力が乖離 |
+| long-direct epoch 128 | exact 89.29%、static 67.6%、v2.5.0へ3勝37敗 | 同じ教師の追加反復を棄却 |
+| 1% search replay | 親へ22勝18敗、v2.5.0へ11勝29敗 | 40局では親との差を判定不能。拡張根拠なし |
+| 旧rank/MMTO/Phase A | output clamp後に学習 | 親からのfine-tuneとして無効または不確定 |
+| corrected value Phase A | Brier 7.34%改善、search MAE 153.46→166.36 cp | 正常な実験。value目的の方向不一致として棄却 |
+| depth 6 / 100k value-only | 100入力中完遂0 | 現条件のown-search value生成を停止 |
+
+#### 学習量の再解釈
+
+long-direct epoch 128までには89,820,544 record、197,318,144 objectiveを提示した。v2.5.0の
+385,407,624 sampleに対して、objective提示数だけなら約51%である。しかし固有WDoor局面は537,723件で、
+同じ集合を128回反復したにすぎない。epoch 64以降はvalid、exact、staticが同時に悪化したため、
+epoch 256へ延ばす根拠はない。
+
+さらに、`halfkp_scratch_train`は198,520 familyをbatch 256で処理し、1 epochあたり776回、
+全6,750,720 direct featureへ`1 - 0.001 * 0.01 = 0.99999`のdecayを掛けていた。未観測rowの理論残存率は
+128 epoch後に約0.370であり、実測でもfeature RMSは0.04035から0.01744へ56.8%低下した。
+「長時間学習でも駄目だった」という結論は、同じデータ、同じ弱いalternative、同じmix、同じLR、
+同じglobal weight decayの組合せに限定する。
+
+次はepoch数を先に増やすのではなく、次の条件を満たす固有教師を増やす。
+
+1. 棋譜手と、現在のscratch探索が実際に選ぶ手を直接比較する。
+2. 各候補の即時子局面へdepth 4探索scoreを付け、静的に無関係なquiet手との容易なpairを主目的にしない。
+3. WDoor棋譜の最終結果は補助診断に残すが、search-value絶対回帰は主目的にしない。
+4. 同じrootを何十回も反復する前に、未使用のrate 4,000以上rootを一度広く処理する。
+
+#### 実装監査で確定した事項
+
+次のcritical pathは正しい。
+
+- runtimeとtrainerはSTM/非STM 64次元、STM側material、target scale 1,000の同じforwardを使う。
+- teacherの子局面scoreはroot視点へ1回だけ反転され、trainerも`utility = -child_score`で比較する。
+- 棋譜結果は各rootの手番側へ正しく変換される。
+- factorは保存時に全HalfKP rowへ正しくfoldされる。
+- trace総eval 30,370件のうち、full refreshと比較した先頭1,024件の最大差は0.000732 cpであり、
+  浮動小数の加算順の範囲である。
+- 現行MMTO train 9,311 / valid 1,840はroot同士のpacked network-input hash重複0で、外部teacher混入、
+  manifest上のparent不一致もない。ただしrootと全candidate childの和集合ではcross-split重複が31件ある。
+  STMを含まない生の`position_hash`にも1件一致があるため、split監査にはSTM、material、featureを含む
+  全学習network inputのhashを使う。
+
+一方、次を今後の運用条件とする。
+
+1. **Factor-onlyを終了する。** 王file 1～4は盤全体のcanonical化ですでに左右反転が同一feature IDになる。
+   王file 5だけはdirect center rowの左右tieが必要であり、現行`project_direct_lr_symmetry`は正しい。
+   しかしfactor projectionは全王位置でabsolute fileとrelative dxを個別にtieしており、正しい対称群より
+   強い制約である。accepted generation 2はfold済みなので破棄せず、以後はDirect-onlyで補正する。
+2. **新しいdirect学習でglobal weight decayを使わない。** corrected MMTOに使う
+   `halfkp_search_train`にはこの全row decayがなく、初期値外のabsolute clampも修正済みである。
+3. **scratch trainerを再利用する場合はvalidationを先に直す。** 現行trainはfamily内objective数で正規化し
+   source mix multiplierを掛ける一方、validationはrecordごとscale 1、multiplier 1であり、学習目的と
+   checkpoint選択が一致しない。generation 2はlast保存のため影響を受けなかったが、今後のbest選択には使わない。
+4. HKST再生成時にはteacher model SHA、dataset output SHA、train/valid packed network-input hash非重複を
+   実行前Gateにする。
+5. manifestにはbest modelに対応するepoch、SWA有無、validation値を保存し、last epoch値と混同しない。
+
+factor projectorの一般化や新しいfactor architectureは今回実装しない。Direct-onlyでこの問題を回避できるため、
+ここでcomponent制約を作り直すのは最短経路ではない。ただし`halfkp_search_train`には、正しい
+center-king direct symmetryを維持する処理も現在ない。Direct-only更新で中央王bucketのmirror rowが別々に
+動かないようにする最小修正は、Step 1より前に必要である。
+
+現行`halfkp_search_teacher`がHKSTへ保存するpositionはPV leafではなく、root move直後の即時子局面である。
+depth 4探索はその候補へscoreを付けるために使い、trainerは即時子局面をforward/backpropする。従って本計画は
+厳密なleaf-gradient MMTOではなく、**depth 4 search-scoreで導いたchild ranking、すなわちMMTO-lite**である。
+PV leaf保存へ変えるとteacher semanticsとcodecの変更が必要になるため、今回の本線には含めない。
+
+#### Step 0: search trainerの最小hardening
+
+corrected pilotより前に、`halfkp_search_train`だけへ次を実装する。新optimizer、新schema、新binaryは作らない。
+
+1. 王file 5のdirect mirror pairへ同じ有効gradientを与え、対応するAdaGrad stateも同期する。
+   非中央王のrowは追加tieしない。全gradient 0ではmodelをbyte単位で変えない。
+2. `--save-last-epoch`相当を追加し、validation compositeが改善しない場合でも、実際のepoch終了modelを
+   manifest付きartifactとして保存できるようにする。manifestへ`selected_kind = initial | best | last | swa`、
+   selected epoch、selected model SHA、そのmodel自身のvalidationを保存する。
+3. game-vs-search eligible pairは通常search rankと方向が競合するため、通常pair accuracyからそのpairを除いた
+   `non_conflicting_search_pair_accuracy`を追加する。Step 1の非退行Gateにはこの値を使う。
+4. HKST manifestのteacher model SHAと実model SHA、manifest output SHAと入力file SHAを照合する。
+   train/validのrootと全candidate childを合わせたpacked network-input hashで重複0を要求する。
+   既存pilotは衝突するvalid recordを決定論的に除外し、除外件数と新しいoutput SHAをmanifestへ記録する。
+5. 次の回帰testを追加する。
+   - 非中央王の物理mirrorが同じpacked featureになる。
+   - 中央王のmirror positionはnonzero 1 batch後も同scoreになる。
+   - 全gradient 0の1 batchは既存のbyte-identityを維持する。
+   - validation非改善でもlast modelと対応manifestを保存する。
+   - best/lastそれぞれのmanifest metricが記録modelの再評価値と一致する。
+   - 競合pairを除いたaccuracy集約とHKST SHA/network split拒否が正しく動く。
+
+targeted test、library全test、release build、既存9,311件のzero-loss 1 epoch byte-identityを通過してから
+Step 1へ進む。これは将来用基盤ではなく、次の一実験が正しいmodelを学習・保存・評価するために必要な範囲である。
+
+#### Step 1: 固定条件とcorrected 9k MMTO-lite成立性pilot
+
+- lineage: `halfkp64-scratch-v1`
+- 初期parent/teacher: accepted generation 2
+  `9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`
+- v2.5.0: 対局比較だけ。weight、score、PV、勝敗を教師へ戻さない
+- test split: 最終構成をfreezeするまで未開封
+- trainer: 修正済み`halfkp_search_train`、Direct-only
+- `--output-limit 0.20`を明示し、初期最大値0.174387を保持
+- `--swa-start-epoch 3`、`--early-stop-patience 3`として最大2 epoch内のSWAと内部early stopを無効化し、
+  weight decay、optimizer変更、parameter gridを使用しない
+- selection depth 2、teacher depth 4、top 10、tactical 2、20,000 node/searchを固定
+
+既存HKST train 9,311と、Step 0で全network-input衝突を除いたvalidを使い、正常なgeneration 2から
+次の二つだけを1 epoch学習する。raw validは1,840件であり、filter後の正確な件数とSHAを先に固定する。
+
+| 条件 | search rank | game-vs-search | その他 |
+|---|---:|---:|---|
+| control | 0.1 | 0.0 | value/result/旧game-rank 0 |
+| treatment | 0.1 | 0.1 | value/result/旧game-rank 0 |
+
+共通条件はbatch 128、learning rate `1e-5`、output learning rate `1e-6`、regret cap 300 cp、
+max pair 4、seed 20260728、`--output-limit 0.20`、`--swa-start-epoch 3`、
+`--early-stop-patience 3`、`--save-last-epoch`とする。旧pilotで壊れていたoutputを維持したまま
+再実行することだけが目的であり、weight、seed、epochを探索しない。
+
+scaleへ進む条件は次のすべてである。
+
+- 初期modelのparameterが学習開始前に無変更で、NaN/Inf、違法手、provenance異常0
+- treatmentのgame-vs-search accuracyがcontrolより0.5 point以上改善、またはmean regretが1%以上減少
+- 競合pairを除いたsearch pair accuracyがcontrolから1 percentage pointを超えて悪化しない
+- exact family 95%下限88%以上
+- health score absolute p99 2,500 cp未満
+- static top-1 68%以上、200k fixed-node search 98%以上
+
+9kは最終棋力を測る量ではないため、ここでv2.5.0超えも対局勝率も要求しない。このpilotは、正常な初期値で
+MMTO-lite lossが意図したheld-out指標を動かすかだけを判定する。失敗時はweightやepochを微調整せず、
+結果を記録して計画を停止し、次戦略を改めて監査する。
+
+#### Step 2: WDoor固有教師の全件生成
+
+Step 1通過時だけ、rate 4,000以上のWDoor train 556,820 rootとvalid全99,660 rootを固定設定で処理する。
+既存実測の完遂率29.7～32.7%から、train約18.2万、
+valid約2.96万HKST recordを見込む。candidateは平均約12件であるため、1世代あたり約220万の
+depth 4 search-score付き即時子局面比較を含む。
+
+- `--jobs 4`で既存の`--skip-positions` / `--max-positions`を使ってshard化する。
+- 各shardは入力範囲、source SHA、parent SHA、設定、出力SHAをmanifestへ記録する。
+- 完遂recordだけを採用し、node cap到達scoreを教師にしない。
+- train 150,000件、valid 15,000件、regret cap内game-vs-search pair 8,000件を最低データGateとする。
+- 既存速度から教師生成だけで約9～10時間/世代を見込む。数分の9k pilotでv2.5.0を超えるとは想定しない。
+
+最低件数へ届かなければdepthやnode capを後付け変更せず、この設定のselection biasと計算効率を記録して
+MMTOを停止する。
+
+v2.5.0の385M sampleはKPPから得た高密度な数値targetであり、本計画の約18.2万root、約220万child pairとは
+情報単位が異なる。sample数やwall timeを直接同等視しない。棋力を判断するのはfull教師生成後であり、
+必要ならpromotion後に同じ約10時間を使う第2世代まで行う。2世代失敗が棄却するのは、この固定
+corrected MMTO設定であって、scratch学習一般ではない。
+
+#### Step 3: full Direct-only学習
+
+full datasetではtreatmentだけを学習し、controlをもう一度作らない。設定はStep 1から変更せず、
+epoch 1 / 2を両方manifest付きで保存し、最大2 epochで止める。epoch 2はactive game-vs-search objectiveが
+epoch 1より改善し、全安全Gateを維持する場合だけ採用する。それ以外はepoch 1を採用する。
+`--swa-start-epoch 3`と`--early-stop-patience 3`を明示し、内部で別modelを選ばせない。
+
+full候補を対局へ進める最低条件は、parent比でgame-vs-search accuracy +2 percentage pointまたは
+mean regret 3%以上減、non-conflicting search rank accuracyの低下1 percentage point以内、および
+Step 1と同じ安全Gateである。valid lossだけでcheckpointを選ばず、active objective、scale、
+安全指標を同じmodel SHAに結び付けて記録する。
+
+#### Step 4: 対局評価とpromotion
+
+40局は候補の大崩れを早く捨てるscreenにだけ使う。`+5 point`のpromotion判定には使用しない。
+
+1. 候補とaccepted parentを同一opening、先後交換、20,000 fixed nodesで固定400局対局させる。
+   score 50%以上かつ400局終了時のWilson 95%下限47.5%以上を要求する。成功判定のための途中打切りは
+   行わない。これは単なる非退行ではなく、再現性のある親超えを要求するGateである。
+2. 候補とparentを、それぞれ同じopeningでv2.5.0へ200局対局させる。opening単位のpaired差と区間を記録し、
+   単純な1勝差を強弱と断定しない。
+3. 親子の明確な改善Gateだけでgeneration 3へpromotionする。v2.5.0への200局結果は診断であり、
+   +1勝をpromotion条件にしない。
+4. generation 3が100 msでv2.5.0へ45%以上なら第2世代を必須にせず300 ms評価へ進む。40%未満なら停止する。
+   40%以上45%未満なら、promotion済みgeneration 3で教師を再生成し、同じ設定の第2世代を一度だけ行う。
+5. corrected MMTOは最大2 full generationとする。第2世代後もv2.5.0への累計改善が5 percentage point未満、
+   またはv2.5.0 scoreが40%未満ならこの固定MMTO設定を停止する。
+   両停止条件を回避した第2世代は300 ms評価へ進む。
+6. 100 ms通過候補を300 ms・200局で評価し、score 48%以上の場合だけ最終評価へ進む。
+7. 最終候補だけを1,000 ms、固定800局でv2.5.0と比較する。運用上200局ごとに記録し、明白な劣勢なら
+   futility停止してよいが、途中の通常Wilson区間で成功終了しない。800局終了時のWilson 95%下限が
+   50%を超えた場合だけ、v2.5.0より強い置換可能weightと判定する。
+
+200局の中間評価も小差の最終証明ではない。目的は、CPU時間を次世代教師へ投入する価値がある方向かを確認する
+ことである。最終的な「上回った」という主張は最後のsequential matchだけで行う。
+
+#### MMTO不成立時
+
+Step 1が失敗した場合、weight、epoch、seedを微調整せず、この計画を停止して結果を再監査する。
+parent-static hard negativeは候補として残るが、generator変更、全合法手評価、scratch validation修正が必要であり、
+corrected MMTO本線より実装範囲が広い。今回は先行実装も自動fallbackも行わず、別の計画判断にする。
+
+#### 当面行わないこと
+
+- long-direct epoch 256、または同じrandom-quiet HKCLへの追加epoch
+- factor-only / piece-relative-onlyの再開、factor projectorの再設計
+- corrected search-valueのmix、LR、epoch調整
+- depth 6 / 100k value-only生成の再開
+- loss weight、seed、optimizer、source mixのgrid search
+- v2.5.0またはKPP由来weightを初期値、教師、anchor、hard-negative選択へ使うこと
+- policy head、新dataset schema、dashboard、self-play league、TDLeaf、SWA
+
+#### 進捗表
+
+| 作業 | 状態 |
+|---|---|
+| 全実験の有効性・学習量・40局Gate再監査 | 完了 |
+| runtime/trainerの符号、scale、fold、incremental eval監査 | 完了 |
+| factor symmetry過剰制約とscratch validation不一致の特定 | 完了 |
+| accepted generation 2と既存HKST provenance固定 | 完了 |
+| search trainer center symmetry、last artifact、非競合metric、SHA/split hardening | 未着手 |
+| hardening回帰testとzero-loss復旧Gate | hardening後 |
+| corrected 9k MMTO-lite control/treatment | hardening後 |
+| full WDoor HKST生成 | Step 1通過時のみ |
+| full Direct-only epoch 1 / 2 | Step 2通過時のみ |
+| 固定400局親子・paired v2.5.0評価 | full候補通過時のみ |
+| generation 3教師再生成 | promotion時のみ |
+| 300 ms中間評価 | 100 ms通過時のみ |
+| 1,000 ms最終評価 | 最終候補のみ |
+
+機械可読な判断・Gate・進捗は
+`training/halfkp64-scratch-v1/strategy_review_corrected_mmto_20260729.json`に保存する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
@@ -2169,11 +2429,11 @@ search MAE親非退行条件を失敗する。安全Gateはexact family 90.73%�
 提案された「型から始める」方針は採用する。ただし、型を人手の絶対評価値として注入するのではなく、
 ルールで証明できる局面と順位、戦型別sampling、固定testとして使う。
 
-強い重みを作る本体は、次の3信号の組合せになる。
+初期curriculumはaccepted generation 2を作る役割を果たした。現在の最短の強化経路は、
+型課題をさらに反復することではなく、WDoor棋譜手とscratch探索が実際に選ぶ手の不一致を
+Direct-only MMTOで修正することである。exact、戦型、static、fixed-node searchは安全anchorと
+slice評価に残すが、次の主lossへ混ぜない。
 
-1. 証明可能な局所知識
-2. 棋譜手と最終結果
-3. 新系列自身の深い探索と自己対局
-
-初期modelから最終世代まで現行重みとの数値的な接続を完全に断つ。これにより、旧KPP模倣の上限を
-引き継がず、失敗時にも原因を各stageへ切り分けられる。
+初期modelから最終世代まで現行重みとの数値的な接続を完全に断つ。v2.5.0は比較対局だけに使う。
+corrected MMTOが成立しない場合は小調整や別実装へ自動的に進まず、その時点の証拠を再監査する。
+parent-static hard negativeや自己対局/TDは次回の費用対効果判断まで保留する。
