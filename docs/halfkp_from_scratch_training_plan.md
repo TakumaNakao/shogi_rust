@@ -1756,6 +1756,37 @@ v2.5.0との差が縮まらなければ停止し、self-play/TDではなく表�
 最短経路は、既にある探索教師pipelineで「scratch engineが選びたがる手」をhard negativeとしてWDoor棋譜手へ
 直接合わせ、その変更が実対局へ転移するかを10k rootで先に確認することである。
 
+#### 2026-07-28 実行結果: 10k MMTO-lite pilotは棄却
+
+`halfkp_search_train`へ計画どおり`--game-vs-search-weight`を追加し、weight 0互換、gradient方向、
+regret上限、逆向きpair除外を含むtargeted 9 testとlibrary全93 testを通過した。実装commitは
+`7cd5ee2`である。
+
+候補recall監査ではtop 8が254/268 = 94.78%で95% Gateに届かなかった。唯一の事前調整としてtop 10へ
+広げると258/268 = 96.27%となったため、以後の条件をtop 10へ固定した。accepted generation 2だけを
+parent/teacherに使い、WDoor high-rate train/validからdepth 4、20,000 nodeでHKSTを作成した。
+20,000 node内に全候補を完遂できないrootを除外した結果、trainは28,500入力中9,311 record、
+validは6,200入力中1,840 recordとなった。探索失敗、違法手、parse失敗、重複は0である。
+
+同じHKST、generation 2初期値、seed、1 epochでcontrolとtreatmentを比較した。検証1,840 recordのうち
+game/search不一致は1,570、regret 300 cp以内は1,191（全体の64.7%）だったため、600 cp fallbackは
+使わなかった。
+
+| 指標 | control | treatment | Gate |
+|---|---:|---:|---:|
+| fixed HKST top-1 | 13.86% | 14.02% | 参考 |
+| fixed HKST pair accuracy | 65.29% | 65.29% | 参考 |
+| game-move top-1 | 8.15% | 8.21% | +3 point未達 |
+| mean regret | 313.40 cp | 312.84 cp | 10%減未達 |
+| game-vs-search pair accuracy | 33.84% | 33.75% | 改善なし |
+
+treatmentの安全Gateはexact family 90.50%（95%下限89.28%）とhealth p99 1,092.9 cpを通過したが、
+static top-1は68.5%（基準69%）、200k searchは97.9%（基準98.5%）で不合格だった。主要転移Gate、
+static、searchの3条件で失敗したため、事前計画どおり100局対局、v2.5.0比較、50k/250k拡張、
+promotionは実施しない。このlossについてweight、epoch、seedを追加調整せず棄却する。詳細な機械可読記録は
+`training/halfkp64-scratch-v1/mmto_lite_10k_pilot_report.json`に保存した。test splitは未開封であり、
+v2.5.0重みは学習・教師・初期値に使用していない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
