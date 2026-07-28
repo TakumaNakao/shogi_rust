@@ -333,6 +333,13 @@ struct TrainOptions {
     max_pairs_per_record: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ParameterMaxAbs {
+    feature_emb: f32,
+    hidden_b: f32,
+    output: f32,
+}
+
 impl Weights {
     fn load(path: &Path) -> Result<Self> {
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
@@ -416,6 +423,52 @@ impl Weights {
             raw: forward.raw,
         }
     }
+
+    fn validate_parameter_limits(&self, output_limit: f32, label: &str) -> Result<ParameterMaxAbs> {
+        fn finite_max_abs(values: impl IntoIterator<Item = f32>, label: &str) -> Result<f32> {
+            let mut maximum = 0.0f32;
+            for value in values {
+                if !value.is_finite() {
+                    return Err(anyhow!("{label} contains a non-finite parameter"));
+                }
+                maximum = maximum.max(value.abs());
+            }
+            Ok(maximum)
+        }
+
+        let maxima = ParameterMaxAbs {
+            feature_emb: finite_max_abs(self.feature_emb.iter().copied(), label)?,
+            hidden_b: finite_max_abs(self.hidden_b, label)?,
+            output: finite_max_abs(
+                self.out_w
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(self.out_b)),
+                label,
+            )?,
+        };
+        if maxima.feature_emb > 1.0 {
+            return Err(anyhow!(
+                "{label} feature max abs {:.9} exceeds limit 1.0; refusing silent projection",
+                maxima.feature_emb
+            ));
+        }
+        if maxima.hidden_b > 1.0 {
+            return Err(anyhow!(
+                "{label} hidden-bias max abs {:.9} exceeds limit 1.0; refusing silent projection",
+                maxima.hidden_b
+            ));
+        }
+        if maxima.output > output_limit {
+            return Err(anyhow!(
+                "{label} output max abs {:.9} exceeds --output-limit {:.9}; \
+                 choose an explicit compatible limit instead of projecting the init model",
+                maxima.output,
+                output_limit
+            ));
+        }
+        Ok(maxima)
+    }
 }
 
 pub fn run() -> Result<()> {
@@ -498,6 +551,16 @@ pub fn run() -> Result<()> {
     let run_fingerprint = training_fingerprint(&args)?;
     let (mut weights, mut optimizer, mut swa, start_epoch, mut best, mut stale) =
         initialize_training(&args, &run_fingerprint)?;
+    let maxima = weights.validate_parameter_limits(args.output_limit, "training weights")?;
+    if let OptimizerState::ScheduleFree(state) = &optimizer {
+        state
+            .z
+            .validate_parameter_limits(args.output_limit, "schedule-free z")?;
+    }
+    println!(
+        "parameter_max_abs feature={:.9} hidden_b={:.9} output={:.9} output_limit={:.9}",
+        maxima.feature_emb, maxima.hidden_b, maxima.output, args.output_limit
+    );
     let mut log = create_log(args.log.as_deref())?;
     options.search_mix = args.search_mix_end.unwrap_or(args.search_mix);
     let initial_weights = evaluation_weights(&weights, &optimizer, args.schedule_free_beta1);
@@ -513,7 +576,7 @@ pub fn run() -> Result<()> {
     let mut completed_epoch = start_epoch;
     print_metrics("initial_valid", 0, &initial);
     if start_epoch == 0 {
-        best = validation_score(&initial, args.value_weight);
+        best = validation_score(&initial, &options);
         initial_weights.save(&args.output)?;
         println!(
             "initial checkpoint score={best:.8} output={}",
@@ -602,7 +665,7 @@ pub fn run() -> Result<()> {
         )?;
         final_valid_metrics = valid_metrics.clone();
         print_metrics("valid", epoch, &valid_metrics);
-        let mut score = validation_score(&valid_metrics, args.value_weight);
+        let mut score = validation_score(&valid_metrics, &options);
         let mut selected = &eval_weights;
         if let Some(state) = &swa {
             let swa_metrics = evaluate_datasets(
@@ -614,7 +677,7 @@ pub fn run() -> Result<()> {
                 &options,
             )?;
             print_metrics("swa_valid", epoch, &swa_metrics);
-            let swa_score = validation_score(&swa_metrics, args.value_weight);
+            let swa_score = validation_score(&swa_metrics, &options);
             if swa_score < score {
                 score = swa_score;
                 selected = &state.average;
@@ -1593,6 +1656,19 @@ fn apply_batch(
             *value *= clip;
         }
     }
+    let has_gradient = dense.out_b != 0.0
+        || dense
+            .hidden_b
+            .iter()
+            .chain(&dense.out_w)
+            .any(|&value| value != 0.0)
+        || sparse
+            .values()
+            .flat_map(|row| row.iter())
+            .any(|&value| value != 0.0);
+    if !has_gradient {
+        return (value_loss, rank_loss, pairs);
+    }
     match optimizer {
         OptimizerState::Adagrad(state) => apply_adagrad(weights, state, dense, sparse, args),
         OptimizerState::ScheduleFree(state) => {
@@ -1609,6 +1685,9 @@ fn adagrad_scalar(
     learning_rate: f32,
     limit: f32,
 ) {
+    if gradient == 0.0 {
+        return;
+    }
     *accumulator += gradient * gradient;
     *weight =
         (*weight - learning_rate * gradient / (accumulator.sqrt() + 1e-8)).clamp(-limit, limit);
@@ -1981,11 +2060,21 @@ fn merge_metrics(mut lhs: Metrics, rhs: Metrics) -> Metrics {
     lhs
 }
 
-fn validation_score(metrics: &Metrics, value_weight: f32) -> f64 {
+fn validation_score(metrics: &Metrics, options: &TrainOptions) -> f64 {
     let brier = metrics.value_loss / metrics.records.max(1) as f64;
     let pair_error = 1.0 - metrics.pair_correct as f64 / metrics.pairs.max(1) as f64;
     let regret = metrics.regret_sum / metrics.records.max(1) as f64;
-    f64::from(value_weight) * brier + 0.02 * pair_error + regret / 10_000.0
+    let mut score = f64::from(options.value_weight) * brier;
+    if options.rank_weight > 0.0 || options.game_rank_weight > 0.0 {
+        score += 0.02 * pair_error + regret / 10_000.0;
+    }
+    if options.game_vs_search_weight > 0.0 {
+        let game_pair_error = 1.0
+            - metrics.game_vs_search_pair_correct as f64
+                / metrics.game_vs_search_eligible.max(1) as f64;
+        score += 0.02 * game_pair_error;
+    }
+    score
 }
 
 fn regret_percentile(metrics: &Metrics, percentile: f64) -> f64 {
@@ -2073,6 +2162,157 @@ mod tests {
     use shogi_ai::halfkp_training::{SearchTeacherCandidate, SearchTeacherWriter};
     use shogi_ai::position_hash::PositionHasher;
     use shogi_lib::Position;
+
+    fn test_args_with_output_limit(limit: &str) -> Args {
+        Args::try_parse_from([
+            "halfkp_search_train",
+            "--train",
+            "train.hkst",
+            "--valid",
+            "valid.hkst",
+            "--init",
+            "init.binary",
+            "--model-manifest",
+            "model.manifest.json",
+            "--promotion-registry",
+            "promotion_registry.json",
+            "--gate-report",
+            "gate_report.json",
+            "--parent-generation",
+            "2",
+            "--output",
+            "output.binary",
+            "--output-limit",
+            limit,
+        ])
+        .expect("parse test args")
+    }
+
+    fn out_of_legacy_limit_weights() -> Weights {
+        let mut out_w = [0.01; HALFKP_HIDDEN * 2 + 1];
+        out_w[7] = 0.174;
+        Weights {
+            feature_emb: vec![0.2; 8],
+            hidden_b: [0.5; HALFKP_HIDDEN],
+            out_w,
+            out_b: 0.02,
+        }
+    }
+
+    #[test]
+    fn init_limit_check_rejects_silent_output_projection() {
+        let weights = out_of_legacy_limit_weights();
+        let error = weights
+            .validate_parameter_limits(0.06, "test init")
+            .expect_err("reject incompatible legacy limit");
+        assert!(error.to_string().contains("explicit compatible limit"));
+
+        let maxima = weights
+            .validate_parameter_limits(0.20, "test init")
+            .expect("explicit compatible limit");
+        assert_eq!(0.2, maxima.feature_emb);
+        assert_eq!(0.5, maxima.hidden_b);
+        assert_eq!(0.174, maxima.output);
+    }
+
+    #[test]
+    fn all_zero_batch_is_byte_identity_for_both_optimizers() {
+        let args = test_args_with_output_limit("0.20");
+        let zero = RecordGradient {
+            dense: DenseGradient::default(),
+            positions: Vec::new(),
+            value_loss: 0.0,
+            rank_loss: 0.0,
+            pairs: 0,
+        };
+        for kind in [OptimizerKind::Adagrad, OptimizerKind::ScheduleFree] {
+            let original = out_of_legacy_limit_weights();
+            let mut weights = original.clone();
+            let mut optimizer = match kind {
+                OptimizerKind::Adagrad => OptimizerState::Adagrad(Box::new(weights.zeros_like())),
+                OptimizerKind::ScheduleFree => {
+                    OptimizerState::ScheduleFree(Box::new(ScheduleFreeState {
+                        z: weights.clone(),
+                        variance: weights.zeros_like(),
+                        last_weight_sum: Vec::new(),
+                        step: 0,
+                        weight_sum: 0.0,
+                        lr_max: 0.0,
+                    }))
+                }
+            };
+            let mut accumulator = BatchAccumulator::default();
+            apply_batch(
+                &mut weights,
+                &mut optimizer,
+                std::slice::from_ref(&zero),
+                &mut accumulator,
+                &args,
+            );
+            assert_eq!(original.feature_emb, weights.feature_emb);
+            assert_eq!(original.hidden_b, weights.hidden_b);
+            assert_eq!(original.out_w, weights.out_w);
+            assert_eq!(original.out_b, weights.out_b);
+            match optimizer {
+                OptimizerState::Adagrad(state) => {
+                    assert!(state.feature_emb.iter().all(|&value| value == 0.0));
+                    assert!(state.hidden_b.iter().all(|&value| value == 0.0));
+                    assert!(state.out_w.iter().all(|&value| value == 0.0));
+                    assert_eq!(0.0, state.out_b);
+                }
+                OptimizerState::ScheduleFree(state) => {
+                    assert_eq!(0, state.step);
+                    assert_eq!(0.0, state.weight_sum);
+                    assert_eq!(0.0, state.lr_max);
+                    assert_eq!(original.out_w, state.z.out_w);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_adagrad_scalar_does_not_project_an_unrelated_weight() {
+        let mut weight = 0.174;
+        let mut accumulator = 0.0;
+        adagrad_scalar(&mut weight, &mut accumulator, 0.0, 0.001, 0.06);
+        assert_eq!(0.174, weight);
+        assert_eq!(0.0, accumulator);
+    }
+
+    #[test]
+    fn validation_score_uses_only_active_objectives() {
+        let mut metrics = Metrics {
+            records: 10,
+            value_loss: 2.0,
+            pairs: 10,
+            pair_correct: 0,
+            regret_sum: 10_000.0,
+            game_vs_search_eligible: 10,
+            game_vs_search_pair_correct: 0,
+            ..Metrics::default()
+        };
+        let (_, _, mut options) = game_vs_search_fixture();
+        options.value_weight = 1.0;
+        options.rank_weight = 0.0;
+        options.game_rank_weight = 0.0;
+        options.game_vs_search_weight = 0.0;
+        assert!((validation_score(&metrics, &options) - 0.2).abs() < 1e-12);
+
+        metrics.pair_correct = 10;
+        metrics.regret_sum = 0.0;
+        metrics.game_vs_search_pair_correct = 10;
+        assert!((validation_score(&metrics, &options) - 0.2).abs() < 1e-12);
+
+        options.value_weight = 0.0;
+        assert_eq!(0.0, validation_score(&metrics, &options));
+        options.rank_weight = 1.0;
+        metrics.pair_correct = 0;
+        assert!(validation_score(&metrics, &options) > 0.0);
+        options.rank_weight = 0.0;
+        options.game_vs_search_weight = 1.0;
+        metrics.game_vs_search_pair_correct = 0;
+        assert!((validation_score(&metrics, &options) - 0.02).abs() < 1e-12);
+    }
 
     #[test]
     fn rejects_manifest_with_incompatible_teacher_semantics() {
