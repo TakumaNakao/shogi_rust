@@ -1787,6 +1787,123 @@ promotionは実施しない。このlossについてweight、epoch、seedを追�
 `training/halfkp64-scratch-v1/mmto_lite_10k_pilot_report.json`に保存した。test splitは未開封であり、
 v2.5.0重みは学習・教師・初期値に使用していない。
 
+### 15.9 MMTO-lite棄却後の戦略: scratch search-value bootstrap（2026-07-28）
+
+#### 結論
+
+次の仮説は、棋譜手や探索手の順位ではなく、accepted scratch親のdepth 4探索で得たroot valueを静的HalfKPへ
+圧縮する`search-value bootstrap`に一本化する。探索scoreだけを自己模倣せず、WDoor最終結果とWDL空間で
+50/50に混ぜる。v2.5.0は対局比較にだけ使い、初期値、教師、target、anchor、negative miningには使わない。
+
+現時点の証拠は次のように整理できる。
+
+| 系列 | 改善した代理指標 | v2.5.0対局または転移 | 判断 |
+|---|---|---|---|
+| accepted generation 2 | exact、WDoor、親対局 | 20局score 35% | scratch初期親として維持 |
+| high-rate 4000 | WDoor順位、static | 最大20局score 30% | 棋譜選別だけでは不足 |
+| long direct | epoch 64までvalid/WDoor | 最大40局22.5%、epoch 128は7.5% | 同一label反復を停止 |
+| search rank | search holdout pair/top-1 | static/searchが退行 | 順位単独を停止 |
+| game-vs-search | ほぼ変化なし | game top-1 +0.06 point、regret 0.18%減 | lossを棄却 |
+
+したがって不足しているのは追加epochではなく、静的評価値そのものへ入る新しい情報である。HalfKP-64の
+表現能力は同じruntime architectureのv2.5.0が既に示しているため、network拡張を先に行う根拠はない。
+generation 2はfactor-only学習で作られた一方、既存`halfkp_search_train`は675万のdirect HalfKP parameterを
+すべて更新できる。さらに同trainerは既に次を実装している。
+
+```text
+search_p = sigmoid(root_search_score_cp / 600)
+target   = 0.5 * search_p + 0.5 * game_result
+loss     = |model_p - target|^2.5
+```
+
+これは探索scoreとgame resultをWDL空間で混合する一般的なNNUE value学習と同じ形である。Stockfishの
+公式NNUE資料も探索評価と最終結果の混合targetを示し、公式開発資料は中程度の探索深さで評価した大量局面を
+NNUE教師にすると説明している。Venessらのsearch bootstrappingも、深いalpha-betaの値を静的評価へ戻すことを
+中核とする。本計画では他engineやKPPを使わず、scratch系列自身の探索だけでこの考え方を検証する。
+
+#### 過剰実装を避ける範囲
+
+最初のpilotではgeneratorもcodecも変更しない。既に生成済みのdepth 4 train 9,311 / valid 1,840 HKSTを
+そのまま使う。実装は`halfkp_search_train`の診断値追加だけに限定する。
+
+1. 既知結果のrecordについて、現在modelと最終結果のBrier/log-lossを出す。
+2. 同じrecordで、scratch teacherのroot search scoreと最終結果のBrier/log-lossを出す。
+3. opening/middle/late別にも同じ値をmanifestとstdoutへ記録する。
+4. metric集約とserializationをunit testする。損失、optimizer、dataset schemaは変更しない。
+
+depth 4 teacherのresult Brierが親modelより相対2%以上良く、3 phase中2 phase以上で非退行の場合だけ学習する。
+この時点で探索値が最終結果との関係を改善しないなら、自己探索値を大量生成する根拠がないため停止する。
+`kappa=600`は既存engine尺度のまま固定し、validへ合わせたkappa fitは行わない。
+
+#### Phase A: 既存9kによるvalue-only成立性pilot
+
+初期値はaccepted generation 2
+`9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`へ戻す。設定は
+`value_weight=1`、`search_mix=0.5`、`rank_weight=0`、旧game-rankとgame-vs-searchも0、
+loss power 2.5、learning rate `3e-4`、output learning rate `3e-5`、batch 128、seed 20260728に固定する。
+SWAは使わず、最大8 epochを1/2/4/8で記録し、validが2回続けて改善しなければ止める。これは強さを
+確定するrunではなく、value signalが正しい方向へdirect parameterを動かすかの成立性確認である。
+
+Phase Bへ進む条件はすべて次のとおりである。
+
+- blended valid Brierを初期値から相対5%以上改善
+- root search MAEを相対10%以上改善
+- exact family 90%以上かつ95%下限88%以上
+- health p99 2,500 cp未満、static 68%以上、200k search 98.0%以上
+- generation 2との40局診断でscore 40%以上
+- NaN/Inf、違法手、provenance/split異常0
+
+ここで失敗した場合、50/50比率、learning rate、rank loss、seedを調整せず、この仮説を棄却する。9k modelが
+v2.5.0を超えることは要求せず、少量pilotを最終棋力の証明には使わない。
+
+#### Phase B: value-only教師250kと第1世代
+
+Phase A通過時だけ、`halfkp_search_teacher`へ`--value-only`を追加する。これは新binaryや新schemaではない。
+候補全手を個別探索せず、rootをdepth 4・最大20,000 nodeで1回だけ探索し、root scoreと、既存意味論どおり
+PV leafのpacked positionを候補1件としてHKST0002へ保存する。cap到達scoreは捨てる。codec互換、
+jobs 1/4のbyte一致、root searchとのscore一致、manifest provenanceをtestする。rank lossは0なので
+候補順位情報は使わない。
+
+既存rate 4,000 WDoor train/valid JSONLから固定strideで、完遂train 250k / valid 25kを生成する。parentと
+teacherはgeneration 2のまま凍結し、Phase Aと同じtarget・optimizer設定で最大32 epoch、milestone
+4/8/16/32を保存する。Brierとsearch MAEが2 milestone連続で悪化した時点で停止し、同一データを追加反復しない。
+
+全安全Gateを通る最良checkpointだけを次で評価する。
+
+1. generation 2と20,000 fixed nodes、先後交換200局。score 50%以上かつWilson 95%下限47.5%以上。
+2. generation 2と候補を、同一opening・100 ms・各100局でv2.5.0へ対局させる。
+3. 候補が再測定したgeneration 2より5 point以上改善し、かつv2.5.0に40%以上ならgeneration 3へpromotionする。
+
+親対局または5 point改善を満たさない場合、epoch延長や50/50比率変更をせず終了する。
+
+#### Phase C: 通過時だけ1回の規模拡張
+
+Phase Bでpromotionされた場合だけ、既存`dataset_build`で両対局者rate 3,500以上のWDoorを作り、
+完遂train 750k / valid 75kへ拡張する。新しいaccepted親をteacherにする以外、depth、node上限、target、
+optimizerを変えない。追加世代は1回だけとし、前世代からv2.5.0 scoreがさらに5 point改善しなければ停止する。
+
+最終対局は次の順で拡大する。
+
+1. 100 ms・100局で45%以上
+2. 300 ms・200局で48%以上
+3. 1,000 ms・200局batch、最大800局でWilson 95%下限が50%を超える
+
+最後の条件を満たしたmodelだけを「v2.5.0より強い重み」とする。最終構成をfreezeするまでtest splitを開かず、
+test確認後にparameter、epoch、比率を変更しない。
+
+#### この計画で行わないこと
+
+- long-direct epoch 128/256の再開
+- search-rankまたはgame-vs-search weightの再探索
+- 50/50、learning rate、seed、epochのgrid search
+- v2.5.0やKPP由来modelの学習利用
+- policy head、新dataset schema、dashboard、self-play league、TDLeaf、SWA
+- Phase A不通過時の250k生成
+
+この順序なら、最初は診断追加と既存artifactだけで仮説を検証できる。大量生成を行う場合も、必要な追加は
+既存teacherのvalue-only分岐一つであり、棋力へ転移した世代だけにCPU時間を使える。機械可読計画は
+`training/halfkp64-scratch-v1/strategy_review_post_mmto_20260728.json`に保存する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
@@ -1817,6 +1934,9 @@ v2.5.0重みは学習・教師・初期値に使用していない。
 10. Ayumu Nagai,
     [df-pnアルゴリズムの詰将棋を解くプログラムへの応用](https://ipsj.ixsq.nii.ac.jp/records/32069)
     詰み・不詰みをproof/disproof numberで解く方法を、Phase 2のbounded exact solverへ反映。
+11. Stockfish project,
+    [Advanced Topics: Classical versus NNUE evaluation](https://official-stockfish.github.io/docs/stockfish-wiki/Advanced-topics.html)
+    中程度の探索深さで評価した大量局面をNNUE教師にする実運用を、15.9のsearch-value方針へ反映。
 
 ### 2026-07-22 Phase 3 combined pilot: activation anchor
 
