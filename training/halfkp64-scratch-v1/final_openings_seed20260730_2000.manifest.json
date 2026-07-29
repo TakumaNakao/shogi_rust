@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "schema": "halfkp_final_opening_reserve_v1_manifest",
+  "seed": 20260730,
+  "pairs": 2000,
+  "selection": "ascending sha256(seed\\0game_key\\0sfen)",
+  "opening_identity": "exact sfen; opening_family is namespaced with game_key for the match loader",
+  "source_manifest": "runs/halfkp64-scratch-v1/final-opening-reserve-source-2026-seed20260730/manifest.json",
+  "source_manifest_sha256": "38615a3676ad4f6a6cd7038eb3fd5b136f77008d903ed3a2883336e30775b296",
+  "source_year": 2026,
+  "source_splits": [
+    "train",
+    "test"
+  ],
+  "reservation_note": "the entire 2026 source dataset is reserved and excluded from training and intermediate matches",
+  "training_source_years": [
+    2023,
+    2024,
+    2025
+  ],
+  "excluded_exact_sfen_against": [
+    "frozen WDoor train split",
+    "frozen WDoor valid split used by prior parent matches"
+  ],
+  "used_for_intermediate_matches": false,
+  "artifact": {
+    "path": "training/halfkp64-scratch-v1/final_openings_seed20260730_2000.jsonl",
+    "sha256": "385b7f70d63ddfb17ea9b39e53d316d7dd1b6d5946e6b4c28a74230e262d2329",
+    "records": 2000
+  }
+}
