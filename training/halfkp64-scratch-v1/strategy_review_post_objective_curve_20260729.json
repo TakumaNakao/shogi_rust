@@ -3,7 +3,7 @@
   "date": "2026-07-29",
   "scope": "Strategy after objective-aligned MMTO learning-curve rejection",
   "decision": "search_consensus_expert_hard_negative",
-  "status": "executing_full_teacher_generation",
+  "status": "completed_route_rejected_at_parent_match",
   "lineage": {
     "lineage_id": "halfkp64-scratch-v1",
     "accepted_parent_generation": 2,
@@ -145,7 +145,7 @@
     "failure_action": "Stop the HKST expert route without tuning the weight, regret cap, epoch count, learning rate, or seed."
   },
   "step_2_full_teacher": {
-    "status": "ready",
+    "status": "completed_passed",
     "source": "existing rate-4000 WDoor train/valid JSONL",
     "source_train_roots": 556820,
     "source_valid_roots": 99660,
@@ -174,7 +174,7 @@
     ]
   },
   "step_3_full_training": {
-    "status": "blocked_on_step_2",
+    "status": "completed_passed_offline",
     "same_hyperparameters_as_pilot": true,
     "epochs_saved": [
       1,
@@ -191,7 +191,7 @@
     "estimated_training_hours": "less than 1"
   },
   "step_4_matches_and_promotion": {
-    "status": "blocked_on_step_3",
+    "status": "completed_rejected_after_400_parent_games",
     "parent_match": {
       "initial_games": 400,
       "maximum_games": 800,
@@ -211,7 +211,7 @@
     "promotion_requires_both_parent_and_v2_5_0_gates": true
   },
   "step_5_second_generation": {
-    "status": "blocked_on_step_4",
+    "status": "not_run_parent_gate_failed",
     "maximum_full_generations": 2,
     "after_generation_3": {
       "v2_5_0_score_below_0_40": "stop",
@@ -226,7 +226,7 @@
     "estimated_total_generation_hours": "20-24"
   },
   "step_6_final_evaluation": {
-    "status": "blocked_on_step_5",
+    "status": "not_run_parent_gate_failed",
     "intermediate": {
       "time_ms": 300,
       "games": 200,

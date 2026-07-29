@@ -2666,11 +2666,12 @@ generation 4も新parentへの親超えGateを必須とし、v2.5.0へ45%以上�
 | game-rank objective-aligned metric | 完了（`87b7562`） |
 | 9k game-rank-only epoch 1 / 2 | 完了、epoch 2を選択 |
 | 9k安全Gate・親200局screen | 完了、104勝92敗4分（53.0%） |
-| full WDoor教師生成 | 実行可能 |
-| full epoch 1 / 2 | 教師data Gate通過時のみ |
-| 親400～800局・paired v2.5.0評価 | full offline Gate通過時のみ |
-| generation 4 | generation 3が40～45%時のみ |
-| 300 ms / 1,000 ms最終評価 | 100 ms Gate通過時のみ |
+| full WDoor教師生成 | 完了、train 180,752 / filtered valid 23,523 |
+| full epoch 1 / 2 | 完了、epoch 2を選択 |
+| 親400局 | 完了、196勝196敗8分（50.0%）、棄却 |
+| paired v2.5.0評価 | 未実施（親400局Gateで停止） |
+| generation 4 | 未実施（generation 3不成立） |
+| 300 ms / 1,000 ms最終評価 | 未実施（100 ms Gateへ進まず） |
 
 機械可読な判断と固定条件は
 `training/halfkp64-scratch-v1/strategy_review_post_objective_curve_20260729.json`に保存する。
@@ -2696,6 +2697,42 @@ static top-1 70.0%、200k exact search 98.6%、異常0で全offline Gateを通�
 45%の破壊的退行screenを通過したため、これは改善証明やpromotionには使わず、計画どおり
 full rate-4000 WDoor教師生成へ進む資格だけを与える。機械可読結果は
 `training/halfkp64-scratch-v1/game_rank_hard_negative_execution_20260729.json`に保存した。
+
+### 15.18 探索合意型expert full実行結果（2026-07-29）
+
+Step 1通過を受け、accepted generation 2を凍結教師としてrate 4,000以上WDoorの全量教師を生成した。
+現行weight、v2.5.0/KPP由来weight、蒸留dataは学習・教師生成・選別に一切使用していない。
+
+| split | source root | raw HKST | 衝突除去後 | game-rank eligible |
+|---|---:|---:|---:|---:|
+| train | 556,820 | 180,752 | 180,752 | 139,439 |
+| valid | 99,660 | 28,827 | 23,523 | 18,011 |
+
+教師生成のparse failure、illegal teacher、search failureはすべて0だった。trainのrootと全candidate childを
+含む2,359,738 unique network inputに衝突したvalid 5,304 recordを除外し、最終overlapを0にした。
+train/validのrecord数とeligible数はStep 2の全下限を通過した。
+
+pilotと同一hyperparameterでaccepted parentから独立にepoch 1 / 2まで学習した。
+
+| model | fixed-pair loss | mean margin | accuracy | all search pair accuracy |
+|---|---:|---:|---:|---:|
+| parent | 4.33510865 | -370.4523 cp | 17.9279% | 64.77% |
+| epoch 1 | 4.26235460 | -362.7266 cp | 18.2333% | 64.93% |
+| epoch 2 | **4.23170845** | **-359.4576 cp** | **18.4054%** | **65.00%** |
+
+epoch 2（SHA-256
+`6d6b949ac0f5fddd13d7042edf5c66d5373a5c9f0d174e7836a36b301437318d`）を選択した。
+exact family 95%下限89.57%、health p99 1,667 cp、static top-1 69.9%、200k exact search 98.6%、
+探索・数値・provenance異常0で全offline Gateを通過した。
+
+最終的な親比較は、計画どおり20,000 fixed nodes、同一200 openingの先後交換400局で行った。
+結果はcandidate 196勝、parent 196勝、8分、score 50.0%、Wilson 95%下限45.12%だった。
+search failure、missing root、illegal move、non-finite scoreはすべて0である。
+
+Step 4は400局時点でscore 50%以下を棄却条件として事前固定しているため、候補を棄却する。
+800局への延長、v2.5.0とのpaired対局、generation 3へのpromotion、generation 4、最終時間対局には進まない。
+offline目的は明瞭に改善した一方で親棋力を上回らなかったため、同じ目的のepoch追加、weight/LR/seed調整、
+同じ教師からの再学習は行わない。この探索合意型expert hard-negative経路はここで完了・停止とする。
 
 ## 16. 参考資料と本計画への反映
 

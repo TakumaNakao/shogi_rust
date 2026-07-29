@@ -2,7 +2,7 @@
   "schema_version": 1,
   "date": "2026-07-29",
   "experiment": "phase12-game-rank-hard-negative-v1",
-  "status": "full_teacher_generation_pending",
+  "status": "completed_rejected_at_parent_match",
   "lineage": {
     "lineage_id": "halfkp64-scratch-v1",
     "accepted_parent_generation": 2,
@@ -94,16 +94,70 @@
       "interpretation": "Non-destructive pilot screen only; this is not a promotion result."
     }
   },
-  "next_action": {
-    "step": "Generate full rate-4000 WDoor train and validation HKST with the frozen accepted generation-2 teacher.",
-    "status": "eligible",
-    "settings": {
-      "selection_depth": 2,
-      "teacher_depth": 4,
-      "candidate_top": 10,
-      "tactical_candidate_limit": 2,
-      "max_nodes_per_search": 20000,
-      "jobs": 4
+  "full_run": {
+    "teacher_data": {
+      "train_source_roots": 556820,
+      "train_records": 180752,
+      "train_sha256": "eec8b92435b9c106b6dafacd72e927b6b23853c71af3c29bb3ffcc6a492ba1c6",
+      "valid_source_roots": 99660,
+      "raw_valid_records": 28827,
+      "filtered_valid_records": 23523,
+      "excluded_colliding_valid_records": 5304,
+      "filtered_valid_sha256": "5a337303bf0c41409093a54632e942c61f967efd6d7f39db501ec00166bd350f",
+      "train_unique_network_inputs": 2359738,
+      "final_network_input_overlap": 0,
+      "game_rank_eligible_train": 139439,
+      "game_rank_eligible_valid": 18011,
+      "parse_illegal_or_search_failures": 0,
+      "data_gates_passed": true
+    },
+    "parent": {
+      "weighted_objective_loss": 4.335108647266881,
+      "mean_signed_margin_cp": -370.4522729723889,
+      "accuracy": 0.17927932929876186,
+      "all_search_pair_accuracy": 0.6477
+    },
+    "epoch_1": {
+      "model_sha256": "2de54dd78b0b921a2fcb460386166641f3e05c145780cf3712aa738f4f4519b4",
+      "weighted_objective_loss": 4.26235460,
+      "mean_signed_margin_cp": -362.7266,
+      "accuracy": 0.182333,
+      "all_search_pair_accuracy": 0.6493
+    },
+    "epoch_2": {
+      "model_sha256": "6d6b949ac0f5fddd13d7042edf5c66d5373a5c9f0d174e7836a36b301437318d",
+      "weighted_objective_loss": 4.23170845,
+      "mean_signed_margin_cp": -359.4576,
+      "accuracy": 0.184054,
+      "all_search_pair_accuracy": 0.6500,
+      "selected_for_parent_match": true
+    },
+    "safety_gates": {
+      "exact_family_accuracy": 0.9076,
+      "exact_family_ci95_lower": 0.8957,
+      "health_score_abs_p99_cp": 1667.409,
+      "static_top1_accuracy": 0.699,
+      "search_200k_success_rate": 0.986,
+      "nan_inf_illegal_or_provenance_errors": 0,
+      "passed": true
+    },
+    "parent_match": {
+      "games": 400,
+      "opening_pairs": 200,
+      "node_budget_per_move": 20000,
+      "candidate_wins": 196,
+      "parent_wins": 196,
+      "draws": 8,
+      "score": 0.5,
+      "score_wilson_95_lower": 0.451234504169709,
+      "search_failures": 0,
+      "passed": false,
+      "decision": "reject_at_fixed_400_game_score_at_most_0_50"
     }
+  },
+  "next_action": {
+    "step": "Stop this route. Do not extend to 800 games, run paired v2.5.0 transfer, or promote generation 3.",
+    "status": "stopped_by_precommitted_parent_gate",
+    "reason": "The full candidate scored exactly 0.50 after the fixed 400-game parent match; the plan rejects scores at or below 0.50."
   }
 }
