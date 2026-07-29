@@ -30,7 +30,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-const TARGET_SCALE: f32 = 1000.0;
+pub(super) const TARGET_SCALE: f32 = 1000.0;
 const HALFKP_BOARD_STATES: usize = 2 * NUM_BOARD_PIECE_KINDS * NUM_SQUARES;
 
 #[derive(Parser, Debug)]
@@ -145,11 +145,11 @@ enum OptimizerKind {
 }
 
 #[derive(Clone)]
-struct Weights {
-    feature_emb: Vec<f32>,
-    hidden_b: [f32; HALFKP_HIDDEN],
-    out_w: [f32; HALFKP_HIDDEN * 2 + 1],
-    out_b: f32,
+pub(super) struct Weights {
+    pub(super) feature_emb: Vec<f32>,
+    pub(super) hidden_b: [f32; HALFKP_HIDDEN],
+    pub(super) out_w: [f32; HALFKP_HIDDEN * 2 + 1],
+    pub(super) out_b: f32,
 }
 
 struct ScheduleFreeState {
@@ -253,10 +253,10 @@ impl Default for DenseGradient {
     }
 }
 
-struct Forward {
-    black: [f32; HALFKP_HIDDEN],
-    white: [f32; HALFKP_HIDDEN],
-    raw: f32,
+pub(super) struct Forward {
+    pub(super) black: [f32; HALFKP_HIDDEN],
+    pub(super) white: [f32; HALFKP_HIDDEN],
+    pub(super) raw: f32,
 }
 
 struct RecordGradient {
@@ -386,7 +386,7 @@ struct ParameterMaxAbs {
 }
 
 impl Weights {
-    fn load(path: &Path) -> Result<Self> {
+    pub(super) fn load(path: &Path) -> Result<Self> {
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let flat = HalfKpFlatModel::decode(&bytes)?;
         if flat.header.target_scale != TARGET_SCALE {
@@ -400,7 +400,7 @@ impl Weights {
         })
     }
 
-    fn save(&self, path: &Path) -> Result<()> {
+    pub(super) fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -420,7 +420,7 @@ impl Weights {
         Ok(())
     }
 
-    fn zeros_like(&self) -> Self {
+    pub(super) fn zeros_like(&self) -> Self {
         Self {
             feature_emb: vec![0.0; self.feature_emb.len()],
             hidden_b: [0.0; HALFKP_HIDDEN],
@@ -443,7 +443,7 @@ impl Weights {
         self.out_b += (value.out_b - self.out_b) * rate;
     }
 
-    fn forward(&self, position: &PackedHalfKpPosition) -> Forward {
+    pub(super) fn forward(&self, position: &PackedHalfKpPosition) -> Forward {
         let forward = HalfKpFlatModel::forward_parts(
             &self.feature_emb,
             &self.hidden_b,
@@ -568,7 +568,9 @@ fn center_mirror_feature(feature: usize) -> Option<usize> {
     Some(king_bucket * HALFKP_PIECE_STATES + mirrored_state)
 }
 
-fn project_center_mirror_sparse_gradient(sparse: &mut HashMap<usize, [f32; HALFKP_HIDDEN]>) {
+pub(super) fn project_center_mirror_sparse_gradient(
+    sparse: &mut HashMap<usize, [f32; HALFKP_HIDDEN]>,
+) {
     let mut pairs = BTreeSet::new();
     for feature in sparse.keys().copied().collect::<Vec<_>>() {
         let Some(mirrored) = center_mirror_feature(feature) else {

@@ -105,6 +105,11 @@ path = "src/bin/halfkp_search_train.rs"
 required-features = ["training-tools"]
 
 [[bin]]
+name = "halfkp_policy_train"
+path = "src/bin/halfkp_policy_train.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
 name = "halfkp_search_split_filter"
 path = "src/bin/halfkp_search_split_filter.rs"
 required-features = ["training-tools"]
