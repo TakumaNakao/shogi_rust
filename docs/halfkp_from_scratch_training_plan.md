@@ -2479,6 +2479,17 @@ accepted generation 2は変更しない。次は既存9,311件だけを使い、
 objective loss、mean margin、non-conflicting pair、安全Gateへ結び付ける。treatmentがparentを超え、
 control比改善を維持した時だけfull WDoor教師生成へ進む。parentへ届かない場合は、この固定MMTO-liteを停止する。
 
+実行前にcurveをepoch 1 / 2 / 4へ固定する。epoch 1は既存artifactを再利用し、epoch 2 / 4はaccepted parentから
+同じseedと全hyperparameterで独立に再実行する。`--save-last-epoch`を使い、SWAまたはbest選択で観測点を
+置換しない。各epochのtreatmentが次のすべてを満たす場合だけconfirmation通過とする。
+
+- treatment objective lossが同epoch controlより小さく、mean marginが大きい
+- treatment objective lossがaccepted parentより小さい
+- non-conflicting pair accuracyがparentから1 pointを超えて低下しない
+- exact family 95%下限88%以上、health p99 2,500 cp未満、static top-1 68%以上、search 200k 98%以上
+
+epochは後から追加せず、1 / 2 / 4のいずれもparentを超えなければ固定MMTO-liteを停止する。
+
 機械可読な再評価結果は
 `training/halfkp64-scratch-v1/mmto_objective_aligned_evaluation_20260729.json`に保存した。
 

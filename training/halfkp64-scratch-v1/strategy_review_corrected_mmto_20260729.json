@@ -6,6 +6,32 @@
   "status": "paused_for_fixed_objective_aligned_learning_curve_before_scale",
   "execution_result_report": "training/halfkp64-scratch-v1/corrected_mmto_lite_pilot_execution_report_20260729.json",
   "objective_aligned_evaluation_report": "training/halfkp64-scratch-v1/mmto_objective_aligned_evaluation_20260729.json",
+  "objective_aligned_confirmation": {
+    "status": "planned",
+    "dataset_train_records": 9311,
+    "dataset_valid_records": 1809,
+    "epochs": [
+      1,
+      2,
+      4
+    ],
+    "epoch_1_artifact": "reuse_existing",
+    "epoch_2_and_4": "independent deterministic runs from accepted generation 2",
+    "same_hyperparameters_as_step_1": true,
+    "save_last_epoch": true,
+    "selection": "none; evaluate each fixed last-epoch artifact",
+    "pass_gates": {
+      "treatment_objective_loss_below_same_epoch_control": true,
+      "treatment_mean_margin_above_same_epoch_control": true,
+      "treatment_objective_loss_below_accepted_parent": true,
+      "non_conflicting_pair_accuracy_regression_from_parent_max": 0.01,
+      "exact_family_ci95_lower_min": 0.88,
+      "health_score_abs_p99_cp_max": 2500,
+      "static_top1_min": 0.68,
+      "search_200k_min": 0.98
+    },
+    "failure_action": "Stop fixed MMTO-lite without adding epochs or tuning hyperparameters."
+  },
   "lineage": {
     "lineage_id": "halfkp64-scratch-v1",
     "accepted_parent_generation": 2,
