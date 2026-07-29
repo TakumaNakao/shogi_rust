@@ -61,6 +61,9 @@ struct Args {
     gradient_clip_norm: f32,
     #[arg(long, default_value_t = 36.63)]
     tau_cp: f32,
+    /// Verification hook. Production MMTO uses exactly 1.0.
+    #[arg(long, default_value_t = 1.0)]
+    loss_weight: f32,
     #[arg(long, default_value_t = 1.0)]
     feature_limit: f32,
     #[arg(long, default_value_t = 0.20)]
@@ -391,7 +394,7 @@ fn train_block(
     for (pairs, sample_metrics) in searched {
         metrics.merge(&sample_metrics);
         for pair in pairs {
-            add_pair_gradient(weights, &pair, args.tau_cp, gradient)?;
+            add_pair_gradient(weights, &pair, args.tau_cp, args.loss_weight, gradient)?;
             if gradient.pairs == args.pair_batch_size {
                 apply_batch(weights, adagrad, gradient, args, material_bits)?;
             }
@@ -409,6 +412,8 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.output_learning_rate_ratio <= 0.0
         || args.gradient_clip_norm <= 0.0
         || args.tau_cp <= 0.0
+        || args.loss_weight < 0.0
+        || !args.loss_weight.is_finite()
         || args.feature_limit <= 0.0
         || args.output_limit <= 0.0
         || args.max_valid_roots == 0
@@ -677,12 +682,13 @@ fn add_pair_gradient(
     weights: &Weights,
     pair: &Pair,
     tau_cp: f32,
+    loss_weight: f32,
     gradient: &mut Gradient,
 ) -> Result<()> {
     let (desired_score, desired_forward) = current_leaf_score(weights, &pair.desired);
     let (alternative_score, alternative_forward) = current_leaf_score(weights, &pair.alternative);
     let loss = mirrored_sigmoid(desired_score - alternative_score, tau_cp);
-    let d_delta_cp = -loss * (1.0 - loss) / tau_cp;
+    let d_delta_cp = -loss_weight * loss * (1.0 - loss) / tau_cp;
     if !loss.is_finite() || !d_delta_cp.is_finite() {
         return Err(anyhow!("non-finite MMTO loss or derivative"));
     }
@@ -1046,6 +1052,7 @@ fn write_run_manifest(
 ) -> Result<()> {
     let mut hyperparameters = BTreeMap::new();
     hyperparameters.insert("tau_cp", serde_json::json!(args.tau_cp));
+    hyperparameters.insert("loss_weight", serde_json::json!(args.loss_weight));
     hyperparameters.insert(
         "feature_learning_rate",
         serde_json::json!(args.learning_rate),
@@ -1108,5 +1115,22 @@ mod tests {
         ));
         assert_eq!(weight.to_bits(), 0.125f32.to_bits());
         assert_eq!(accumulator.to_bits(), 0.0f32.to_bits());
+    }
+
+    #[test]
+    fn mirrored_sigmoid_derivative_matches_finite_difference() {
+        let tau = 36.63;
+        for delta in [-100.0f32, -10.0, 0.0, 10.0, 100.0] {
+            let epsilon = 0.01;
+            let numerical = (mirrored_sigmoid(delta + epsilon, tau)
+                - mirrored_sigmoid(delta - epsilon, tau))
+                / (2.0 * epsilon);
+            let loss = mirrored_sigmoid(delta, tau);
+            let analytical = -loss * (1.0 - loss) / tau;
+            assert!(
+                (numerical - analytical).abs() < 2e-5,
+                "delta={delta} numerical={numerical} analytical={analytical}"
+            );
+        }
     }
 }
