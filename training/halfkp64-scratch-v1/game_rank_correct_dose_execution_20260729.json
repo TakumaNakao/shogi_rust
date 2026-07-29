@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "experiment": "phase13-game-rank-correct-dose-v1",
+  "date": "2026-07-29",
+  "decision": "reject_and_stop_game_rank",
+  "parent": {
+    "generation": 2,
+    "sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6"
+  },
+  "candidate": {
+    "epoch": 2,
+    "sha256": "56358e8947ce3a32d75a27fe97aaa80ef229640d33f649176b6bd0835f327e7b",
+    "path": "runs/halfkp64-scratch-v1/phase13-game-rank-correct-dose-v1/epoch2.bin"
+  },
+  "preflight": {
+    "finite_difference_black_and_white": "pass",
+    "library_tests": {
+      "passed": 110,
+      "failed": 0
+    },
+    "sanity_1024": {
+      "eligible": 828,
+      "baseline_loss": 4.85574397,
+      "candidate_loss": 4.60250607,
+      "baseline_mean_margin_cp": -413.1111,
+      "candidate_mean_margin_cp": -385.6405
+    },
+    "zero_loss_parent_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "zero_loss_output_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6"
+  },
+  "training": {
+    "train_records": 180752,
+    "valid_records": 23523,
+    "epochs": 2,
+    "batch_size": 128,
+    "learning_rate": 0.0003,
+    "output_learning_rate": 0.00003,
+    "value_weight": 0.0,
+    "rank_weight": 0.0,
+    "game_rank_weight": 0.1,
+    "game_vs_search_weight": 0.0,
+    "rank_margin_cp": 20.0,
+    "rank_temperature_cp": 100.0,
+    "min_rank_gap_cp": 15.0,
+    "game_regret_cap_cp": 300.0,
+    "seed": 20260728
+  },
+  "offline": {
+    "eligible_records": 18011,
+    "baseline_loss": 4.335108647266881,
+    "candidate_loss": 2.3436286383802813,
+    "baseline_mean_margin_cp": -370.4522729723889,
+    "candidate_mean_margin_cp": -143.9583093840055,
+    "baseline_accuracy": 0.17927932929876186,
+    "candidate_accuracy": 0.34156904114152464,
+    "margin_improved": 15264,
+    "margin_worsened": 2745,
+    "margin_unchanged": 2,
+    "accuracy_gained": 3328,
+    "accuracy_lost": 405,
+    "all_search_pair_accuracy": 0.6565907749779964
+  },
+  "safety": {
+    "exact_family_ci95_lower": 0.8907,
+    "health_score_abs_p99_cp": 1619.497,
+    "static_top1": 0.699,
+    "search_200k_success": 0.986,
+    "search_failures": 0,
+    "illegal_moves": 0,
+    "non_finite_scores": 0,
+    "passed": true
+  },
+  "parent_match": {
+    "games": 400,
+    "candidate_wins": 175,
+    "parent_wins": 213,
+    "draws": 12,
+    "score": 0.4525,
+    "wilson_95_lower": 0.4044047885153861,
+    "search_failures": 0,
+    "illegal_moves": 0,
+    "non_finite_scores": 0,
+    "passed_48_percent_non_regression": false,
+    "passed_v250_entry_gate": false
+  },
+  "interpretation": [
+    "The correctly dosed run proves that the trainer can strongly optimize the fixed game-rank objective.",
+    "The same stronger optimization caused a clear playing-strength regression against the accepted parent.",
+    "The prior small-dose experiment was under-updated, but update dose was not the main path to stronger weights.",
+    "Game-rank hyperparameters must not be tuned further."
+  ],
+  "next_step": "Implement the pre-registered minimal all-legal expert-policy CE Phase B; do not run v2.5.0 matches for this rejected candidate."
+}

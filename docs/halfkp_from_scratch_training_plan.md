@@ -2888,15 +2888,66 @@ generation 2から累計10 point改善を要求する。
 | 現行trainerの符号・手番・forward・optimizer再監査 | 完了、致命的bugなし |
 | full epoch 2のparameter更新量監査 | 完了、各group約0.08～0.11% RMS |
 | 400局のopening-pair再集計 | 完了、43優位 / 45劣位 / 112同点 |
-| Phase A finite difference / 1,024 record Gate | 未実施 |
-| Phase A correctly dosed game-rank | 実行可能 |
-| Phase A parent / paired v2.5.0対局 | offline Gate通過時のみ |
-| Phase B all-legal CE実装・pilot | Phase A失敗時のみ |
+| Phase A finite difference / 1,024 record Gate | 完了、全Gate通過 |
+| Phase A correctly dosed game-rank | 完了、offline / safety通過、親対局で棄却 |
+| Phase A parent / paired v2.5.0対局 | 親400局45.25%、v2.5.0対局へ進まず終了 |
+| Phase B all-legal CE実装・pilot | 次作業 |
 | rate 3,500拡張・第2世代 | generation 3がv2.5.0へ40～45%時のみ |
 | 300 ms / 1,000 ms最終評価 | v2.5.0転移Gate通過時のみ |
 
 機械可読な判断は
 `training/halfkp64-scratch-v1/post_game_rank_learning_audit_20260729.json`へ保存する。
+
+### 15.20 correctly dosed game-rank実行結果（2026-07-29）
+
+#### 実行前Gate
+
+`game_rank_weight`の勾配について、先手番・後手番それぞれで疎feature embeddingとSTM側output weightを
+中央差分と照合するtestを追加した。有限差分、library全110 test、release buildを通過した。さらに、
+既存full trainの先頭1,024 recordを既定LRで1 epoch学習し、固定pair loss
+`4.85574397 -> 4.60250607`、mean margin `-413.11 -> -385.64 cp`を確認した。
+zero-loss artifactのSHA-256はparentと同じ
+`9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`であり、
+no-op byte identityも維持された。
+
+#### full学習とoffline評価
+
+train 180,752 / valid 23,523、accepted generation 2初期値、zero-state AdaGrad、
+feature/hidden LR `3e-4`、output LR `3e-5`でepoch 1 / 2を独立に実行した。
+epoch 2 model SHA-256は
+`56358e8947ce3a32d75a27fe97aaa80ef229640d33f649176b6bd0835f327e7b`である。
+
+| 指標 | parent | 旧small-LR epoch 2 | correct-dose epoch 1 | correct-dose epoch 2 |
+|---|---:|---:|---:|---:|
+| fixed game-rank loss | 4.335109 | 4.231708 | 2.759765 | **2.343629** |
+| mean margin | -370.45 cp | -359.46 cp | -193.88 cp | **-143.96 cp** |
+| game-rank accuracy | 17.93% | 18.41% | 29.62% | **34.16%** |
+| all search pair accuracy | 64.77% | 65.00% | 65.84% | **65.66%** |
+
+epoch 2のfixed pairはparent比でmargin改善15,264、悪化2,745、同値2、accuracy gain 3,328、
+loss 405だった。旧small-LR epoch 2も十分に上回り、学習量不足仮説はoffline objective上では確認された。
+安全Gateもexact family CI lower 89.07%、health p99 1,619 cp、static top-1 69.9%、
+200k-node exact search 98.6%、search failure / illegal / non-finite 0ですべて通過した。
+
+#### 親400局と判断
+
+同一WDoor opening 200 pairを先後交換し、各着手20,000 fixed nodesでaccepted generation 2と比較した。
+
+- candidate 175勝、parent 213勝、draw 12
+- candidate score **45.25%**
+- Wilson 95%下限 **40.44%**
+- search failure、missing result、illegal move、non-finite scoreはすべて0
+
+事前固定した48%非退行Gateを下回るため、candidateを棄却する。point score 50%とWilson下限45%にも
+届かないため、v2.5.0対局とgeneration 3 promotionは実行しない。旧small-LRの親対局50.0%に対し、
+正しいdoseでoffline目的を大幅に学ぶほど実戦が45.25%へ悪化したことから、更新量不足という未解決点は
+閉じた。**即時childのgame-rank proxyは実戦棋力と目的不整合であり、今後LR、epoch、weight、
+temperature、regret cap、seedを再調整しない。**
+
+次は15.19で事前指定したPhase B all-legal expert-policy CEだけを実施する。既存の合法手生成、
+HalfKP forward/backprop、AdaGrad、WDoor splitを再利用し、新runtime headや新dataset形式は作らない。
+機械可読な実行結果は
+`training/halfkp64-scratch-v1/game_rank_correct_dose_execution_20260729.json`に保存する。
 
 ## 16. 参考資料と本計画への反映
 
