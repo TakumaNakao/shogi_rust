@@ -326,7 +326,7 @@ fn visit_samples(
         let teacher = parse_usi_move_for_color(&record.teacher_move, position.side_to_move())
             .filter(|mv| legal.contains(mv))
             .ok_or_else(|| anyhow!("illegal teacher move"))?;
-        if legal.len() < 2 {
+        if !policy_eligible(legal.len()) {
             continue;
         }
         visitor(Sample {
@@ -336,6 +336,10 @@ fn visit_samples(
         count += 1;
     }
     Ok(count)
+}
+
+fn policy_eligible(legal_moves: usize) -> bool {
+    legal_moves >= 2
 }
 
 fn children_and_utilities(
@@ -487,13 +491,9 @@ fn apply_batch(weights: &mut Weights, adagrad: &mut Weights, gradient: &mut Grad
             args.output_limit,
         );
     }
-    adagrad_scalar(
-        &mut weights.out_b,
-        &mut adagrad.out_b,
-        gradient.out_b * clip,
-        args.output_learning_rate,
-        args.output_limit,
-    );
+    // A common bias shifts every legal-child logit equally, so softmax CE is
+    // exactly invariant to out_b. Keep it frozen instead of integrating f32
+    // cancellation residue into a zero-state AdaGrad accumulator.
     for feature in features {
         let start = feature * HALFKP_HIDDEN;
         for h in 0..HALFKP_HIDDEN {
@@ -746,16 +746,47 @@ mod tests {
             let plus = sample_metrics(&weights, &sample, 300.0).expect("plus").1;
             weights.out_w[output_index] -= 2.0 * epsilon;
             let minus = sample_metrics(&weights, &sample, 300.0).expect("minus").1;
+            weights.out_w[output_index] += epsilon;
             let numerical = ((plus - minus) / f64::from(2.0 * epsilon)) as f32;
             assert!(
                 (analytic - numerical).abs() < 2e-4,
                 "side={side_to_move:?} analytic={analytic} numerical={numerical}"
             );
+
+            let (&feature, row) = gradient
+                .sparse
+                .iter()
+                .find(|(_, row)| row.iter().any(|value| value.abs() > 1e-6))
+                .expect("non-zero sparse gradient");
+            let hidden = row
+                .iter()
+                .position(|value| value.abs() > 1e-6)
+                .expect("non-zero hidden component");
+            let feature_index = feature * HALFKP_HIDDEN + hidden;
+            let analytic = row[hidden];
+            weights.feature_emb[feature_index] += epsilon;
+            let plus = sample_metrics(&weights, &sample, 300.0).expect("plus").1;
+            weights.feature_emb[feature_index] -= 2.0 * epsilon;
+            let minus = sample_metrics(&weights, &sample, 300.0).expect("minus").1;
+            let numerical = ((plus - minus) / f64::from(2.0 * epsilon)) as f32;
+            assert!(
+                (analytic - numerical).abs() < 2e-4,
+                "side={side_to_move:?} sparse analytic={analytic} numerical={numerical}"
+            );
+
+            assert!(
+                gradient.out_b.abs() < 1e-4,
+                "softmax common-bias gradient={}",
+                gradient.out_b
+            );
         }
     }
 
     #[test]
-    fn forced_move_positions_are_excluded_by_loader_contract() {
+    fn forced_move_positions_are_excluded() {
+        assert!(!policy_eligible(0));
+        assert!(!policy_eligible(1));
+        assert!(policy_eligible(2));
         let (weights, sample) = fixture(Color::Black);
         assert!(sample.root.legal_moves().len() > 1);
         assert!(add_policy_gradient(&weights, &sample, 300.0, &mut Gradient::default()).is_ok());

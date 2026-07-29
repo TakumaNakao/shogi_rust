@@ -2949,6 +2949,49 @@ HalfKP forward/backprop、AdaGrad、WDoor splitを再利用し、新runtime head
 機械可読な実行結果は
 `training/halfkp64-scratch-v1/game_rank_correct_dose_execution_20260729.json`に保存する。
 
+### 15.21 Phase B実装sanityとGate訂正（2026-07-29）
+
+#### 最小実装
+
+`halfkp_policy_train`を追加した。入力は既存WDoor JSONLを直接streamし、各rootの全合法手をchildへ進め、
+`utility = -child STM score`、temperature 300 cpのstable softmax、棋譜手one-hot CEを使う。
+model形式、runtime、dataset schemaは変更しない。accepted parent / manifest / Gate report照合、
+license/source検査、opening-family split overlap 0、teacher legality、forced-move除外、
+中央王mirror勾配、zero-state AdaGrad、保存artifact manifestを実装した。
+
+先手番・後手番のoutput weightとtouched sparse featureを中央差分で照合し、共通output biasのsoftmax勾配が
+0であることもtestする。output biasは全child logitへ同じ定数を加えるだけでCEが不変なため、学習中は
+固定する。library全112 testは通過した。
+
+#### 1,024 root sanityと10%条件の訂正
+
+事前計画はLR `1e-5` / `1e-4`を4 passし、train CEを10%以上下げる最小LRを選ぶとしていた。固定train
+再評価の結果は次のとおりだった。
+
+| LR | fixed train CE epoch 0 | epoch 4 | 相対改善 | fixed valid CE epoch 0 | epoch 4 |
+|---:|---:|---:|---:|---:|---:|
+| `1e-5` | 約4.3165 | 4.3105 | 約0.14% | 4.18275 | 4.17988 |
+| `1e-4` | 4.31652 | 4.25820 | **1.35%** | 4.18275 | **4.15529** |
+
+`1e-4`ではvalid teacher marginが`-669.37 -> -656.29 cp`、paired改善805、悪化218、同値1、
+top-1が6.64%から6.84%へ改善した。LRを10倍にしたとき、CE改善量、margin改善、feature/output deltaも
+約9.6～10倍になり、全parameterはfiniteかつlimit非接触だった。符号・手番有限差分も通過している。
+
+この観測を受け、pilot開始前に10%条件を撤回する。これはvalid結果を見たLR最適化ではない。
+1,024 rootは実質45 game、4 passは32 batch updateしかなく、CE 10%はperplexityを約35%下げる要求で、
+実装sanityとして過大だったためである。sanity Gateを次へ訂正し、LRは二値の大きい方`1e-4`へ固定する。
+
+1. 先後両手番のoutput / sparse finite differenceが通る。
+2. fixed train CEが単調低下し、4 passで1%以上改善する。
+3. fixed valid CEも低下する。
+4. `1e-4`の改善量が`1e-5`の5倍以上である。
+5. valid margin改善数が悪化数を上回る。
+6. finite、parameter limit、保存再読込、provenance、split検査が正常である。
+
+これはすべて通過したため50,000 train / 10,000 valid pilotへ進む。pilot以降のCE bootstrap、
+top-1 parent比+1 point、margin多数、既存安全Gate、2,000 root探索一致、親対局、v2.5.0対局の条件は
+緩和しない。各epochは元datasetの固定順であり、seed shuffleを行ったとは記録しない。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
