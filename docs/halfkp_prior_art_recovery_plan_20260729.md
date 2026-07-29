@@ -629,7 +629,7 @@ fallbackのscratch self-playでは、promoted scratch model自身が定跡なし
 | 0 | 誤分類・誤dataset記録の訂正 | completed | docs / JSON |
 | 1 | exact qsearch principal-leaf trace | completed | `bacd856` / unit / fingerprint |
 | 2 | streaming `halfkp_mmto_train` | completed | `4275e2e` / tests / release build |
-| 3 | 64 fixture / 1,024 root | pending | execution manifest |
+| 3 | 64 fixture / 1,024 root | completed | `a916fb3` / execution manifest |
 | 4 | 10k、3 LR、各2 outer | pending | calibration report |
 | 5 | 10k jobs benchmark、100k×4 outer | pending | benchmark report |
 | 6 | full 200 outer | pending | checkpoint manifests |
@@ -659,6 +659,23 @@ SWA、中間leaf dumpは追加していない。
 frozen WDoor rate-4000 manifestとaccepted scratch generation 2を用いた実データsmokeを完走し、
 jobs 1 / 4のmodelおよびoptimizerがbyte一致した。詳細は
 `training/halfkp64-scratch-v1/mmto_trainer_step2_report_20260729.json`に固定した。
+
+### Step 3 実行記録（2026-07-29）
+
+最終対局用openingは、学習に使わない2026年WDoor棋譜からseed `20260730`で2,000局面を予約し、
+SHA-256 `385b7f70...262d2329`としてcommit `15b7634`に凍結した。2023～2025年のtrainおよび
+過去parent match用validとのexact SFEN重複は0であり、途中対局には使わない。
+
+64 root no-opでは5,305 train pairと4,316 valid pairを全合法手探索し、bound誤受理、違法手、
+root復元失敗、非有限値は0だった。loss weight 0のmodelとoptimizerは更新前とbyte一致した。
+1,024 root更新ではtrain 92,055 pair / 98,515,597 qnode、fresh-valid 89,865 pair /
+179,737,746 qnodeを処理し、bound誤受理0、固定probe best-move不変率98.242%だった。
+feature / hidden / output最大deltaはそれぞれ`2.111e-5 / 1.872e-5 / 1.721e-6`で上限を通過し、
+material係数はbit不変だった。
+
+両leaf backpropの先後別finite difference、T(delta) derivative、repetition、mate、max-qply、
+save/reload、jobs決定論も通過した。詳細は
+`training/halfkp64-scratch-v1/mmto_step3_verification_report_20260729.json`に固定した。
 
 ## 10. 今回行わないこと
 

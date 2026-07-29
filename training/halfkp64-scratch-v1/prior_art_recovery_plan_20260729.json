@@ -283,7 +283,17 @@
     {
       "id": 3,
       "name": "verify_64_fixtures_and_1024_roots",
-      "status": "pending"
+      "status": "completed",
+      "commits": [
+        "38223d7",
+        "15b7634",
+        "4bfdc1d",
+        "a916fb3"
+      ],
+      "evidence": [
+        "training/halfkp64-scratch-v1/mmto_step3_verification_report_20260729.json",
+        "training/halfkp64-scratch-v1/final_openings_seed20260730_2000.manifest.json"
+      ]
     },
     {
       "id": 4,
