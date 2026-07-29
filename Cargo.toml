@@ -110,6 +110,11 @@ path = "src/bin/halfkp_search_split_filter.rs"
 required-features = ["training-tools"]
 
 [[bin]]
+name = "halfkp_search_objective_eval"
+path = "src/bin/halfkp_search_objective_eval.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
 name = "halfkp_scratch_init"
 path = "src/bin/halfkp_scratch_init.rs"
 required-features = ["halfkp64", "training-tools"]

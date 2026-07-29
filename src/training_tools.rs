@@ -20,6 +20,8 @@ pub mod halfkp_scratch_eval;
 pub mod halfkp_scratch_init;
 pub mod halfkp_scratch_train;
 pub mod halfkp_search_gate;
+pub mod halfkp_search_objective;
+pub mod halfkp_search_objective_eval;
 pub mod halfkp_search_split_filter;
 pub mod halfkp_search_teacher;
 pub mod halfkp_search_train;
