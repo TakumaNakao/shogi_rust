@@ -3,7 +3,7 @@
   "date": "2026-07-29",
   "scope": "Strategy after objective-aligned MMTO learning-curve rejection",
   "decision": "search_consensus_expert_hard_negative",
-  "status": "planned",
+  "status": "executing_full_teacher_generation",
   "lineage": {
     "lineage_id": "halfkp64-scratch-v1",
     "accepted_parent_generation": 2,
@@ -79,7 +79,7 @@
     }
   ],
   "step_0_metric_hardening": {
-    "status": "pending",
+    "status": "completed",
     "implementation_scope": [
       "Share game-rank eligibility and hard-negative selection between trainer and evaluator.",
       "Freeze hard-negative identity with the accepted parent for paired model comparisons.",
@@ -98,7 +98,7 @@
     "estimated_hours": "1-3"
   },
   "step_1_pilot": {
-    "status": "blocked_on_step_0",
+    "status": "completed_passed",
     "train_records": 9311,
     "valid_records": 1809,
     "parent_is_control": true,
@@ -145,7 +145,7 @@
     "failure_action": "Stop the HKST expert route without tuning the weight, regret cap, epoch count, learning rate, or seed."
   },
   "step_2_full_teacher": {
-    "status": "blocked_on_step_1",
+    "status": "ready",
     "source": "existing rate-4000 WDoor train/valid JSONL",
     "source_train_roots": 556820,
     "source_valid_roots": 99660,

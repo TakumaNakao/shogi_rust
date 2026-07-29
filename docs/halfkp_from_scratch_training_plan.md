@@ -2663,10 +2663,10 @@ generation 4も新parentへの親超えGateを必須とし、v2.5.0へ45%以上�
 | 全結果・固定MMTO目的競合の再監査 | 完了 |
 | 既存候補と実装範囲の比較 | 完了 |
 | search-consensus expert hard-negative決定 | 完了 |
-| game-rank objective-aligned metric | 未着手 |
-| 9k game-rank-only epoch 1 / 2 | metric実装後 |
-| 9k安全Gate・親200局screen | offline通過時のみ |
-| full WDoor教師生成 | pilot通過時のみ |
+| game-rank objective-aligned metric | 完了（`87b7562`） |
+| 9k game-rank-only epoch 1 / 2 | 完了、epoch 2を選択 |
+| 9k安全Gate・親200局screen | 完了、104勝92敗4分（53.0%） |
+| full WDoor教師生成 | 実行可能 |
 | full epoch 1 / 2 | 教師data Gate通過時のみ |
 | 親400～800局・paired v2.5.0評価 | full offline Gate通過時のみ |
 | generation 4 | generation 3が40～45%時のみ |
@@ -2674,6 +2674,28 @@ generation 4も新parentへの親超えGateを必須とし、v2.5.0へ45%以上�
 
 機械可読な判断と固定条件は
 `training/halfkp64-scratch-v1/strategy_review_post_objective_curve_20260729.json`に保存する。
+
+### 15.17 探索合意型expert pilot実行結果（2026-07-29）
+
+`87b7562`でgame-rank選別をtrainer/evaluator間で共有し、accepted parentが選んだ負例を固定する
+objective-aligned metricへcheckpoint選択を揃えた。targeted test 25件、全library test 109件、
+release build、実データzero-loss 1 epochのparentとのbyte identityを通過した。
+
+9,311 train / filtered valid 1,809件を固定条件でparentから独立にepoch 1 / 2まで学習した。
+
+| model | fixed-pair loss | mean margin | accuracy | margin改善 / 悪化 |
+|---|---:|---:|---:|---:|
+| parent | 4.40372715 | -375.7274 cp | 19.4265% | - |
+| epoch 1 | 4.38661039 | -373.9050 cp | 19.7849% | 1,107 / 288 |
+| epoch 2 | **4.37883890** | **-373.0767 cp** | 19.7849% | **1,110 / 285** |
+
+epoch 2は全search pair accuracy 63.71%、exact family 95%下限89.62%、health p99 1,673 cp、
+static top-1 70.0%、200k exact search 98.6%、異常0で全offline Gateを通過した。
+
+親との20,000 fixed nodes・同一opening先後交換200局は104勝92敗4分、score 53.0%だった。
+45%の破壊的退行screenを通過したため、これは改善証明やpromotionには使わず、計画どおり
+full rate-4000 WDoor教師生成へ進む資格だけを与える。機械可読結果は
+`training/halfkp64-scratch-v1/game_rank_hard_negative_execution_20260729.json`に保存した。
 
 ## 16. 参考資料と本計画への反映
 

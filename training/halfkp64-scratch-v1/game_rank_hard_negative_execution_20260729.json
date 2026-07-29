@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "experiment": "phase12-game-rank-hard-negative-v1",
+  "status": "full_teacher_generation_pending",
+  "lineage": {
+    "lineage_id": "halfkp64-scratch-v1",
+    "accepted_parent_generation": 2,
+    "accepted_parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "v2_5_0_used_for_training": false,
+    "kpp_or_distillation_data_used": false,
+    "test_split_opened": false
+  },
+  "implementation": {
+    "commit": "87b7562",
+    "changes": [
+      "Share game-rank eligibility and current-model hard-negative selection between trainer and evaluator.",
+      "Use the accepted parent to freeze hard-negative identity for validation and paired model comparison.",
+      "Record sample-weighted softplus loss, signed margin, accuracy, eligible count, and paired changes.",
+      "Select game-rank-only checkpoints by the aligned fixed-pair smooth loss."
+    ],
+    "targeted_tests_passed": 25,
+    "full_library_tests_passed": 109,
+    "release_build_passed": true,
+    "zero_loss_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "zero_loss_byte_identical_to_parent": true
+  },
+  "pilot": {
+    "train_records": 9311,
+    "valid_records": 1809,
+    "eligible_valid_records": 1395,
+    "fixed_conditions": {
+      "epochs": [
+        1,
+        2
+      ],
+      "batch_size": 128,
+      "learning_rate": 0.00001,
+      "output_learning_rate": 0.000001,
+      "value_weight": 0.0,
+      "rank_weight": 0.0,
+      "game_rank_weight": 0.1,
+      "game_vs_search_weight": 0.0,
+      "rank_margin_cp": 20.0,
+      "rank_temperature_cp": 100.0,
+      "minimum_teacher_gap_cp": 15.0,
+      "game_regret_cap_cp": 300.0,
+      "seed": 20260728,
+      "output_limit": 0.2,
+      "selection": "last epoch; fixed accepted-parent hard-negative pairs"
+    },
+    "parent": {
+      "weighted_objective_loss": 4.40372715266992,
+      "mean_signed_margin_cp": -375.7273552884338,
+      "accuracy": 0.19426523297491038
+    },
+    "epoch_1": {
+      "model_sha256": "a93c52fec4154aae547aec9836c2c9a9b3d43c562d2e9b9d4ee20c3a27c26816",
+      "weighted_objective_loss": 4.386610387100646,
+      "mean_signed_margin_cp": -373.90503737644485,
+      "accuracy": 0.1978494623655914,
+      "margin_improved": 1107,
+      "margin_worsened": 288
+    },
+    "epoch_2": {
+      "model_sha256": "cd1f967d96723f5a974bb459a8dfea0ef5092b5da1e610594dc017eb6ae8323d",
+      "weighted_objective_loss": 4.378838898349287,
+      "mean_signed_margin_cp": -373.07665553417684,
+      "accuracy": 0.1978494623655914,
+      "margin_improved": 1110,
+      "margin_worsened": 285,
+      "all_search_pair_accuracy": 0.6371,
+      "selected_for_screen": true
+    },
+    "safety_gates": {
+      "exact_family_accuracy": 0.9080781746031747,
+      "exact_family_ci95_lower": 0.8962428571428581,
+      "health_score_abs_p99_cp": 1673.071,
+      "static_top1_accuracy": 0.7,
+      "search_200k_success_rate": 0.986,
+      "nan_inf_illegal_or_provenance_errors": 0,
+      "passed": true
+    },
+    "parent_screen": {
+      "games": 200,
+      "node_budget_per_move": 20000,
+      "candidate_wins": 104,
+      "parent_wins": 92,
+      "draws": 4,
+      "score": 0.53,
+      "score_wilson_95_lower": 0.4609168291500183,
+      "catastrophic_regression_score_min": 0.45,
+      "passed": true,
+      "interpretation": "Non-destructive pilot screen only; this is not a promotion result."
+    }
+  },
+  "next_action": {
+    "step": "Generate full rate-4000 WDoor train and validation HKST with the frozen accepted generation-2 teacher.",
+    "status": "eligible",
+    "settings": {
+      "selection_depth": 2,
+      "teacher_depth": 4,
+      "candidate_top": 10,
+      "tactical_candidate_limit": 2,
+      "max_nodes_per_search": 20000,
+      "jobs": 4
+    }
+  }
+}
