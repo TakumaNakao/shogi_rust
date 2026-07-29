@@ -8,7 +8,8 @@ use shogi_ai::halfkp_training::{
 };
 use shogi_ai::training_data::sha256_file;
 use shogi_ai::training_tools::halfkp_search_objective::{
-    eligible_game_vs_search_pair, observe_game_vs_search_pair, GameVsSearchObservation,
+    eligible_game_vs_search_pair, observe_game_rank_pair, observe_game_vs_search_pair,
+    select_game_rank_pair, GameRankObservation, GameVsSearchObservation,
 };
 use shogi_core::Color;
 use std::fs;
@@ -25,6 +26,11 @@ struct Args {
     candidate_model: PathBuf,
     #[arg(long, default_value_t = 300.0)]
     game_regret_cap_cp: f32,
+    /// Evaluate the recorded move against a baseline-selected, search-confirmed hard negative.
+    #[arg(long, default_value_t = false)]
+    game_rank: bool,
+    #[arg(long, default_value_t = 15.0)]
+    min_rank_gap_cp: f32,
     #[arg(long, default_value_t = 20.0)]
     rank_margin_cp: f32,
     #[arg(long, default_value_t = 100.0)]
@@ -81,6 +87,7 @@ struct Report {
     rank_margin_cp: f32,
     rank_temperature_cp: f32,
     game_regret_cap_cp: f32,
+    min_rank_gap_cp: f32,
     baseline: ModelSummary,
     candidate: ModelSummary,
     candidate_minus_baseline: DeltaSummary,
@@ -114,6 +121,9 @@ pub fn run() -> Result<()> {
     if !args.rank_margin_cp.is_finite() {
         return Err(anyhow!("--rank-margin-cp must be finite"));
     }
+    if !args.min_rank_gap_cp.is_finite() || args.min_rank_gap_cp < 0.0 {
+        return Err(anyhow!("--min-rank-gap-cp must be finite and non-negative"));
+    }
     if !args.rank_temperature_cp.is_finite() || args.rank_temperature_cp <= 0.0 {
         return Err(anyhow!("--rank-temperature-cp must be finite and positive"));
     }
@@ -136,9 +146,6 @@ pub fn run() -> Result<()> {
                 break;
             };
             records_read += 1;
-            let Some(pair) = eligible_game_vs_search_pair(&record, args.game_regret_cap_cp) else {
-                continue;
-            };
             let baseline_utilities = record
                 .candidates
                 .iter()
@@ -149,18 +156,49 @@ pub fn run() -> Result<()> {
                 .iter()
                 .map(|entry| -score(&candidate, &entry.child))
                 .collect::<Vec<_>>();
-            let baseline_observation = observe_game_vs_search_pair(
-                &baseline_utilities,
-                pair,
-                args.rank_margin_cp,
-                args.rank_temperature_cp,
-            );
-            let candidate_observation = observe_game_vs_search_pair(
-                &candidate_utilities,
-                pair,
-                args.rank_margin_cp,
-                args.rank_temperature_cp,
-            );
+            let (baseline_observation, candidate_observation) = if args.game_rank {
+                let Some(pair) = select_game_rank_pair(
+                    &record,
+                    &baseline_utilities,
+                    args.game_regret_cap_cp,
+                    args.min_rank_gap_cp,
+                ) else {
+                    continue;
+                };
+                (
+                    PairObservation::from(observe_game_rank_pair(
+                        &baseline_utilities,
+                        pair,
+                        args.rank_margin_cp,
+                        args.rank_temperature_cp,
+                    )),
+                    PairObservation::from(observe_game_rank_pair(
+                        &candidate_utilities,
+                        pair,
+                        args.rank_margin_cp,
+                        args.rank_temperature_cp,
+                    )),
+                )
+            } else {
+                let Some(pair) = eligible_game_vs_search_pair(&record, args.game_regret_cap_cp)
+                else {
+                    continue;
+                };
+                (
+                    PairObservation::from(observe_game_vs_search_pair(
+                        &baseline_utilities,
+                        pair,
+                        args.rank_margin_cp,
+                        args.rank_temperature_cp,
+                    )),
+                    PairObservation::from(observe_game_vs_search_pair(
+                        &candidate_utilities,
+                        pair,
+                        args.rank_margin_cp,
+                        args.rank_temperature_cp,
+                    )),
+                )
+            };
             accumulate(
                 &mut accumulator,
                 record.sample_weight,
@@ -194,7 +232,11 @@ pub fn run() -> Result<()> {
     );
     let report = Report {
         schema_version: 1,
-        metric: "game-vs-search-softplus-v1",
+        metric: if args.game_rank {
+            "game-rank-fixed-hard-negative-softplus-v1"
+        } else {
+            "game-vs-search-softplus-v1"
+        },
         datasets,
         baseline_model: Artifact {
             path: args.baseline_model.display().to_string(),
@@ -210,6 +252,7 @@ pub fn run() -> Result<()> {
         rank_margin_cp: args.rank_margin_cp,
         rank_temperature_cp: args.rank_temperature_cp,
         game_regret_cap_cp: args.game_regret_cap_cp,
+        min_rank_gap_cp: args.min_rank_gap_cp,
         candidate_minus_baseline: DeltaSummary {
             accuracy: candidate_summary.accuracy - baseline_summary.accuracy,
             mean_signed_margin_cp: candidate_summary.mean_signed_margin_cp
@@ -298,8 +341,8 @@ fn score(model: &HalfKpFlatModel, position: &PackedHalfKpPosition) -> f32 {
 fn accumulate(
     accumulator: &mut Accumulator,
     sample_weight: f32,
-    baseline: GameVsSearchObservation,
-    candidate: GameVsSearchObservation,
+    baseline: PairObservation,
+    candidate: PairObservation,
 ) {
     let sample_weight = f64::from(sample_weight);
     accumulator.eligible += 1;
@@ -324,6 +367,33 @@ fn accumulate(
     }
     accumulator.accuracy_gained += usize::from(!baseline.correct && candidate.correct);
     accumulator.accuracy_lost += usize::from(baseline.correct && !candidate.correct);
+}
+
+#[derive(Clone, Copy)]
+struct PairObservation {
+    signed_margin_cp: f32,
+    objective_loss: f32,
+    correct: bool,
+}
+
+impl From<GameVsSearchObservation> for PairObservation {
+    fn from(value: GameVsSearchObservation) -> Self {
+        Self {
+            signed_margin_cp: value.signed_margin_cp,
+            objective_loss: value.objective_loss,
+            correct: value.correct,
+        }
+    }
+}
+
+impl From<GameRankObservation> for PairObservation {
+    fn from(value: GameRankObservation) -> Self {
+        Self {
+            signed_margin_cp: value.signed_margin_cp,
+            objective_loss: value.objective_loss,
+            correct: value.correct,
+        }
+    }
 }
 
 fn summarize(
@@ -358,12 +428,12 @@ mod tests {
         accumulate(
             &mut accumulator,
             2.0,
-            GameVsSearchObservation {
+            PairObservation {
                 signed_margin_cp: -30.0,
                 objective_loss: 1.0,
                 correct: false,
             },
-            GameVsSearchObservation {
+            PairObservation {
                 signed_margin_cp: -20.0,
                 objective_loss: 0.8,
                 correct: false,
