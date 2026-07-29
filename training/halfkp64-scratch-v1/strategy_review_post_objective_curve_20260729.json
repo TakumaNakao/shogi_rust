@@ -1,0 +1,255 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "scope": "Strategy after objective-aligned MMTO learning-curve rejection",
+  "decision": "search_consensus_expert_hard_negative",
+  "status": "planned",
+  "lineage": {
+    "lineage_id": "halfkp64-scratch-v1",
+    "accepted_parent_generation": 2,
+    "accepted_parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "v2_5_0_usage": "match_comparison_only",
+    "v2_5_0_used_for_training": false,
+    "kpp_or_distillation_data_used": false,
+    "test_split_opened": false
+  },
+  "evidence": {
+    "fixed_mmto_conflict": {
+      "parent_objective_loss": 1.6151593468464585,
+      "rank_only_epoch_1_objective_loss": 1.6239206877536254,
+      "combined_epoch_1_objective_loss": 1.6223195575031955,
+      "rank_only_parent_margin_delta_cp": -2.5554302328157092,
+      "game_vs_causal_margin_delta_cp": 0.23475285816437008,
+      "conclusion": "The game-vs intervention works, but ordinary search-rank shared-feature updates move the game-vs subset in the opposite direction much more strongly."
+    },
+    "game_rank_coverage_audit": {
+      "train": {
+        "records": 9311,
+        "eligible": 7116,
+        "fraction": 0.764257330039738,
+        "mean_search_confirmed_negative_candidates_per_eligible": 6.75
+      },
+      "filtered_valid": {
+        "records": 1809,
+        "eligible": 1395,
+        "fraction": 0.7711442786070,
+        "mean_search_confirmed_negative_candidates_per_eligible": 6.77
+      },
+      "teacher_regret_cap_cp": 300.0,
+      "minimum_teacher_gap_cp": 15.0
+    },
+    "prior_quiet_expert_failure": "The old expert objective used one deterministic quiet legal alternative without evaluator confirmation or online hardness.",
+    "new_signal": "Use a recorded WDoor move as positive only against candidates that frozen scratch depth-4 search scores at least 15 cp lower, then choose the currently most overvalued negative."
+  },
+  "alternatives": [
+    {
+      "strategy": "search_consensus_expert_hard_negative",
+      "decision": "selected",
+      "reason": "Combines independent WDoor choice with scratch-search confirmation and online hard-negative selection without contradictory labels."
+    },
+    {
+      "strategy": "game_vs_search_only",
+      "decision": "not_selected",
+      "reason": "It forces a recorded move above the depth-4 search best even when the frozen teacher scores it lower; aligned offline improvement would not establish playing-strength transfer."
+    },
+    {
+      "strategy": "search_rank_only",
+      "decision": "not_mainline",
+      "reason": "It improves own-search proxy metrics but adds little independent information; the prior one-percent candidate did not improve the paired v2.5.0 score."
+    },
+    {
+      "strategy": "parent_static_hard_negative",
+      "decision": "deferred",
+      "reason": "It needs generator changes and lacks depth-4 confirmation, while existing HKST already contains search-confirmed candidates."
+    },
+    {
+      "strategy": "more_long_direct_or_rate_3500_first",
+      "decision": "rejected",
+      "reason": "It increases volume before correcting the known weak-negative problem."
+    },
+    {
+      "strategy": "search_value_or_wdl_tuning",
+      "decision": "rejected",
+      "reason": "Corrected value training improved its blended objective while worsening the search target."
+    },
+    {
+      "strategy": "self_play_td_or_policy_head",
+      "decision": "deferred",
+      "reason": "Implementation and CPU data-generation cost are disproportionate before testing the existing consensus hard-negative path."
+    }
+  ],
+  "step_0_metric_hardening": {
+    "status": "pending",
+    "implementation_scope": [
+      "Share game-rank eligibility and hard-negative selection between trainer and evaluator.",
+      "Freeze hard-negative identity with the accepted parent for paired model comparisons.",
+      "Record eligible count, sample-weighted softplus loss, signed margin, and paired improved/worsened counts.",
+      "Select game-rank-only checkpoints by the aligned smooth loss.",
+      "Extend the existing objective evaluator; do not add a trainer, optimizer, dataset schema, or dashboard."
+    ],
+    "required_verification": [
+      "Gradient direction and finite-difference behavior.",
+      "Teacher regret and minimum-gap eligibility.",
+      "Hardest-negative selection.",
+      "Weight-zero compatibility.",
+      "Model/HKST SHA and all-network-input split rejection.",
+      "Targeted tests, full library tests, release build, and zero-loss byte identity."
+    ],
+    "estimated_hours": "1-3"
+  },
+  "step_1_pilot": {
+    "status": "blocked_on_step_0",
+    "train_records": 9311,
+    "valid_records": 1809,
+    "parent_is_control": true,
+    "epochs": [
+      1,
+      2
+    ],
+    "save_last_epoch": true,
+    "hyperparameters": {
+      "batch_size": 128,
+      "learning_rate": 0.00001,
+      "output_learning_rate": 0.000001,
+      "value_weight": 0.0,
+      "rank_weight": 0.0,
+      "game_vs_search_weight": 0.0,
+      "game_rank_weight": 0.1,
+      "rank_margin_cp": 20.0,
+      "rank_temperature_cp": 100.0,
+      "game_regret_cap_cp": 300.0,
+      "seed": 20260728,
+      "output_limit": 0.20,
+      "direct_only": true,
+      "global_weight_decay": false,
+      "swa": false
+    },
+    "offline_gates": {
+      "fixed_pair_objective_loss_below_parent": true,
+      "mean_signed_margin_above_parent": true,
+      "paired_margin_improved_greater_than_worsened": true,
+      "all_search_pair_accuracy_regression_max": 0.01,
+      "exact_family_ci95_lower_min": 0.88,
+      "health_score_abs_p99_cp_max": 2500,
+      "static_top1_min": 0.68,
+      "search_200k_min": 0.98,
+      "nan_inf_illegal_or_provenance_errors": 0
+    },
+    "parent_screen": {
+      "games": 200,
+      "limit": "20000 fixed nodes",
+      "same_openings_and_color_swap": true,
+      "catastrophic_regression_score_min": 0.45,
+      "interpretation": "A non-destructive screen only; it does not prove improvement."
+    },
+    "failure_action": "Stop the HKST expert route without tuning the weight, regret cap, epoch count, learning rate, or seed."
+  },
+  "step_2_full_teacher": {
+    "status": "blocked_on_step_1",
+    "source": "existing rate-4000 WDoor train/valid JSONL",
+    "source_train_roots": 556820,
+    "source_valid_roots": 99660,
+    "teacher_model": "accepted generation 2",
+    "selection_depth": 2,
+    "teacher_depth": 4,
+    "candidate_top": 10,
+    "tactical_candidate_limit": 2,
+    "max_nodes_per_search": 20000,
+    "jobs": 4,
+    "minimum_records": {
+      "train": 150000,
+      "valid": 15000,
+      "game_rank_eligible_train": 100000,
+      "game_rank_eligible_valid": 10000
+    },
+    "estimated_records": {
+      "train": 182000,
+      "valid": 29600
+    },
+    "estimated_wall_hours": "9-10",
+    "requirements": [
+      "Use only completed depth-4 records.",
+      "Bind source, teacher, settings, shard range, and output SHA values.",
+      "Remove validation records colliding with any train root or candidate network input."
+    ]
+  },
+  "step_3_full_training": {
+    "status": "blocked_on_step_2",
+    "same_hyperparameters_as_pilot": true,
+    "epochs_saved": [
+      1,
+      2
+    ],
+    "selection": "Lowest fixed-pair game-rank objective loss among last-epoch artifacts, with every safety gate passing.",
+    "match_eligibility": {
+      "objective_loss_below_parent": true,
+      "mean_margin_above_parent": true,
+      "paired_margin_improved_greater_than_worsened": true,
+      "all_search_pair_accuracy_regression_max": 0.01,
+      "same_safety_gates_as_pilot": true
+    },
+    "estimated_training_hours": "less than 1"
+  },
+  "step_4_matches_and_promotion": {
+    "status": "blocked_on_step_3",
+    "parent_match": {
+      "initial_games": 400,
+      "maximum_games": 800,
+      "limit": "20000 fixed nodes",
+      "same_openings_and_color_swap": true,
+      "reject_after_400_if_score_at_most": 0.50,
+      "promotion_wilson_ci95_lower_min": 0.50,
+      "success_early_stop": false
+    },
+    "paired_v2_5_0": {
+      "games_per_model": 200,
+      "time_ms": 100,
+      "same_openings": true,
+      "candidate_score_min": 0.40,
+      "paired_improvement_min": 0.05
+    },
+    "promotion_requires_both_parent_and_v2_5_0_gates": true
+  },
+  "step_5_second_generation": {
+    "status": "blocked_on_step_4",
+    "maximum_full_generations": 2,
+    "after_generation_3": {
+      "v2_5_0_score_below_0_40": "stop",
+      "v2_5_0_score_0_40_to_below_0_45": "regenerate from promoted generation 3 and run one final full generation",
+      "v2_5_0_score_at_least_0_45": "proceed to 300 ms evaluation"
+    },
+    "generation_4_requirements": {
+      "clear_improvement_over_generation_3": true,
+      "v2_5_0_score_min": 0.45,
+      "cumulative_improvement_from_generation_2_min": 0.10
+    },
+    "estimated_total_generation_hours": "20-24"
+  },
+  "step_6_final_evaluation": {
+    "status": "blocked_on_step_5",
+    "intermediate": {
+      "time_ms": 300,
+      "games": 200,
+      "score_min": 0.48
+    },
+    "final": {
+      "time_ms": 1000,
+      "games": 800,
+      "success_check": "once after all 800 games",
+      "early_stop": "futility only",
+      "required_wilson_ci95_lower": 0.50,
+      "estimated_wall_hours": "10-45"
+    }
+  },
+  "explicitly_not_used": [
+    "KPP or v2.5.0 weights, scores, PVs, results, distillation pools, anchors, or hard-negative selection",
+    "long-direct additional epochs",
+    "rate-3500 expansion before correcting negative quality",
+    "rank plus game-vs weight tuning",
+    "game-vs-only automatic fallback",
+    "search-value or WDL retuning",
+    "factor-only training",
+    "multiple seeds or learning-rate grid",
+    "self-play, TD, policy head, or new dataset schema in this route"
+  ]
+}

@@ -1,6 +1,6 @@
 # HalfKP-64 重みゼロスタート学習方針
 
-- Status: **fixed MMTO-lite rejected after epoch 1/2/4 parent Gate failure / generation 2 remains accepted**
+- Status: **next strategy fixed: search-consensus expert hard-negative / generation 2 remains accepted**
 - 作成日: 2026-07-21
 - 対象: v2.6.0以降のHalfKP-64評価関数
 - 前提計算機: AMD Ryzen 7 PRO 4750U、8 core / 16 thread、RAM 14 GiB、GPUなし
@@ -2518,6 +2518,163 @@ non-conflicting pairは全epochでparent以上であり、安全性との単純�
 対局は行わない。accepted generation 2を維持する。機械可読結果は
 `training/halfkp64-scratch-v1/mmto_objective_learning_curve_report_20260729.json`に保存した。
 
+### 15.16 次戦略: 探索合意型expert hard-negative（2026-07-29）
+
+#### 結論
+
+次の主経路を、既存`game_rank_weight`を単独で使う
+**search-consensus expert hard-negative**に決定する。accepted generation 2を初期値と凍結teacherにし、
+WDoor棋譜手とdepth 4探索が「この候補より棋譜手の方が良い」と合意するpairだけをDirect-onlyで学習する。
+
+固定MMTO-liteの`rank 0.1 + game-vs-search 0.1`は再開しない。また、`game-vs-search`だけにして
+棋譜手をsearch bestより上へ強制する経路も本線にはしない。aligned objectiveの改善がほぼ設計上保証される一方、
+探索が劣ると判断した棋譜手を正解にするため、棋力へ転移する根拠が弱いからである。
+
+新しいpairは次のように作る。
+
+1. WDoor棋譜手がcandidateに含まれることを要求する。
+2. accepted parentのdepth 4 scoreで、search bestから棋譜手のregretが300 cp以内であることを要求する。
+3. 棋譜手よりdepth 4 scoreが15 cp以上低いcandidateだけを負例候補にする。
+4. その集合から、現在の学習modelが最も高く評価する1手をhard negativeにする。
+5. `game move > hard negative`のsoftplus rank lossだけを学習する。search bestとの逆向きpairは作らない。
+
+既存9,311 trainでは7,116件（76.43%）、filtered valid 1,809件では1,395件（77.11%）がeligibleで、
+eligible recordあたり探索承認済み負例候補は平均6.75 / 6.77件ある。旧`game_soft_expert_v1`は
+evaluatorを使わず決定論的なquiet手を1手だけ負例にしたが、本方式はquietに限定せず、depth 4で悪さを確認した
+候補から現modelが最も誤る手を選ぶ。この負例品質の差が次の一仮説である。
+
+#### 候補戦略の比較と棄却
+
+| 戦略 | 判断 | 理由 |
+|---|---|---|
+| search-consensus expert hard-negative | **採用** | 人間棋譜とscratch探索が合意し、modelが実際に誤るhard negativeを使える |
+| game-vs-search only | 不採用 | search bestより劣る棋譜手を上へ強制し、offline改善と棋力の対応が弱い |
+| search-rank only | 本線にしない | valid search順位は改善するが自己蒸留で新情報が少なく、1%候補はv2.5.0へ転移しなかった |
+| parent-static hard-negative | 保留 | search確認なしのfalse negativeがあり、既存consensus pairよりgenerator変更が大きい |
+| rate 3,500への即時拡大 | 不採用 | 旧quiet/result教師の固有量だけ増やしても負例品質を解決しない |
+| WDL/search-value、long-direct追加epoch | 棄却済み | corrected実験または長期curveで目的不整合・非転移を確認済み |
+| self-play/TD/policy head | 保留 | 現CPUと既存評価器に対して実装・生成costが大きすぎる |
+
+v2.5.0/KPP由来weight、score、PV、勝敗、`data/halfkp_distill_*`は引き続き学習、選別、anchorへ
+一切使わない。v2.5.0は固定対局相手としてのみ使う。
+
+#### Step 0: objective-aligned metricの最小実装
+
+現`halfkp_search_train`の`game_rank_weight`は学習には使えるが、validation/checkpoint選択が
+全search pair accuracyとregretを見ており、専用lossと一致しない。学習前に次だけを実装する。
+
+1. trainerとevaluatorでgame-rank eligible判定とhard-negative選択を共有する。
+2. accepted parentが選んだhard negativeを固定pairにし、model間で同じpairを比較する。
+3. `margin = utility(game move) - utility(hard negative)`、学習式と同じsample-weighted softplus loss、
+   eligible数、paired margin改善/悪化数をmanifest/JSONへ保存する。
+4. game-rank-only checkpointはこのsmooth lossで選択する。
+5. gradient方向、regret/gap Gate、hard-negative選択、weight 0互換、SHA/split拒否、metric集約をtestする。
+
+既存`halfkp_search_objective_eval`を拡張し、新trainer、optimizer、dataset schema、dashboardは作らない。
+targeted test、library全test、release build、zero-loss byte identityを通過してからpilotへ進む。
+実装見込みは1～3時間である。
+
+#### Step 1: 既存9kの単独目的pilot
+
+- parent/teacher: accepted generation 2
+  `9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`
+- train 9,311 / filtered valid 1,809、全network-input overlap 0
+- `value-weight = 0`
+- `rank-weight = 0`
+- `game-vs-search-weight = 0`
+- `game-rank-weight = 0.1`
+- epoch 1 / 2をparentから決定論的に実行し、両方のlast artifactを保存
+- batch 128、LR `1e-5`、output LR `1e-6`、margin 20 cp、temperature 100 cp、
+  regret cap 300 cp、seed 20260728、output limit 0.20
+- Direct-only、global weight decayなし、SWAなし、hyperparameter/seed gridなし
+
+parentをcontrolとして使い、別のzero-loss modelは作らない。epoch 1 / 2のうち次をすべて満たすmodelだけを
+pilot候補にする。
+
+- fixed-pair game-rank lossがparentより小さく、mean marginが大きい
+- paired margin改善record数が悪化record数を上回る
+- 全search pair accuracyがparentから1 pointを超えて低下しない
+- exact family 95%下限88%以上、health p99 2,500 cp未満、static top-1 68%以上、
+  200k exact search 98%以上
+- NaN/Inf、違法手、provenance/SHA/split異常0
+
+offline通過候補だけをaccepted parentと20,000 fixed nodes、同一opening・先後交換200局でscreenする。
+score 45%未満は明確な退行として停止する。45%以上は小標本で改善と断定せず、full教師を作る価値がある
+非破壊確認としてだけ使う。pilot失敗時はweight、cap、epoch、LRを調整せず、このHKST expert経路を停止する。
+
+#### Step 2: full high-rate WDoor教師生成
+
+Step 1通過時だけ、既存rate 4,000以上WDoor train 556,820 root、valid 99,660 rootを処理する。
+
+- teacherはaccepted generation 2で凍結する。
+- selection depth 2、teacher depth 4、candidate top 10、tactical 2、20,000 nodes/searchを固定する。
+- `--jobs 4`と既存shard optionを使い、入力範囲、source SHA、teacher SHA、設定、出力SHAを保存する。
+- node cap内にdepth 4を完遂したrecordだけを採用する。
+- rootと全candidate childのnetwork-input hashでsplit重複を除く。
+- 最低件数をtrain 150,000、valid 15,000、game-rank eligible train 100,000、valid 10,000とする。
+
+既存完遂率からtrain約182,000、valid約29,600 record、教師生成約9～10時間を見込む。
+最低Gate未達時はdepth/node capを後から変えず停止する。WDoorの最終結果は診断に残るが、
+value lossを0にするため学習targetには使わない。
+
+#### Step 3: full Direct-only学習
+
+full教師でもStep 1と同一条件を使い、epoch 1 / 2のlast artifactを両方保存する。epoch 2はepoch 1から
+継続するが、SWA/best artifactで置換しない。fixed-pair game-rank lossが最小のepochを候補にする。
+
+対局へ進むには、parent比でgame-rank lossとmean marginを改善し、paired改善数が悪化数を上回り、
+全search pair accuracyの低下1 point以内、およびStep 1の全安全Gateを満たす必要がある。
+valid lossだけ、game move accuracyだけ、またはWDoor family accuracyだけでは選択しない。
+学習時間は1時間未満、1世代の主costは教師生成と対局である。
+
+#### Step 4: 親超えとv2.5.0転移
+
+1. candidateとaccepted parentを20,000 fixed nodes、同一opening・先後交換400局で比較する。
+2. 400局時点でscore 50%以下なら棄却する。Wilson 95%下限が50%を超えれば親超え通過とする。
+3. point scoreは50%を超えるがWilson下限が50%以下なら、固定800局まで延長し、終了時のWilson下限50%超を
+   要求する。成功理由による途中打切りはしない。
+4. 親超え候補とaccepted parentを、同じopeningでそれぞれv2.5.0へ100 ms・200局対局させる。
+   candidate raw score 40%以上、かつparentからのpaired score改善5 point以上を要求する。
+5. 親超えとv2.5.0転移の両方を満たす場合だけgeneration 3へpromotionする。
+
+1% search replayは親へ22勝18敗でもv2.5.0へのpaired差が-2.5 pointだったため、親対局だけではpromotionしない。
+40局は今後も破壊的退行screenにしか使わない。
+
+#### Step 5: 最大2 full generation
+
+generation 3の100 ms対局scoreが45%以上なら300 ms評価へ進む。40%以上45%未満なら、generation 3を
+凍結teacherにして同じroot分布・設定で教師を再生成し、同じgame-rank-only学習を一度だけ行う。
+40%未満なら固定経路を停止する。
+
+generation 4も新parentへの親超えGateを必須とし、v2.5.0へ45%以上かつgeneration 2から累計10 point以上
+改善した場合だけ300 msへ進む。full generationは最大2回、見込み20～24時間である。
+
+#### Step 6: 最終評価
+
+100 ms通過候補を300 ms・固定200局でv2.5.0と比較し、score 48%以上の場合だけ1,000 msへ進む。
+最終評価は固定800局とし、800局終了時のWilson 95%下限が50%を超えた場合だけ
+「v2.5.0より強い置換可能weight」と判定する。200局ごとの記録とfutility停止は許可するが、
+成功理由で途中終了しない。最終対局は局長と並列度により約10～45時間を見込む。
+
+#### 進捗と停止条件
+
+| 作業 | 状態 |
+|---|---|
+| 全結果・固定MMTO目的競合の再監査 | 完了 |
+| 既存候補と実装範囲の比較 | 完了 |
+| search-consensus expert hard-negative決定 | 完了 |
+| game-rank objective-aligned metric | 未着手 |
+| 9k game-rank-only epoch 1 / 2 | metric実装後 |
+| 9k安全Gate・親200局screen | offline通過時のみ |
+| full WDoor教師生成 | pilot通過時のみ |
+| full epoch 1 / 2 | 教師data Gate通過時のみ |
+| 親400～800局・paired v2.5.0評価 | full offline Gate通過時のみ |
+| generation 4 | generation 3が40～45%時のみ |
+| 300 ms / 1,000 ms最終評価 | 100 ms Gate通過時のみ |
+
+機械可読な判断と固定条件は
+`training/halfkp64-scratch-v1/strategy_review_post_objective_curve_20260729.json`に保存する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
@@ -2567,10 +2724,12 @@ non-conflicting pairは全epochでparent以上であり、安全性との単純�
 ルールで証明できる局面と順位、戦型別sampling、固定testとして使う。
 
 初期curriculumはaccepted generation 2を作る役割を果たした。現在の最短の強化経路は、
-型課題をさらに反復することではなく、WDoor棋譜手とscratch探索が実際に選ぶ手の不一致を
-Direct-only MMTOで修正することである。exact、戦型、static、fixed-node searchは安全anchorと
-slice評価に残すが、次の主lossへ混ぜない。
+型課題をさらに反復することでも、棋譜手とsearch bestを逆向きに学ぶことでもない。
+WDoor棋譜手とscratch depth 4探索が合意するhard pairから、現modelが過大評価する負例を
+Direct-onlyで修正する。exact、戦型、static、fixed-node searchは安全anchorとslice評価に残すが、
+次の主lossへ混ぜない。
 
 初期modelから最終世代まで現行重みとの数値的な接続を完全に断つ。v2.5.0は比較対局だけに使う。
-corrected MMTOが成立しない場合は小調整や別実装へ自動的に進まず、その時点の証拠を再監査する。
+固定`rank + game-vs-search` MMTOは目的競合により棄却した。次は探索合意型expert hard-negativeを
+単独目的として一度だけ検証し、失敗時は小調整やgame-vs-onlyへ自動fallbackしない。
 parent-static hard negativeや自己対局/TDは次回の費用対効果判断まで保留する。
