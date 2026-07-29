@@ -1,6 +1,6 @@
 # HalfKP-64 重みゼロスタート学習方針
 
-- Status: **objective-aligned metric implemented / 9k treatment signal confirmed but below parent / generation 2 remains accepted**
+- Status: **fixed MMTO-lite rejected after epoch 1/2/4 parent Gate failure / generation 2 remains accepted**
 - 作成日: 2026-07-21
 - 対象: v2.6.0以降のHalfKP-64評価関数
 - 前提計算機: AMD Ryzen 7 PRO 4750U、8 core / 16 thread、RAM 14 GiB、GPUなし
@@ -2373,13 +2373,13 @@ corrected MMTO本線より実装範囲が広い。今回は先行実装も自動
 | hardening回帰testとzero-loss復旧Gate | 完了 |
 | corrected 9k MMTO-lite control/treatment | 完了。旧binary Gate不合格、objective-aligned Gate通過 |
 | objective-aligned loss/marginとpaired evaluator | 完了（`a5d2d32`） |
-| 固定learning curve確認 | 未着手。full生成前の次Gate |
-| full WDoor HKST生成 | learning curve通過まで保留 |
-| full Direct-only epoch 1 / 2 | full教師生成まで保留 |
-| 固定400局親子・paired v2.5.0評価 | full候補通過時のみ |
-| generation 3教師再生成 | promotion時のみ |
-| 300 ms中間評価 | 100 ms通過時のみ |
-| 1,000 ms最終評価 | 最終候補のみ |
+| 固定learning curve確認 | 完了、parent objective Gate不合格 |
+| full WDoor HKST生成 | 固定curve不合格のため対象外 |
+| full Direct-only epoch 1 / 2 | 固定curve不合格のため対象外 |
+| 固定400局親子・paired v2.5.0評価 | 固定curve不合格のため対象外 |
+| generation 3教師再生成 | 固定curve不合格のため対象外 |
+| 300 ms中間評価 | 固定curve不合格のため対象外 |
+| 1,000 ms最終評価 | 固定curve不合格のため対象外 |
 
 機械可読な判断・Gate・進捗は
 `training/halfkp64-scratch-v1/strategy_review_corrected_mmto_20260729.json`に保存する。
@@ -2492,6 +2492,31 @@ epochは後から追加せず、1 / 2 / 4のいずれもparentを超えなけれ
 
 機械可読な再評価結果は
 `training/halfkp64-scratch-v1/mmto_objective_aligned_evaluation_20260729.json`に保存した。
+
+### 15.15 objective-aligned固定learning curve結果（2026-07-29）
+
+commit `d7dc549`で事前固定したepoch 1 / 2 / 4を、既存train 9,311件とfiltered valid 1,809件で実行した。
+epoch 2 / 4はaccepted parentから独立に開始し、seed、LR、weight、batch、regret capを変更していない。
+全artifactはlast epochを保存し、bestまたはSWAへ置換していない。
+
+| epoch | control loss | treatment loss | treatment-control | parentとの差 | treatment margin | non-conflicting |
+|---:|---:|---:|---:|---:|---:|---:|
+| parent | - | 1.61515935 | - | - | -64.7237 cp | 63.6161% |
+| 1 | 1.62392069 | 1.62231956 | -0.00160113 | +0.00716021 | -67.0443 cp | 63.9977% |
+| 2 | 1.62817799 | 1.62576320 | -0.00241479 | +0.01060385 | -68.0642 cp | 64.1142% |
+| 4 | 1.63438666 | 1.63070953 | -0.00367713 | +0.01555018 | -69.4545 cp | 64.2308% |
+
+game-vs-search treatmentは全epochでcontrolよりlossが小さく、control比mean margin改善も
+`+0.2348 -> +0.3556 -> +0.5438 cp`と増えた。従って追加lossが動作しているという15.14の判断は維持する。
+一方、treatmentの絶対lossはepochを重ねるほどparentから悪化し、固定curve内でparentを一度も超えなかった。
+通常search-rank objectiveがgame-vs-search orderingを逆方向へ動かす量の方が大きい。
+
+non-conflicting pairは全epochでparent以上であり、安全性との単純なtrade-offではない。epoch 1の全安全Gateは
+通過済みである。epoch 2 / 4はprimary parent Gateに先に不合格となったため、高コストの安全Gateを再実行していない。
+
+事前条件どおり、この固定MMTO-liteを停止する。同じ9,311件へのepoch追加、loss weight調整、full WDoor教師生成、
+対局は行わない。accepted generation 2を維持する。機械可読結果は
+`training/halfkp64-scratch-v1/mmto_objective_learning_curve_report_20260729.json`に保存した。
 
 ## 16. 参考資料と本計画への反映
 
