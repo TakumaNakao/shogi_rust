@@ -2992,6 +2992,37 @@ top-1が6.64%から6.84%へ改善した。LRを10倍にしたとき、CE改善�
 top-1 parent比+1 point、margin多数、既存安全Gate、2,000 root探索一致、親対局、v2.5.0対局の条件は
 緩和しない。各epochは元datasetの固定順であり、seed shuffleを行ったとは記録しない。
 
+### 15.22 Phase B 50k/10k pilot結果と教師ありchild順位経路の終了（2026-07-29）
+
+accepted generation 2からzero-state AdaGradを再初期化し、LR `1e-4`、temperature 300 cp、
+batch 128、固定50,000 train / 10,000 validでepoch 1 / 2を実行した。
+
+| 指標 | parent | epoch 1 | epoch 2 | epoch 2差 |
+|---|---:|---:|---:|---:|
+| valid CE | 4.256464 | 4.162029 | **4.127225** | -3.04% |
+| top-1 | 7.33% | 7.70% | **7.84%** | **+0.51 point** |
+| mean teacher margin | -703.59 cp | -656.19 cp | **-637.85 cp** | +65.74 cp |
+| margin改善 / 悪化 / 同値 | 0 / 0 / 10,000 | 8,441 / 1,557 / 2 | **8,395 / 1,603 / 2** | 改善多数 |
+
+epoch 2 model SHA-256は
+`45b447cf20c17e16c1e7ed1fd821c1091a3b0dc759ffcbb79b257913117f5241`である。
+CEとmarginは明確に改善し、all-legal CE実装が学習可能であることは確認できた。一方、事前固定した
+top-1 parent比+1 point Gateに対し、epoch 2でも+0.51 pointに留まった。このGateは15.21で緩和しないと
+明記しているため、candidateを棄却する。
+
+一条件が失敗した時点でAND Gateは不成立である。従って、失敗候補へ計算を追加しても採否が変わらない
+exact / health / static / 200k search、2,000 root探索一致、親200局、v2.5.0対局は実行しない。
+temperature、LR、epoch、winner-only、top-Kを後付け調整せず、50kからfull 556,820へも拡張しない。
+
+これにより、旧quiet expert、search-rank/value、game-vs-search、search-consensus game-rank、
+all-legal expert-policy CEという即時childを直接順位付けする教師あり経路は終了する。現行weightを
+上回る次の技術候補はtrue PV-leaf MMTOまたはTD/self-playだが、探索状態保存、teacher semantics、
+長時間self-play基盤を伴う別計画である。過剰実装を避けるため本計画から自動着手せず、ここを
+明示的な停止点とする。
+
+機械可読な実行結果は
+`training/halfkp64-scratch-v1/all_legal_policy_pilot_execution_20260729.json`へ保存する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)

@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "experiment": "phase14-all-legal-policy-v1",
+  "date": "2026-07-29",
+  "decision": "reject_and_stop_immediate_child_supervision",
+  "parent": {
+    "generation": 2,
+    "sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6"
+  },
+  "implementation": {
+    "binary": "halfkp_policy_train",
+    "objective": "all-legal one-hot expert-policy softmax cross entropy",
+    "utility": "negative child side-to-move HalfKP score",
+    "runtime_or_model_format_change": false,
+    "new_dataset_schema": false,
+    "fixed_dataset_order": true,
+    "output_bias_frozen": true,
+    "finite_difference": {
+      "black_output_and_sparse": "pass",
+      "white_output_and_sparse": "pass",
+      "common_bias_zero": "pass"
+    },
+    "library_tests": {
+      "passed": 112,
+      "failed": 0
+    }
+  },
+  "sanity_1024": {
+    "learning_rate_selected": 0.0001,
+    "epochs": 4,
+    "train_ce_initial": 4.31652275,
+    "train_ce_final": 4.25820395,
+    "train_relative_improvement": 0.013512916,
+    "valid_ce_initial": 4.18274694,
+    "valid_ce_final": 4.15529197,
+    "valid_top1_initial": 0.0664,
+    "valid_top1_final": 0.0684,
+    "valid_margin_initial_cp": -669.374,
+    "valid_margin_final_cp": -656.288,
+    "margin_improved": 805,
+    "margin_worsened": 218,
+    "margin_unchanged": 1,
+    "revised_sanity_gate_passed": true,
+    "ten_percent_gate_withdrawn_before_pilot": true,
+    "withdrawal_reason": "Ten percent CE reduction over only 32 batch updates was an excessive implementation-sanity threshold; finite differences and approximately tenfold dose response showed correct learning scale."
+  },
+  "pilot": {
+    "train_records": 50000,
+    "valid_records": 10000,
+    "batch_size": 128,
+    "learning_rate": 0.0001,
+    "output_learning_rate": 0.0001,
+    "temperature_cp": 300.0,
+    "epochs": [
+      {
+        "epoch": 1,
+        "model_sha256": "781f6dec8387bcca0c7767239b65746e9fe1c486ca0c82affff0e681baf8ae12",
+        "valid_ce": 4.16202865,
+        "valid_top1": 0.0770,
+        "valid_mean_teacher_margin_cp": -656.190,
+        "margin_improved": 8441,
+        "margin_worsened": 1557,
+        "margin_unchanged": 2
+      },
+      {
+        "epoch": 2,
+        "model_sha256": "45b447cf20c17e16c1e7ed1fd821c1091a3b0dc759ffcbb79b257913117f5241",
+        "valid_ce": 4.12722490,
+        "valid_top1": 0.0784,
+        "valid_mean_teacher_margin_cp": -637.845,
+        "margin_improved": 8395,
+        "margin_worsened": 1603,
+        "margin_unchanged": 2
+      }
+    ],
+    "baseline_valid_ce": 4.25646438,
+    "baseline_valid_top1": 0.0733,
+    "baseline_valid_mean_teacher_margin_cp": -703.588,
+    "top1_gain_points": 0.51,
+    "required_top1_gain_points": 1.0,
+    "ce_improved": true,
+    "margin_majority_improved": true,
+    "top1_gate_passed": false,
+    "pilot_gate_passed": false
+  },
+  "skipped_after_gate_failure": [
+    "bootstrap confirmation",
+    "exact safety",
+    "health safety",
+    "static safety",
+    "200k search safety",
+    "2000-root search move agreement",
+    "parent match",
+    "v2.5.0 paired matches",
+    "full 556820-record training"
+  ],
+  "prohibited_followups": [
+    "temperature tuning",
+    "learning-rate tuning",
+    "additional policy epochs",
+    "winner-only filtering",
+    "top-k or sampled-softmax rescue",
+    "further game-rank tuning"
+  ],
+  "next_step": "Stop this plan. A future true PV-leaf MMTO or TD/self-play effort requires a separately reviewed plan and is not started automatically."
+}
