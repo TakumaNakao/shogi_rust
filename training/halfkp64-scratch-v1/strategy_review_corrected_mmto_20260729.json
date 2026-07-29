@@ -3,8 +3,9 @@
   "date": "2026-07-29",
   "scope": "Post-recovery HalfKP-64 scratch result audit and shortest next training strategy",
   "decision": "harden_search_trainer_then_run_corrected_direct_only_wdoor_mmto_lite",
-  "status": "stopped_after_corrected_9k_mmto_lite_primary_gate_failure",
+  "status": "paused_for_fixed_objective_aligned_learning_curve_before_scale",
   "execution_result_report": "training/halfkp64-scratch-v1/corrected_mmto_lite_pilot_execution_report_20260729.json",
+  "objective_aligned_evaluation_report": "training/halfkp64-scratch-v1/mmto_objective_aligned_evaluation_20260729.json",
   "lineage": {
     "lineage_id": "halfkp64-scratch-v1",
     "accepted_parent_generation": 2,
@@ -200,7 +201,7 @@
     {
       "step": 1,
       "name": "corrected_9k_mmto_lite_control_treatment",
-      "status": "failed_primary_gate",
+      "status": "binary_gate_invalid_objective_signal_confirmed_pending_learning_curve",
       "dataset": {
         "train_records": 9311,
         "raw_valid_records": 1840,
@@ -243,7 +244,7 @@
     {
       "step": 2,
       "name": "generate_full_rate_4000_wdoor_mmto_lite_teacher",
-      "status": "not_eligible_after_step_1_failure",
+      "status": "blocked_on_objective_aligned_learning_curve",
       "source_train_roots": 556820,
       "source_valid_roots": 99660,
       "selection_depth": 2,
@@ -271,7 +272,7 @@
     {
       "step": 3,
       "name": "train_full_direct_only_mmto_lite",
-      "status": "not_eligible_after_step_1_failure",
+      "status": "blocked_on_objective_aligned_learning_curve",
       "epochs_saved": [
         1,
         2
@@ -296,7 +297,7 @@
     {
       "step": 4,
       "name": "parent_and_release_baseline_matches",
-      "status": "not_eligible_after_step_1_failure",
+      "status": "blocked_on_objective_aligned_learning_curve",
       "parent_match": {
         "games": 400,
         "limit": "20000 fixed nodes",
@@ -316,7 +317,7 @@
     {
       "step": 5,
       "name": "promote_and_repeat_one_teacher_generation",
-      "status": "not_eligible_after_step_1_failure",
+      "status": "blocked_on_objective_aligned_learning_curve",
       "maximum_full_generations": 2,
       "promotion_rule": "Promote solely on the clear parent-match gate; do not promote on a one-win directional change against v2.5.0.",
       "after_generation_3": {
@@ -333,7 +334,7 @@
     {
       "step": 6,
       "name": "intermediate_300ms_match",
-      "status": "not_eligible_after_step_1_failure",
+      "status": "blocked_on_objective_aligned_learning_curve",
       "time_ms": 300,
       "games": 200,
       "score_min": 0.48
@@ -341,7 +342,7 @@
     {
       "step": 7,
       "name": "final_release_acceptance",
-      "status": "not_eligible_after_step_1_failure",
+      "status": "blocked_on_objective_aligned_learning_curve",
       "time_ms": 1000,
       "games": 800,
       "operational_record_interval_games": 200,
@@ -354,7 +355,8 @@
     "trigger": "corrected 9k MMTO-lite step 1 fails",
     "action": "Stop the plan, record the evidence, and conduct a new strategy review without changing the weight, epoch count, seed, or optimizer.",
     "triggered": true,
-    "result": "The treatment changed game-vs-search accuracy by 0.0 and worsened mean regret by 0.0570%; all safety gates passed, but neither preregistered primary scale signal passed.",
+    "superseded": true,
+    "result": "The binary gate triggered, but objective-aligned re-evaluation showed treatment-control loss -0.00160113 and margin +0.2348 cp across 1,169 eligible records. The route is paused for one fixed learning-curve confirmation because treatment remains below the accepted parent.",
     "deferred_candidate": "parent-static hard-negative WDoor",
     "reason_deferred": "It requires generator changes, all-legal child evaluation, and scratch-validation repair, so it is broader than the current single-route plan."
   },

@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "experiment": "phase10-corrected-mmto-lite-objective-aligned-evaluation",
+  "decision": "binary_gate_was_false_negative_pause_before_scale_for_fixed_learning_curve_confirmation",
+  "implementation": {
+    "commit": "a5d2d32",
+    "metric": "game-vs-search-softplus-v1",
+    "definition": {
+      "signed_margin_cp": "utility(game move) - utility(search best); larger is better",
+      "objective_loss": "softplus((rank_margin_cp - signed_margin_cp) / rank_temperature_cp); smaller is better",
+      "sample_weighting": "same HKST sample_weight as training",
+      "eligibility": "same recorded-move/search-best mismatch and teacher-regret cap as training"
+    },
+    "trainer_changes": [
+      "Use a shared eligibility and objective implementation for training and evaluation.",
+      "Write mean signed margin and weighted objective loss to logs and model manifests.",
+      "Select game-vs-search checkpoints using the smooth objective loss instead of binary pair accuracy.",
+      "Add a paired evaluator that binds every input to model and HKST SHA-256 values."
+    ],
+    "targeted_tests_passed": 21,
+    "full_library_tests_passed": 105,
+    "release_build_passed": true,
+    "evaluator_binary_sha256": "22f064746c2e1a60e60d1d585eb37b2730b770be63d808c51c36c91aadaa1391",
+    "clippy": {
+      "status": "not_clean_due_to_pre_existing_repository_warnings",
+      "new_warning_fixed": "manual_is_multiple_of in the new evaluator"
+    }
+  },
+  "dataset": {
+    "path": "runs/halfkp64-scratch-v1/phase10-corrected-mmto-lite-v1/valid-filtered.hkst",
+    "sha256": "eb2ccc0aa0e840f0c1a841879dd4c3cbdd941b913b980a2a4f6a0524f18e8ad6",
+    "records": 1809,
+    "eligible_records": 1169,
+    "game_regret_cap_cp": 300.0,
+    "rank_margin_cp": 20.0,
+    "rank_temperature_cp": 100.0
+  },
+  "models": {
+    "parent_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "control_sha256": "3bb40320eb9a341a525ecfcfae05a51f812bbac5883ec9efe4ce1c7f111fc5d4",
+    "treatment_sha256": "97436190deacbf252c85b471cc70d215dd911878bfff5a8daad5bb2f493a0227"
+  },
+  "control_vs_treatment": {
+    "control": {
+      "accuracy": 0.369546621043627,
+      "mean_signed_margin_cp": -67.27909352577477,
+      "median_signed_margin_cp": -55.76554870605469,
+      "weighted_objective_loss": 1.6239206877536254
+    },
+    "treatment": {
+      "accuracy": 0.369546621043627,
+      "mean_signed_margin_cp": -67.0443406676104,
+      "median_signed_margin_cp": -55.49699401855469,
+      "weighted_objective_loss": 1.6223195575031955
+    },
+    "delta": {
+      "accuracy": 0.0,
+      "mean_signed_margin_cp": 0.23475285816437008,
+      "weighted_objective_loss": -0.0016011302504299607,
+      "relative_objective_loss_reduction": 0.0009859657940837056
+    },
+    "paired_counts": {
+      "margin_improved": 832,
+      "margin_worsened": 337,
+      "margin_unchanged": 0,
+      "accuracy_gained": 0,
+      "accuracy_lost": 0
+    },
+    "objective_improved": true,
+    "raw_report_sha256": "228fc298f9868d232b206c1bad43cb1702656270524ed633f37c4b436dac6038"
+  },
+  "parent_vs_treatment": {
+    "parent": {
+      "accuracy": 0.3772455089820359,
+      "mean_signed_margin_cp": -64.72366329295906,
+      "weighted_objective_loss": 1.6151593468464585
+    },
+    "treatment": {
+      "accuracy": 0.369546621043627,
+      "mean_signed_margin_cp": -67.0443406676104,
+      "weighted_objective_loss": 1.6223195575031955
+    },
+    "delta": {
+      "accuracy": -0.007698887938408894,
+      "mean_signed_margin_cp": -2.320677374651339,
+      "weighted_objective_loss": 0.007160210656736998,
+      "relative_objective_loss_reduction": -0.004433129567504938
+    },
+    "paired_counts": {
+      "margin_improved": 446,
+      "margin_worsened": 723,
+      "margin_unchanged": 0,
+      "accuracy_gained": 1,
+      "accuracy_lost": 10
+    },
+    "objective_improved": false,
+    "raw_report_sha256": "e5282aa78369fa053d654043d4dada796c8eaeaf591e49a06187e3d8ba3f333c"
+  },
+  "interpretation": [
+    "The treatment causally improves the held-out objective relative to the control even though neither model crosses an additional zero-margin decision boundary.",
+    "The former accuracy/regret gate was a false negative because binary accuracy cannot observe sub-threshold margin movement and search regret rewards the opposite ordering.",
+    "The effect is small: the treatment recovers only part of the control's degradation relative to the accepted parent.",
+    "Do not start full teacher generation yet. First run one fixed, objective-aligned learning-curve confirmation without a hyperparameter grid."
+  ],
+  "lineage": {
+    "accepted_parent_generation": 2,
+    "accepted_parent_unchanged": true,
+    "v2_5_0_used_for_training": false,
+    "test_split_opened": false,
+    "full_teacher_generation_started": false
+  }
+}

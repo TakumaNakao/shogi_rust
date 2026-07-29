@@ -1,6 +1,6 @@
 # HalfKP-64 重みゼロスタート学習方針
 
-- Status: **corrected 9k MMTO-lite stopped at primary Gate / generation 2 remains accepted / next strategy review required**
+- Status: **objective-aligned metric implemented / 9k treatment signal confirmed but below parent / generation 2 remains accepted**
 - 作成日: 2026-07-21
 - 対象: v2.6.0以降のHalfKP-64評価関数
 - 前提計算機: AMD Ryzen 7 PRO 4750U、8 core / 16 thread、RAM 14 GiB、GPUなし
@@ -2371,13 +2371,15 @@ corrected MMTO本線より実装範囲が広い。今回は先行実装も自動
 | accepted generation 2と既存HKST provenance固定 | 完了 |
 | search trainer center symmetry、last artifact、非競合metric、SHA/split hardening | 完了（`e568b31`） |
 | hardening回帰testとzero-loss復旧Gate | 完了 |
-| corrected 9k MMTO-lite control/treatment | 完了、主Gate不合格 |
-| full WDoor HKST生成 | Step 1不合格のため対象外 |
-| full Direct-only epoch 1 / 2 | Step 1不合格のため対象外 |
-| 固定400局親子・paired v2.5.0評価 | Step 1不合格のため対象外 |
-| generation 3教師再生成 | Step 1不合格のため対象外 |
-| 300 ms中間評価 | Step 1不合格のため対象外 |
-| 1,000 ms最終評価 | Step 1不合格のため対象外 |
+| corrected 9k MMTO-lite control/treatment | 完了。旧binary Gate不合格、objective-aligned Gate通過 |
+| objective-aligned loss/marginとpaired evaluator | 完了（`a5d2d32`） |
+| 固定learning curve確認 | 未着手。full生成前の次Gate |
+| full WDoor HKST生成 | learning curve通過まで保留 |
+| full Direct-only epoch 1 / 2 | full教師生成まで保留 |
+| 固定400局親子・paired v2.5.0評価 | full候補通過時のみ |
+| generation 3教師再生成 | promotion時のみ |
+| 300 ms中間評価 | 100 ms通過時のみ |
+| 1,000 ms最終評価 | 最終候補のみ |
 
 機械可読な判断・Gate・進捗は
 `training/halfkp64-scratch-v1/strategy_review_corrected_mmto_20260729.json`に保存する。
@@ -2427,6 +2429,58 @@ Step 1の事前登録済み停止条件を発動する。weight、learning rate�
 accepted generation 2を引き続き現lineageの採用weightとする。次の戦略はこの不合格結果を改めて監査してから
 別計画として決める。詳細な機械可読結果は
 `training/halfkp64-scratch-v1/corrected_mmto_lite_pilot_execution_report_20260729.json`に保存した。
+
+### 15.14 objective-aligned Gateへの修正（2026-07-29）
+
+#### 旧Gateの問題
+
+15.13の「追加目的がheld-out指標を動かさなかった」という判断を訂正する。
+game-vs-search学習は、探索上300 cp以内で劣る棋譜手をsearch bestより上へ押すpairwise softplus lossである。
+旧accuracyはmarginが0を越えたかしか見ず、marginが改善しても順位反転しなければ変化しない。
+旧mean regretはsearch bestを選ぶほど良くなるため、この目的とは逆方向であり、代替成功指標にはできない。
+
+`a5d2d32`で次を実装した。
+
+- trainerとevaluatorが同じeligible pair判定を共有する。
+- `signed_margin_cp = utility(game move) - utility(search best)`を保存する。
+- 学習式と同じ
+  `softplus((rank_margin_cp - signed_margin_cp) / rank_temperature_cp)`をsample weight付きで保存する。
+- game-vs-searchを有効にしたcheckpoint選択では、binary accuracyでなくこのsmooth lossを使う。
+- 既存model同士を同一recordで比較し、margin改善/悪化、accuracy gain/loss、model/dataset SHAをJSONへ保存する
+  `halfkp_search_objective_eval`を追加する。
+
+targeted test 21件、library test 105件、release buildは成功した。Clippyの`-D warnings`は既存コード由来の
+warningでrepository全体としては通過しないが、新規evaluatorに出たwarningは修正した。
+
+#### 既存modelの再評価
+
+filtered valid 1,809件中eligible 1,169件を、margin 20 cp、temperature 100 cp、regret cap 300 cpで評価した。
+
+| 比較 | objective loss | mean margin | accuracy |
+|---|---:|---:|---:|
+| parent | 1.61515935 | -64.7237 cp | 37.7246% |
+| control | 1.62392069 | -67.2791 cp | 36.9547% |
+| treatment | 1.62231956 | -67.0443 cp | 36.9547% |
+| treatment - control | **-0.00160113** | **+0.2348 cp** | 0.0000 point |
+| treatment - parent | +0.00716021 | -2.3207 cp | -0.7699 point |
+
+treatmentはcontrol比でlossを0.0986%削減し、1,169件中832件でmarginを改善、337件で悪化させた。
+accuracy gain/lossはいずれも0であり、旧Gateがsub-thresholdの改善を見落としたことを直接確認した。
+従って「lossが機能しない」という棄却は撤回する。
+
+ただし、treatmentはaccepted parentよりlossが0.4433%悪く、平均marginも2.3207 cp悪い。
+通常search-rank更新による逆方向の移動をgame-vs-search更新が一部だけ取り戻した状態であり、
+この小さなcontrol差だけで9～10時間のfull教師生成へ進むのも早い。
+
+#### 修正後の判断
+
+accepted generation 2は変更しない。次は既存9,311件だけを使い、hyperparameter gridを行わない
+固定learning curveを一度確認する。比較対象は常にparent、control、treatmentで、各checkpointを同じ
+objective loss、mean margin、non-conflicting pair、安全Gateへ結び付ける。treatmentがparentを超え、
+control比改善を維持した時だけfull WDoor教師生成へ進む。parentへ届かない場合は、この固定MMTO-liteを停止する。
+
+機械可読な再評価結果は
+`training/halfkp64-scratch-v1/mmto_objective_aligned_evaluation_20260729.json`に保存した。
 
 ## 16. 参考資料と本計画への反映
 
