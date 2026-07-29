@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "step": 2,
+  "status": "completed",
+  "commit": "4275e2e",
+  "executable": "halfkp_mmto_train",
+  "implementation": {
+    "current_model_qsearch_leaf_refresh_each_outer": true,
+    "immutable_search_snapshot": true,
+    "all_legal_alternatives": true,
+    "update_side_leaf_reforward": true,
+    "equal_pair_weighting": true,
+    "leaf_reuse_passes": 1,
+    "persistent_adagrad": true,
+    "material_coefficient_bit_frozen": true,
+    "fresh_valid_research": true,
+    "hash_verified_atomic_resume": true,
+    "parallel_search_deterministic_update_order": true,
+    "auxiliary_losses": false,
+    "hard_negative_mining": false,
+    "weight_decay": false,
+    "swa": false,
+    "persistent_leaf_dump": false
+  },
+  "checks": [
+    {
+      "command": "RUST_FONTCONFIG_DLOPEN=1 cargo check --release --features halfkp64,training-tools --bin halfkp_mmto_train",
+      "result": "passed"
+    },
+    {
+      "command": "RUST_FONTCONFIG_DLOPEN=1 cargo test --features halfkp64,training-tools --lib halfkp_mmto_train",
+      "result": "passed",
+      "tests": 2
+    },
+    {
+      "scope": "accepted generation 2 plus frozen WDoor rate-4000 real-data smoke",
+      "train_roots": 2,
+      "valid_roots": 1,
+      "outer_iterations": 2,
+      "resume_exercised": true,
+      "outer_1_train_loss": 0.347503044,
+      "outer_1_valid_fresh_loss": 0.110484274,
+      "outer_2_train_loss": 0.345928781,
+      "outer_2_valid_fresh_loss": 0.110484084,
+      "result": "passed"
+    },
+    {
+      "scope": "jobs determinism on 8 train roots and 2 fresh-valid roots",
+      "jobs": [
+        1,
+        4
+      ],
+      "model_sha256": "0729efad527edde10426fd2101135e812bb49187b28c6f62bf03245ff7fdb93c",
+      "optimizer_sha256": "c2ed8ed6a7d5d7dd81edacdf93fe241a33d6eaae08aa993b667c71a58b3f3336",
+      "byte_identical": true
+    }
+  ],
+  "input_provenance": {
+    "dataset_manifest_sha256": "d8da8088b02d3d0200aad2ecb061691c6c418173a16fe32819f03088af48708f",
+    "parent_generation": 2,
+    "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "kpp_or_current_halfkp_teacher_used": false
+  }
+}

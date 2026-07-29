@@ -274,7 +274,11 @@
     {
       "id": 2,
       "name": "implement_single_streaming_halfkp_mmto_trainer",
-      "status": "pending"
+      "status": "completed",
+      "commit": "4275e2e",
+      "evidence": [
+        "training/halfkp64-scratch-v1/mmto_trainer_step2_report_20260729.json"
+      ]
     },
     {
       "id": 3,

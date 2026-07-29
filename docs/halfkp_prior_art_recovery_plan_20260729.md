@@ -628,7 +628,7 @@ fallbackのscratch self-playでは、promoted scratch model自身が定跡なし
 |---:|---|---|---|
 | 0 | 誤分類・誤dataset記録の訂正 | completed | docs / JSON |
 | 1 | exact qsearch principal-leaf trace | completed | `bacd856` / unit / fingerprint |
-| 2 | streaming `halfkp_mmto_train` | pending | tests / release build |
+| 2 | streaming `halfkp_mmto_train` | completed | `4275e2e` / tests / release build |
 | 3 | 64 fixture / 1,024 root | pending | execution manifest |
 | 4 | 10k、3 LR、各2 outer | pending | calibration report |
 | 5 | 10k jobs benchmark、100k×4 outer | pending | benchmark report |
@@ -646,6 +646,19 @@ stand-pat、check evasion、promotion、drop、mate、先後score向き、root�
 さらに実HalfKP-64 fixtureを使い、forced qsearch後の増分評価値とroot局面のfull refresh評価値が
 bit一致することを確認した。詳細なコマンドと結果は
 `training/halfkp64-scratch-v1/qsearch_leaf_trace_step1_report_20260729.json`に固定した。
+
+### Step 2 実行記録（2026-07-29）
+
+commit `4275e2e`で単一native executable `halfkp_mmto_train`を実装した。各outer開始時の
+HalfKPをimmutableな`Arc<EngineEvaluator>`として固定し、1,024 root blockを並列forced-qsearchした後、
+pair順を保持して更新側weightでleafを再forwardする。棋譜手対全代替手の`T(delta)`をpair数で正規化し、
+両leafへbackpropする。persistent AdaGrad、material bit固定、center-king mirror、parameter/outer delta
+上限、fresh valid再探索、hash検証付きatomic resumeを含む。補助loss、hard negative、weight decay、
+SWA、中間leaf dumpは追加していない。
+
+frozen WDoor rate-4000 manifestとaccepted scratch generation 2を用いた実データsmokeを完走し、
+jobs 1 / 4のmodelおよびoptimizerがbyte一致した。詳細は
+`training/halfkp64-scratch-v1/mmto_trainer_step2_report_20260729.json`に固定した。
 
 ## 10. 今回行わないこと
 
