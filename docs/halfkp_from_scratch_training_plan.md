@@ -2734,6 +2734,170 @@ Step 4は400局時点でscore 50%以下を棄却条件として事前固定し�
 offline目的は明瞭に改善した一方で親棋力を上回らなかったため、同じ目的のepoch追加、weight/LR/seed調整、
 同じ教師からの再学習は行わない。この探索合意型expert hard-negative経路はここで完了・停止とする。
 
+### 15.19 full実験後の学習部監査と次計画（2026-07-29）
+
+#### 結論
+
+15.18のcandidateをgeneration 3へ昇格させない判断は維持する。一方、「同じgame-rank目的そのものを
+棄却した」という結論は撤回する。追加監査により、現行実装が目的を学べないのではなく、**事前固定した
+learning rateが小さすぎ、棋力差を期待できる更新量へ達する前に停止した可能性**が残っていることが
+分かったためである。
+
+より高性能なweightにならない原因を、現時点では次の順に置く。
+
+1. game-rankの更新量不足と、即時child順位を20,000-node探索後の着手へ移す目的の弱さ
+2. depth 4 / 20,000 nodeを完遂できる容易なrootへ偏った教師と、1 record 1 pairという情報密度
+3. 高rate WDoorの固有意思決定数がv2.5.0のKPP数値教師より大幅に少ないこと
+4. 対局の統計幅
+5. 現行trainerの未知の致命的bug
+
+第5項の確率は低い。旧search trainerには104/129個のoutput weightを最初のbatchでclampする重大なbugが
+あったが、これは修正済みであり、今回のrunはzero-loss byte identityを通過している。teacher、trainer、
+runtimeのcritical pathを再監査した結果は次のとおりである。
+
+- teacherは着手後のchild STM scoreをroot側へ1回だけ反転する。
+- trainerは`utility = -child_score`として同じperspectiveへ戻す。
+- rank勾配はgood childの相手側評価を下げ、bad childの相手側評価を上げる。
+- trainerとruntimeは同じ`HalfKpFlatModel::forward_parts`を使う。
+- feature index、中央王mirror、AdaGrad state、checkpoint model、manifest/SHA、split検査は整合する。
+- trainer test 19件、objective test 5件、incremental refresh test 1件はすべて通過した。
+- objective evaluatorの再実行はvalid 18,011件、loss `4.33510865 -> 4.23170845`を再現した。
+
+従って、既知の符号反転、手番、codec、optimizer、保存modelの取り違えで400局50%を説明する根拠はない。
+ただし、完全なrank-loss finite differenceと小集合fitは次の実行前Gateに追加する。
+
+#### 更新量監査
+
+accepted parentとfull epoch 2を全6,750,914 scalar parameterで比較した。
+
+| parameter | 変更数 | delta RMS | 親RMS比 | max absolute delta |
+|---|---:|---:|---:|---:|
+| feature embedding | 962,109 / 6,750,720 | `4.552e-5` | **0.1128%** | `9.229e-4` |
+| hidden bias | 61 / 64 | `4.016e-4` | **0.0805%** | `1.012e-3` |
+| output weight | 129 / 129 | `9.671e-5` | **0.0982%** | `1.028e-4` |
+| output bias | 0 / 1 | 0 | 0% | 0 |
+
+epoch 2 / epoch 1のparent差RMS比はfeature 1.426、hidden 1.427、output 1.423であり、
+`sqrt(2) = 1.414`に近い。これはzero-state AdaGradの一貫した勾配に対する累積変位
+`約 2 * learning_rate * sqrt(update steps)`と一致する。現runの`1e-5 / 1e-6`は
+`halfkp_search_train`既定の`3e-4 / 3e-5`の1/30である。同じ小learning rateのまま30倍の変位を
+得るには概算1,800倍のupdateが必要であり、epochを2から4や8へ延ばすだけでは解決しない。
+
+また、validはepoch 0 / 1 / 2でloss `4.335109 / 4.262355 / 4.231708`、mean margin
+`-370.45 / -362.73 / -359.46 cp`とまだ単調改善中である。fixed pairではmargin改善14,462、
+悪化3,547、accuracy gain 114、loss 28であり、optimizerが停止または逆向きだったという観測ではない。
+
+一方、400局はgame単位196勝196敗8分、opening pair単位でもcandidate有利43、parent有利45、同点112だった。
+これは大きな棋力改善を否定するが、相対約0.1%しかparameterを動かしていないdoseから目的全体を
+棄却する十分な根拠ではない。従って、広いgrid searchではなく既定learning rateで一度だけ再確認する。
+
+#### Phase A: correctly dosed game-rankの一回限定確認
+
+教師生成は繰り返さず、15.18のtrain 180,752 / filtered valid 23,523をそのまま使う。
+現行weight、v2.5.0/KPP weight、KPP score/PV、蒸留dataは使わない。
+
+1. accepted generation 2から再初期化し、AdaGrad stateもzeroから開始する。
+2. 目的、dataset、seed、batch、hard-negative semanticsは15.18と同一にする。
+3. 変更するのはlearning rateだけで、feature/hidden `3e-4`、output `3e-5`とする。
+4. `value/rank/game-vs-search = 0`、`game-rank = 0.1`、epoch 1 / 2、Direct-only、
+   no weight decay、no SWA、seed 20260728、output limit 0.20を固定する。
+5. 実行前にblack/white両手番を含むrank finite difference、1,024 recordのloss低下、
+   no-op byte identityを通す。ここで失敗した場合だけlearning実装問題として停止する。
+
+対局へ進むoffline Gateは次の全条件とする。
+
+- fixed-pair lossとmean marginがparentだけでなく15.18 epoch 2より改善する。
+- paired margin改善数が悪化数を上回る。
+- 全search pair accuracyがparentから1 pointを超えて低下しない。
+- exact family 95%下限88%以上、health p99 2,500 cp未満、static 68%以上、
+  200k exact search 98%以上。
+- NaN/Inf、parameter limit接触、違法手、search/provenance/SHA/split異常0。
+
+offline通過候補はparentと20,000 fixed nodes、同一opening先後交換400局を行う。今後の親対局は
+「親を統計的に上回ること」だけでなく、外部目標へ進むための非退行Gateとして使う。
+
+- score 48%未満は明確な退行として終了する。
+- v2.5.0比較へ進むにはpoint score 50%以上、Wilson 95%下限45%以上を要求する。
+- candidateとparentを同じopeningでそれぞれv2.5.0と100 ms・200局対局させる。
+- candidate raw score 40%以上、かつparentからのopening-paired改善5 point以上を要求する。
+- 両Gateを通った場合だけgeneration 3へpromotionする。
+
+この一回が失敗した場合、game-rankのLR、epoch、weight、temperature、regret cap、seedを追加調整しない。
+これにより「微小doseだった」という未解決点だけを閉じ、同じproxyの探索を繰り返さない。
+
+#### Phase B: 失敗時だけall-legal expert-policy CE
+
+Phase Aが実戦転移Gateを失敗した場合、次の一仮説だけを試す。高rate WDoorの棋譜手を、rootの
+**全合法手softmaxに対するone-hot expert target**としてDirect-only HalfKPへ学習する。
+
+これは旧quiet expertやgame-rankと異なる。
+
+| 方式 | 正例 | 負例 / 1 root | 独立情報 |
+|---|---|---|---|
+| 旧quiet expert | WDoor棋譜手 | 決定論的quiet 1手 | 棋譜のみ、負例が弱い |
+| game-rank | WDoor棋譜手 | depth 4確認済みhard negative 1手 | 棋譜 + scratch探索合意 |
+| all-legal CE | WDoor棋譜手 | 捕獲・王手・駒打ち・成りを含む全合法手 | 棋譜の全着手選択 |
+
+既存train 556,820 rootは平均約98.58合法手で、1 epochあたり約54.9M child比較を与える。
+自己探索scoreをtargetにせず、現在の1 pair/rootより約2桁高密度な外部意思決定信号になる。
+ただし即時child順位がalpha-beta棋力へ転移しない危険は残るため、CEだけで採用しない。
+
+実装は既存HalfKP forward/backprop、AdaGrad、center-mirror処理、JSONL splitを再利用するpolicy-only modeに
+限定する。新しいruntime policy head、新model形式、新dataset schema、dashboardは作らない。
+KPP実装から再利用してよいのは合法手列挙、stable softmax CE、metricの考え方だけであり、
+KPP feature、weight、score、PV、optimizer state、distillation dataは読み込まない。
+
+実行順は次のとおりとする。
+
+1. 1,024 rootのtrain-only sanityで有限差分、手番符号、teacher legality、forced-move除外、
+   CE低下、保存再読込、mirrorを確認する。`1e-5`と`1e-4`の二値だけから4 passでCEを10%以上下げる
+   最小LRを固定し、validや対局scoreでLRを選ばない。
+2. 固定50,000 train / 10,000 valid、epoch 1 / 2、temperature 300 cpでpilotする。
+3. valid CEのgame-family bootstrap 95%下限が改善側、top-1がparent比+1 point以上、
+   teacher marginの改善recordが悪化recordより多いことを要求する。
+4. exact、health、static、200k searchの既存安全Gateに加え、固定2,000 WDoor rootの20,000-node探索で
+   棋譜手一致率がparentから非退行であることを要求する。
+5. parent 200局で48%以上の場合だけ、candidateとparentを同じopeningでそれぞれv2.5.0と200局対局する。
+   candidate 35%以上かつpaired +5 pointを満たさなければ、temperature/LR/epoch/winner-only/top-Kを
+   後付け調整せずall-legal経路を終了する。
+6. pilot通過時だけ全556,820 / 99,660 rootをstream学習する。epoch 1 / 2、epoch 2でもCEが相対0.5%以上
+   改善中ならepoch 4まで、最大4 epochとする。
+7. full候補はparent 400局でpoint 50%以上かつWilson下限45%以上、v2.5.0へraw 40%以上かつ
+   parentからpaired +5 pointの場合だけgeneration 3へ昇格する。
+
+1,000 root benchmarkからfull 1 epochが24時間超と予測される場合、top-Kやsampled softmaxへ自動変更せず
+いったん停止して再計画する。all-legal CEも失敗した場合、即時childを直接順位付けする教師あり学習を終了する。
+その後の候補はtrue PV-leaf MMTOまたはTD/self-playだが、探索状態保存とteacher semantics変更を伴うため、
+本計画から自動実装しない。
+
+#### 最終評価と明示的非採用
+
+generation 3がv2.5.0へ45%以上なら300 ms評価へ進む。40%以上45%未満の場合だけrate 3,500以上の
+新規unique 2～3M rootへ一度拡張する。40%未満なら停止する。第2世代は最大1回で、v2.5.0へ45%以上かつ
+generation 2から累計10 point改善を要求する。
+
+300 ms・200局で48%以上の最終候補だけを1,000 ms・固定800局へ進め、800局終了時のWilson 95%下限が
+50%を超えた場合だけ「v2.5.0より強い置換可能weight」とする。
+
+当面再開しないものは、game-vs-search、search-rank/value、long-direct、quiet expert、winner-only A/B、
+複数seed/LR grid、CSA評価コメント、self-play/TDである。CSA評価コメントはengineごとにscaleと符号が異なり、
+`**` scoreが0 placeholderの棋譜もあるため、校正基盤を今回作るのは過剰実装である。
+
+| 作業 | 状態 |
+|---|---|
+| 現行trainerの符号・手番・forward・optimizer再監査 | 完了、致命的bugなし |
+| full epoch 2のparameter更新量監査 | 完了、各group約0.08～0.11% RMS |
+| 400局のopening-pair再集計 | 完了、43優位 / 45劣位 / 112同点 |
+| Phase A finite difference / 1,024 record Gate | 未実施 |
+| Phase A correctly dosed game-rank | 実行可能 |
+| Phase A parent / paired v2.5.0対局 | offline Gate通過時のみ |
+| Phase B all-legal CE実装・pilot | Phase A失敗時のみ |
+| rate 3,500拡張・第2世代 | generation 3がv2.5.0へ40～45%時のみ |
+| 300 ms / 1,000 ms最終評価 | v2.5.0転移Gate通過時のみ |
+
+機械可読な判断は
+`training/halfkp64-scratch-v1/post_game_rank_learning_audit_20260729.json`へ保存する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
@@ -2783,12 +2947,12 @@ offline目的は明瞭に改善した一方で親棋力を上回らなかった�
 ルールで証明できる局面と順位、戦型別sampling、固定testとして使う。
 
 初期curriculumはaccepted generation 2を作る役割を果たした。現在の最短の強化経路は、
-型課題をさらに反復することでも、棋譜手とsearch bestを逆向きに学ぶことでもない。
-WDoor棋譜手とscratch depth 4探索が合意するhard pairから、現modelが過大評価する負例を
-Direct-onlyで修正する。exact、戦型、static、fixed-node searchは安全anchorとslice評価に残すが、
-次の主lossへ混ぜない。
+型課題をさらに反復することでも、棋譜手とsearch bestを逆向きに学ぶことでもない。まず、更新量監査で
+見つかった1/30 learning rateという未解決点だけを、既定learning rateのgame-rank単独目的で一度閉じる。
+失敗した場合は、WDoor棋譜手を全合法手に対して学ぶexpert-policy CEへ一度だけ切り替える。
+exact、戦型、static、fixed-node searchは安全anchorとslice評価に残すが、次の主lossへ混ぜない。
 
 初期modelから最終世代まで現行重みとの数値的な接続を完全に断つ。v2.5.0は比較対局だけに使う。
-固定`rank + game-vs-search` MMTOは目的競合により棄却した。次は探索合意型expert hard-negativeを
-単独目的として一度だけ検証し、失敗時は小調整やgame-vs-onlyへ自動fallbackしない。
-parent-static hard negativeや自己対局/TDは次回の費用対効果判断まで保留する。
+固定`rank + game-vs-search` MMTOは目的競合により棄却した。game-rankの適正dose確認とall-legal CEを
+それぞれ一度に限定し、失敗時は小調整やgame-vs-onlyへ自動fallbackしない。true PV-leaf MMTO、
+parent-static hard negative、自己対局/TDは次回の費用対効果判断まで保留する。
