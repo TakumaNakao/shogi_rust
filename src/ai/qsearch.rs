@@ -1,5 +1,58 @@
 use super::*;
 
+/// Describes why a training qsearch trace stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QsearchLeafKind {
+    /// A normal stand-pat or no-tactical-move evaluation.
+    StaticEvaluation,
+    /// A raw evaluation taken at the deterministic qsearch ply cap.
+    MaxPlyEvaluation,
+    /// A checkmated terminal position. No raw evaluation gradient exists.
+    Mate,
+    /// A history-dependent repetition score. No raw evaluation gradient exists.
+    Repetition,
+    /// A fail-hard alpha-beta bound rather than an exact leaf value.
+    FailHardBound,
+}
+
+/// Training-only qsearch result that retains the exact principal leaf.
+///
+/// Normal game search continues to expose the historical empty qsearch PV.
+#[derive(Clone)]
+pub struct QsearchLeafTrace {
+    pub score: f32,
+    pub pv: Vec<Move>,
+    pub leaf: Option<Position>,
+    pub kind: QsearchLeafKind,
+}
+
+impl QsearchLeafTrace {
+    fn evaluated(score: f32, position: &Position, kind: QsearchLeafKind) -> Self {
+        Self {
+            score,
+            pv: Vec::new(),
+            leaf: Some(position.clone()),
+            kind,
+        }
+    }
+
+    fn terminal(score: f32, kind: QsearchLeafKind) -> Self {
+        Self {
+            score,
+            pv: Vec::new(),
+            leaf: None,
+            kind,
+        }
+    }
+
+    pub fn has_exact_evaluation_leaf(&self) -> bool {
+        matches!(
+            self.kind,
+            QsearchLeafKind::StaticEvaluation | QsearchLeafKind::MaxPlyEvaluation
+        ) && self.leaf.is_some()
+    }
+}
+
 impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     pub fn quiescence_search(
         &mut self,
@@ -8,6 +61,41 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         beta: f32,
     ) -> Option<(f32, Vec<Move>)> {
         self.quiescence_search_internal(position, alpha, beta, 0, 0, None)
+    }
+
+    /// Forces one legal root move and returns the qsearch principal leaf.
+    ///
+    /// This is a training API. It does not reset counters or game history, and
+    /// always restores `position` and the incremental evaluation context.
+    pub fn forced_move_qsearch_leaf_trace(
+        &mut self,
+        position: &mut Position,
+        root_move: Move,
+    ) -> Option<QsearchLeafTrace> {
+        if !position.legal_moves().contains(&root_move) {
+            return None;
+        }
+        self.begin_eval_context(position);
+        let moved_by = position.side_to_move();
+        self.make_move(position, root_move);
+        self.sennichite_detector
+            .record_position_after_move(position, moved_by);
+        let result = self.quiescence_search_trace_internal(
+            position,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            1,
+            0,
+            None,
+        );
+        self.sennichite_detector.unrecord_last_position();
+        self.undo_move(position, root_move);
+
+        result.map(|mut trace| {
+            trace.score = -trace.score;
+            trace.pv.insert(0, root_move);
+            trace
+        })
     }
 
     fn filter_quiescence_moves_from_legal(
@@ -28,12 +116,34 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
     pub(super) fn quiescence_search_internal(
         &mut self,
         position: &mut Position,
-        mut alpha: f32,
+        alpha: f32,
         beta: f32,
         ply_from_root: u16,
         quiescence_ply: u8,
         precomputed_moves: Option<LegalMoves>,
     ) -> Option<(f32, Vec<Move>)> {
+        self.quiescence_search_trace_internal(
+            position,
+            alpha,
+            beta,
+            ply_from_root,
+            quiescence_ply,
+            precomputed_moves,
+        )
+        // Preserve the normal search fingerprint: qsearch historically did not
+        // contribute moves to the public PV.
+        .map(|trace| (trace.score, Vec::new()))
+    }
+
+    fn quiescence_search_trace_internal(
+        &mut self,
+        position: &mut Position,
+        mut alpha: f32,
+        beta: f32,
+        ply_from_root: u16,
+        quiescence_ply: u8,
+        precomputed_moves: Option<LegalMoves>,
+    ) -> Option<QsearchLeafTrace> {
         assert!(
             alpha < beta,
             "invalid quiescence window: alpha={alpha}, beta={beta}"
@@ -45,15 +155,22 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.quiescence_nodes_searched += 1;
 
         let in_check = position.in_check();
-        let stand_pat_score = if in_check {
+        let stand_pat = if in_check {
             None
         } else {
             let score = self.evaluate_position(position);
             if score >= beta {
-                return Some((beta, Vec::new()));
+                return Some(QsearchLeafTrace::terminal(
+                    beta,
+                    QsearchLeafKind::FailHardBound,
+                ));
             }
             alpha = alpha.max(score);
-            Some(score)
+            Some(QsearchLeafTrace::evaluated(
+                score,
+                position,
+                QsearchLeafKind::StaticEvaluation,
+            ))
         };
         let (moves, generated_moves) = if in_check {
             let moves = precomputed_moves.unwrap_or_else(|| position.legal_moves());
@@ -70,16 +187,17 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         if moves.is_empty() {
             if in_check {
                 self.quiescence_terminal_mates += 1;
-                return Some((mate_loss_score(ply_from_root), Vec::new()));
+                return Some(QsearchLeafTrace::terminal(
+                    mate_loss_score(ply_from_root),
+                    QsearchLeafKind::Mate,
+                ));
             }
-            return Some((
-                stand_pat_score.expect("non-check position has stand-pat"),
-                Vec::new(),
-            ));
+            return stand_pat;
         }
         self.quiescence_moves_considered += moves.len() as u64;
 
-        let mut best_score = stand_pat_score.unwrap_or(-f32::INFINITY);
+        let mut best = stand_pat;
+        let mut best_score = best.as_ref().map_or(-f32::INFINITY, |trace| trace.score);
         let mut scored_moves: Vec<(Move, i32)> = moves
             .iter()
             .map(|&mv| {
@@ -103,15 +221,25 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             self.sennichite_detector
                 .record_position_after_move(position, moved_by);
             let score_result = if let Some(score) = self.sennichite_score(position) {
-                Some((score, Vec::new()))
+                Some(QsearchLeafTrace::terminal(
+                    score,
+                    QsearchLeafKind::Repetition,
+                ))
             } else if quiescence_ply >= MAX_QUIESCENCE_PLY {
                 if position.in_check() && !position.has_legal_evasion() {
-                    Some((mate_loss_score(ply_from_root.saturating_add(1)), Vec::new()))
+                    Some(QsearchLeafTrace::terminal(
+                        mate_loss_score(ply_from_root.saturating_add(1)),
+                        QsearchLeafKind::Mate,
+                    ))
                 } else {
-                    Some((self.evaluate_position(position), Vec::new()))
+                    Some(QsearchLeafTrace::evaluated(
+                        self.evaluate_position(position),
+                        position,
+                        QsearchLeafKind::MaxPlyEvaluation,
+                    ))
                 }
             } else {
-                self.quiescence_search_internal(
+                self.quiescence_search_trace_internal(
                     position,
                     -beta,
                     -alpha,
@@ -123,19 +251,25 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             self.sennichite_detector.unrecord_last_position();
             self.undo_move(position, mv);
 
-            if let Some((current_score, _)) = score_result {
-                let negated_score = -current_score;
-                if negated_score > best_score {
-                    best_score = negated_score;
-                }
-                alpha = alpha.max(negated_score);
-                if alpha >= beta {
-                    break;
-                }
-            } else {
+            let Some(mut child) = score_result else {
                 return None;
+            };
+            let negated_score = -child.score;
+            if negated_score > best_score {
+                best_score = negated_score;
+                child.score = negated_score;
+                child.pv.insert(0, mv);
+                best = Some(child);
+            }
+            alpha = alpha.max(negated_score);
+            if alpha >= beta {
+                if let Some(trace) = best.as_mut() {
+                    trace.kind = QsearchLeafKind::FailHardBound;
+                    trace.leaf = None;
+                }
+                break;
             }
         }
-        Some((best_score, Vec::new()))
+        best
     }
 }

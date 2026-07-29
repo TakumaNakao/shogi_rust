@@ -19,6 +19,7 @@ pub use outcome::{
     SharedSearchObserver,
 };
 pub use parallel::resolve_search_threads;
+pub use qsearch::{QsearchLeafKind, QsearchLeafTrace};
 use shogi_core::Move;
 use shogi_lib::Position;
 use std::collections::HashMap;
@@ -414,7 +415,13 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evaluation::{
+        EngineEvaluator, HalfKpModel, HALFKP_HIDDEN, HALFKP_INPUTS, HALFKP_KING_BUCKETS,
+        HALFKP_PIECE_STATES,
+    };
     use crate::utils::{parse_usi_move_for_color, position_from_sfen_or_usi};
+    use std::fs::File;
+    use std::io::Write;
 
     const V252_INCIDENT_POSITION: &str = "startpos moves \
         7g7f 8c8d 2g2f 4a3b 2f2e 8d8e 8h7g 3c3d 7i6h 2b7g+ 6h7g 3a2b \
@@ -545,6 +552,150 @@ mod tests {
         );
         assert_eq!(legal_evasions.len() as u64, ai.quiescence_moves_searched());
         assert_eq!(0, ai.quiescence_terminal_mates());
+    }
+
+    fn assert_forced_qsearch_leaf(
+        sfen: &str,
+        move_text: &str,
+        expected_min_pv: usize,
+    ) -> (QsearchLeafTrace, String) {
+        let mut position = position_from_sfen_or_usi(sfen).expect("valid fixture");
+        let root_sfen = position.to_sfen_owned();
+        let root_turn = position.side_to_move();
+        let root_move = parse_usi_move_for_color(move_text, root_turn).expect("legal move text");
+        assert!(position.legal_moves().contains(&root_move));
+        let mut immediate_child = position.clone();
+        immediate_child.do_move(root_move);
+        let immediate_child_sfen = immediate_child.to_sfen_owned();
+
+        let mut ai = ShogiAI::<_, 256>::new(HashEvaluator);
+        ai.reset_for_independent_search();
+        ai.sennichite_detector.record_initial_position(&position);
+        let trace = ai
+            .forced_move_qsearch_leaf_trace(&mut position, root_move)
+            .expect("forced qsearch should complete");
+
+        assert_eq!(root_sfen, position.to_sfen_owned());
+        assert_eq!(Some(root_move), trace.pv.first().copied());
+        assert!(trace.pv.len() >= expected_min_pv);
+        if let Some(leaf) = trace.leaf.as_ref() {
+            let leaf_score = ai.evaluator.evaluate(leaf);
+            let expected = if leaf.side_to_move() == root_turn {
+                leaf_score
+            } else {
+                -leaf_score
+            };
+            assert_eq!(expected, trace.score);
+        }
+        (trace, immediate_child_sfen)
+    }
+
+    #[test]
+    fn forced_qsearch_trace_returns_the_capture_evasion_leaf_for_both_sides() {
+        let (black, black_child) =
+            assert_forced_qsearch_leaf("9/9/4k4/4s4/4R4/9/9/9/4K4 b - 1", "5e5d", 2);
+        assert!(black.has_exact_evaluation_leaf());
+        let black_leaf = black.leaf.expect("exact black leaf");
+        assert_ne!(black_child, black_leaf.to_sfen_owned());
+
+        let (white, white_child) =
+            assert_forced_qsearch_leaf("4k4/9/9/4r4/4S4/4K4/9/9/9 w - 1", "5d5e", 2);
+        assert!(white.has_exact_evaluation_leaf());
+        assert_ne!(
+            white_child,
+            white.leaf.expect("exact white leaf").to_sfen_owned()
+        );
+    }
+
+    #[test]
+    fn forced_qsearch_trace_handles_stand_pat_drop_and_promotion() {
+        for (sfen, move_text) in [
+            ("startpos", "7g7f"),
+            ("4k4/9/9/9/9/9/9/9/4K4 b P 1", "P*5e"),
+            ("4k4/9/9/4P4/9/9/9/9/4K4 b - 1", "5d5c+"),
+        ] {
+            let (trace, immediate_child) = assert_forced_qsearch_leaf(sfen, move_text, 1);
+            assert_eq!(QsearchLeafKind::StaticEvaluation, trace.kind);
+            assert!(trace.has_exact_evaluation_leaf());
+            assert_eq!(
+                immediate_child,
+                trace.leaf.expect("stand-pat leaf").to_sfen_owned()
+            );
+        }
+    }
+
+    #[test]
+    fn forced_qsearch_trace_classifies_a_mating_terminal_without_a_leaf() {
+        let mut position =
+            position_from_sfen_or_usi(V252_INCIDENT_POSITION).expect("valid incident position");
+        let root_sfen = position.to_sfen_owned();
+        let mating_move =
+            parse_usi_move_for_color("S*5g", position.side_to_move()).expect("valid mating move");
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        ai.reset_for_independent_search();
+        ai.sennichite_detector.record_initial_position(&position);
+
+        let trace = ai
+            .forced_move_qsearch_leaf_trace(&mut position, mating_move)
+            .expect("mating qsearch should complete");
+
+        assert_eq!(QsearchLeafKind::Mate, trace.kind);
+        assert!(trace.leaf.is_none());
+        assert_eq!(Some(mating_move), trace.pv.first().copied());
+        assert!(trace.score > MATE_SCORE - 16.0);
+        assert_eq!(root_sfen, position.to_sfen_owned());
+    }
+
+    #[test]
+    fn forced_qsearch_trace_restores_halfkp_incremental_context() {
+        let path = std::env::temp_dir().join(format!(
+            "forced_qsearch_trace_restores_halfkp_context_{}.bin",
+            std::process::id()
+        ));
+        let mut file = File::create(&path).expect("create HalfKP fixture");
+        file.write_all(HalfKpModel::MAGIC).unwrap();
+        file.write_all(&1u32.to_le_bytes()).unwrap();
+        file.write_all(&(HALFKP_HIDDEN as u32).to_le_bytes())
+            .unwrap();
+        file.write_all(&(HALFKP_INPUTS as u32).to_le_bytes())
+            .unwrap();
+        file.write_all(&(HALFKP_KING_BUCKETS as u32).to_le_bytes())
+            .unwrap();
+        file.write_all(&(HALFKP_PIECE_STATES as u32).to_le_bytes())
+            .unwrap();
+        file.write_all(&1000.0f32.to_le_bytes()).unwrap();
+        for _ in 0..HALFKP_INPUTS * HALFKP_HIDDEN {
+            file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        }
+        for _ in 0..HALFKP_HIDDEN {
+            file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        }
+        for _ in 0..(HALFKP_HIDDEN * 2 + 1) {
+            file.write_all(&0.0f32.to_le_bytes()).unwrap();
+        }
+        file.write_all(&0.5f32.to_le_bytes()).unwrap();
+        drop(file);
+
+        let model = HalfKpModel::load(&path).expect("load HalfKP fixture");
+        std::fs::remove_file(&path).ok();
+        let mut position = position_from_sfen_or_usi("9/9/4k4/4s4/4R4/9/9/9/4K4 b - 1")
+            .expect("valid tactical fixture");
+        let root_sfen = position.to_sfen_owned();
+        let root_move =
+            parse_usi_move_for_color("5e5d", position.side_to_move()).expect("valid move");
+        let evaluator = EngineEvaluator::HalfKp(model);
+        let direct_root_score = evaluator.evaluate(&position);
+        let mut ai = ShogiAI::<_, 256>::new(evaluator);
+        ai.reset_for_independent_search();
+        ai.sennichite_detector.record_initial_position(&position);
+
+        let trace = ai
+            .forced_move_qsearch_leaf_trace(&mut position, root_move)
+            .expect("forced qsearch should complete");
+
+        assert!(trace.has_exact_evaluation_leaf());
+        assert_eq!(root_sfen, position.to_sfen_owned());
+        assert_eq!(direct_root_score, ai.evaluate_position(&position));
     }
 
     #[test]
