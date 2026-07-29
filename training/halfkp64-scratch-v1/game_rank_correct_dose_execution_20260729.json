@@ -58,7 +58,7 @@
     "margin_unchanged": 2,
     "accuracy_gained": 3328,
     "accuracy_lost": 405,
-    "all_search_pair_accuracy": 0.6565907749779964
+    "all_search_pair_accuracy": 0.6565798301608297
   },
   "safety": {
     "exact_family_ci95_lower": 0.8907,
