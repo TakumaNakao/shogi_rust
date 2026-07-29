@@ -1,12 +1,13 @@
 # HalfKP-64 重みゼロスタート学習方針
 
-- Status: **next strategy fixed: search-consensus expert hard-negative / generation 2 remains accepted**
+- Status: **prior-art recovery fixed: MMTO-objective-aligned HalfKP adaptation / implementation not started**
 - 作成日: 2026-07-21
 - 対象: v2.6.0以降のHalfKP-64評価関数
 - 前提計算機: AMD Ryzen 7 PRO 4750U、8 core / 16 thread、RAM 14 GiB、GPUなし
 
 関連文書:
 
+- [`halfkp_prior_art_recovery_plan_20260729.md`](halfkp_prior_art_recovery_plan_20260729.md)
 - [`halfkp_performance_training_design.md`](halfkp_performance_training_design.md)
 - [`halfkp_training_start_gate.md`](halfkp_training_start_gate.md)
 - [`artifact_policy.md`](artifact_policy.md)
@@ -3023,6 +3024,48 @@ all-legal expert-policy CEという即時childを直接順位付けする教師�
 機械可読な実行結果は
 `training/halfkp64-scratch-v1/all_legal_policy_pilot_execution_20260729.json`へ保存する。
 
+### 15.23 先行事例との全面再照合とMMTO目的準拠HalfKP適応への改訂（2026-07-29）
+
+15.22の「all-legal expert-policy CEを棄却」という分類を撤回する。計画ではrate 4,000以上WDoorを
+使うはずだったが、実行manifestはrate下限のない`wdoor-phase3-250k-v1`を読んでいた。pilot先頭
+50,000件のうち両対局者rate 4,000以上は約13.6%にすぎない。また、epoch 2でもCE
+`4.256464 -> 4.127225`、top-1 `7.33% -> 7.84%`、margin改善8,395対悪化1,603であり、
+学習曲線は改善中だった。従って現在の分類は`invalid_source_and_inconclusive`である。
+
+ただし正しいdatasetでone-ply CEを本線として再実行しない。Bonanza/MMTO、Apery、現代NNUEの一次資料と
+実装を再照合した結果、これまでのHalfKP経路は成功事例の縮小版ではなかった。
+
+- `halfkp_search_teacher`は探索前にroot move直後のchildをpackし、depth探索値をそのchildへ付ける。
+- `halfkp_search_train`と`halfkp_policy_train`は即時childへbackpropする。
+- HKSTはaccepted generation 2で固定され、学習中の現在重みによるPV再生成を行わない。
+- qsearchは内部で選んだ手順を返さず、PVを常に空にする。旧KPP用tree dumpのleaf fieldも、
+  depth 1では本当のqsearch末端を表せない。
+
+Bonanza/MMTOの規模は47,566棋譜、4,467,116棋譜手、368,313,024 move pair、200回のPV生成であり、
+1回のPV生成につき同じPV集合で微分・更新を32回反復した。
+本repoのHalfKP direct parameterは約675万でBonanza full featureの約0.17、監査済み高rate trainの
+推定約5,500万pair/outerは同実験の約0.15である。ただしfeature分布、非線形性、optimizer、
+更新単位が違うので、pair/parameter比から学習量の同等性を主張しない。これまでの50k×2がsanityであり、
+50時間超のv2.5.0と比較する成熟学習ではなかったことだけを結論とする。
+
+次の主経路を**Bonanza-MMTO目的準拠のHalfKP適応一本**へ変更する。
+
+1. training専用のforced-move qsearch leaf traceを実装する。non-terminal full-window結果では
+   root向きsearch scoreと実際のpacked leaf runtime評価を一致させる。
+2. accepted scratch generation 2から、棋譜手と全合法代替手を現在modelでdepth 1 + qsearchする。
+3. 棋譜手leafと代替手leafへmirrored-sigmoidの両側gradientを与える。
+4. material coefficientを固定し、weight decayなしのpersistent AdaGradと事前規定したparameter/PV変化上限を用いる。
+5. 更新ごとに全PVを現在modelで再生成する。旧HKST、game result、exact、戦型、詰みを主lossへ混ぜない。
+6. 64 fixture / 1,024 root、10kの3 LR、100kの時間検証を実装Gateとして通した後、
+   full 570,875 rootを固定200 outer iteration実行する。
+7. 途中の20～40局や任意top-1閾値で方法を棄却しない。checkpointは親と500局、
+   最小full-valid lossで一つを事前規則どおり凍結し、v2.5.0と固定4,000局比較する。
+
+詳細仕様、停止条件、進捗表は
+`docs/halfkp_prior_art_recovery_plan_20260729.md`、機械可読な正本は
+`training/halfkp64-scratch-v1/prior_art_recovery_plan_20260729.json`に分離した。
+15.22以前の計画と矛盾する場合は、この15.23と分離計画を優先する。
+
 ## 16. 参考資料と本計画への反映
 
 1. Yoshua Bengio et al., [Curriculum Learning (ICML 2009)](https://icml.cc/2009/papers/119.pdf)
@@ -3068,16 +3111,13 @@ all-legal expert-policy CEという即時childを直接順位付けする教師�
 
 ## 17. 最終判断
 
-提案された「型から始める」方針は採用する。ただし、型を人手の絶対評価値として注入するのではなく、
-ルールで証明できる局面と順位、戦型別sampling、固定testとして使う。
+提案された「型から始める」curriculumは、accepted generation 2を作り、学習器と安全性を検証する役割を
+果たした。しかしv2.5.0を超える現在の最短経路は、型課題、即時child CE、固定HKSTをさらに調整することではない。
 
-初期curriculumはaccepted generation 2を作る役割を果たした。現在の最短の強化経路は、
-型課題をさらに反復することでも、棋譜手とsearch bestを逆向きに学ぶことでもない。まず、更新量監査で
-見つかった1/30 learning rateという未解決点だけを、既定learning rateのgame-rank単独目的で一度閉じる。
-失敗した場合は、WDoor棋譜手を全合法手に対して学ぶexpert-policy CEへ一度だけ切り替える。
-exact、戦型、static、fixed-node searchは安全anchorとslice評価に残すが、次の主lossへ混ぜない。
+先行成功例に合わせ、現在重みで全合法手をdepth 1 + qsearchし、棋譜手と代替手の実PV末端へ勾配を与え、
+更新ごとにPVを再生成するMMTO目的準拠HalfKP適応を実装・成熟させる。Bonanza原法とHalfKPの更新単位を
+同一視せず、固定200 outer iterationを実行する。小さいpilotは実装確認にだけ使い、短時間で棋力結論を出さない。
 
-初期modelから最終世代まで現行重みとの数値的な接続を完全に断つ。v2.5.0は比較対局だけに使う。
-固定`rank + game-vs-search` MMTOは目的競合により棄却した。game-rankの適正dose確認とall-legal CEを
-それぞれ一度に限定し、失敗時は小調整やgame-vs-onlyへ自動fallbackしない。true PV-leaf MMTO、
-parent-static hard negative、自己対局/TDは次回の費用対効果判断まで保留する。
+初期modelから最終世代まで現行KPP/HalfKP重みとの数値的な接続を断つ。v2.5.0は最終比較対局だけに使う。
+この成熟MMTOでfresh-search一致と親棋力を改善してもv2.5.0へ届かず収束した場合に限り、
+同じscratch lineage自身によるself-playとdeep score/resultのqsearch-leaf学習へ進む。

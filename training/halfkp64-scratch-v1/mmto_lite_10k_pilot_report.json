@@ -3,6 +3,7 @@
   "experiment": "phase7-wdoor-mmto-lite-10k-v1",
   "date": "2026-07-28",
   "decision": "reject_game_vs_search_loss_and_stop_before_match_or_scale",
+  "post_audit_classification": "valid_negative_for_immediate_child_proxy_not_evidence_against_current_model_qsearch_pv_leaf_objective",
   "lineage": {
     "parent_generation": 2,
     "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
@@ -12,6 +13,9 @@
   "implementation": {
     "commit": "7cd5ee2adc394b8dc383c68a0aeb8e6cbed7e22c",
     "option": "--game-vs-search-weight",
+    "true_mmto": false,
+    "gradient_position": "immediate root-move child rather than qsearch PV leaf",
+    "current_model_pv_refresh_during_training": false,
     "tests": {
       "targeted_passed": 9,
       "full_library_passed": 93

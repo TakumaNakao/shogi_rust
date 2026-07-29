@@ -3,6 +3,7 @@
   "date": "2026-07-29",
   "experiment": "phase10-corrected-direct-mmto-lite-v1",
   "decision": "stop_after_corrected_9k_pilot_primary_gate_failure",
+  "post_audit_classification": "valid_negative_for_immediate_child_proxy_not_evidence_against_current_model_qsearch_pv_leaf_objective",
   "lineage": {
     "lineage_id": "halfkp64-scratch-v1",
     "accepted_parent_generation": 2,
@@ -12,6 +13,9 @@
   },
   "implementation": {
     "commit": "e568b31",
+    "true_mmto": false,
+    "gradient_position": "immediate root-move child rather than qsearch PV leaf",
+    "current_model_pv_refresh_during_training": false,
     "changes": [
       "Project center-king direct sparse gradients onto the correct mirror orbit and update both AdaGrad rows identically.",
       "Reject an asymmetric init or optimizer state instead of silently projecting it.",

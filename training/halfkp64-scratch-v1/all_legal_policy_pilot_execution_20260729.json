@@ -2,7 +2,21 @@
   "schema_version": 1,
   "experiment": "phase14-all-legal-policy-v1",
   "date": "2026-07-29",
-  "decision": "reject_and_stop_immediate_child_supervision",
+  "decision": "invalid_source_and_inconclusive",
+  "original_decision": "reject_and_stop_immediate_child_supervision",
+  "post_audit": {
+    "date": "2026-07-29",
+    "true_mmto": false,
+    "planned_source": "rate-4000 WDoor",
+    "actual_train_source": "runs/halfkp64-scratch-v1/wdoor-phase3-250k-v1/train.jsonl",
+    "actual_valid_source": "runs/halfkp64-scratch-v1/wdoor-phase3-250k-v1/valid.jsonl",
+    "actual_source_min_player_rate": null,
+    "actual_source_min_opponent_rate": null,
+    "both_rates_at_least_4000_fraction_in_first_50000": 0.136,
+    "learning_curve_still_improving_at_stop": true,
+    "method_rejection_supported": false,
+    "superseding_plan": "docs/halfkp_prior_art_recovery_plan_20260729.md"
+  },
   "parent": {
     "generation": 2,
     "sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6"
@@ -102,5 +116,5 @@
     "top-k or sampled-softmax rescue",
     "further game-rank tuning"
   ],
-  "next_step": "Stop this plan. A future true PV-leaf MMTO or TD/self-play effort requires a separately reviewed plan and is not started automatically."
+  "next_step": "Do not promote or extend this artifact. Implement the separately reviewed Bonanza-MMTO-objective-aligned HalfKP adaptation; this pilot remains a useful immediate-child gradient diagnostic only."
 }
