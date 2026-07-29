@@ -1091,6 +1091,48 @@ fn write_run_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shogi_ai::evaluation::HALFKP_INPUTS;
+
+    fn pair_fixture(side_to_move: Color) -> (Weights, Pair) {
+        let mut root = Position::default();
+        if side_to_move == Color::White {
+            root.do_move(root.legal_moves()[0]);
+        }
+        let moves = root.legal_moves();
+        let mut leaves = Vec::new();
+        for mv in [moves[0], moves[1]] {
+            let mut child = root.clone();
+            child.do_move(mv);
+            leaves.push(Leaf {
+                packed: Some(PackedHalfKpPosition::from_position(&child).expect("packed child")),
+                root_sign: -1.0,
+                fixed_score_cp: 0.0,
+                kind: QsearchLeafKind::StaticEvaluation,
+            });
+        }
+        let mut out_w = [0.0; HALFKP_HIDDEN * 2 + 1];
+        for (index, value) in out_w.iter_mut().enumerate() {
+            *value = 0.005 + index as f32 * 0.00001;
+        }
+        (
+            Weights {
+                feature_emb: vec![0.0; HALFKP_INPUTS * HALFKP_HIDDEN],
+                hidden_b: [0.5; HALFKP_HIDDEN],
+                out_w,
+                out_b: 0.0,
+            },
+            Pair {
+                desired: leaves.remove(0),
+                alternative: leaves.remove(0),
+            },
+        )
+    }
+
+    fn pair_loss(weights: &Weights, pair: &Pair, tau_cp: f32) -> f32 {
+        let desired = current_leaf_score(weights, &pair.desired).0;
+        let alternative = current_leaf_score(weights, &pair.alternative).0;
+        mirrored_sigmoid(desired - alternative, tau_cp)
+    }
 
     #[test]
     fn mirrored_sigmoid_is_symmetric_and_decreasing() {
@@ -1130,6 +1172,54 @@ mod tests {
             assert!(
                 (numerical - analytical).abs() < 2e-5,
                 "delta={delta} numerical={numerical} analytical={analytical}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_leaf_halfkp_gradient_matches_finite_difference_for_both_sides() {
+        for side_to_move in [Color::Black, Color::White] {
+            let (mut weights, pair) = pair_fixture(side_to_move);
+            let mut gradient = Gradient::default();
+            add_pair_gradient(&weights, &pair, 36.63, 1.0, &mut gradient).expect("gradient");
+            let epsilon = 1e-3;
+
+            let output_index = if side_to_move == Color::Black {
+                0
+            } else {
+                HALFKP_HIDDEN
+            };
+            let analytical = gradient.out_w[output_index];
+            weights.out_w[output_index] += epsilon;
+            let plus = pair_loss(&weights, &pair, 36.63);
+            weights.out_w[output_index] -= 2.0 * epsilon;
+            let minus = pair_loss(&weights, &pair, 36.63);
+            weights.out_w[output_index] += epsilon;
+            let numerical = (plus - minus) / (2.0 * epsilon);
+            assert!(
+                (analytical - numerical).abs() < 2e-4,
+                "side={side_to_move:?} output analytical={analytical} numerical={numerical}"
+            );
+
+            let (&feature, row) = gradient
+                .sparse
+                .iter()
+                .find(|(_, row)| row.iter().any(|value| value.abs() > 1e-7))
+                .expect("non-zero sparse gradient");
+            let hidden = row
+                .iter()
+                .position(|value| value.abs() > 1e-7)
+                .expect("non-zero hidden component");
+            let index = feature * HALFKP_HIDDEN + hidden;
+            let analytical = row[hidden];
+            weights.feature_emb[index] += epsilon;
+            let plus = pair_loss(&weights, &pair, 36.63);
+            weights.feature_emb[index] -= 2.0 * epsilon;
+            let minus = pair_loss(&weights, &pair, 36.63);
+            let numerical = (plus - minus) / (2.0 * epsilon);
+            assert!(
+                (analytical - numerical).abs() < 2e-4,
+                "side={side_to_move:?} sparse analytical={analytical} numerical={numerical}"
             );
         }
     }
