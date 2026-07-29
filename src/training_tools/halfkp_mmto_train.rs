@@ -76,6 +76,8 @@ struct Args {
     max_train_roots: Option<usize>,
     #[arg(long, default_value_t = 10_000)]
     max_valid_roots: usize,
+    #[arg(long, default_value_t = 1024)]
+    pv_probe_roots: usize,
     #[arg(long, default_value_t = false)]
     resume: bool,
 }
@@ -158,6 +160,8 @@ struct SearchMetrics {
     agreement: usize,
     regret_sum_cp: f64,
     qnodes: u64,
+    #[serde(skip)]
+    best_moves: Vec<Move>,
 }
 
 impl SearchMetrics {
@@ -172,6 +176,7 @@ impl SearchMetrics {
         self.agreement += other.agreement;
         self.regret_sum_cp += other.regret_sum_cp;
         self.qnodes += other.qnodes;
+        self.best_moves.extend_from_slice(&other.best_moves);
     }
 }
 
@@ -214,6 +219,7 @@ struct RunManifest {
     hyperparameters: BTreeMap<&'static str, serde_json::Value>,
     last_train: MetricReport,
     last_valid_fresh: MetricReport,
+    pv_probe_best_move_unchanged: f64,
 }
 
 pub fn run() -> Result<()> {
@@ -286,6 +292,15 @@ pub fn run() -> Result<()> {
         // EngineEvaluator owns this immutable search-side copy while `weights`
         // is updated independently throughout the streaming pass.
         let search_snapshot = Arc::new(EngineEvaluator::new(&model_path, 0.0)?);
+        let valid_before = fresh_evaluate(
+            &model_path,
+            &args.valid,
+            "valid",
+            Some(args.pv_probe_roots.min(args.max_valid_roots)),
+            args.tau_cp,
+            &search_pool,
+            args.search_block_roots,
+        )?;
         let mut gradient = Gradient::default();
         let mut last_train = SearchMetrics::default();
         let mut block = Vec::with_capacity(args.search_block_roots);
@@ -337,7 +352,10 @@ pub fn run() -> Result<()> {
             "valid",
             Some(args.max_valid_roots),
             args.tau_cp,
+            &search_pool,
+            args.search_block_roots,
         )?;
+        let pv_unchanged = best_move_unchanged(&valid_before, &last_valid)?;
         let model_sha = sha256_file(&model_path)?;
         let optimizer_sha = sha256_file(&optimizer_path)?;
         let checkpoint = Checkpoint {
@@ -360,6 +378,7 @@ pub fn run() -> Result<()> {
             &optimizer_path,
             &last_train,
             &last_valid,
+            pv_unchanged,
         )?;
         println!(
             "outer={outer} train_loss={:.9} valid_fresh_loss={:.9} valid_agreement={:.6}",
@@ -417,6 +436,7 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.feature_limit <= 0.0
         || args.output_limit <= 0.0
         || args.max_valid_roots == 0
+        || args.pv_probe_roots == 0
     {
         return Err(anyhow!("invalid MMTO hyperparameter"));
     }
@@ -632,10 +652,16 @@ fn search_pairs<E: Evaluator>(
         .iter()
         .map(|(_, leaf)| leaf.fixed_score_cp)
         .fold(f32::NEG_INFINITY, f32::max);
+    let best_move = searched
+        .iter()
+        .max_by(|lhs, rhs| lhs.1.fixed_score_cp.total_cmp(&rhs.1.fixed_score_cp))
+        .map(|(mv, _)| *mv)
+        .expect("at least two legal moves");
     metrics.roots += 1;
     metrics.agreement += usize::from(teacher_score.to_bits() == best_score.to_bits());
     metrics.regret_sum_cp += f64::from(best_score - teacher_score);
     metrics.qnodes += ai.quiescence_nodes_searched();
+    metrics.best_moves.push(best_move);
 
     let (_, desired) = searched.swap_remove(teacher_index);
     let mut desired = Some(desired);
@@ -917,15 +943,54 @@ fn fresh_evaluate(
     split: &str,
     limit: Option<usize>,
     tau_cp: f32,
+    search_pool: &rayon::ThreadPool,
+    block_roots: usize,
 ) -> Result<SearchMetrics> {
     let evaluator = Arc::new(EngineEvaluator::new(model_path, 0.0)?);
     let mut metrics = SearchMetrics::default();
+    let mut block = Vec::with_capacity(block_roots);
     visit_samples(paths, split, limit, |sample| {
-        let (_, sample_metrics) = search_sample(Arc::clone(&evaluator), &sample, tau_cp)?;
-        metrics.merge(&sample_metrics);
+        block.push(sample);
+        if block.len() == block_roots {
+            evaluate_block(&mut block, search_pool, &evaluator, tau_cp, &mut metrics)?;
+        }
         Ok(())
     })?;
+    evaluate_block(&mut block, search_pool, &evaluator, tau_cp, &mut metrics)?;
     Ok(metrics)
+}
+
+fn evaluate_block(
+    block: &mut Vec<Sample>,
+    search_pool: &rayon::ThreadPool,
+    evaluator: &Arc<EngineEvaluator>,
+    tau_cp: f32,
+    metrics: &mut SearchMetrics,
+) -> Result<()> {
+    let searched = search_pool.install(|| {
+        block
+            .par_iter()
+            .map(|sample| search_sample(Arc::clone(evaluator), sample, tau_cp))
+            .collect::<Result<Vec<_>>>()
+    })?;
+    block.clear();
+    for (_, sample_metrics) in searched {
+        metrics.merge(&sample_metrics);
+    }
+    Ok(())
+}
+
+fn best_move_unchanged(before: &SearchMetrics, after: &SearchMetrics) -> Result<f64> {
+    if before.best_moves.is_empty() || after.best_moves.len() < before.best_moves.len() {
+        return Err(anyhow!("incomplete fixed PV probe"));
+    }
+    let unchanged = before
+        .best_moves
+        .iter()
+        .zip(&after.best_moves)
+        .filter(|(before, after)| before == after)
+        .count();
+    Ok(unchanged as f64 / before.best_moves.len() as f64)
 }
 
 fn report(metrics: &SearchMetrics) -> MetricReport {
@@ -1049,6 +1114,7 @@ fn write_run_manifest(
     optimizer_path: &Path,
     train: &SearchMetrics,
     valid: &SearchMetrics,
+    pv_probe_best_move_unchanged: f64,
 ) -> Result<()> {
     let mut hyperparameters = BTreeMap::new();
     hyperparameters.insert("tau_cp", serde_json::json!(args.tau_cp));
@@ -1066,6 +1132,7 @@ fn write_run_manifest(
         "search_block_roots",
         serde_json::json!(args.search_block_roots),
     );
+    hyperparameters.insert("pv_probe_roots", serde_json::json!(args.pv_probe_roots));
     hyperparameters.insert("jobs", serde_json::json!(args.jobs));
     hyperparameters.insert("leaf_reuse_passes", serde_json::json!(1));
     hyperparameters.insert("l1_lambda", serde_json::json!(0));
@@ -1084,6 +1151,7 @@ fn write_run_manifest(
         hyperparameters,
         last_train: report(train),
         last_valid_fresh: report(valid),
+        pv_probe_best_move_unchanged,
     };
     atomic_json(&args.output_dir.join("run_manifest.json"), &manifest)
 }
