@@ -647,6 +647,31 @@ mod tests {
     }
 
     #[test]
+    fn forced_qsearch_trace_classifies_repetition_without_a_leaf() {
+        let mut position = Position::default();
+        let root_sfen = position.to_sfen_owned();
+        let root_move = position.legal_moves()[0];
+        let mut child = position.clone();
+        child.do_move(root_move);
+        let mut ai = ShogiAI::<_, 256>::new(ZeroEvaluator);
+        for _ in 0..3 {
+            ai.sennichite_detector.record_position(&child);
+            ai.sennichite_detector.record_initial_position(&position);
+        }
+        let history_len = ai.sennichite_detector.len();
+
+        let trace = ai
+            .forced_move_qsearch_leaf_trace(&mut position, root_move)
+            .expect("repetition qsearch should complete");
+
+        assert_eq!(QsearchLeafKind::Repetition, trace.kind);
+        assert!(trace.leaf.is_none());
+        assert_eq!(0.0, trace.score);
+        assert_eq!(root_sfen, position.to_sfen_owned());
+        assert_eq!(history_len, ai.sennichite_detector.len());
+    }
+
+    #[test]
     fn forced_qsearch_trace_restores_halfkp_incremental_context() {
         let path = std::env::temp_dir().join(format!(
             "forced_qsearch_trace_restores_halfkp_context_{}.bin",

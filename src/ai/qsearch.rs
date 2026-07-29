@@ -80,14 +80,21 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.make_move(position, root_move);
         self.sennichite_detector
             .record_position_after_move(position, moved_by);
-        let result = self.quiescence_search_trace_internal(
-            position,
-            f32::NEG_INFINITY,
-            f32::INFINITY,
-            1,
-            0,
-            None,
-        );
+        let result = if let Some(score) = self.sennichite_score(position) {
+            Some(QsearchLeafTrace::terminal(
+                score,
+                QsearchLeafKind::Repetition,
+            ))
+        } else {
+            self.quiescence_search_trace_internal(
+                position,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                1,
+                0,
+                None,
+            )
+        };
         self.sennichite_detector.unrecord_last_position();
         self.undo_move(position, root_move);
 
@@ -271,5 +278,50 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             }
         }
         best
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::position_from_sfen_or_usi;
+    use shogi_core::Color;
+
+    #[derive(Clone, Copy)]
+    struct MaxPlyFixtureEvaluator;
+
+    impl Evaluator for MaxPlyFixtureEvaluator {
+        fn evaluate(&self, position: &Position) -> f32 {
+            if position.side_to_move() == Color::Black {
+                0.0
+            } else {
+                -100.0
+            }
+        }
+    }
+
+    #[test]
+    fn qsearch_trace_classifies_the_deterministic_max_ply_leaf() {
+        let mut position = position_from_sfen_or_usi("9/9/4k4/4r4/4P4/9/9/9/4K4 b - 1")
+            .expect("valid capture fixture");
+        let root_sfen = position.to_sfen_owned();
+        let mut ai = ShogiAI::<_, 256>::new(MaxPlyFixtureEvaluator);
+        ai.begin_eval_context(&position);
+
+        let trace = ai
+            .quiescence_search_trace_internal(
+                &mut position,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                0,
+                MAX_QUIESCENCE_PLY,
+                None,
+            )
+            .expect("qsearch");
+
+        assert_eq!(QsearchLeafKind::MaxPlyEvaluation, trace.kind);
+        assert!(trace.has_exact_evaluation_leaf());
+        assert!(!trace.pv.is_empty());
+        assert_eq!(root_sfen, position.to_sfen_owned());
     }
 }
