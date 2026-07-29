@@ -3329,6 +3329,112 @@ mod tests {
         assert!(metrics.game_rank_objective_loss_sum > 0.0);
     }
 
+    fn sparse_feature_gradient(gradient: &RecordGradient, feature: usize, hidden: usize) -> f32 {
+        gradient
+            .positions
+            .iter()
+            .map(|position| {
+                let black_count = position
+                    .features_black
+                    .iter()
+                    .filter(|&&candidate| candidate == feature)
+                    .count() as f32;
+                let white_count = position
+                    .features_white
+                    .iter()
+                    .filter(|&&candidate| candidate == feature)
+                    .count() as f32;
+                black_count * position.black_hidden[hidden]
+                    + white_count * position.white_hidden[hidden]
+            })
+            .sum()
+    }
+
+    fn assert_game_rank_gradient_matches_finite_difference(side_to_move: Color) {
+        const GAME_FEATURE: usize = 1;
+        const BAD_FEATURE: usize = 2;
+        const HIDDEN: usize = 0;
+
+        let (mut weights, mut record, mut options) = game_vs_search_fixture();
+        for candidate in &mut record.candidates {
+            candidate.child.side_to_move = side_to_move;
+            candidate.child.features_black.clear();
+            candidate.child.features_white.clear();
+        }
+        let game_index = record
+            .candidates
+            .iter()
+            .position(|candidate| candidate.flags & CANDIDATE_GAME_MOVE != 0)
+            .expect("game candidate");
+        match side_to_move {
+            Color::Black => record.candidates[game_index]
+                .child
+                .features_black
+                .push(GAME_FEATURE as u32),
+            Color::White => record.candidates[game_index]
+                .child
+                .features_white
+                .push(GAME_FEATURE as u32),
+        }
+        let mut bad_child = record.root.clone();
+        bad_child.side_to_move = side_to_move;
+        bad_child.features_black.clear();
+        bad_child.features_white.clear();
+        match side_to_move {
+            Color::Black => bad_child.features_black.push(BAD_FEATURE as u32),
+            Color::White => bad_child.features_white.push(BAD_FEATURE as u32),
+        }
+        record.candidates.push(SearchTeacherCandidate {
+            flags: 0,
+            score_cp: -20.0,
+            child: bad_child,
+        });
+        options.rank_weight = 0.0;
+        options.game_rank_weight = 1.0;
+        options.game_vs_search_weight = 0.0;
+        weights.feature_emb[GAME_FEATURE * HALFKP_HIDDEN + HIDDEN] = 0.10;
+        weights.feature_emb[BAD_FEATURE * HALFKP_HIDDEN + HIDDEN] = 0.20;
+
+        let gradient = compute_record_gradient(&weights, &record, &options);
+        assert_eq!(1, gradient.pairs);
+
+        let epsilon = 1e-3_f32;
+        let feature_index = GAME_FEATURE * HALFKP_HIDDEN + HIDDEN;
+        let analytic_feature = sparse_feature_gradient(&gradient, GAME_FEATURE, HIDDEN);
+        weights.feature_emb[feature_index] += epsilon;
+        let plus = compute_record_gradient(&weights, &record, &options).rank_loss;
+        weights.feature_emb[feature_index] -= 2.0 * epsilon;
+        let minus = compute_record_gradient(&weights, &record, &options).rank_loss;
+        weights.feature_emb[feature_index] += epsilon;
+        let numerical_feature = ((plus - minus) / f64::from(2.0 * epsilon)) as f32;
+        assert!(
+            (analytic_feature - numerical_feature).abs() < 2e-4,
+            "side={side_to_move:?} feature analytic={analytic_feature} numerical={numerical_feature}"
+        );
+
+        let output_index = if side_to_move == Color::Black {
+            HIDDEN
+        } else {
+            HALFKP_HIDDEN + HIDDEN
+        };
+        let analytic_output = gradient.dense.out_w[output_index];
+        weights.out_w[output_index] += epsilon;
+        let plus = compute_record_gradient(&weights, &record, &options).rank_loss;
+        weights.out_w[output_index] -= 2.0 * epsilon;
+        let minus = compute_record_gradient(&weights, &record, &options).rank_loss;
+        let numerical_output = ((plus - minus) / f64::from(2.0 * epsilon)) as f32;
+        assert!(
+            (analytic_output - numerical_output).abs() < 2e-4,
+            "side={side_to_move:?} output analytic={analytic_output} numerical={numerical_output}"
+        );
+    }
+
+    #[test]
+    fn game_rank_gradient_matches_finite_difference_for_both_sides() {
+        assert_game_rank_gradient_matches_finite_difference(Color::Black);
+        assert_game_rank_gradient_matches_finite_difference(Color::White);
+    }
+
     #[test]
     fn game_vs_search_respects_regret_cap_and_reports_thresholds() {
         let (weights, record, mut options) = game_vs_search_fixture();
