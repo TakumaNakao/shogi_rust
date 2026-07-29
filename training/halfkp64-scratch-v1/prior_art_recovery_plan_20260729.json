@@ -2,7 +2,7 @@
   "schema_version": 1,
   "date": "2026-07-29",
   "scope": "HalfKP-64 scratch training failure audit and Bonanza-MMTO-objective-aligned recovery",
-  "status": "planned_not_started",
+  "status": "in_progress",
   "decision": "bonanza_mmto_objective_aligned_halfkp_adaptation",
   "source_of_truth": "docs/halfkp_prior_art_recovery_plan_20260729.md",
   "lineage": {
@@ -265,7 +265,11 @@
     {
       "id": 1,
       "name": "implement_training_only_exact_qsearch_principal_leaf_trace",
-      "status": "pending"
+      "status": "completed",
+      "commit": "bacd856",
+      "evidence": [
+        "training/halfkp64-scratch-v1/qsearch_leaf_trace_step1_report_20260729.json"
+      ]
     },
     {
       "id": 2,

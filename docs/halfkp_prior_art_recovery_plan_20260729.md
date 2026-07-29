@@ -627,7 +627,7 @@ fallbackのscratch self-playでは、promoted scratch model自身が定跡なし
 | Step | 内容 | 状態 | 完了証拠 |
 |---:|---|---|---|
 | 0 | 誤分類・誤dataset記録の訂正 | completed | docs / JSON |
-| 1 | exact qsearch principal-leaf trace | pending | unit / fingerprint |
+| 1 | exact qsearch principal-leaf trace | completed | `bacd856` / unit / fingerprint |
 | 2 | streaming `halfkp_mmto_train` | pending | tests / release build |
 | 3 | 64 fixture / 1,024 root | pending | execution manifest |
 | 4 | 10k、3 LR、各2 outer | pending | calibration report |
@@ -637,6 +637,15 @@ fallbackのscratch self-playでは、promoted scratch model自身が定跡なし
 
 進捗の機械可読な正本は
 `training/halfkp64-scratch-v1/prior_art_recovery_plan_20260729.json`とする。
+
+### Step 1 実行記録（2026-07-29）
+
+commit `bacd856`でtraining専用`forced_move_qsearch_leaf_trace`を実装した。通常探索は従来どおり
+qsearch PVを外部へ返さず、depth 3 search fingerprintも基準と完全一致した。capture継続、
+stand-pat、check evasion、promotion、drop、mate、先後score向き、root局面復元をunit testで確認した。
+さらに実HalfKP-64 fixtureを使い、forced qsearch後の増分評価値とroot局面のfull refresh評価値が
+bit一致することを確認した。詳細なコマンドと結果は
+`training/halfkp64-scratch-v1/qsearch_leaf_trace_step1_report_20260729.json`に固定した。
 
 ## 10. 今回行わないこと
 

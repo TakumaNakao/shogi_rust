@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "step": 1,
+  "status": "completed",
+  "commit": "bacd856",
+  "scope": "training-only exact qsearch principal-leaf trace",
+  "normal_search_behavior_changed": false,
+  "checks": [
+    {
+      "command": "cargo test --lib forced_qsearch_trace",
+      "result": "passed",
+      "tests": 3
+    },
+    {
+      "command": "cargo test --lib forced_qsearch_trace_restores_halfkp_incremental_context",
+      "result": "passed",
+      "tests": 1
+    },
+    {
+      "command": "cargo test --lib quiescence",
+      "result": "passed",
+      "tests": 2
+    },
+    {
+      "command": "cargo test --lib",
+      "result": "passed",
+      "tests": 46
+    },
+    {
+      "command": "cargo run --release --features benchmark-tools --bin search_fingerprint -- --depth 3 --expected benchmarks/baselines/search_fingerprint_v2.5.4_plus_master.json",
+      "result": "passed_exact_fingerprint"
+    },
+    {
+      "command": "cargo fmt --check",
+      "result": "passed"
+    }
+  ],
+  "semantics_verified": [
+    "capture continuation leaf differs from immediate child",
+    "non-terminal score equals root-oriented raw leaf evaluation",
+    "black and white root score orientation",
+    "stand-pat",
+    "check evasion",
+    "capture",
+    "promotion",
+    "drop",
+    "mate terminal classification",
+    "root position restoration",
+    "HalfKP-64 incremental context restoration"
+  ],
+  "known_follow_up": [
+    "repetition and max-qply classification receive deterministic fixture coverage in Step 3"
+  ]
+}
