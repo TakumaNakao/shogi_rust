@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-30",
+  "step": 4,
+  "status": "completed",
+  "conditions": {
+    "train_roots": 10000,
+    "valid_roots": 2000,
+    "outer_iterations": 2,
+    "pair_batch_size": 8192,
+    "jobs": 8,
+    "tau_cp": 36.63,
+    "output_learning_rate_ratio": 0.1,
+    "dataset_manifest_sha256": "d8da8088b02d3d0200aad2ecb061691c6c418173a16fe32819f03088af48708f",
+    "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6"
+  },
+  "runs": [
+    {
+      "learning_rate": 0.000003,
+      "run_dir": "runs/halfkp64-scratch-v1/prior-art-step4-lr3e-6-v2",
+      "completed_outer": 2,
+      "train_loss": 0.21923061243571068,
+      "valid_fresh_loss": 0.2289882473295448,
+      "valid_agreement": 0.125,
+      "pv_probe_best_move_unchanged": 0.9833984375,
+      "feature_max_delta": 0.00007175840437412262,
+      "hidden_max_delta": 0.00007581710815429688,
+      "output_max_delta": 0.00000797957181930542,
+      "rejected_bounds": 0,
+      "material_bits_equal": true,
+      "model_sha256": "9937813fab43d03e61f5a10d35c5f943d9caa24aeb0c29ea1ec8581c8ee24e24"
+    },
+    {
+      "learning_rate": 0.00001,
+      "run_dir": "runs/halfkp64-scratch-v1/prior-art-step4-lr1e-5-v1",
+      "completed_outer": 2,
+      "train_loss": 0.2173659441078775,
+      "valid_fresh_loss": 0.22686275106412698,
+      "valid_agreement": 0.1275,
+      "pv_probe_best_move_unchanged": 0.98046875,
+      "feature_max_delta": 0.0002397056668996811,
+      "hidden_max_delta": 0.0002461671829223633,
+      "output_max_delta": 0.000026211142539978027,
+      "rejected_bounds": 0,
+      "material_bits_equal": true,
+      "model_sha256": "ff33200e12e35e20c0365d2d767994844eaf71422beaad77e679f604ef87185f"
+    },
+    {
+      "learning_rate": 0.00003,
+      "run_dir": "runs/halfkp64-scratch-v1/prior-art-step4-lr3e-5-v1",
+      "completed_outer": 2,
+      "train_loss": 0.21288315516978035,
+      "valid_fresh_loss": 0.22219761058117013,
+      "valid_agreement": 0.132,
+      "pv_probe_best_move_unchanged": 0.9716796875,
+      "feature_max_delta": 0.0007163286209106445,
+      "hidden_max_delta": 0.0007011294364929199,
+      "output_max_delta": 0.00007565505802631378,
+      "rejected_bounds": 0,
+      "material_bits_equal": true,
+      "model_sha256": "fd82e4e028f8aa9b41b94387058a6c3105c5302ca2dd9b5b6e80ac6b755daaac"
+    }
+  ],
+  "selection": {
+    "safety_gate_passed_for_all": true,
+    "criterion": "lowest fresh-valid MMTO loss, then largest safe learning rate",
+    "selected_learning_rate": 0.00003,
+    "selected_model_sha256": "fd82e4e028f8aa9b41b94387058a6c3105c5302ca2dd9b5b6e80ac6b755daaac",
+    "match_strength_used": false,
+    "v2_5_0_used": false
+  }
+}

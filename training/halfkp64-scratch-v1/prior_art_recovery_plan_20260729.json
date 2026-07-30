@@ -298,7 +298,11 @@
     {
       "id": 4,
       "name": "calibrate_three_learning_rates_on_10k",
-      "status": "pending"
+      "status": "completed",
+      "selected_learning_rate": 0.00003,
+      "evidence": [
+        "training/halfkp64-scratch-v1/mmto_step4_calibration_report_20260730.json"
+      ]
     },
     {
       "id": 5,

@@ -630,7 +630,7 @@ fallbackのscratch self-playでは、promoted scratch model自身が定跡なし
 | 1 | exact qsearch principal-leaf trace | completed | `bacd856` / unit / fingerprint |
 | 2 | streaming `halfkp_mmto_train` | completed | `4275e2e` / tests / release build |
 | 3 | 64 fixture / 1,024 root | completed | `a916fb3` / execution manifest |
-| 4 | 10k、3 LR、各2 outer | pending | calibration report |
+| 4 | 10k、3 LR、各2 outer | completed | `calibration report` |
 | 5 | 10k jobs benchmark、100k×4 outer | pending | benchmark report |
 | 6 | full 200 outer | pending | checkpoint manifests |
 | 7 | parent / test / v2.5.0評価 | pending | match reports |
@@ -676,6 +676,14 @@ material係数はbit不変だった。
 両leaf backpropの先後別finite difference、T(delta) derivative、repetition、mate、max-qply、
 save/reload、jobs決定論も通過した。詳細は
 `training/halfkp64-scratch-v1/mmto_step3_verification_report_20260729.json`に固定した。
+
+### Step 4 実行記録（2026-07-30）
+
+同一10,000 train / 2,000 valid、各2 outer、pair batch 8,192、jobs 8で3 learning rateを実行した。
+全runでrejected boundは0、material係数はbit固定、PV probeは90% Gateを通過した。
+fresh-valid lossは`3e-6: 0.2289882`、`1e-5: 0.2268628`、`3e-5: 0.2221976`となり、
+安全Gateを満たす最大値`3e-5`を次の固定learning rateとして選択する。棋力対局やv2.5.0は選択に使っていない。
+詳細は`training/halfkp64-scratch-v1/mmto_step4_calibration_report_20260730.json`に固定した。
 
 ## 10. 今回行わないこと
 
