@@ -1,7 +1,7 @@
 # HalfKP棋譜学習の失敗監査と先行事例準拠の再計画
 
 - 作成日: 2026-07-29
-- 状態: **レビュー反映済み計画・未実装**
+- 状態: **Step 4条件付き完了・Step 5事前整備待ち**
 - 対象lineage: `halfkp64-scratch-v1`
 - 採用経路: **高rate WDoor棋譜を用いたBonanza-MMTO目的準拠のHalfKP適応**
 - 初期model: accepted generation 2
@@ -74,7 +74,7 @@ Hokiらの論文が、one-plyの直感的比較を出発点として示した上
 | corrected search-value | Brier改善、search MAE悪化 | 有効な目的不一致 |
 | game-rank correct dose | proxy loss改善、親400局45.25% | 有効なproxy不一致 |
 | Phase 14 all-legal CE | 誤dataset、改善中2 epochで停止、対局未実施 | 未検証 |
-| MMTO目的準拠HalfKP適応 | 未実装 | 次の本線 |
+| MMTO目的準拠HalfKP適応 | Step 4で正しいdataset・PV leaf・3 LR校正を完走 | 実装成立、効果は条件付き判定中 |
 
 「独立な学習法が何度も正しく試され、すべて失敗した」と解釈してはならない。実装不具合で無効な実験、
 意味の異なるproxyの負結果、未収束pilotが混在している。
@@ -103,7 +103,7 @@ PV末端を選び直してから勾配更新した。原法は1回のPV生成に
 
 論文のfull modelは約4,000万parameterである。本repoのHalfKP-64はdirect featureだけで約675万parameterなので、
 parameter比は約0.17である。既存高rate datasetのtrain 570,875 rootはBonanzaの約0.13、
-1回のPV生成あたり推定約5,500万合法手pairは3.68億pairの約0.15である。
+1回のPV生成あたり56,035,622合法手pairは3.68億pairの約0.15である。
 
 ただし、この二つの比から「parameter当たりの学習量が同等」と結論してはならない。feature分布、
 sparse row coverage、ClippedReLU、optimizer、原法の32更新が異なるためである。これらの数値は
@@ -388,7 +388,7 @@ leafをforwardし直し**、lossと勾配を計算する。snapshot scoreを固�
 search snapshotと更新側を分けることで、後半blockのPVだけが更新済みmodelで選ばれる混在を防ぐ。
 
 Bonanza原法は1 PV生成につき32回のfull-gradient更新を行う。一方、この適応の1 streaming passは
-推定5,500万pair / 8,192、すなわち約6,700回のmini-batch更新を含む。両者の「更新1回」は同じ単位ではなく、
+56,035,622 pair / 8,192、すなわち約6,841回のmini-batch更新を含む。両者の「更新1回」は同じ単位ではなく、
 32 passへ機械的に増やすとblock順序を過大に反復する。従ってbaselineは`leaf_reuse_passes=1`に固定し、
 原法と量的に同等とは主張しない。PV安定性とfresh objectiveでこの適応自体を検証する。
 
@@ -513,7 +513,7 @@ parent対局openingとの重複を除いてSHA-256をmanifestへ固定する。�
 - train 10,000 / valid 2,000
 - feature learning rate `3e-6 / 1e-5 / 3e-5`、outputは各0.1倍
 - 各2 outer iteration
-- 同じroot、seed、初期model
+- 同じroot、決定論的な入力順、初期model
 - batch 8,192 pair、clip norm 1.0、leaf reuse 1 pass
 - `|delta| / tau`のp50 / p90 / p99と、mirrored-sigmoid derivativeが最大値の1%以上あるpair率を
   診断値として記録する（選択Gateにはしない）
@@ -530,32 +530,64 @@ parent対局openingとの重複を除いてSHA-256をmanifestへ固定する。�
 
 top-1を何point上げる、対局を何勝する、というGateは置かない。
 
-### Step 5: thread benchmarkと100k rootで実装・時間検証
+### Step 5: 記録修正、選択LR再現、thread benchmark、100k検証
 
-- まず固定10,000 rootでjobs 1 / 4 / 8を一度benchmarkする
-- 最速の安定設定でtrain 100,000 / valid 10,000
-- 固定learning rate
-- 4 outer iteration
-- jobsが変わっても許容差内で同じgradient、完全決定論modeではbyte一致
+Step 4後監査で、outer 0とouter 1のfresh-valid履歴、計画済み飽和診断、outer別checkpoint、
+区間wall timeが保存されていないことが分かった。長時間実行の前に、学習式を変えず次を追加する。
 
-これはfull 1 outerの時間、node/qnode、legal moves、terminal、retry率を測る工程である。
-offline改善が小さいことを理由に本線を止めない。lossが逆向き、leaf不一致、非有限など、
-実装仮説そのものが壊れた場合だけ修正して同じStepを再実行する。
+- outer 0と全outerのfixed-valid履歴
+- milestoneごとのimmutable model / optimizer / manifest
+- search / update / valid / saveの単調時計による経過時間
+- `|delta|/tau`分位点、有効derivative率、regret分位点、gradient clip率
+- per-outer feature / hidden / output最大delta
+- 固定probeのqsearch PV length、PV sequence hash、leaf position hash一致率
+- qnodes / root、binary SHA
 
-### Step 6: full MMTO目的準拠HalfKP適応
+per-root valid指標とparameter RMS / p99 / maxはfull production開始前に追加し、100k開始のblocking要件にはしない。
+
+追加後、三つのlearning rateを再実行せず、`3e-5`だけを同じ10,000 train / 2,000 validで
+4 outer再実行する。outer 2のmodel / optimizerが旧Step 4とbyte一致し、outer 4の同一valid
+fresh lossがouter 0より低いことを確認する。
+
+jobs benchmarkは固定1,024 train / 1,024 valid、`3e-5`、1 outerへ短縮してjobs 1 / 4 / 8を一度測る。
+決定論と速度を確認した後、
+accepted generation 2から独立にtrain 100,000 / valid 10,000、`3e-5`、4 outerを実行する。
+まずouter 1を検証し、同じrunをresumeしてouter 4まで進める。
+
+これはfull 1 outerの時間、node/qnode、legal moves、terminal、retry率と、複数outerの改善曲線を測る工程である。
+agreementや小規模対局の改善が小さいことだけを理由に本線を止めない。fixed-valid fresh lossが親より逆向き、
+leaf不一致、非有限、provenance不一致など、実装仮説そのものが壊れた場合は修正して同じStepを再実行する。
+outer 4後の親500局は診断値とする。ただしopening pair単位paired scoreの95%上限が45%未満という
+明白な棋力崩壊だけはfull開始の保留・監査Gateとし、別戦略へ自動移行しない。
+対局前に、ply 8～40・opening family一意の250 pair suiteをcurrent strategy記載の規則で凍結し、
+対局reportへopening-pair clustered percentile bootstrapを実装する。
+
+### Step 6: full MMTO目的準拠HalfKP適応をmilestone運用
 
 - train 570,875 root
 - valid probe 10,000 root / checkpoint full valid 90,759 root
 - 全合法手
 - nominal depth 1 + qsearch
-- 200 outer iterationを固定
-- checkpoint: 1, 2, 4, 8, 16, 32, 64, 100, 144, 200
+- 200 outer iterationを最終目標とする
+- 初期checkpoint: 1, 2, 4, 8, 16
+- iteration 16がouter 0より低く、`loss(4) < loss(8) < loss(16)`の連続悪化がなければ
+  32, 64, 100, 144, 200へ継続する
 - 小規模対局だけを理由に学習停止しない
 
-既存高rate trainは約5,500万pair / outerと見込む。実時間はStep 5の実測から算出し、
-wall-clock、disk、温度、再開時間を開始前manifestへ書く。約11 billion規模のforced qsearchになるため、
-Step 5前に週～月と断言しない。電源断からatomic resumeでき、CPU温度とfilesystem容量が安全なら、
-長い見積りだけを理由に短いpilot判定へ戻らない。
+full開始前に、modelを更新せず指定checkpointをfull validで評価して別artifactへ保存するeval-only経路を追加する。
+per-root / parameter統計を含む観測機能追加後は、no-op byte identityと短い既知runのbyte回帰を再確認する。
+accepted generation 2のouter 0 full-valid評価をproduction更新前に同じ90,759 rootで凍結する。
+
+既存高rate trainは実datasetの`legal_moves - 1`合計で56,035,622 pair / outerである。
+実時間はStep 5の実測から算出し、wall-clock、disk、温度、再開時間を開始前manifestへ書く。
+200 outerで11,207,124,400 pair、
+Step 4のqnode比では約20 trillion qnodeになる。実時間は1 outer約40～50時間、
+200 outer約330～420日と外挿された。従って約1年の単一jobとして
+起動せず、milestoneごとにatomic resume、CPU温度、filesystem容量、fresh loss曲線を確認する。
+長い見積りだけを理由に別の短期proxyへ戻らない。
+
+実行はtarget outer 1 / 2 / 4 / 8 / 16ごとに別invocationでresumeする。outer途中のresumeは実装せず、
+障害時に最大1 outerを再実行するRPOを受容する。CPU温度、空き容量、process heartbeatは外部監視する。
 
 各checkpointで記録する:
 
@@ -572,14 +604,16 @@ Step 5前に週～月と断言しない。電源断からatomic resumeでき、C
 
 ### Step 7: 対局評価
 
-checkpoint対局はiteration 16から行うが、途中停止条件にはしない。
+checkpoint対局はiteration 8から行う。通常の小差は途中停止条件にしない。
 
-1. iteration 16 / 32 / 64 / 100 / 144 / 200をaccepted generation 2と
-   固定node、先後交換500局で比較する。
+1. iteration 8 / 16 / 32 / 64 / 100 / 144 / 200をaccepted generation 2と
+   20,000 nodes / move、max depth 64、max 256 plies、先後交換500局で比較する。
+   paired scoreの95%上限が45%未満の場合だけ、明白な棋力崩壊として次の長期区間を保留して監査する。
 2. safety Gateを通過した指定checkpointのうち、**full valid fresh MMTO lossが最小**の一つを凍結する。
    同値なら早いiterationを選ぶ。親対局は診断値であり選択には使わない。
 3. test 62,233 rootは、この凍結後にmodelで一度だけ評価する。test結果でcheckpointを選び直さない。
-4. 凍結候補とv2.5.0をStep 3前に予約したopening 2,000組、先後交換、固定nodeの
+4. 凍結候補とv2.5.0をStep 3前に予約したopening 2,000組、先後交換、20,000 nodes / move、
+   max depth 64、max 256 pliesの
    **固定4,000局**で比較する。
 5. 1 opening pairをclusterとして100,000回のpaired bootstrap
    （seed 20260729、win=1 / draw=0.5 / loss=0）を一度だけ行う。
@@ -603,8 +637,11 @@ v2.5.0の対局結果を見てlearning rate、loss、datasetを調整しない�
 
 ### 8.2 MMTOを完了とみなす条件
 
-200 outer iteration完了まで進める。例外は、数値的に安全な最小学習率でもobjectiveが最初から逆向きに動く、
-leaf同一性が壊れる、provenanceが不一致になる等、実装仮説そのものが成立しない場合だけである。
+200 outer iterationを最終目標とするが、Step 5完了前に約1年分を一括起動しない。まずfull iteration
+1 / 2 / 4 / 8 / 16を完了し、fixed-valid曲線、実測時間、運用安全性を記録する。事前定義した
+outer 16 Gateを満たせば後半milestoneへ継続する。
+例外は、数値的に安全な学習率でもobjectiveが親から逆向きに動く、leaf同一性が壊れる、
+provenanceが不一致になる等、実装仮説そのものが成立しない場合である。
 
 20～40局の負け、2 iterationのtop-1不足、任意margin不足では終了しない。
 
@@ -630,13 +667,14 @@ fallbackのscratch self-playでは、promoted scratch model自身が定跡なし
 | 1 | exact qsearch principal-leaf trace | completed | `bacd856` / unit / fingerprint |
 | 2 | streaming `halfkp_mmto_train` | completed | `4275e2e` / tests / release build |
 | 3 | 64 fixture / 1,024 root | completed | `a916fb3` / execution manifest |
-| 4 | 10k、3 LR、各2 outer | completed | `calibration report` |
-| 5 | 10k jobs benchmark、100k×4 outer | pending | benchmark report |
-| 6 | full 200 outer | pending | checkpoint manifests |
+| 4 | 10k、3 LR、各2 outer | conditional | 実行完了、`3e-5`暫定選択。履歴診断をStep 5で補完 |
+| 5 | 記録修正、3e-5 10k×4再現、short jobs benchmark、100k×4 | pending | post-Step 4 strategy / benchmark report |
+| 6 | full milestone 1 / 2 / 4 / 8 / 16、Gate通過時は後半継続 | pending | checkpoint manifests |
 | 7 | parent / test / v2.5.0評価 | pending | match reports |
 
-進捗の機械可読な正本は
-`training/halfkp64-scratch-v1/prior_art_recovery_plan_20260729.json`とする。
+現在の実行判断と進捗の機械可読な正本は
+`training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json`とする。
+`prior_art_recovery_plan_20260729.json`は元計画と来歴を保持する。
 
 ### Step 1 実行記録（2026-07-29）
 
@@ -682,8 +720,18 @@ save/reload、jobs決定論も通過した。詳細は
 同一10,000 train / 2,000 valid、各2 outer、pair batch 8,192、jobs 8で3 learning rateを実行した。
 全runでrejected boundは0、material係数はbit固定、PV probeは90% Gateを通過した。
 fresh-valid lossは`3e-6: 0.2289882`、`1e-5: 0.2268628`、`3e-5: 0.2221976`となり、
-安全Gateを満たす最大値`3e-5`を次の固定learning rateとして選択する。棋力対局やv2.5.0は選択に使っていない。
+最終候補間では安全Gateを満たす最大値`3e-5`が最良だった。棋力対局やv2.5.0は選択に使っていない。
 詳細は`training/halfkp64-scratch-v1/mmto_step4_calibration_report_20260730.json`に固定した。
+
+後監査では、同じ2,000 rootの親model基準値、outer 1履歴、`|delta|/tau`分位点、有効derivative率、
+outer別wall timeが保存されていないことを確認した。このため`3e-5`は暫定選択とし、Step 4を
+「実行完了・判定は条件付き」と訂正する。learning rateを上げるほどloss / agreement / regretが同方向へ
+改善し、`3e-5`の各outerのparameter deltaも上限を十分下回ったので、選択を撤回したり
+3 LRを再実行したりはしない。
+Step 5冒頭で記録機能を補い、`3e-5`だけを10k × 4 outerで再現する。
+
+評価の説明は`docs/halfkp_mmto_post_step4_strategy_20260730.md`へ、現在の機械可読な実行正本は
+`training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json`へ固定した。
 
 ## 10. 今回行わないこと
 

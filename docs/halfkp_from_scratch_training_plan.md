@@ -1,12 +1,13 @@
 # HalfKP-64 重みゼロスタート学習方針
 
-- Status: **prior-art recovery fixed: MMTO-objective-aligned HalfKP adaptation / implementation not started**
+- Status: **MMTO Step 4 conditionally passed / Step 5 observability work pending**
 - 作成日: 2026-07-21
 - 対象: v2.6.0以降のHalfKP-64評価関数
 - 前提計算機: AMD Ryzen 7 PRO 4750U、8 core / 16 thread、RAM 14 GiB、GPUなし
 
 関連文書:
 
+- [`halfkp_mmto_post_step4_strategy_20260730.md`](halfkp_mmto_post_step4_strategy_20260730.md)
 - [`halfkp_prior_art_recovery_plan_20260729.md`](halfkp_prior_art_recovery_plan_20260729.md)
 - [`halfkp_performance_training_design.md`](halfkp_performance_training_design.md)
 - [`halfkp_training_start_gate.md`](halfkp_training_start_gate.md)
@@ -3044,7 +3045,7 @@ all-legal expert-policy CEという即時childを直接順位付けする教師�
 Bonanza/MMTOの規模は47,566棋譜、4,467,116棋譜手、368,313,024 move pair、200回のPV生成であり、
 1回のPV生成につき同じPV集合で微分・更新を32回反復した。
 本repoのHalfKP direct parameterは約675万でBonanza full featureの約0.17、監査済み高rate trainの
-推定約5,500万pair/outerは同実験の約0.15である。ただしfeature分布、非線形性、optimizer、
+56,035,622 pair / outerは同実験の約0.15である。ただしfeature分布、非線形性、optimizer、
 更新単位が違うので、pair/parameter比から学習量の同等性を主張しない。これまでの50k×2がsanityであり、
 50時間超のv2.5.0と比較する成熟学習ではなかったことだけを結論とする。
 
@@ -3057,14 +3058,35 @@ Bonanza/MMTOの規模は47,566棋譜、4,467,116棋譜手、368,313,024 move pai
 4. material coefficientを固定し、weight decayなしのpersistent AdaGradと事前規定したparameter/PV変化上限を用いる。
 5. 更新ごとに全PVを現在modelで再生成する。旧HKST、game result、exact、戦型、詰みを主lossへ混ぜない。
 6. 64 fixture / 1,024 root、10kの3 LR、100kの時間検証を実装Gateとして通した後、
-   full 570,875 rootを固定200 outer iteration実行する。
+   full 570,875 rootを事前定義milestone単位で実行する。
 7. 途中の20～40局や任意top-1閾値で方法を棄却しない。checkpointは親と500局、
    最小full-valid lossで一つを事前規則どおり凍結し、v2.5.0と固定4,000局比較する。
 
-詳細仕様、停止条件、進捗表は
-`docs/halfkp_prior_art_recovery_plan_20260729.md`、機械可読な正本は
-`training/halfkp64-scratch-v1/prior_art_recovery_plan_20260729.json`に分離した。
-15.22以前の計画と矛盾する場合は、この15.23と分離計画を優先する。
+元の詳細仕様、停止条件、進捗表は
+`docs/halfkp_prior_art_recovery_plan_20260729.md`に分離した。Step 4後の現在の実行正本は
+`training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json`とし、
+旧`prior_art_recovery_plan_20260729.json`は来歴として保持する。
+15.23以前の計画と矛盾する場合は、次の15.24と現在の分離計画を優先する。
+
+### 15.24 MMTO Step 4結果監査と段階実行への改訂（2026-07-30）
+
+同一accepted generation 2、同一10,000 train / 2,000 valid、各2 outerで
+feature / hidden learning rate `3e-6 / 1e-5 / 3e-5`を比較した。候補最終値はlearning rateが
+大きいほどfresh-valid loss `0.228988 / 0.226863 / 0.222198`、agreement
+`12.50% / 12.75% / 13.20%`、平均regret `353.52 / 351.53 / 347.61 cp`の順に改善した。
+数値・parameter Gateも通過したため`3e-5`を暫定採用する。
+
+ただしouter 0とouter 1の同一valid fresh指標、飽和診断、outer別時間が保存されておらず、
+親からの絶対改善と棋力改善は未証明である。Step 4は「実行完了・判定は条件付き」へ訂正する。
+
+次は新lossを追加せず、outer履歴、update-side飽和率、区間時間、immutable checkpointを実装する。
+`3e-5`だけを10k × 4で再現し、outer 2の旧成果物byte一致とouter 4の親比fresh-loss改善を確認してから、
+100k × 4へ進む。full trainは56,035,622 pair / outer、200 outerで11,207,124,400 pairであり、
+Step 4から約330～420日の計算量が外挿されるため、一括jobにしない。outer 1 / 2 / 4 / 8 / 16を
+別invocationでresumeし、事前Gate通過時だけ32 / 64 / 100 / 144 / 200へ継続する。
+
+詳細説明は`docs/halfkp_mmto_post_step4_strategy_20260730.md`、現在の機械可読な実行正本は
+`training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json`である。
 
 ## 16. 参考資料と本計画への反映
 
@@ -3116,7 +3138,8 @@ Bonanza/MMTOの規模は47,566棋譜、4,467,116棋譜手、368,313,024 move pai
 
 先行成功例に合わせ、現在重みで全合法手をdepth 1 + qsearchし、棋譜手と代替手の実PV末端へ勾配を与え、
 更新ごとにPVを再生成するMMTO目的準拠HalfKP適応を実装・成熟させる。Bonanza原法とHalfKPの更新単位を
-同一視せず、固定200 outer iterationを実行する。小さいpilotは実装確認にだけ使い、短時間で棋力結論を出さない。
+同一視せず、200 outerを上限milestoneとして段階実行する。小さいpilotは実装確認にだけ使い、
+短時間で棋力結論を出さない。
 
 初期modelから最終世代まで現行KPP/HalfKP重みとの数値的な接続を断つ。v2.5.0は最終比較対局だけに使う。
 この成熟MMTOでfresh-search一致と親棋力を改善してもv2.5.0へ届かず収束した場合に限り、

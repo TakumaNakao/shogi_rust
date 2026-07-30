@@ -3,8 +3,11 @@
   "date": "2026-07-29",
   "scope": "HalfKP-64 scratch training failure audit and Bonanza-MMTO-objective-aligned recovery",
   "status": "in_progress",
+  "last_review_date": "2026-07-30",
+  "current_strategy": "training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json",
+  "current_execution_source_of_truth": "training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json",
   "decision": "bonanza_mmto_objective_aligned_halfkp_adaptation",
-  "source_of_truth": "docs/halfkp_prior_art_recovery_plan_20260729.md",
+  "historical_plan_source_of_truth": "docs/halfkp_prior_art_recovery_plan_20260729.md",
   "lineage": {
     "lineage_id": "halfkp64-scratch-v1",
     "initial_generation": 2,
@@ -123,12 +126,13 @@
       "train_sha256": "c35673d69c9306f1dd4b1f2f32714adce4a43e7c1a086141bd6b7246b680eee6",
       "valid_sha256": "3ce8745dbeb094a6a3f357494eb94aa5f57a716437bda66dd0ca13060f075f96",
       "test_sha256": "85c73cdf519deff2a51bc2a92e0a746047cb1deae2187f3a1445dd2411b49893",
-      "estimated_move_pairs_per_outer": 55000000
+      "move_pairs_per_outer": 56035622,
+      "move_pair_count_method": "exact sum of legal_moves minus one over the frozen train split"
     },
     "halfkp_direct_parameters": 6750720,
     "pair_and_parameter_ratios": {
       "local_roots_over_bonanza_desired_moves": 0.128,
-      "local_pairs_over_bonanza_pairs": 0.149,
+      "local_pairs_over_bonanza_pairs": 0.152,
       "local_parameters_over_bonanza_parameters": 0.169
     },
     "comparability_conclusion": "unknown_not_inferred_from_ratios_because_feature_distribution_nonlinearity_optimizer_and_update_units_differ"
@@ -150,7 +154,7 @@
     "updates_per_outer": "one streaming mini-batch pass over all generated leaf pairs; each mini-batch forwards the fixed leaves with the current update-side weights",
     "leaf_reuse_passes": 1,
     "bonanza_gradient_updates_per_pv_refresh": 32,
-    "adaptation_note": "One local pass contains about 6700 mini-batch updates, so it is not equated with one Bonanza full-gradient update and is not multiplied by 32.",
+    "adaptation_note": "One local pass contains about 6841 mini-batch updates, so it is not equated with one Bonanza full-gradient update and is not multiplied by 32.",
     "loss": "mirrored sigmoid over desired-versus-all-alternative current search values",
     "normalization": "equal weight per move pair, divided by total pair count rather than root count",
     "sigmoid_tau_cp_fixed": 36.63,
@@ -196,16 +200,35 @@
       "fraction_of_pairs_with_mirrored_sigmoid_derivative_at_least_one_percent_of_its_maximum"
     ],
     "selection_uses_match_strength": false,
-    "selection": "largest rate passing semantics, finite, scale, fresh-loss, parameter-delta, and 90-percent fixed-probe root-best-move-stability checks"
+    "selection": "largest rate passing semantics, finite, scale, candidate-final fresh-loss, parameter-delta, and 90-percent fixed-probe root-best-move-stability checks",
+    "selected_feature_learning_rate_provisional": 0.00003,
+    "post_run_review": "parent outer0 and outer1 fixed-valid history plus saturation diagnostics were not saved; reproduce only 3e-5 before 100k"
   },
   "full_run": {
     "train_roots": 570875,
     "valid_roots": 90759,
-    "fixed_outer_iterations": 200,
-    "checkpoints": [
+    "move_pairs_per_outer": 56035622,
+    "move_pairs_at_200_outer": 11207124400,
+    "target_outer_iterations": 200,
+    "initial_milestones": [
       1,
       2,
       4,
+      8,
+      16
+    ],
+    "later_milestones_after_outer16_gate": [
+      32,
+      64,
+      100,
+      144,
+      200
+    ],
+    "run_as_single_unreviewed_job": false,
+    "small_match_is_training_stop": false
+  },
+  "evaluation": {
+    "parent_match_checkpoints": [
       8,
       16,
       32,
@@ -214,19 +237,9 @@
       144,
       200
     ],
-    "small_match_is_training_stop": false
-  },
-  "evaluation": {
-    "parent_match_checkpoints": [
-      16,
-      32,
-      64,
-      100,
-      144,
-      200
-    ],
     "parent_match_games_each": 500,
-    "parent_match_role": "diagnostic_only_not_checkpoint_selection",
+    "parent_match_role": "diagnostic_only_not_checkpoint_selection_except_predefined_catastrophic_audit_gate",
+    "catastrophic_audit_gate": "paired_score_95_percent_upper_bound_below_0.45",
     "checkpoint_selection": "lowest full-valid fresh MMTO loss among predefined safety-passing checkpoints; earliest iteration breaks an exact tie",
     "test_split_scored_after_checkpoint_freeze": true,
     "test_split_used_to_reselect_checkpoint": false,
@@ -298,20 +311,25 @@
     {
       "id": 4,
       "name": "calibrate_three_learning_rates_on_10k",
-      "status": "completed",
+      "status": "completed_with_followup_required",
       "selected_learning_rate": 0.00003,
+      "selected_learning_rate_status": "provisional",
       "evidence": [
-        "training/halfkp64-scratch-v1/mmto_step4_calibration_report_20260730.json"
+        "training/halfkp64-scratch-v1/mmto_step4_calibration_report_20260730.json",
+        "training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json"
       ]
     },
     {
       "id": 5,
-      "name": "benchmark_jobs_on_10k_then_run_100k_four_outer",
-      "status": "pending"
+      "name": "add_history_reproduce_3e5_on_10k_benchmark_jobs_then_run_100k_four_outer",
+      "status": "pending",
+      "evidence": [
+        "docs/halfkp_mmto_post_step4_strategy_20260730.md"
+      ]
     },
     {
       "id": 6,
-      "name": "run_full_fixed_200_outer_iterations",
+      "name": "run_full_milestones_then_continue_by_predefined_gate",
       "status": "pending"
     },
     {

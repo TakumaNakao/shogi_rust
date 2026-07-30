@@ -1,0 +1,387 @@
+{
+  "schema_version": 1,
+  "role": "current_machine_readable_execution_source_of_truth",
+  "date": "2026-07-30",
+  "lineage": "halfkp64-scratch-v1",
+  "source_plan": "docs/halfkp_prior_art_recovery_plan_20260729.md",
+  "source_report": "training/halfkp64-scratch-v1/mmto_step4_calibration_report_20260730.json",
+  "source_selected_run_manifest": "runs/halfkp64-scratch-v1/prior-art-step4-lr3e-5-v1/run_manifest.json",
+  "status": "step4_conditionally_passed_step5_instrumentation_pending",
+  "verdict": {
+    "training_implementation_direction": "semantic_checks_passed_absolute_update_effect_pending",
+    "learning_rate_calibration": "positive_dose_response",
+    "selected_learning_rate_status": "provisional",
+    "accepted_parent_improvement": "not_proven",
+    "strength_improvement": "not_evaluated",
+    "overall": "relative_calibration_progressing_absolute_strength_goal_not_demonstrated"
+  },
+  "lineage_policy": {
+    "parent_generation": 2,
+    "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "parent_model_path": "runs/halfkp64-scratch-v1/phase3-wdoor250k-v1-mix70-epoch2-seed20260721/model.bin",
+    "parent_is_scratch_only": true,
+    "kpp_or_current_halfkp_teacher_used": false,
+    "v2_5_0_usage": "final_match_comparison_only"
+  },
+  "fixed_training_spec": {
+    "train_path": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/train.jsonl",
+    "valid_path": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/valid.jsonl",
+    "dataset_manifest_path": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/manifest.json",
+    "dataset_manifest_sha256": "d8da8088b02d3d0200aad2ecb061691c6c418173a16fe32819f03088af48708f",
+    "model_manifest_path": "runs/halfkp64-scratch-v1/phase3-wdoor250k-v1-mix70-epoch2-seed20260721/model.bin.manifest.json",
+    "promotion_registry_path": "training/halfkp64-scratch-v1/promotion_registry.json",
+    "parent_gate_report_path": "training/halfkp64-scratch-v1/promotion_gen2_report.json",
+    "teacher_label": "recorded_wdoor_move",
+    "negative_scope": "every_other_legal_move",
+    "search": "nominal_depth_1_plus_qsearch",
+    "tau_cp": 36.63,
+    "pair_batch_size": 8192,
+    "search_block_roots": 1024,
+    "pv_probe_roots": 1024,
+    "gradient_clip_norm": 1.0,
+    "leaf_reuse_passes": 1,
+    "loss_weight": 1.0,
+    "output_learning_rate_ratio": 0.1,
+    "feature_and_hidden_parameter_limit": 1.0,
+    "output_parameter_limit": 0.2,
+    "max_feature_and_hidden_delta_per_outer": 0.02,
+    "max_output_delta_per_outer": 0.004,
+    "minimum_each_outer_fixed_probe_root_best_move_unchanged": 0.9,
+    "optimizer": "persistent_adagrad",
+    "l1_lambda": 0.0,
+    "l2_lambda": 0.0,
+    "weight_decay": 0.0
+  },
+  "match_spec": {
+    "node_budget_per_move": 20000,
+    "max_depth": 64,
+    "max_plies": 256,
+    "color_swap": true,
+    "parent_diagnostic": {
+      "opening_pairs": 250,
+      "games": 500,
+      "seed": 20260731,
+      "source_path": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/valid.jsonl",
+      "selection": [
+        "require_split_valid",
+        "require_ply_between_8_and_40_inclusive",
+        "exclude_train_and_final_reserve_exact_sfen",
+        "sort_by_ascending_sha256_seed_null_game_key_null_sfen",
+        "scan_in_hash_order_accepting_only_unseen_opening_family_and_unseen_exact_sfen",
+        "take_first_250_or_fail"
+      ],
+      "planned_path": "training/halfkp64-scratch-v1/parent_diagnostic_openings_seed20260731_250.jsonl",
+      "creation_status": "pending_before_phase_d_match",
+      "deduplicate_exact_sfen_against": [
+        "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/train.jsonl",
+        "training/halfkp64-scratch-v1/final_openings_seed20260730_2000.jsonl"
+      ],
+      "test_split_read_for_opening_generation": false,
+      "reserved_2026_final_source_read_for_intermediate_opening_generation": false,
+      "reuse_same_suite_for_all_parent_diagnostics": true,
+      "required_manifest_checks": {
+        "records": 250,
+        "unique_opening_families": 250,
+        "unique_exact_sfen": 250,
+        "minimum_ply": 8,
+        "maximum_ply": 40,
+        "train_exact_sfen_overlap": 0,
+        "final_reserve_exact_sfen_overlap": 0,
+        "source_and_output_sha256_recorded": true
+      },
+      "planning_feasibility_audit": {
+        "eligible_records_after_filters": 14206,
+        "selectable_records_checked": 250,
+        "selected_unique_opening_families": 250,
+        "selected_unique_exact_sfen": 250,
+        "selected_minimum_ply": 8,
+        "selected_maximum_ply": 40
+      },
+      "paired_bootstrap_resamples": 100000,
+      "paired_bootstrap_seed": 20260731,
+      "paired_bootstrap_unit": "opening_pair_mean_of_two_color_swapped_game_scores",
+      "paired_bootstrap_interval": "percentile_2.5_and_97.5_percent",
+      "match_binary_bootstrap_implementation_status": "pending_before_phase_d_match",
+      "catastrophic_audit_gate": "paired_score_95_percent_upper_bound_below_0.45"
+    },
+    "final_v2_5_0": {
+      "opening_pairs": 2000,
+      "games": 4000,
+      "opening_path": "training/halfkp64-scratch-v1/final_openings_seed20260730_2000.jsonl"
+    }
+  },
+  "step4_results": {
+    "metric_semantics": {
+      "valid_metrics": "final_outer_endpoints_for_cross_learning_rate_comparison_not_parent_to_candidate_deltas",
+      "pv_probe_best_move_unchanged": "outer1_to_outer2_last_outer_only",
+      "reported_max_delta": "parent_to_outer2_cumulative_reference_not_the_per_outer_cap_check"
+    },
+    "conditions": {
+      "train_roots": 10000,
+      "valid_roots": 2000,
+      "outer_iterations": 2,
+      "jobs": 8,
+      "pair_batch_size": 8192,
+      "tau_cp": 36.63,
+      "full_train_pairs_per_outer_exact": 56035622,
+      "full_200_outer_pairs_exact": 11207124400,
+      "selected_calibration_dose_fraction_of_full_200": 0.000160599984060139
+    },
+    "runs": [
+      {
+        "feature_learning_rate": 0.000003,
+        "valid_fresh_loss": 0.2289882473295448,
+        "valid_agreement": 0.125,
+        "valid_mean_regret_cp": 353.5173,
+        "pv_probe_best_move_unchanged": 0.9833984375
+      },
+      {
+        "feature_learning_rate": 0.00001,
+        "valid_fresh_loss": 0.22686275106412698,
+        "valid_agreement": 0.1275,
+        "valid_mean_regret_cp": 351.52949,
+        "pv_probe_best_move_unchanged": 0.98046875
+      },
+      {
+        "feature_learning_rate": 0.00003,
+        "valid_fresh_loss": 0.22219761058117013,
+        "valid_agreement": 0.132,
+        "valid_mean_regret_cp": 347.61006163024905,
+        "pv_probe_best_move_unchanged": 0.9716796875,
+        "parent_to_outer2_feature_max_delta": 0.0007163286209106445,
+        "parent_to_outer2_hidden_max_delta": 0.0007011294364929199,
+        "parent_to_outer2_output_max_delta": 0.00007565505802631378,
+        "model_sha256": "fd82e4e028f8aa9b41b94387058a6c3105c5302ca2dd9b5b6e80ac6b755daaac",
+        "optimizer_sha256": "6119bb2ea8cb51264b7463abfd96626a86569e4851eb4ee1dacaaaa5d1eb1744"
+      }
+    ],
+    "low_to_high_learning_rate_delta": {
+      "valid_fresh_loss_absolute": -0.00679063674837467,
+      "valid_fresh_loss_relative": -0.02965495752540531,
+      "valid_agreement_percentage_points": 0.7,
+      "valid_agreement_roots": 14,
+      "valid_mean_regret_cp": -5.907238369750966
+    },
+    "safety": {
+      "all_qsearch_rejected_bounds_zero": true,
+      "material_bits_equal": true,
+      "delta_cap_semantics": "cap_is_checked_per_outer_not_against_parent_to_final_cumulative_delta",
+      "outer1_max_delta": {
+        "feature": 0.0005068182945251465,
+        "hidden": 0.0004825890064239502,
+        "output": 0.000052813440561294556
+      },
+      "outer2_max_delta": {
+        "feature": 0.00021360814571380615,
+        "hidden": 0.00021854043006896973,
+        "output": 0.000022841617465019226
+      },
+      "root_best_move_stability_reference": "outer1_to_outer2_last_outer_only",
+      "saved_outer1_to_outer2_root_best_move_stability_gate_binding": false,
+      "outer0_to_outer1_root_best_move_stability": "missing"
+    }
+  },
+  "audit_gaps": [
+    "same_2000_root_parent_outer0_fresh_metrics_missing",
+    "outer1_fresh_metrics_missing",
+    "per_outer_manifest_overwritten",
+    "abs_delta_over_tau_quantiles_missing",
+    "active_derivative_fraction_missing",
+    "regret_quantiles_missing",
+    "gradient_clip_rate_missing",
+    "per_root_and_game_paired_metrics_missing",
+    "per_section_monotonic_wall_time_missing",
+    "immutable_milestone_checkpoint_archives_missing",
+    "strength_match_not_run"
+  ],
+  "decisions": {
+    "provisional_feature_learning_rate": 0.00003,
+    "provisional_output_learning_rate": 0.000003,
+    "rerun_all_three_learning_rates": false,
+    "change_loss_or_architecture_now": false,
+    "run_100k_before_recording_fix": false,
+    "run_full_200_as_one_job": false,
+    "root_best_move_stability_threshold": 0.9,
+    "root_best_move_stability_threshold_change": false,
+    "root_best_move_stability_is_full_pv_stability": false
+  },
+  "next_phases": [
+    {
+      "id": "A",
+      "name": "minimal_long_run_observability_and_checkpointing",
+      "status": "pending",
+      "required": [
+        "outer0_and_all_outer_fixed_valid_history",
+        "immutable_model_optimizer_manifest_at_selected_outer",
+        "search_update_valid_save_monotonic_timings",
+        "update_side_abs_delta_over_tau_quantiles_and_active_derivative_fraction",
+        "regret_quantiles_and_gradient_clip_rate",
+        "per_outer_feature_hidden_and_output_max_delta",
+        "fixed_probe_qsearch_pv_length_pv_sequence_hash_and_leaf_position_hash_stability",
+        "qnodes_per_root_and_binary_sha"
+      ],
+      "gradient_diagnostic_semantics": "collect_delta_over_tau_and_active_derivative_when_add_pair_gradient_reforwards_each_leaf_with_current_update_side_weights_not_from_search_snapshot_fixed_scores",
+      "artifact_policy": "atomically_write_one_metrics_outer_NNNN_json_per_outer_and_do_not_build_an_append_log_recovery_protocol",
+      "deferred_until_before_full_production": [
+        "per_root_valid_metrics_with_game_key",
+        "parameter_rms_p99_and_max"
+      ],
+      "forbidden_scope_expansion": [
+        "new_loss",
+        "new_regularizer",
+        "new_architecture",
+        "dashboard",
+        "block_level_resume"
+      ]
+    },
+    {
+      "id": "B",
+      "name": "reproduce_selected_rate_on_10k_for_four_outer",
+      "status": "pending",
+      "start_model": "accepted_generation_2",
+      "train_roots": 10000,
+      "valid_roots": 2000,
+      "outer_iterations": 4,
+      "feature_learning_rate": 0.00003,
+      "output_learning_rate": 0.000003,
+      "jobs": 8,
+      "inherits_fixed_training_spec": true,
+      "expected_outer2_model_sha256": "fd82e4e028f8aa9b41b94387058a6c3105c5302ca2dd9b5b6e80ac6b755daaac",
+      "expected_outer2_optimizer_sha256": "6119bb2ea8cb51264b7463abfd96626a86569e4851eb4ee1dacaaaa5d1eb1744",
+      "estimated_wall_hours": "3.5-4",
+      "go_gate": [
+        "provenance_and_semantic_safety_pass",
+        "outer2_byte_reproduces_old_artifact",
+        "outer4_fixed_valid_fresh_loss_below_outer0",
+        "pv_probe_root_best_move_unchanged_at_least_0.90_for_every_outer"
+      ],
+      "binary_provenance_scope": "record_new_binary_sha_and_require_consistency_across_new_run_and_resume_because_old_step4_binary_sha_was_not_saved",
+      "warning_only": "qnodes_per_root_more_than_10_percent_above_outer0"
+    },
+    {
+      "id": "C",
+      "name": "short_jobs_benchmark",
+      "status": "pending",
+      "start_model": "accepted_generation_2",
+      "train_roots": 1024,
+      "valid_roots": 1024,
+      "outer_iterations": 1,
+      "feature_learning_rate": 0.00003,
+      "output_learning_rate": 0.000003,
+      "jobs": [
+        1,
+        4,
+        8
+      ],
+      "inherits_fixed_training_spec": true,
+      "selection": "fastest_byte_deterministic_setting"
+    },
+    {
+      "id": "D",
+      "name": "run_100k_four_outer",
+      "status": "pending",
+      "start_model": "accepted_generation_2",
+      "train_roots": 100000,
+      "valid_roots": 10000,
+      "outer_iterations": 4,
+      "feature_learning_rate": 0.00003,
+      "output_learning_rate": 0.000003,
+      "jobs": "phase_c_selected_byte_deterministic_setting",
+      "inherits_fixed_training_spec": true,
+      "estimated_wall_hours": "32-36",
+      "execution": "run_outer1_validate_then_resume_to_outer4",
+      "success": "outer4_fixed_valid_fresh_loss_below_outer0_with_all_semantic_and_safety_gates",
+      "pre_match_requirements": [
+        "create_and_verify_parent_diagnostic_opening_suite_per_match_spec",
+        "implement_opening_pair_clustered_percentile_bootstrap_in_match_report",
+        "test_bootstrap_known_fixture_seed_determinism_and_pair_order_invariance"
+      ],
+      "post_run_parent_match_games": 500,
+      "parent_match_role": "diagnostic_except_catastrophic_audit_gate",
+      "catastrophic_audit_gate": "pause_full_start_if_opening_pair_clustered_paired_score_95_percent_upper_bound_is_below_0.45"
+    },
+    {
+      "id": "E",
+      "name": "staged_full_run",
+      "status": "pending",
+      "start_model": "accepted_generation_2",
+      "train_roots": 570875,
+      "valid_probe_roots": 10000,
+      "full_valid_roots_at_milestones": 90759,
+      "feature_learning_rate": 0.00003,
+      "output_learning_rate": 0.000003,
+      "jobs": "phase_c_selected_byte_deterministic_setting",
+      "inherits_fixed_training_spec": true,
+      "preproduction_observability": [
+        "per_root_valid_loss_agreement_regret_qnodes_and_game_key",
+        "parameter_rms_p99_and_max",
+        "eval_only_full_valid_90759_roots_without_model_or_optimizer_update",
+        "freeze_accepted_generation2_outer0_eval_only_metrics_on_the_same_90759_full_valid_roots_before_any_production_update"
+      ],
+      "preproduction_regression_gate_after_observability_change": [
+        "loss_weight_zero_model_and_optimizer_byte_identity",
+        "short_known_training_run_model_and_optimizer_byte_equal_to_prechange_artifact"
+      ],
+      "initial_milestones": [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      "later_milestones_after_outer16_gate": [
+        32,
+        64,
+        100,
+        144,
+        200
+      ],
+      "continue_after_16_gate": [
+        "all_provenance_semantic_numeric_and_parameter_safety_checks_pass",
+        "outer16_full_valid_fresh_loss_below_outer0",
+        "not_loss_outer4_less_than_loss_outer8_less_than_loss_outer16",
+        "resume_disk_and_thermal_operation_safe"
+      ],
+      "parent_match_diagnostic_milestones": [
+        8,
+        16,
+        32,
+        64,
+        100,
+        144,
+        200
+      ],
+      "later_milestone_continue_gate": "current_full_valid_loss_below_outer0_and_no_loss_increase_across_both_of_the_two_most_recent_milestone_intervals",
+      "estimated_wall_hours_per_outer": "40-50",
+      "estimated_wall_hours_for_200": "8000-10000",
+      "invocation_targets": [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      "resume_between_invocations": true,
+      "accepted_failure_recovery_point": "one_outer_iteration",
+      "block_level_resume": false,
+      "external_monitoring": [
+        "cpu_temperature",
+        "free_disk_space",
+        "process_heartbeat"
+      ],
+      "ordinary_small_parent_match_is_stop_gate": false,
+      "catastrophic_parent_match_audit_gate": "paired_score_95_percent_upper_bound_below_0.45"
+    },
+    {
+      "id": "F",
+      "name": "freeze_test_and_final_v2_5_0_match",
+      "status": "pending",
+      "policy": "unchanged_from_prior_art_recovery_plan",
+      "inherits_evaluation_policy_from": "training/halfkp64-scratch-v1/prior_art_recovery_plan_20260729.json"
+    }
+  ],
+  "deferred": [
+    "multiple_leaf_reuse_passes_require_a_separate_plan_after_the_one_pass_100k_and_initial_full_results",
+    "global_bonanza_leaf_reuse_and_block_local_streaming_reuse_must_not_be_described_as_equivalent"
+  ]
+}
