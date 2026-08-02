@@ -154,7 +154,7 @@ impl Default for Gradient {
     }
 }
 
-#[derive(Default, Serialize, Clone)]
+#[derive(Serialize, Clone)]
 struct UpdateDiagnostics {
     #[serde(skip)]
     delta_hist: [u64; DELTA_HIST_BINS],
@@ -165,6 +165,21 @@ struct UpdateDiagnostics {
     active_derivative_fraction: f64,
     update_batches: u64,
     clipped_batches: u64,
+}
+
+impl Default for UpdateDiagnostics {
+    fn default() -> Self {
+        Self {
+            delta_hist: [0; DELTA_HIST_BINS],
+            pairs: 0,
+            delta_over_tau_p50: 0.0,
+            delta_over_tau_p90: 0.0,
+            delta_over_tau_p99: 0.0,
+            active_derivative_fraction: 0.0,
+            update_batches: 0,
+            clipped_batches: 0,
+        }
+    }
 }
 
 #[derive(Serialize)]
