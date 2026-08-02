@@ -149,6 +149,13 @@ fresh-valid loss、agreement、regret、更新量分位点で比較し、最小l
 `1e-3`はこのscreenでは実行しない。`3e-4`でも改善が続き、更新診断が飽和していない場合に限り、別判断として再検討する。
 このscreenは校正であり、v2.5.0を上回ったことを意味しない。
 
+`1e-4`のscreenは完了した。valid fresh lossはouter 1で`0.21655246`、outer 2で`0.21251359`まで改善したが、
+outer 1の固定probe best-move維持率が`0.876953125`であり、90% Gateに違反した。outer 2は`0.9482421875`まで
+戻ったものの、全outer合格条件を満たさないため、この候補は採用せず、`3e-4`も実行しない。更新診断では
+`|delta|/tau`のp50/p90/p99がouter 2で`10/31/81`、active derivative率`0.3612`、gradient clip率`11/110`
+であり、単純な飽和よりも初回更新の不安定性が問題と判断する。結果は
+`runs/halfkp64-scratch-v1/prior-art-step4-lr1e-4-v2/`に保存した。
+
 ### Phase A: 長期実行に必要な最小記録を追加する
 
 `halfkp_mmto_train`の学習式、探索条件、optimizer、parameter更新順は変えず、次だけを追加する。

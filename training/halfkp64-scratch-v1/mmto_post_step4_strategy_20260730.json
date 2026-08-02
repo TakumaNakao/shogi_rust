@@ -6,7 +6,7 @@
   "source_plan": "docs/halfkp_prior_art_recovery_plan_20260729.md",
   "source_report": "training/halfkp64-scratch-v1/mmto_step4_calibration_report_20260730.json",
   "source_selected_run_manifest": "runs/halfkp64-scratch-v1/prior-art-step4-lr3e-5-v1/run_manifest.json",
-  "status": "higher_learning_rate_screen_running_1e-4",
+  "status": "higher_learning_rate_screen_1e-4_rejected_stability",
   "verdict": {
     "training_implementation_direction": "semantic_checks_passed_absolute_update_effect_pending",
     "learning_rate_calibration": "positive_dose_response",
@@ -211,6 +211,18 @@
     ],
     "higher_learning_rate_screen_stop": "stop_on_nonfinite_bound_touch_or_fixed_probe_stability_below_0.90",
     "higher_learning_rate_screen_selection": "choose_lowest_fresh_valid_loss_among_safe_runs_then_extend_winner_to_outer4"
+    ,"higher_learning_rate_results": {
+      "1e-4": {
+        "run": "runs/halfkp64-scratch-v1/prior-art-step4-lr1e-4-v2",
+        "outer1_valid_fresh_loss": 0.21655246166404354,
+        "outer2_valid_fresh_loss": 0.21251359482083246,
+        "outer1_pv_probe_best_move_unchanged": 0.876953125,
+        "outer2_pv_probe_best_move_unchanged": 0.9482421875,
+        "outer1_clipped_batches": 8,
+        "outer2_clipped_batches": 11,
+        "decision": "reject_stability_gate_and_do_not_run_3e-4"
+      }
+    }
   },
   "next_phases": [
     {
