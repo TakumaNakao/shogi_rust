@@ -136,6 +136,14 @@ warningは原因調査を開始するが、それ単独で棄却しない。best
 
 完了条件: `1e-4`の改善が一部gameだけでなくgame横断で確認でき、変更したbest moveの方向を説明できる。
 
+Phase 1は完了した。6,099 game各1 rootのauditでは、parentのroot-equal mean pair lossは`0.22240457`だった。
+`3e-5` outer 2は`0.21644027`、`1e-4` outer 1は`0.21189074`、`1e-4` outer 2は`0.20841469`まで低下した。
+parentとの差のgame単位bootstrap 95%区間は、それぞれ`[-0.00667850,-0.00525955]`、
+`[-0.01162620,-0.00938168]`、`[-0.01552393,-0.01246939]`で、全候補がparentより明確に改善した。
+`1e-4` outer 2ではwrong→teacherが137 root、teacher→wrongが60 rootで、変更方向も正である。
+qnodes/rootはparent比6.63%増で、10% warning域内だった。従って旧90% Gate違反は品質悪化を示しておらず、
+Phase 2の`1e-4` outer 4へ進む。
+
 ### Phase 2: `1e-4`をouter 4まで確認する
 
 - 既存outer 2 checkpointからouter 3、4へresumeする。
@@ -210,9 +218,9 @@ lineage自身の深い探索または自己対局から教師を作る次計画�
 
 | Phase | 状態 | 次の成果物 |
 |---|---|---|
-| 0 成果物保全・判定訂正 | pending | immutable outer 1 / 2、訂正manifest |
-| 1 per-root fixed audit | pending | 6,099-root set、paired report |
-| 2 `1e-4` outer 4 | pending | outer 3 / 4 metrics |
+| 0 成果物保全・判定訂正 | completed | immutable outer 1 / 2、訂正manifest |
+| 1 per-root fixed audit | completed | 6,099-root set、paired report |
+| 2 `1e-4` outer 4 | in progress | outer 3 / 4 metrics |
 | 3 `3e-4` bounded screen | blocked by Phase 1–2 | 最大4 outer metrics |
 | 4 LR凍結 | blocked by Phase 3 | selection report |
 | 5 100k × 1 | blocked by Phase 4 | scale confirmation |

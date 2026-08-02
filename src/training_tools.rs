@@ -12,6 +12,7 @@ pub mod halfkp_factorization;
 pub mod halfkp_game_generate;
 pub mod halfkp_health_generate;
 pub mod halfkp_kpp_train;
+pub mod halfkp_mmto_audit;
 pub mod halfkp_mmto_train;
 pub mod halfkp_opening_report;
 pub mod halfkp_policy_train;

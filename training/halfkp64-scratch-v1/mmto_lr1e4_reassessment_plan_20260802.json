@@ -5,7 +5,7 @@
   "lineage": "halfkp64-scratch-v1",
   "source_report": "runs/halfkp64-scratch-v1/prior-art-step4-lr1e-4-v2/run_manifest.json",
   "human_plan": "docs/halfkp_mmto_lr1e4_reassessment_20260802.md",
-  "status": "reassessment_complete_phase0_pending",
+  "status": "phase2_lr1e-4_outer4_running",
   "verdict": {
     "old_gate_stop_procedure": "correct",
     "old_candidate_rejection": "reversed",
@@ -75,6 +75,45 @@
       "full_valid_games": 6099,
       "old_90_percent_threshold_has_empirical_calibration": false,
       "metric_is_full_pv_stability": false
+    },
+    "cross_game_fixed_audit": {
+      "audit_set_path": "training/halfkp64-scratch-v1/mmto_audit_valid_20260802.jsonl",
+      "audit_set_sha256": "e0a710c116c5507df566a9716f28015efd1511d51016ebdc7a2b780e5a312cbe",
+      "roots": 6099,
+      "games": 6099,
+      "opening_families": 1892,
+      "comparison_report": "runs/halfkp64-scratch-v1/mmto_root_audit_20260802/comparison.json",
+      "lr3e-5_outer2": {
+        "loss_root_equal": 0.2164402718641579,
+        "loss_delta_vs_parent_mean": -0.0059642934971376165,
+        "loss_delta_vs_parent_bootstrap_95": [-0.006678495483893672, -0.005259552464121882],
+        "agreement": 0.14920478767010986,
+        "regret_cp": 722.8663824916592,
+        "qnodes_per_root": 195320.14838498115
+      },
+      "lr1e-4_outer1": {
+        "loss_root_equal": 0.2118907414945344,
+        "loss_delta_vs_parent_mean": -0.0105138238667626,
+        "loss_delta_vs_parent_bootstrap_95": [-0.011626202998337092, -0.009381683950489396],
+        "agreement": 0.15199212985735366,
+        "regret_cp": 717.929183346077,
+        "qnodes_per_root": 199136.1380554189,
+        "wrong_to_teacher": 95,
+        "teacher_to_wrong": 54
+      },
+      "lr1e-4_outer2": {
+        "loss_root_equal": 0.2084146939060414,
+        "loss_delta_vs_parent_mean": -0.01398987145525579,
+        "loss_delta_vs_parent_bootstrap_95": [-0.015523931749756416, -0.012469389475132764],
+        "agreement": 0.15789473684210525,
+        "regret_cp": 713.9893143178213,
+        "qnodes_per_root": 202664.2651254304,
+        "qnodes_relative_to_parent": 0.06631511137811019,
+        "wrong_to_teacher": 137,
+        "teacher_to_wrong": 60,
+        "non_teacher_to_non_teacher": 768,
+        "hard_safety": "pass"
+      }
     }
   },
   "gate_policy": {
@@ -105,7 +144,7 @@
     {
       "id": 0,
       "name": "preserve_artifacts_and_correct_verdict",
-      "status": "pending",
+      "status": "completed",
       "required": [
         "archive_lr1e-4_outer1_model_and_optimizer",
         "archive_lr1e-4_outer2_model_optimizer_checkpoint_and_metrics",
@@ -116,7 +155,7 @@
     {
       "id": 1,
       "name": "minimal_per_root_fresh_audit",
-      "status": "pending",
+      "status": "completed",
       "audit_set": {
         "source": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/valid.jsonl",
         "selection": "one_deterministic_seeded_hash_root_per_game",
@@ -154,7 +193,7 @@
     {
       "id": 2,
       "name": "extend_lr1e-4_to_outer4",
-      "status": "blocked_by_phase1",
+      "status": "in_progress",
       "start": "existing_lr1e-4_outer2_checkpoint",
       "target_outer": 4,
       "estimated_wall_hours": 1.8,
