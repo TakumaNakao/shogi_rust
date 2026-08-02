@@ -672,8 +672,8 @@ fallbackのscratch self-playでは、promoted scratch model自身が定跡なし
 | 6 | full milestone 1 / 2 / 4 / 8 / 16、Gate通過時は後半継続 | pending | checkpoint manifests |
 | 7 | parent / test / v2.5.0評価 | pending | match reports |
 
-現在の実行判断と進捗の機械可読な正本は
-`training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json`とする。
+現在の実行判断と進捗の機械可読な正本は、2026-08-02のGate再評価により
+`training/halfkp64-scratch-v1/mmto_lr1e4_reassessment_plan_20260802.json`へ移した。
 `prior_art_recovery_plan_20260729.json`は元計画と来歴を保持する。
 
 ### Step 1 実行記録（2026-07-29）
@@ -730,8 +730,9 @@ outer別wall timeが保存されていないことを確認した。このため
 3 LRを再実行したりはしない。
 Step 5冒頭で記録機能を補い、`3e-5`だけを10k × 4 outerで再現する。
 
-評価の説明は`docs/halfkp_mmto_post_step4_strategy_20260730.md`へ、現在の機械可読な実行正本は
-`training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json`へ固定した。
+当時の評価説明は`docs/halfkp_mmto_post_step4_strategy_20260730.md`、当時の実行計画は
+`training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json`へ固定した。現在の実行正本は
+2026-08-02の再評価計画を参照する。
 
 ## 10. 今回行わないこと
 

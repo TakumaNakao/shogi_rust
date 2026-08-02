@@ -3064,7 +3064,7 @@ Bonanza/MMTOの規模は47,566棋譜、4,467,116棋譜手、368,313,024 move pai
 
 元の詳細仕様、停止条件、進捗表は
 `docs/halfkp_prior_art_recovery_plan_20260729.md`に分離した。Step 4後の現在の実行正本は
-`training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json`とし、
+`training/halfkp64-scratch-v1/mmto_lr1e4_reassessment_plan_20260802.json`とし、
 旧`prior_art_recovery_plan_20260729.json`は来歴として保持する。
 15.23以前の計画と矛盾する場合は、次の15.24と現在の分離計画を優先する。
 
@@ -3085,8 +3085,19 @@ feature / hidden learning rate `3e-6 / 1e-5 / 3e-5`を比較した。候補最�
 Step 4から約330～420日の計算量が外挿されるため、一括jobにしない。outer 1 / 2 / 4 / 8 / 16を
 別invocationでresumeし、事前Gate通過時だけ32 / 64 / 100 / 144 / 200へ継続する。
 
-詳細説明は`docs/halfkp_mmto_post_step4_strategy_20260730.md`、現在の機械可読な実行正本は
-`training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json`である。
+詳細説明は`docs/halfkp_mmto_post_step4_strategy_20260730.md`に履歴として残す。
+
+### 15.25 `1e-4`安定性Gate再評価（2026-08-02）
+
+`1e-4` outer 1はroot best-move維持率87.70%で旧90% Gateを下回ったが、outer 2では94.82%へ回復し、
+fresh-valid lossは`3e-5` outer 2より4.36%低かった。旧Gateに従って自動進行を止めた手続きは維持する一方、
+この指標はPV全体でも棋力でもなく、先頭1,024 rootは48 gameにしか属さないため、単独のhard rejectionには
+使わない。`1e-4`をwarning付き継続候補へ戻す。
+
+次はgame横断fixed audit、`1e-4` outer 4、限定した`3e-4`上限確認、100k 1 outer、full outer
+`1 / 2 / 4 / 8 / 16`の順とする。旧100k × 4とfull 200 outerへの事前commitは廃止する。
+詳細説明は`docs/halfkp_mmto_lr1e4_reassessment_20260802.md`、現在の機械可読な実行正本は
+`training/halfkp64-scratch-v1/mmto_lr1e4_reassessment_plan_20260802.json`である。
 
 ## 16. 参考資料と本計画への反映
 

@@ -4,8 +4,8 @@
   "scope": "HalfKP-64 scratch training failure audit and Bonanza-MMTO-objective-aligned recovery",
   "status": "in_progress",
   "last_review_date": "2026-07-30",
-  "current_strategy": "training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json",
-  "current_execution_source_of_truth": "training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json",
+  "current_strategy": "training/halfkp64-scratch-v1/mmto_lr1e4_reassessment_plan_20260802.json",
+  "current_execution_source_of_truth": "training/halfkp64-scratch-v1/mmto_lr1e4_reassessment_plan_20260802.json",
   "decision": "bonanza_mmto_objective_aligned_halfkp_adaptation",
   "historical_plan_source_of_truth": "docs/halfkp_prior_art_recovery_plan_20260729.md",
   "lineage": {

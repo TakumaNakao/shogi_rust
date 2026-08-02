@@ -1,0 +1,241 @@
+{
+  "schema_version": 1,
+  "role": "current_machine_readable_execution_source_of_truth",
+  "date": "2026-08-02",
+  "lineage": "halfkp64-scratch-v1",
+  "source_report": "runs/halfkp64-scratch-v1/prior-art-step4-lr1e-4-v2/run_manifest.json",
+  "human_plan": "docs/halfkp_mmto_lr1e4_reassessment_20260802.md",
+  "status": "reassessment_complete_phase0_pending",
+  "verdict": {
+    "old_gate_stop_procedure": "correct",
+    "old_candidate_rejection": "reversed",
+    "learning_rate_1e-4": "held_for_review_promising_candidate",
+    "learning_rate_3e-4": "deferred_until_1e-4_directional_and_outer4_review",
+    "strength_improvement": "not_yet_evaluated"
+  },
+  "lineage_policy": {
+    "parent_generation": 2,
+    "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "parent_is_scratch_only": true,
+    "kpp_or_current_halfkp_teacher_used": false,
+    "v2_5_0_usage": "final_frozen_match_only"
+  },
+  "evidence": {
+    "lr3e-5_outer2": {
+      "valid_loss": 0.22219761058117013,
+      "agreement": 0.132,
+      "mean_regret_cp": 347.61006163024905,
+      "qnodes_per_root": 159220.9325,
+      "best_move_unchanged": 0.9716796875
+    },
+    "lr1e-4_outer1": {
+      "model_sha256": "934b5675ec5ae92d5837704a6debeaf752521303dad6ee4388b3560d7811607f",
+      "optimizer_sha256": "6dab6bd0feee88b57bdebd6c2f11ea518ae24a1c18e187a0d63f15b76d308a6b",
+      "valid_loss": 0.21655246166404354,
+      "agreement": 0.1335,
+      "mean_regret_cp": 343.9583714113235,
+      "qnodes_per_root": 161436.45,
+      "best_move_unchanged": 0.876953125,
+      "unchanged_roots": 898,
+      "changed_roots": 126,
+      "feature_max_delta": 0.0016907873,
+      "hidden_max_delta": 0.0014259815,
+      "output_max_delta": 0.00015945546,
+      "update_batches": 110,
+      "clipped_batches": 8,
+      "active_derivative_fraction": 0.375418364943129
+    },
+    "lr1e-4_outer2": {
+      "model_sha256": "d8fe5a48374b0435832fd28f286f5591982130c1b78a35f3b0499b40495d995e",
+      "optimizer_sha256": "9b584a2398f3ceb297f1c5737d6c0518b8bfb3cc5779f9bcf5f777837a339c54",
+      "valid_loss": 0.21251359482083246,
+      "agreement": 0.1355,
+      "mean_regret_cp": 341.3369849615097,
+      "qnodes_per_root": 163692.5025,
+      "best_move_unchanged": 0.9482421875,
+      "unchanged_roots": 971,
+      "changed_roots": 53,
+      "feature_max_delta": 0.0007582884,
+      "hidden_max_delta": 0.00067669153,
+      "output_max_delta": 0.000070955604,
+      "update_batches": 110,
+      "clipped_batches": 11,
+      "active_derivative_fraction": 0.3611884009014014
+    },
+    "lr1e-4_vs_lr3e-5_outer2": {
+      "valid_loss_relative_change": -0.043582897831388,
+      "agreement_percentage_point_change": 0.35,
+      "mean_regret_cp_change": -6.27307666873935,
+      "qnodes_per_root_relative_change": 0.0280840586083115
+    },
+    "probe_audit": {
+      "first_1024_valid_roots_games": 48,
+      "first_2000_valid_roots_games": 97,
+      "full_valid_roots": 90759,
+      "full_valid_games": 6099,
+      "old_90_percent_threshold_has_empirical_calibration": false,
+      "metric_is_full_pv_stability": false
+    }
+  },
+  "gate_policy": {
+    "hard_safety_stop": [
+      "provenance_mismatch",
+      "non_finite_value",
+      "illegal_move_or_root_restore_failure",
+      "qsearch_bound_rejection",
+      "material_bit_change",
+      "parameter_bound_touch",
+      "feature_or_hidden_delta_at_least_0.02",
+      "output_delta_at_least_0.004",
+      "artifact_sha_mismatch"
+    ],
+    "quality_progression": [
+      "game_clustered_paired_fixed_valid_loss_not_clearly_worse",
+      "stop_after_two_consecutive_fixed_valid_checkpoint_regressions",
+      "prefer_lower_learning_rate_when_difference_is_inconclusive"
+    ],
+    "warning_only": [
+      "root_best_move_unchanged_below_0.90",
+      "qnodes_per_root_more_than_10_percent_above_baseline",
+      "clip_active_derivative_or_parameter_delta_trend_change"
+    ],
+    "do_not_replace_90_percent_with_another_unvalidated_churn_threshold": true
+  },
+  "phases": [
+    {
+      "id": 0,
+      "name": "preserve_artifacts_and_correct_verdict",
+      "status": "pending",
+      "required": [
+        "archive_lr1e-4_outer1_model_and_optimizer",
+        "archive_lr1e-4_outer2_model_optimizer_checkpoint_and_metrics",
+        "record_all_sha_and_lineage",
+        "mark_old_reject_as_historical_and_current_status_as_held_for_review"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "minimal_per_root_fresh_audit",
+      "status": "pending",
+      "audit_set": {
+        "source": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/valid.jsonl",
+        "selection": "one_deterministic_seeded_hash_root_per_game",
+        "roots": 6099,
+        "games": 6099,
+        "final_reserve_read": false
+      },
+      "models": [
+        "accepted_generation2",
+        "lr3e-5_outer1",
+        "lr3e-5_outer2",
+        "lr1e-4_outer1",
+        "lr1e-4_outer2"
+      ],
+      "per_root_fields": [
+        "game_key",
+        "root_hash",
+        "teacher_move",
+        "best_move",
+        "teacher_score_cp",
+        "best_score_cp",
+        "mean_pair_loss",
+        "regret_cp",
+        "qnodes"
+      ],
+      "paired_analysis": [
+        "game_key_clustered_loss_delta_95_percent_interval",
+        "wrong_to_teacher",
+        "teacher_to_wrong",
+        "non_teacher_to_non_teacher",
+        "unchanged"
+      ],
+      "minimal_implementation_only": true
+    },
+    {
+      "id": 2,
+      "name": "extend_lr1e-4_to_outer4",
+      "status": "blocked_by_phase1",
+      "start": "existing_lr1e-4_outer2_checkpoint",
+      "target_outer": 4,
+      "estimated_wall_hours": 1.8,
+      "selection": "best_safe_fixed_valid_checkpoint_not_necessarily_outer4"
+    },
+    {
+      "id": 3,
+      "name": "bounded_lr3e-4_upper_bracket",
+      "status": "blocked_by_phase2",
+      "start": "accepted_generation2",
+      "feature_learning_rate": 0.0003,
+      "output_learning_rate": 0.00003,
+      "train_roots": 10000,
+      "aggregate_valid_roots": 2000,
+      "outer1_to_outer2_gate": "hard_safety_pass_and_fixed_audit_loss_lower_than_matched_lr1e-4_outer",
+      "outer2_to_outer4_gate": "hard_safety_pass_and_fixed_audit_loss_lower_than_lr1e-4_outer2",
+      "maximum_outer": 4,
+      "forbidden": [
+        "learning_rate_1e-3",
+        "intermediate_learning_rate_search",
+        "new_optimizer",
+        "manual_learning_rate_schedule"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "freeze_learning_rate",
+      "status": "blocked_by_phase3",
+      "candidates": [0.00003, 0.0001, 0.0003],
+      "selection_order": [
+        "all_hard_safety_checks_pass",
+        "lowest_game_paired_fixed_audit_loss_at_matched_outer",
+        "regret_and_teacher_direction_non_regression",
+        "lower_learning_rate_on_inconclusive_difference"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "100k_one_outer_scale_confirmation",
+      "status": "blocked_by_phase4",
+      "start": "accepted_generation2",
+      "train_roots": 100000,
+      "valid_roots": 10000,
+      "outer_iterations": 1,
+      "estimated_wall_hours": "8-9",
+      "do_not_inherit_pilot_model": true,
+      "replaces_old_100k_four_outer_plan": true
+    },
+    {
+      "id": 6,
+      "name": "full_dataset_staged_training",
+      "status": "blocked_by_phase5",
+      "start": "accepted_generation2",
+      "train_roots": 570875,
+      "audit_roots_each_outer": 6099,
+      "full_valid_roots_at_milestones": 90759,
+      "milestones": [1, 2, 4, 8, 16],
+      "estimated_wall_hours_per_outer": "40-50",
+      "best_checkpoint_selection": true,
+      "commit_to_200_outer_now": false,
+      "manual_learning_rate_decay": false
+    },
+    {
+      "id": 7,
+      "name": "strength_evaluation",
+      "status": "runs_at_full_milestones",
+      "parent_match_games": 500,
+      "parent_match_color_swap": true,
+      "catastrophic_stop": "paired_score_95_percent_upper_bound_below_0.45",
+      "promotion": "paired_score_95_percent_lower_bound_above_0.50",
+      "final_v2_5_0_games": 4000,
+      "v2_5_0_only_after_final_checkpoint_freeze": true
+    }
+  ],
+  "deferred": [
+    "new_loss",
+    "new_regularizer",
+    "new_architecture",
+    "manual_learning_rate_schedule",
+    "dashboard",
+    "full_pv_and_leaf_hash_instrumentation_until_before_production",
+    "selfplay_or_deeper_scratch_teacher_until_mmto_objective_strength_divergence_is_demonstrated"
+  ]
+}

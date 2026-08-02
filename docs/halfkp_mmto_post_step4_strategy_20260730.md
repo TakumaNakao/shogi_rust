@@ -2,7 +2,7 @@
 
 - 作成日: 2026-07-30
 - 対象lineage: `halfkp64-scratch-v1`
-- 状態: **Step 4条件付き合格、Step 5事前整備待ち**
+- 状態: **2026-08-02のGate再評価により実行正本から置換済み**
 - 初期model: accepted scratch generation 2
   `9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6`
 - 暫定learning rate: feature / hidden `3e-5`、output `3e-6`
@@ -12,7 +12,8 @@
 - 選択run一次成果物:
   `runs/halfkp64-scratch-v1/prior-art-step4-lr3e-5-v1/run_manifest.json`
 - 現在の機械可読な実行正本:
-  `training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json`
+  `training/halfkp64-scratch-v1/mmto_lr1e4_reassessment_plan_20260802.json`
+- 置換後の説明: `docs/halfkp_mmto_lr1e4_reassessment_20260802.md`
 
 ## 1. 結論
 
@@ -149,7 +150,8 @@ fresh-valid loss、agreement、regret、更新量分位点で比較し、最小l
 `1e-3`はこのscreenでは実行しない。`3e-4`でも改善が続き、更新診断が飽和していない場合に限り、別判断として再検討する。
 このscreenは校正であり、v2.5.0を上回ったことを意味しない。
 
-`1e-4`のscreenは完了した。valid fresh lossはouter 1で`0.21655246`、outer 2で`0.21251359`まで改善したが、
+以下はscreen直後の旧判定であり、2026-08-02の再評価で置換した。`1e-4`のscreenは完了した。
+valid fresh lossはouter 1で`0.21655246`、outer 2で`0.21251359`まで改善したが、
 outer 1の固定probe best-move維持率が`0.876953125`であり、90% Gateに違反した。outer 2は`0.9482421875`まで
 戻ったものの、全outer合格条件を満たさないため、この候補は採用せず、`3e-4`も実行しない。更新診断では
 `|delta|/tau`のp50/p90/p99がouter 2で`10/31/81`、active derivative率`0.3612`、gradient clip率`11/110`

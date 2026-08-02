@@ -1,12 +1,13 @@
 {
   "schema_version": 1,
-  "role": "current_machine_readable_execution_source_of_truth",
+  "role": "superseded_machine_readable_execution_plan",
   "date": "2026-07-30",
+  "superseded_by": "training/halfkp64-scratch-v1/mmto_lr1e4_reassessment_plan_20260802.json",
   "lineage": "halfkp64-scratch-v1",
   "source_plan": "docs/halfkp_prior_art_recovery_plan_20260729.md",
   "source_report": "training/halfkp64-scratch-v1/mmto_step4_calibration_report_20260730.json",
   "source_selected_run_manifest": "runs/halfkp64-scratch-v1/prior-art-step4-lr3e-5-v1/run_manifest.json",
-  "status": "higher_learning_rate_screen_1e-4_rejected_stability",
+  "status": "superseded_after_lr1e-4_gate_reassessment",
   "verdict": {
     "training_implementation_direction": "semantic_checks_passed_absolute_update_effect_pending",
     "learning_rate_calibration": "positive_dose_response",
