@@ -6,7 +6,7 @@
   "source_plan": "docs/halfkp_prior_art_recovery_plan_20260729.md",
   "source_report": "training/halfkp64-scratch-v1/mmto_step4_calibration_report_20260730.json",
   "source_selected_run_manifest": "runs/halfkp64-scratch-v1/prior-art-step4-lr3e-5-v1/run_manifest.json",
-  "status": "step4_conditionally_passed_step5_instrumentation_pending",
+  "status": "higher_learning_rate_screen_pending",
   "verdict": {
     "training_implementation_direction": "semantic_checks_passed_absolute_update_effect_pending",
     "learning_rate_calibration": "positive_dose_response",
@@ -203,7 +203,14 @@
     "run_full_200_as_one_job": false,
     "root_best_move_stability_threshold": 0.9,
     "root_best_move_stability_threshold_change": false,
-    "root_best_move_stability_is_full_pv_stability": false
+    "root_best_move_stability_is_full_pv_stability": false,
+    "screen_higher_learning_rates_before_long_run": true,
+    "higher_learning_rate_screen": [
+      {"feature_learning_rate": 0.0001, "output_learning_rate": 0.00001, "outer_iterations": 2},
+      {"feature_learning_rate": 0.0003, "output_learning_rate": 0.00003, "outer_iterations": 2}
+    ],
+    "higher_learning_rate_screen_stop": "stop_on_nonfinite_bound_touch_or_fixed_probe_stability_below_0.90",
+    "higher_learning_rate_screen_selection": "choose_lowest_fresh_valid_loss_among_safe_runs_then_extend_winner_to_outer4"
   },
   "next_phases": [
     {

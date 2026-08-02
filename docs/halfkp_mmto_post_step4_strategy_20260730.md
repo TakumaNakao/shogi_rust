@@ -135,6 +135,20 @@ Step 4はlearning rate校正であり、対局は行っていない。fresh MMTO
 
 ## 4. 修正後の実行計画
 
+### 4.0 追加した高learning-rate短期screen
+
+`3e-5`は校正範囲の上端であり、そこで改善が続いているため、長期実行の前に探索範囲を一段だけ広げる。
+同じaccepted generation 2、凍結dataset、10,000 train root、2,000 valid root、2 outer、同じoptimizerと
+安全上限で、次を順に実行する。
+
+1. feature/hidden `1e-4`（output `1e-5`）
+2. 1が安全かつ固定probe維持率90%以上なら feature/hidden `3e-4`（output `3e-5`）
+
+非有限値、parameter bound接触、qsearch拒否、または固定probe維持率90%未満で即停止する。安全に完走した候補だけを
+fresh-valid loss、agreement、regret、更新量分位点で比較し、最小lossの候補をouter 4まで延長する。
+`1e-3`はこのscreenでは実行しない。`3e-4`でも改善が続き、更新診断が飽和していない場合に限り、別判断として再検討する。
+このscreenは校正であり、v2.5.0を上回ったことを意味しない。
+
 ### Phase A: 長期実行に必要な最小記録を追加する
 
 `halfkp_mmto_train`の学習式、探索条件、optimizer、parameter更新順は変えず、次だけを追加する。

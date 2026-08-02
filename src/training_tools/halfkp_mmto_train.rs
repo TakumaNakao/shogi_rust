@@ -18,9 +18,11 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 const OPTIMIZER_MAGIC: &[u8; 8] = b"MMTOAD01";
 const CHECKPOINT_SCHEMA: u32 = 1;
+const DELTA_HIST_BINS: usize = 81;
 
 #[derive(Parser, Debug)]
 #[command(about = "Train scratch HalfKP with refreshed forced-qsearch MMTO leaves")]
@@ -133,6 +135,8 @@ struct Gradient {
     sparse: HashMap<usize, [f32; HALFKP_HIDDEN]>,
     pairs: usize,
     loss_sum: f64,
+    delta_hist: [u64; DELTA_HIST_BINS],
+    active_derivative_pairs: u64,
 }
 
 impl Default for Gradient {
@@ -144,8 +148,43 @@ impl Default for Gradient {
             sparse: HashMap::new(),
             pairs: 0,
             loss_sum: 0.0,
+            delta_hist: [0; DELTA_HIST_BINS],
+            active_derivative_pairs: 0,
         }
     }
+}
+
+#[derive(Default, Serialize, Clone)]
+struct UpdateDiagnostics {
+    #[serde(skip)]
+    delta_hist: [u64; DELTA_HIST_BINS],
+    pairs: u64,
+    delta_over_tau_p50: f64,
+    delta_over_tau_p90: f64,
+    delta_over_tau_p99: f64,
+    active_derivative_fraction: f64,
+    update_batches: u64,
+    clipped_batches: u64,
+}
+
+#[derive(Serialize)]
+struct OuterDelta {
+    feature_max_abs: f32,
+    hidden_max_abs: f32,
+    output_max_abs: f32,
+}
+
+#[derive(Serialize)]
+struct OuterMetricsFile {
+    outer: usize,
+    train: MetricReport,
+    valid: MetricReport,
+    train_diagnostics: UpdateDiagnostics,
+    outer_delta: OuterDelta,
+    pv_probe_best_move_unchanged: f64,
+    elapsed_ms: u128,
+    model_sha256: String,
+    optimizer_sha256: String,
 }
 
 #[derive(Default, Serialize, Clone)]
@@ -220,6 +259,9 @@ struct RunManifest {
     last_train: MetricReport,
     last_valid_fresh: MetricReport,
     pv_probe_best_move_unchanged: f64,
+    train_diagnostics: UpdateDiagnostics,
+    outer_delta: OuterDelta,
+    elapsed_ms: u128,
 }
 
 pub fn run() -> Result<()> {
@@ -287,6 +329,7 @@ pub fn run() -> Result<()> {
     };
 
     for outer in start_outer + 1..=args.outer_iterations {
+        let outer_started = Instant::now();
         let before = weights.clone();
         weights.save(&model_path)?;
         // EngineEvaluator owns this immutable search-side copy while `weights`
@@ -302,6 +345,7 @@ pub fn run() -> Result<()> {
             args.search_block_roots,
         )?;
         let mut gradient = Gradient::default();
+        let mut diagnostics = UpdateDiagnostics::default();
         let mut last_train = SearchMetrics::default();
         let mut block = Vec::with_capacity(args.search_block_roots);
         visit_samples(&args.train, "train", args.max_train_roots, |sample| {
@@ -315,6 +359,7 @@ pub fn run() -> Result<()> {
                     &mut adagrad,
                     &mut gradient,
                     &mut last_train,
+                    &mut diagnostics,
                     &args,
                     material_bits,
                 )?;
@@ -329,6 +374,7 @@ pub fn run() -> Result<()> {
             &mut adagrad,
             &mut gradient,
             &mut last_train,
+            &mut diagnostics,
             &args,
             material_bits,
         )?;
@@ -339,9 +385,10 @@ pub fn run() -> Result<()> {
                 &mut gradient,
                 &args,
                 material_bits,
+                &mut diagnostics,
             )?;
         }
-        validate_outer_delta(&before, &weights, &args, material_bits)?;
+        let outer_delta = validate_outer_delta(&before, &weights, &args, material_bits)?;
         atomic_copy(&model_path, &model_path.with_extension("previous"))?;
         atomic_copy(&optimizer_path, &optimizer_path.with_extension("previous"))?;
         weights.save(&model_path)?;
@@ -356,6 +403,7 @@ pub fn run() -> Result<()> {
             args.search_block_roots,
         )?;
         let pv_unchanged = best_move_unchanged(&valid_before, &last_valid)?;
+        finalize_diagnostics(&mut diagnostics);
         let model_sha = sha256_file(&model_path)?;
         let optimizer_sha = sha256_file(&optimizer_path)?;
         let checkpoint = Checkpoint {
@@ -369,7 +417,28 @@ pub fn run() -> Result<()> {
             optimizer_sha256: optimizer_sha,
         };
         atomic_json(&checkpoint_path, &checkpoint)?;
-        previous_sha = model_sha;
+        previous_sha = model_sha.clone();
+        let metrics_dir = args.output_dir.join("metrics");
+        fs::create_dir_all(&metrics_dir)?;
+        let metrics_file = OuterMetricsFile {
+            outer,
+            train: report(&last_train),
+            valid: report(&last_valid),
+            train_diagnostics: diagnostics.clone(),
+            outer_delta: OuterDelta {
+                feature_max_abs: outer_delta.feature_max_abs,
+                hidden_max_abs: outer_delta.hidden_max_abs,
+                output_max_abs: outer_delta.output_max_abs,
+            },
+            pv_probe_best_move_unchanged: pv_unchanged,
+            elapsed_ms: outer_started.elapsed().as_millis(),
+            model_sha256: sha256_file(&model_path)?,
+            optimizer_sha256: sha256_file(&optimizer_path)?,
+        };
+        atomic_json(
+            &metrics_dir.join(format!("outer_{outer:04}.json")),
+            &metrics_file,
+        )?;
         write_run_manifest(
             &args,
             outer,
@@ -379,6 +448,9 @@ pub fn run() -> Result<()> {
             &last_train,
             &last_valid,
             pv_unchanged,
+            diagnostics,
+            outer_delta,
+            outer_started.elapsed().as_millis(),
         )?;
         println!(
             "outer={outer} train_loss={:.9} valid_fresh_loss={:.9} valid_agreement={:.6}",
@@ -400,6 +472,7 @@ fn train_block(
     adagrad: &mut Weights,
     gradient: &mut Gradient,
     metrics: &mut SearchMetrics,
+    diagnostics: &mut UpdateDiagnostics,
     args: &Args,
     material_bits: u32,
 ) -> Result<()> {
@@ -415,7 +488,7 @@ fn train_block(
         for pair in pairs {
             add_pair_gradient(weights, &pair, args.tau_cp, args.loss_weight, gradient)?;
             if gradient.pairs == args.pair_batch_size {
-                apply_batch(weights, adagrad, gradient, args, material_bits)?;
+                apply_batch(weights, adagrad, gradient, args, material_bits, diagnostics)?;
             }
         }
     }
@@ -714,6 +787,11 @@ fn add_pair_gradient(
     let (desired_score, desired_forward) = current_leaf_score(weights, &pair.desired);
     let (alternative_score, alternative_forward) = current_leaf_score(weights, &pair.alternative);
     let loss = mirrored_sigmoid(desired_score - alternative_score, tau_cp);
+    let ratio = ((desired_score - alternative_score).abs() / tau_cp).min(80.0);
+    gradient.delta_hist[ratio.floor() as usize] += 1;
+    if loss * (1.0 - loss) >= 0.0025 {
+        gradient.active_derivative_pairs += 1;
+    }
     let d_delta_cp = -loss_weight * loss * (1.0 - loss) / tau_cp;
     if !loss.is_finite() || !d_delta_cp.is_finite() {
         return Err(anyhow!("non-finite MMTO loss or derivative"));
@@ -806,7 +884,14 @@ fn apply_batch(
     gradient: &mut Gradient,
     args: &Args,
     material_bits: u32,
+    diagnostics: &mut UpdateDiagnostics,
 ) -> Result<()> {
+    diagnostics.pairs += gradient.pairs as u64;
+    diagnostics.update_batches += 1;
+    for (dst, src) in diagnostics.delta_hist.iter_mut().zip(gradient.delta_hist) {
+        *dst += src;
+    }
+    diagnostics.active_derivative_fraction += gradient.active_derivative_pairs as f64;
     project_center_mirror_sparse_gradient(&mut gradient.sparse);
     let scale = 1.0 / gradient.pairs.max(1) as f32;
     gradient.out_w[HALFKP_HIDDEN * 2] = 0.0;
@@ -828,6 +913,9 @@ fn apply_batch(
         return Err(anyhow!("non-finite gradient norm"));
     }
     let clip = (args.gradient_clip_norm / norm_squared.sqrt()).min(1.0);
+    if clip < 1.0 {
+        diagnostics.clipped_batches += 1;
+    }
     let mut touched_parameter_bound = false;
     for h in 0..HALFKP_HIDDEN {
         touched_parameter_bound |= adagrad_scalar(
@@ -903,7 +991,7 @@ fn validate_outer_delta(
     after: &Weights,
     args: &Args,
     material_bits: u32,
-) -> Result<()> {
+) -> Result<OuterDelta> {
     let feature = before
         .feature_emb
         .iter()
@@ -934,7 +1022,11 @@ fn validate_outer_delta(
     if after.out_w[HALFKP_HIDDEN * 2].to_bits() != material_bits {
         return Err(anyhow!("material coefficient changed"));
     }
-    Ok(())
+    Ok(OuterDelta {
+        feature_max_abs: feature,
+        hidden_max_abs: hidden,
+        output_max_abs: output,
+    })
 }
 
 fn fresh_evaluate(
@@ -1005,6 +1097,26 @@ fn report(metrics: &SearchMetrics) -> MetricReport {
         rejected_bounds: metrics.rejected_bounds,
         qnodes: metrics.qnodes,
     }
+}
+
+fn finalize_diagnostics(d: &mut UpdateDiagnostics) {
+    let total = d.pairs.max(1);
+    d.delta_over_tau_p50 = histogram_quantile(&d.delta_hist, total, 0.50);
+    d.delta_over_tau_p90 = histogram_quantile(&d.delta_hist, total, 0.90);
+    d.delta_over_tau_p99 = histogram_quantile(&d.delta_hist, total, 0.99);
+    d.active_derivative_fraction /= total as f64;
+}
+
+fn histogram_quantile(hist: &[u64; DELTA_HIST_BINS], total: u64, q: f64) -> f64 {
+    let target = ((total as f64) * q).ceil().max(1.0) as u64;
+    let mut cumulative = 0;
+    for (bin, count) in hist.iter().enumerate() {
+        cumulative += *count;
+        if cumulative >= target {
+            return (bin + 1) as f64;
+        }
+    }
+    DELTA_HIST_BINS as f64
 }
 
 fn save_optimizer(path: &Path, values: &Weights) -> Result<()> {
@@ -1115,6 +1227,9 @@ fn write_run_manifest(
     train: &SearchMetrics,
     valid: &SearchMetrics,
     pv_probe_best_move_unchanged: f64,
+    train_diagnostics: UpdateDiagnostics,
+    outer_delta: OuterDelta,
+    elapsed_ms: u128,
 ) -> Result<()> {
     let mut hyperparameters = BTreeMap::new();
     hyperparameters.insert("tau_cp", serde_json::json!(args.tau_cp));
@@ -1152,6 +1267,9 @@ fn write_run_manifest(
         last_train: report(train),
         last_valid_fresh: report(valid),
         pv_probe_best_move_unchanged,
+        train_diagnostics,
+        outer_delta,
+        elapsed_ms,
     };
     atomic_json(&args.output_dir.join("run_manifest.json"), &manifest)
 }
