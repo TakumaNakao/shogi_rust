@@ -153,6 +153,11 @@ Phase 2の`1e-4` outer 4へ進む。
 
 概算: 約1.8時間。
 
+実績: outer 3はvalid loss `0.20995277`、outer 4は`0.20806211`まで改善した。PV probeの
+best-move維持率も`0.9736`、`0.9854`へ回復し、hard safety違反はなかった。outer 3/4の
+checkpointは`checkpoints/archive_manifest.json`へSHA-256付きで保全した。従ってPhase 2は完了とし、
+次の`3e-4` bounded screenへ進む。
+
 ### Phase 3: `3e-4`で上限を一度だけ確認する
 
 - accepted generation 2から独立に`3e-4`、10k train、2k集約validでouter 1を実行する。
@@ -220,8 +225,8 @@ lineage自身の深い探索または自己対局から教師を作る次計画�
 |---|---|---|
 | 0 成果物保全・判定訂正 | completed | immutable outer 1 / 2、訂正manifest |
 | 1 per-root fixed audit | completed | 6,099-root set、paired report |
-| 2 `1e-4` outer 4 | in progress | outer 3 / 4 metrics |
-| 3 `3e-4` bounded screen | blocked by Phase 1–2 | 最大4 outer metrics |
+| 2 `1e-4` outer 4 | completed | outer 3 / 4 metrics、SHA-256 archive |
+| 3 `3e-4` bounded screen | in progress | outer 1 fixed-audit判定 |
 | 4 LR凍結 | blocked by Phase 3 | selection report |
 | 5 100k × 1 | blocked by Phase 4 | scale confirmation |
 | 6 full staged run | blocked by Phase 5 | outer 1 / 2 / 4 / 8 / 16 |
