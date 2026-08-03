@@ -168,6 +168,11 @@ checkpointは`checkpoints/archive_manifest.json`へSHA-256付きで保全した�
 
 概算: outer 1だけ約0.9時間、最大outer 4まで約3.6時間。
 
+実績: `3e-4` outer 1は集約valid loss `0.20427213`、固定6,099局面audit loss `0.20189649`、
+regret `707.29cp`だった。`1e-4` outer 1のaudit loss `0.21189074`との差は`-0.01051382`で、
+game bootstrap 95%区間は`[-0.02211544,-0.01883100]`。rejected boundsは0、qnodes増加も約7.5%で
+hard safetyを満たしたため、outer 2へ進む。
+
 ### Phase 4: learning rateを凍結する
 
 `3e-5 / 1e-4 / 3e-4`の安全なcheckpointを、同じouter数、同じ固定audit、同じfresh searchで比較する。
