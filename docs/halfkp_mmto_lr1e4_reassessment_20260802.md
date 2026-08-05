@@ -173,6 +173,10 @@ regret `707.29cp`だった。`1e-4` outer 1のaudit loss `0.21189074`との差�
 game bootstrap 95%区間は`[-0.02211544,-0.01883100]`。rejected boundsは0、qnodes増加も約7.5%で
 hard safetyを満たしたため、outer 2へ進む。
 
+outer 2も完了し、固定audit lossは`0.19633878`、regretは`700.12cp`となった。`1e-4` outer 2の
+`0.20841469`より改善し、差のbootstrap 95%区間は`[-0.02812364,-0.02390033]`、rejected boundsは0。
+従って計画どおりouter 4まで延長する。
+
 ### Phase 4: learning rateを凍結する
 
 `3e-5 / 1e-4 / 3e-4`の安全なcheckpointを、同じouter数、同じ固定audit、同じfresh searchで比較する。
