@@ -5,7 +5,7 @@
   "lineage": "halfkp64-scratch-v1",
   "source_report": "runs/halfkp64-scratch-v1/prior-art-step4-lr1e-4-v2/run_manifest.json",
   "human_plan": "docs/halfkp_mmto_lr1e4_reassessment_20260802.md",
-  "status": "phase4_match_3e-4_outer4_running",
+  "status": "phase4_candidate_rejected_match_parent_check_pending",
   "verdict": {
     "old_gate_stop_procedure": "correct",
     "old_candidate_rejection": "reversed",
@@ -87,6 +87,15 @@
       "audit_loss_delta_bootstrap95": [-0.03393915399522419, -0.029131276910128005],
       "rejected_bounds": 0,
       "decision": "best_lr_screen_candidate_warning_qnodes"
+    },
+    "lr3e-4_outer4_match_v250": {
+      "games": 200,
+      "new_wins": 64,
+      "baseline_wins": 135,
+      "draws": 1,
+      "total_score_rate": 0.3225,
+      "total_score_rate_ci95": [0.2579, 0.3871],
+      "decision": "reject_candidate_pending_parent_control"
     },
     "lr1e-4_vs_lr3e-5_outer2": {
       "valid_loss_relative_change": -0.043582897831388,

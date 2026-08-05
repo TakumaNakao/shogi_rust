@@ -182,6 +182,13 @@ parent比loss差のbootstrap 95%区間は`[-0.03393915,-0.02913128]`、rejected 
 `3e-5`および`1e-4`系列を含めた比較で最良だった。qnodesはparent比約11.6%増でwarningとして記録するが、
 品質低下を示すhard safety違反ではない。Phase 3を完了し、Phase 4の採用候補を`3e-4 outer4`として凍結する。
 
+### 対局ゲート結果（2026-08-06）
+
+v2.5.0を相手に1秒・200局（先後入替え、seed固定）を実施した結果、候補は64勝・135敗・1分、
+総合得点率`32.25%`（95%区間`25.79–38.71%`）だった。offline auditの改善は実対局の強さへ結び付かず、
+候補は採用しない。まずaccepted generation 2親モデルを同一条件で対局させ、探索・重み形式・時間管理の
+差による見かけの失敗か、学習重み自体の過学習かを切り分ける。
+
 ### Phase 4: learning rateを凍結する
 
 `3e-5 / 1e-4 / 3e-4`の安全なcheckpointを、同じouter数、同じ固定audit、同じfresh searchで比較する。
@@ -241,8 +248,8 @@ lineage自身の深い探索または自己対局から教師を作る次計画�
 | 1 per-root fixed audit | completed | 6,099-root set、paired report |
 | 2 `1e-4` outer 4 | completed | outer 3 / 4 metrics、SHA-256 archive |
 | 3 `3e-4` bounded screen | completed | outer 1 / 2 / 4 metrics、fixed audit |
-| 4 LR凍結 | in progress | `3e-4 outer4`候補のmatch確認 |
-| 5 100k × 1 | blocked by Phase 4 | scale confirmation |
+| 4 LR凍結 | candidate rejected by match | 親モデルcontrol match |
+| 5 100k × 1 | blocked by Phase 4 | scale confirmation（control後に再判定） |
 | 6 full staged run | blocked by Phase 5 | outer 1 / 2 / 4 / 8 / 16 |
 | 7 対局・最終比較 | milestone連動 | parent match、最終v2.5.0 match |
 
