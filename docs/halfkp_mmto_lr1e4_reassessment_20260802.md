@@ -177,6 +177,11 @@ outer 2も完了し、固定audit lossは`0.19633878`、regretは`700.12cp`と�
 `0.20841469`より改善し、差のbootstrap 95%区間は`[-0.02812364,-0.02390033]`、rejected boundsは0。
 従って計画どおりouter 4まで延長する。
 
+outer 4はvalid loss `0.19051571`、固定audit loss `0.19081546`、regret `692.83cp`で完了した。
+parent比loss差のbootstrap 95%区間は`[-0.03393915,-0.02913128]`、rejected boundsは0であり、
+`3e-5`および`1e-4`系列を含めた比較で最良だった。qnodesはparent比約11.6%増でwarningとして記録するが、
+品質低下を示すhard safety違反ではない。Phase 3を完了し、Phase 4の採用候補を`3e-4 outer4`として凍結する。
+
 ### Phase 4: learning rateを凍結する
 
 `3e-5 / 1e-4 / 3e-4`の安全なcheckpointを、同じouter数、同じ固定audit、同じfresh searchで比較する。
@@ -235,8 +240,8 @@ lineage自身の深い探索または自己対局から教師を作る次計画�
 | 0 成果物保全・判定訂正 | completed | immutable outer 1 / 2、訂正manifest |
 | 1 per-root fixed audit | completed | 6,099-root set、paired report |
 | 2 `1e-4` outer 4 | completed | outer 3 / 4 metrics、SHA-256 archive |
-| 3 `3e-4` bounded screen | in progress | outer 1 fixed-audit判定 |
-| 4 LR凍結 | blocked by Phase 3 | selection report |
+| 3 `3e-4` bounded screen | completed | outer 1 / 2 / 4 metrics、fixed audit |
+| 4 LR凍結 | in progress | `3e-4 outer4`候補のmatch確認 |
 | 5 100k × 1 | blocked by Phase 4 | scale confirmation |
 | 6 full staged run | blocked by Phase 5 | outer 1 / 2 / 4 / 8 / 16 |
 | 7 対局・最終比較 | milestone連動 | parent match、最終v2.5.0 match |

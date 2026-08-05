@@ -1,0 +1,50 @@
+{
+  "schema": "halfkp_mmto_root_audit_comparison_v1",
+  "parent": {
+    "path": "runs/halfkp64-scratch-v1/mmto_root_audit_20260802/parent.jsonl",
+    "summary": {
+      "roots": 6099,
+      "games": 6099,
+      "agreement": 0.14526971634694213,
+      "mean_pair_loss_root_equal": 0.22240456536129616,
+      "mean_pair_loss_pair_weighted": 0.21531995446410024,
+      "mean_regret_cp": 731.0339550797513,
+      "qnodes_per_root": 190060.38924413838,
+      "rejected_bounds": 0
+    }
+  },
+  "comparisons": {
+    "lr3e-4_outer4": {
+      "path": "runs/halfkp64-scratch-v1/mmto_root_audit_20260802/lr3e-4_outer4/audit.jsonl",
+      "summary": {
+        "roots": 6099,
+        "games": 6099,
+        "agreement": 0.16445318904738482,
+        "mean_pair_loss_root_equal": 0.1908154638869634,
+        "mean_pair_loss_pair_weighted": 0.18239713257904397,
+        "mean_regret_cp": 692.8342280645869,
+        "qnodes_per_root": 212031.91195277913,
+        "rejected_bounds": 0
+      },
+      "versus_parent": {
+        "roots": 6099,
+        "loss_delta_mean": -0.03158910147433382,
+        "loss_delta_bootstrap_95": [
+          -0.03393915399522419,
+          -0.029131276910128005
+        ],
+        "regret_delta_mean_cp": -38.1997270151648,
+        "regret_delta_bootstrap_95": [
+          -41.82515998605224,
+          -34.707950756920305
+        ],
+        "best_move_transitions": {
+          "unchanged": 4466,
+          "wrong_to_teacher": 229,
+          "teacher_to_wrong": 112,
+          "non_teacher_to_non_teacher": 1292
+        }
+      }
+    }
+  }
+}
