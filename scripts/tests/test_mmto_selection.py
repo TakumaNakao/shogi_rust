@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -68,6 +69,16 @@ def write_source(root: Path, train_rows, valid_rows, test_rows):
 
 
 class GameBalancedSelectionTests(unittest.TestCase):
+    def test_display_path_is_repository_relative_independent_of_cwd(self):
+        target = balanced.REPOSITORY_ROOT / "docs"
+        original = Path.cwd()
+        with tempfile.TemporaryDirectory() as temporary:
+            try:
+                os.chdir(temporary)
+                self.assertEqual(balanced.display_path(target), "docs")
+            finally:
+                os.chdir(original)
+
     def test_deterministic_coverage_byte_preservation_and_reuse(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

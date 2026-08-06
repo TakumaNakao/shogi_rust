@@ -287,6 +287,12 @@ def build_provenance(inputs: RunInputs, openings: Sequence[SelectedOpening]) -> 
     ):
         _require_regular_file(path, label, executable)
 
+    openings_sha_before = sha256_file(inputs.openings)
+    current_openings = select_openings(inputs.openings, inputs.pairs)
+    openings_sha_after = sha256_file(inputs.openings)
+    if openings_sha_before != openings_sha_after or list(openings) != current_openings:
+        raise MatchRunnerError("opening suite changed while provenance was captured")
+
     candidate_hash = _manifest_model_hash(inputs.candidate_manifest, inputs.candidate)
     parent_hash = _manifest_model_hash(inputs.parent_manifest, inputs.parent)
     if candidate_hash == parent_hash:
@@ -321,7 +327,7 @@ def build_provenance(inputs: RunInputs, openings: Sequence[SelectedOpening]) -> 
         "parent_sha256": parent_hash,
         "parent_manifest_sha256": sha256_file(inputs.parent_manifest),
         "registry_sha256": sha256_file(inputs.registry),
-        "openings_sha256": sha256_file(inputs.openings),
+        "openings_sha256": openings_sha_after,
         "pairs": inputs.pairs,
         "nodes": inputs.nodes,
         "max_depth": inputs.max_depth,
@@ -334,6 +340,41 @@ def build_provenance(inputs: RunInputs, openings: Sequence[SelectedOpening]) -> 
         "selected_openings": selected,
     }
     return fingerprint_inputs, fingerprint_json(fingerprint_inputs)
+
+
+def verify_runtime_inputs(
+    inputs: RunInputs, fingerprint_inputs: Mapping[str, Any]
+) -> None:
+    """Fail closed if any frozen match input changed after fingerprinting."""
+    checks = (
+        (
+            inputs.binary,
+            "promotion match binary",
+            "promotion_match_binary_sha256",
+            True,
+        ),
+        (inputs.candidate, "candidate", "candidate_sha256", False),
+        (
+            inputs.candidate_manifest,
+            "candidate manifest",
+            "candidate_manifest_sha256",
+            False,
+        ),
+        (inputs.parent, "parent", "parent_sha256", False),
+        (
+            inputs.parent_manifest,
+            "parent manifest",
+            "parent_manifest_sha256",
+            False,
+        ),
+        (inputs.registry, "promotion registry", "registry_sha256", False),
+        (inputs.openings, "opening suite", "openings_sha256", False),
+    )
+    for path, label, field, executable in checks:
+        _require_regular_file(path, label, executable)
+        expected = fingerprint_inputs.get(field)
+        if not isinstance(expected, str) or sha256_file(path) != expected:
+            raise MatchRunnerError(f"{label} changed after provenance fingerprinting")
 
 
 def initialize_or_validate_run(
@@ -717,6 +758,7 @@ def run_child_pair(
     fingerprint_inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
     global _active_child
+    verify_runtime_inputs(inputs, fingerprint_inputs)
     attempts_dir = inputs.output_dir / "attempts"
     attempts_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
@@ -776,6 +818,7 @@ def run_child_pair(
             raise MatchRunnerError(
                 f"promotion match failed for pair {opening.pair_index} with exit {return_code}"
             )
+        verify_runtime_inputs(inputs, fingerprint_inputs)
         child_report = load_json(child_json)
         validate_child_report(child_report, opening, fingerprint_inputs)
         return child_report
@@ -856,6 +899,7 @@ def run(inputs: RunInputs) -> dict[str, Any]:
 
         openings = select_openings(inputs.openings, inputs.pairs)
         fingerprint_inputs, fingerprint = build_provenance(inputs, openings)
+        verify_runtime_inputs(inputs, fingerprint_inputs)
         pair_dir = inputs.output_dir / "pairs"
         run_path = inputs.output_dir / "run.json"
         report_path = inputs.output_dir / "report.json"
@@ -918,6 +962,7 @@ def run(inputs: RunInputs) -> dict[str, Any]:
                 f"saved={destination}"
             )
 
+        verify_runtime_inputs(inputs, fingerprint_inputs)
         ordered_artifacts = [artifacts[index] for index in range(inputs.pairs)]
         artifact_metadata = [
             {

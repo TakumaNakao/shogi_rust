@@ -25,6 +25,7 @@ DERIVATION_SCHEMA = "halfkp_mmto_game_balanced_derivation_v1"
 MANIFEST_SCHEMA = "rank_value_dataset_v4_manifest"
 RECORD_SCHEMA = "rank_value_dataset_v3_position"
 PHASES = ("opening", "middlegame", "endgame")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 class SelectionError(RuntimeError):
@@ -64,6 +65,14 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def display_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(REPOSITORY_ROOT))
+    except ValueError:
+        return str(resolved)
 
 
 def _canonical_json(value: object) -> bytes:
@@ -121,6 +130,14 @@ def load_frozen_source(
         min_opponent_rate=min_opponent_rate,
         outputs=outputs,
     )
+
+
+def verify_frozen_source_unchanged(source: FrozenSource) -> None:
+    if sha256_file(source.manifest_path) != source.manifest_sha256:
+        raise SelectionError("source manifest changed during selection")
+    for artifact in source.outputs.values():
+        if sha256_file(artifact.path) != artifact.sha256:
+            raise SelectionError(f"source artifact changed during selection: {artifact.path}")
 
 
 def _candidate(raw: bytes, line_no: int, expected_split: str) -> Candidate:
@@ -469,7 +486,7 @@ def build_dataset(
                     "source_lines": "copied_byte_for_byte",
                 },
                 "source_manifest": {
-                    "path": str(frozen.manifest_path),
+                    "path": display_path(frozen.manifest_path),
                     "sha256": frozen.manifest_sha256,
                 },
             },
@@ -484,6 +501,7 @@ def build_dataset(
             },
         }
         _write_json(staging / "manifest.json", manifest)
+        verify_frozen_source_unchanged(frozen)
     return manifest, False
 
 

@@ -332,6 +332,17 @@ class ProvenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.MatchRunnerError, "payload"):
             runner.initialize_or_validate_run(path, changed, fingerprint, {})
 
+    def test_runtime_input_change_is_rejected_after_fingerprinting(self) -> None:
+        payload, _ = runner.build_provenance(
+            self.inputs, runner.select_openings(self.openings_path, 1)
+        )
+        runner.verify_runtime_inputs(self.inputs, payload)
+        self.candidate.write_bytes(b"candidate-changed")
+        with self.assertRaisesRegex(
+            runner.MatchRunnerError, "candidate changed"
+        ):
+            runner.verify_runtime_inputs(self.inputs, payload)
+
 
 class ResumeRangeTests(unittest.TestCase):
     def test_scan_returns_only_missing_pair_indices(self) -> None:

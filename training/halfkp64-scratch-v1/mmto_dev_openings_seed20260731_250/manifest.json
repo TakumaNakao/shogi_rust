@@ -1,9 +1,9 @@
 {
   "derivation": {
     "final_reserve": {
-      "manifest_path": "/home/kuro/shogi_rust/training/halfkp64-scratch-v1/final_openings_seed20260730_2000.manifest.json",
+      "manifest_path": "training/halfkp64-scratch-v1/final_openings_seed20260730_2000.manifest.json",
       "manifest_sha256": "c5745163db94efa36cdcddc25b5d13eec83feb25446d1b604db33783b9653d71",
-      "path": "/home/kuro/shogi_rust/training/halfkp64-scratch-v1/final_openings_seed20260730_2000.jsonl",
+      "path": "training/halfkp64-scratch-v1/final_openings_seed20260730_2000.jsonl",
       "records": 2000,
       "sha256": "385b7f70d63ddfb17ea9b39e53d316d7dd1b6d5946e6b4c28a74230e262d2329"
     },
@@ -26,7 +26,7 @@
       "uniqueness": "opening_family and exact SFEN"
     },
     "source_manifest": {
-      "path": "/home/kuro/shogi_rust/runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/manifest.json",
+      "path": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/manifest.json",
       "sha256": "d8da8088b02d3d0200aad2ecb061691c6c418173a16fe32819f03088af48708f"
     }
   },

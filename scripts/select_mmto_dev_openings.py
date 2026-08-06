@@ -13,11 +13,13 @@ from typing import Sequence
 
 from select_game_balanced_mmto import (
     SelectionError,
+    display_path,
     iter_candidates,
     load_frozen_source,
     sha256_file,
     staged_output_directory,
     validate_reusable_output,
+    verify_frozen_source_unchanged,
 )
 
 
@@ -92,10 +94,10 @@ def _load_final_reserve(
     if records != artifact["records"] or len(sfens) != records:
         raise SelectionError("final opening reserve count or SFEN uniqueness mismatch")
     provenance: dict[str, object] = {
-        "path": str(reserve_path),
+        "path": display_path(reserve_path),
         "sha256": reserve_sha,
         "records": records,
-        "manifest_path": str(reserve_manifest_path),
+        "manifest_path": display_path(reserve_manifest_path),
         "manifest_sha256": reserve_manifest_sha,
     }
     return sfens, provenance
@@ -251,7 +253,7 @@ def build_openings(
                     "source_lines": "copied_byte_for_byte",
                 },
                 "source_manifest": {
-                    "path": str(frozen.manifest_path),
+                    "path": display_path(frozen.manifest_path),
                     "sha256": frozen.manifest_sha256,
                 },
                 "final_reserve": final_provenance,
@@ -282,6 +284,13 @@ def build_openings(
             },
         }
         _write_json(staging / "manifest.json", manifest)
+        verify_frozen_source_unchanged(frozen)
+        if (
+            sha256_file(final_reserve.resolve()) != final_provenance["sha256"]
+            or sha256_file(final_reserve_manifest.resolve())
+            != final_provenance["manifest_sha256"]
+        ):
+            raise SelectionError("final opening reserve changed during selection")
     return manifest, False
 
 

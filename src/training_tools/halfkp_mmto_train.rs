@@ -433,7 +433,7 @@ pub fn run() -> Result<()> {
             material_bits,
             previous_model_sha256: previous_sha.clone(),
             model_sha256: model_sha.clone(),
-            optimizer_sha256: optimizer_sha,
+            optimizer_sha256: optimizer_sha.clone(),
         };
         let metrics_dir = args.output_dir.join("metrics");
         fs::create_dir_all(&metrics_dir)?;
@@ -469,6 +469,17 @@ pub fn run() -> Result<()> {
             outer_delta,
             outer_started.elapsed().as_millis(),
         )?;
+        // The frozen JSONL files are reopened throughout an outer.  Recheck their
+        // manifest and content hashes immediately before committing so an
+        // external replacement cannot produce a mixed-data checkpoint that still
+        // declares the original dataset provenance.
+        revalidate_dataset_artifacts(&args, &manifest_sha)?;
+        if sha256_file(&model_path)? != model_sha || sha256_file(&optimizer_path)? != optimizer_sha
+        {
+            return Err(anyhow!(
+                "model or optimizer changed before checkpoint commit"
+            ));
+        }
         // Commit the checkpoint last.  If the process is interrupted before this
         // point, resume restores the preceding model/optimizer pair and safely
         // overwrites any uncommitted metrics from this outer.  Once checkpoint.json
@@ -571,6 +582,16 @@ fn validate_lineage_and_dataset(args: &Args) -> Result<()> {
     }
     validate_manifest_outputs(&args.dataset_manifest, &manifest, &args.train, &args.valid)?;
     validate_dataset_splits(&args.train, &args.valid)
+}
+
+fn revalidate_dataset_artifacts(args: &Args, expected_manifest_sha256: &str) -> Result<()> {
+    if sha256_file(&args.dataset_manifest)? != expected_manifest_sha256 {
+        return Err(anyhow!("dataset manifest changed during MMTO outer"));
+    }
+    let manifest: DatasetManifest =
+        serde_json::from_reader(BufReader::new(File::open(&args.dataset_manifest)?))?;
+    validate_manifest_outputs(&args.dataset_manifest, &manifest, &args.train, &args.valid)
+        .context("dataset artifacts changed during MMTO outer")
 }
 
 fn validate_manifest_outputs(
