@@ -329,6 +329,8 @@ pub fn run() -> Result<()> {
         let adagrad = weights.zeros_like();
         weights.save(&model_path)?;
         save_optimizer(&optimizer_path, &adagrad)?;
+        sync_file(&model_path)?;
+        sync_file(&optimizer_path)?;
         let checkpoint = Checkpoint {
             schema_version: CHECKPOINT_SCHEMA,
             completed_outer: 0,
@@ -408,6 +410,8 @@ pub fn run() -> Result<()> {
         atomic_copy(&optimizer_path, &optimizer_path.with_extension("previous"))?;
         weights.save(&model_path)?;
         save_optimizer(&optimizer_path, &adagrad)?;
+        sync_file(&model_path)?;
+        sync_file(&optimizer_path)?;
         let last_valid = fresh_evaluate(
             &model_path,
             &args.valid,
@@ -431,8 +435,6 @@ pub fn run() -> Result<()> {
             model_sha256: model_sha.clone(),
             optimizer_sha256: optimizer_sha,
         };
-        atomic_json(&checkpoint_path, &checkpoint)?;
-        previous_sha = model_sha.clone();
         let metrics_dir = args.output_dir.join("metrics");
         fs::create_dir_all(&metrics_dir)?;
         let metrics_file = OuterMetricsFile {
@@ -467,6 +469,12 @@ pub fn run() -> Result<()> {
             outer_delta,
             outer_started.elapsed().as_millis(),
         )?;
+        // Commit the checkpoint last.  If the process is interrupted before this
+        // point, resume restores the preceding model/optimizer pair and safely
+        // overwrites any uncommitted metrics from this outer.  Once checkpoint.json
+        // advances, all diagnostics needed to audit that outer already exist.
+        atomic_json(&checkpoint_path, &checkpoint)?;
+        previous_sha = model_sha.clone();
         println!(
             "outer={outer} train_loss={:.9} valid_fresh_loss={:.9} valid_agreement={:.6}",
             report(&last_train).mean_loss_per_pair,
@@ -1144,8 +1152,10 @@ fn save_optimizer(path: &Path, values: &Weights) -> Result<()> {
     write_f32s(&mut writer, &values.out_w)?;
     write_f32s(&mut writer, &[values.out_b])?;
     writer.flush()?;
+    writer.get_ref().sync_all()?;
     drop(writer);
     fs::rename(temporary, path)?;
+    sync_parent(path)?;
     Ok(())
 }
 
@@ -1218,7 +1228,9 @@ fn restore_checkpoint_artifacts_if_needed(
 fn atomic_copy(source: &Path, destination: &Path) -> Result<()> {
     let temporary = destination.with_extension("tmp");
     fs::copy(source, &temporary)?;
+    sync_file(&temporary)?;
     fs::rename(temporary, destination)?;
+    sync_parent(destination)?;
     Ok(())
 }
 
@@ -1228,8 +1240,28 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     serde_json::to_writer_pretty(&mut writer, value)?;
     writer.write_all(b"\n")?;
     writer.flush()?;
+    writer.get_ref().sync_all()?;
     drop(writer);
     fs::rename(temporary, path)?;
+    sync_parent(path)?;
+    Ok(())
+}
+
+fn sync_file(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) -> Result<()> {
     Ok(())
 }
 
