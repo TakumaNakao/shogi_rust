@@ -3155,3 +3155,9 @@ fresh-valid lossは`3e-5` outer 2より4.36%低かった。旧Gateに従って�
 初期modelから最終世代まで現行KPP/HalfKP重みとの数値的な接続を断つ。v2.5.0は最終比較対局だけに使う。
 この成熟MMTOでfresh-search一致と親棋力を改善してもv2.5.0へ届かず収束した場合に限り、
 同じscratch lineage自身によるself-playとdeep score/resultのqsearch-leaf学習へ進む。
+
+### 2026-08-06 更新
+
+10k MMTO、固定6,099-game audit、v2.5.0との候補・親各200局を完了した。最新の結果解釈、full規模へ
+進むGate、WDL補助とscratch-only自己対局の導入条件は
+[`halfkp_next_training_strategy_20260806.md`](halfkp_next_training_strategy_20260806.md)を正本とする。

@@ -1,5 +1,8 @@
 # HalfKP MMTO `1e-4` Gate再評価と次期学習計画
 
+> この計画は2026-08-06に
+> `docs/halfkp_next_training_strategy_20260806.md`で更新された。以下はGate再評価から10k対局までの履歴である。
+
 - 作成日: 2026-08-02
 - 対象lineage: `halfkp64-scratch-v1`
 - 状態: **`1e-4`を棄却から「安定性警告付き継続評価」へ変更**

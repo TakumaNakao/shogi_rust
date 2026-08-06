@@ -1,0 +1,32 @@
+{
+  "schema": "halfkp_shared_baseline_paired_reanalysis_v1",
+  "date": "2026-08-06",
+  "candidate_match": "runs/halfkp64-scratch-v1/match_lr3e-4_outer4_vs_v250_1s_200g",
+  "parent_match": "runs/halfkp64-scratch-v1/match_parent_gen2_vs_v250_1s_200g",
+  "same_positions": true,
+  "same_seed": true,
+  "same_candidate_color_per_game": true,
+  "games": 200,
+  "opening_pairs": 100,
+  "candidate_score": 0.3225,
+  "parent_score": 0.305,
+  "candidate_minus_parent": 0.0175,
+  "game_level": {
+    "candidate_better": 45,
+    "candidate_worse": 41,
+    "same": 114
+  },
+  "opening_pair_level": {
+    "candidate_better": 28,
+    "candidate_worse": 26,
+    "same": 46,
+    "bootstrap95_score_delta": [-0.07, 0.1025],
+    "sign_flip_p": 0.735
+  },
+  "candidate_minus_parent_by_side": {
+    "black": 0.13,
+    "white": -0.095,
+    "interaction": 0.225
+  },
+  "interpretation": "release_candidate_rejected_but_parent_relative_strength_change_unproven"
+}

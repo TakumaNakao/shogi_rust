@@ -12,5 +12,5 @@
   "total_score_rate": 0.3225,
   "total_score_rate_ci95": [0.2579, 0.3871],
   "record_dir": "runs/halfkp64-scratch-v1/match_lr3e-4_outer4_vs_v250_1s_200g/games",
-  "decision": "reject_candidate"
+  "decision": "reject_as_release_candidate_parent_relative_change_unproven"
 }
