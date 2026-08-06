@@ -1,0 +1,16 @@
+{
+  "schema": "halfkp_match_result_v1",
+  "candidate": "runs/halfkp64-scratch-v1/phase3-wdoor250k-v1-mix70-epoch2-seed20260721/model.bin",
+  "baseline": "policy_weights_halfkp64_kpp_distilled_v2.5.0.binary",
+  "games": 200,
+  "time_limit_ms": 1000,
+  "depth": 32,
+  "seed": 20260806,
+  "new_wins": 61,
+  "baseline_wins": 139,
+  "draws": 0,
+  "total_score_rate": 0.305,
+  "total_score_rate_ci95": [0.2412, 0.3688],
+  "record_dir": "runs/halfkp64-scratch-v1/match_parent_gen2_vs_v250_1s_200g/games",
+  "decision": "control_below_baseline"
+}
