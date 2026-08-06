@@ -1,0 +1,73 @@
+{
+  "derivation": {
+    "final_reserve": {
+      "manifest_path": "/home/kuro/shogi_rust/training/halfkp64-scratch-v1/final_openings_seed20260730_2000.manifest.json",
+      "manifest_sha256": "c5745163db94efa36cdcddc25b5d13eec83feb25446d1b604db33783b9653d71",
+      "path": "/home/kuro/shogi_rust/training/halfkp64-scratch-v1/final_openings_seed20260730_2000.jsonl",
+      "records": 2000,
+      "sha256": "385b7f70d63ddfb17ea9b39e53d316d7dd1b6d5946e6b4c28a74230e262d2329"
+    },
+    "request": {
+      "final_reserve_manifest_sha256": "c5745163db94efa36cdcddc25b5d13eec83feb25446d1b604db33783b9653d71",
+      "final_reserve_sha256": "385b7f70d63ddfb17ea9b39e53d316d7dd1b6d5946e6b4c28a74230e262d2329",
+      "pairs": 250,
+      "schema": "halfkp_mmto_dev_opening_selection_v1",
+      "seed": 20260731,
+      "source_manifest_sha256": "d8da8088b02d3d0200aad2ecb061691c6c418173a16fe32819f03088af48708f",
+      "source_test_sha256": "85c73cdf519deff2a51bc2a92e0a746047cb1deae2187f3a1445dd2411b49893",
+      "source_train_sha256": "c35673d69c9306f1dd4b1f2f32714adce4a43e7c1a086141bd6b7246b680eee6",
+      "source_valid_sha256": "3ce8745dbeb094a6a3f357494eb94aa5f57a716437bda66dd0ca13060f075f96"
+    },
+    "selection": {
+      "exclusions": "exact SFEN in frozen train, frozen test, or final reserve",
+      "rank": "ascending sha256(seed\\0game_key\\0sfen)",
+      "source_filter": "split valid and 8 <= ply <= 40",
+      "source_lines": "copied_byte_for_byte",
+      "uniqueness": "opening_family and exact SFEN"
+    },
+    "source_manifest": {
+      "path": "/home/kuro/shogi_rust/runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/manifest.json",
+      "sha256": "d8da8088b02d3d0200aad2ecb061691c6c418173a16fe32819f03088af48708f"
+    }
+  },
+  "output_files": [
+    {
+      "path": "openings.jsonl",
+      "records": 250,
+      "sha256": "06b6d7739a5973e391e6a275b8dd8be09842f0f061b598c5c30da40b578ba190"
+    }
+  ],
+  "schema": "halfkp_mmto_dev_openings_v1_manifest",
+  "schema_version": 1,
+  "stage_fingerprint": "5e5ddd415d0718ee16357f64e9818894e1fa0d4e9c77702c753417a74651e432",
+  "stats": {
+    "duplicate_family_skipped_before_completion": 46,
+    "duplicate_sfen_skipped_before_completion": 0,
+    "eligible_after_exclusions": 14206,
+    "excluded_records": {
+      "final_reserve": 0,
+      "test": 0,
+      "train": 0
+    },
+    "in_ply_range": 14206,
+    "output_overlap": {
+      "final_reserve_exact_sfen": 0,
+      "test_exact_sfen": 0,
+      "train_exact_sfen": 0
+    },
+    "selected": {
+      "pairs": 250,
+      "phase": {
+        "endgame": 0,
+        "middlegame": 0,
+        "opening": 250
+      },
+      "ply_max": 40,
+      "ply_min": 8,
+      "unique_exact_sfen": 250,
+      "unique_games": 250,
+      "unique_opening_families": 250
+    },
+    "source_valid_records": 90759
+  }
+}
