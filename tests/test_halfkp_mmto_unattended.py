@@ -340,8 +340,9 @@ class SupervisorTests(unittest.TestCase):
         tampered = json.loads(marker.read_text())
         tampered["offline_improves"] = False
         marker.write_text(json.dumps(tampered), encoding="utf-8")
-        with self.assertRaisesRegex(unattended.TerminalBlocked, "semantics"):
-            self.supervisor.verify_audit_marker(marker, model, "B", 1)
+        with mock.patch.object(self.supervisor, "_verify_declared"):
+            with self.assertRaisesRegex(unattended.TerminalBlocked, "semantics"):
+                self.supervisor.verify_audit_marker(marker, model, "B", 1)
 
     def test_existing_archive_must_match_live_training(self) -> None:
         archive = self.supervisor.run_root / "archives/phase-b/outer_0001"
@@ -369,6 +370,12 @@ class SupervisorTests(unittest.TestCase):
         self.supervisor.config["phases"]["C"]["max_outer"] = 5
         with self.assertRaisesRegex(unattended.TerminalBlocked, "max_outer"):
             self.supervisor.validate_frozen_policy()
+
+    def test_repeated_command_success_does_not_erase_crash_loop_count(self) -> None:
+        self.supervisor.completed_step("match_command")
+        self.supervisor.save_status(supervisor_crash_count=2)
+        self.supervisor.completed_step("match_command")
+        self.assertEqual(self.supervisor.status["supervisor_crash_count"], 2)
 
     def test_shutdown_status_without_stop_marker_resumes(self) -> None:
         self.supervisor.save_status(status="stopped_by_user")

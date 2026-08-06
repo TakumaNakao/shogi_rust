@@ -1473,6 +1473,8 @@ class Supervisor:
         if seen != expected_names:
             raise TerminalBlocked("audit completed marker file set is incomplete")
         audit_config = self.section("audit")
+        for name in ("input", "parent_jsonl", "parent_manifest", "analyzer"):
+            self._verify_declared(audit_config[name], f"audit.{name}")
         sidecar = load_json(marker_path.parent / "audit.jsonl.manifest.json")
         sidecar_tau = sidecar.get("tau_cp")
         if (
