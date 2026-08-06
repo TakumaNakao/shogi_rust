@@ -34,6 +34,7 @@
 ## HalfKP・学習
 
 - [`halfkp_from_scratch_training_plan.md`](halfkp_from_scratch_training_plan.md): 現行重みを完全に隔離したHalfKP-64ゼロスタート学習計画
+- [`halfkp_unattended_training_20260806.md`](halfkp_unattended_training_20260806.md): MMTO長期無人学習のcheckpoint、Gate、自動再開運用
 - [`halfkp64_training.md`](halfkp64_training.md)
 - [`halfkp_performance_training_design.md`](halfkp_performance_training_design.md)
 - [`halfkp_training_start_gate.md`](halfkp_training_start_gate.md)

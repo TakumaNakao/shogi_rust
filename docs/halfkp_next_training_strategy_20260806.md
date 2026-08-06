@@ -6,7 +6,7 @@
   `training/halfkp64-scratch-v1/next_training_plan_20260806.json`
 - 旧計画:
   `docs/halfkp_mmto_lr1e4_reassessment_20260802.md`
-- 制約: KPP由来重みおよびv2.5.0を初期値、教師、target、選別器として使用しない
+- 制約: Phase A〜Cの無人実行でKPP由来重みおよびv2.5.0を初期値、教師、target、対局相手、選別器のいずれにも使用しない
 
 ## 1. 決定
 
@@ -19,7 +19,7 @@
 
 1. `3e-4 outer4`とaccepted generation 2を直接500局対局させ、MMTO更新方向を診断する。
 2. game横断で均衡化した100k rootを`3e-4`で1 outerだけ学習し、規模安全性を確認する。
-3. 100k modelを継承せず、accepted generation 2から既存570,875 root全量をouter 1、条件付きでouter 2まで学習する。
+3. 100k modelを継承せず、accepted generation 2から既存570,875 root全量をouter 1、条件付きでouter 2まで学習する。outer 2で明確な棋力・audit改善を確認できた場合だけ、同じGateでouter 3 / 4を一段ずつ自動許可する。
 4. full outer 1 / 2でもofflineだけ改善して親対局が改善しなければ、棋譜手MMTOと棋力の乖離を確定する。
 5. その場合だけ、終局WDL補助を加えた単一A/Bを行う。それも失敗した場合に、scratch-only自己対局と
    TDLeaf / RootStrap型の探索bootstrapへ移る。
@@ -137,11 +137,12 @@ fresh-search auditを通過している。doseを上げるほどloss・regret・
 full outerで親棋力も改善した場合に限り、2026年分を同じrate 4,000基準で追加し、game/content/network-inputを
 deduplicateする。rate閾値を下げる、同じgameからroot数を増やす、同じ10kを反復する、の順では増やさない。
 
-### 4.2 現MMTOをfull規模で1～2 outerだけ試す
+### 4.2 現MMTOをfull規模で1～2 outer、明確な改善時のみ最大4 outer試す
 
 現在の結果だけではalgorithm変更を正当化できない。100kはscale safety、full outer 1は初めてv2.5.0の
 50時間超学習とwall-timeの桁が揃う本試験である。outer 2はouter 1が明白に崩壊しない場合だけ行う。
-outer 4 / 8 / 16を事前予約しない。
+outer 3 / 4は後述の棋力・paired safety・fixed audit Gateを毎outer通過する場合だけ行う。
+outer 5以降は事前予約しない。
 
 ### 4.3 自己対局は視野に入れるが、純AlphaZeroは採用しない
 
@@ -165,9 +166,22 @@ Stockfish NNUEもcp評価をWDL空間へ写し、探索評価とgame resultを�
 
 ## 5. 実行計画
 
+### 長期無人実行の共通手順
+
+Phase A→B→Cはsupervisorで自動段階実行する。計画書は実行中に書き換えず、起動後の正確な進捗と
+terminal状態はruntimeの`status.json`を正本とする。設定・復帰・操作の詳細は
+`docs/halfkp_unattended_training_20260806.md`に固定する。
+
+- 完了した各outerでmodel、optimizer、checkpoint、metrics、run manifestのimmutable archiveを作る。
+- archiveしたmodelに対し、固定6,099-game auditと同じ250 opening pair / 500局の親直接対局を完了してから次のouterを許可する。
+- 進捗、heartbeat、artifact SHA、Gate判定、停止理由をatomicなstatus JSONへ保存し、中断時は最後にcommit済みのouterから再開する。
+- Gate違反、provenance不一致、archive破損、不完全なaudit / 対局では自動停止し、次段に進まない。
+- Phase D / Eは保存結果の人手再検討と別の実行承認が必要であり、supervisorは自動実行しない。
+- この無人workflowはKPP由来重みとv2.5.0を一度もloadしない。
+
 ### Phase A: 現候補と親の直接診断対局
 
-1. validからtrain/test/final reserveとexact SFENが重ならない250 opening familyを固定する。
+1. validからtrain/test/final reserveとexact SFENが重ならない250 opening familyをseed `20260731`で固定する。正本は`training/halfkp64-scratch-v1/mmto_dev_openings_seed20260731_250/openings.jsonl`（SHA-256 `06b6d7739a5973e391e6a275b8dd8be09842f0f061b598c5c30da40b578ba190`）と同directoryの`manifest.json`（SHA-256 `e9485ee47fc4bba73490399710f2e8724646fe1dfc01676c2826b0ed3a7bd22a`）である。
 2. `3e-4 outer4`とaccepted generation 2を20,000 fixed nodes/手、先後交換500局で対局させる。
 3. opening pair平均を単位に100,000回bootstrapし、score差の95%区間を保存する。
 4. この対局はpromotionではなく、10k MMTOの方向診断とする。
@@ -187,7 +201,7 @@ full規模の学習量を判定できず小pilotを一段増やすため、今�
 
 1. accepted generation 2とzero-state AdaGradから開始する。
 2. train全34,582 gameをhash順に巡回し、各gameからphase別に最大1 rootずつ選び、残りを別hash順で補充する。
-3. exact 100,000 root、game数・phase数・SHAをmanifestへ固定する。
+3. seed `20260731`でexact 100,000 / 10,000 rootを作り、game数・phase数・SHAをmanifestへ固定する。正本は`runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/derived-balanced-100k/`下で、`train.jsonl` SHA-256は`79cc64ced54eb95418dc0f2d6b78cfb9ad2102f3ad0545e5015cf3ffb5d99458`、`valid.jsonl`は`84fbd8233f0e2baa3ee96d9aa152edcf224555bcd947ce0758e84327f2f7db0d`、`manifest.json`は`f1c388c35747599a83716b2de170c7828362281aecd25923ba5614072d482066`である。
 4. feature LR `3e-4`、output比0.1、1 outerだけ実行する。
 5. 全6,099 valid gameを横断する10,000-root aggregate valid、固定6,099-game audit、parameter/qnodes、
    安全性を評価する。
@@ -195,13 +209,13 @@ full規模の学習量を判定できず小pilotを一段増やすため、今�
 
 判定:
 
-- hard safety違反: 保存して停止し、`1e-4`を一度だけfallbackとして再実行する。
+- `outer delta limit exceeded`または`parameter bound touched`: `3e-4`成果を採用せず、accepted generation 2 + zero-state AdaGradから`1e-4`を一度だけfallback実行する。これ以外のhard safety、provenance、I/O、未知の失敗はfallbackせず停止する。
 - 親対局scoreが47.5%未満かつ95%上限も50%未満: 現MMTOをfullへ拡大しない。
 - それ以外: Phase Cへ進む。100k modelはproductionへ継承しない。
 
 概算: 学習8～9時間 + audit・対局。
 
-### Phase C: 既存full dataset outer 1 / 2
+### Phase C: 既存full dataset outer 1 / 2（明確な改善時のみouter 3 / 4）
 
 1. accepted generation 2とzero-state AdaGradから、570,875 train root全量を開始する。
 2. LRはPhase Bでsafeだった`3e-4`、fallback時だけ`1e-4`を使う。
@@ -217,14 +231,16 @@ outer 1 → 2 Gate:
 outer 2後:
 
 - 両outerでofflineだけ改善し、親scoreが一度も50%を超えない: objective乖離を確定しPhase Dへ移る。
-- 親改善がありouter 2がouter 1以上: outer 4を条件付きで許可する。
-- outer 4は事前予約せず、outer 2結果から別途決定する。
+- outer 3自動許可: outer 2の親対局scoreが52.5%以上、outer 1以上、paired safety合格、かつfixed audit loss差の95% CI上限が0未満。
+- outer 4自動許可: outer 3でもscore 52.5%以上、直前outer以上、paired safety合格、fixed audit loss差95% CI上限0未満の同じGateを再確認する。
+- outer 3 / 4の各完了後にもimmutable archive、fixed audit、250 pair / 500局を作り、同じGate違反で即時停止する。outer 5以降は自動実行しない。
 
 概算: 40～50時間/outer。
 
 ### Phase D: MMTO + root WDLの単一A/B
 
 Phase Cでobjective乖離を確認した場合だけ実行する。
+Phase A〜Cの無人supervisorはPhase Dを自動実行しない。
 
 1. architecture、optimizer、dataset schema、MMTO pair lossは変えない。
 2. 各rootの既存`winner`からside-to-move WDL targetを作り、root valueの補助lossを加える。
@@ -236,6 +252,8 @@ MMTO lossを大きく悪化させず、WDLを改善し、親対局もcontrolよ�
 seedを微調整しない。
 
 ### Phase E: scratch-only自己対局 + TDLeaf / RootStrap
+
+Phase A〜Cの無人supervisorはPhase Eを自動実行しない。
 
 導入triggerは次のどちらかである。
 
@@ -266,11 +284,11 @@ checkpointを選び直さない。
 
 | Phase | 状態 | 完了条件 |
 |---|---|---|
-| A 親直接500局 | pending | paired reportと方向判定 |
-| B balanced 100k × 1 | blocked by A | scale safety、fixed audit、親500局 |
-| C full outer 1 / 2 | blocked by B | objectiveと親棋力の転移判定 |
-| D MMTO + WDL | conditional | 単一100k A/B |
-| E scratch self-play | conditional | 200 → 1,000 → 5,000 game |
+| A 親直接500局 | 常設service実行対象（実状態はruntime参照） | paired reportと方向判定 |
+| B balanced 100k × 1 | A通過後に自動実行 | scale safety、immutable archive、fixed audit、親500局 |
+| C full outer 1～4 | B通過後に条件付き自動実行 | 各outerのarchive / audit / 250 pairとobjective・親棋力の転移判定 |
+| D MMTO + WDL | 条件付き・無人実行対象外 | 単一100k A/B |
+| E scratch self-play | 条件付き・無人実行対象外 | 200 → 1,000 → 5,000 game |
 | F v2.5.0最終比較 | blocked by parent promotion | frozen 4,000-game report |
 
 この計画で最も重要なのは、短いpilotのlossだけでもv2.5.0対局だけでも方針を決めないことである。次の
