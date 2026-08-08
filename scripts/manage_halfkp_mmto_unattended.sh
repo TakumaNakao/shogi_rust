@@ -3,11 +3,15 @@ set -euo pipefail
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly SUPERVISOR="$ROOT_DIR/scripts/halfkp_mmto_unattended.py"
-readonly DEFAULT_CONFIG="$ROOT_DIR/training/halfkp64-scratch-v1/unattended_mmto_20260806.json"
-readonly UNIT="${HALFKP_MMTO_UNIT:-halfkp-mmto-unattended-20260806}"
-readonly UNIT_FILE="$ROOT_DIR/scripts/systemd/halfkp-mmto-unattended-20260806.service"
+readonly RECOVERY_CONFIG="$ROOT_DIR/training/halfkp64-scratch-v1/unattended_mmto_recovery_20260808.json"
+readonly LEGACY_CONFIG="$ROOT_DIR/training/halfkp64-scratch-v1/unattended_mmto_20260806.json"
+readonly DEFAULT_CONFIG="$RECOVERY_CONFIG"
 
 CONFIG="${HALFKP_MMTO_CONFIG:-$DEFAULT_CONFIG}"
+UNIT="${HALFKP_MMTO_UNIT:-}"
+UNIT_FILE=""
+EXPECTED_UNIT=""
+CONFLICTING_UNIT=""
 COMMAND=""
 
 usage() {
@@ -25,12 +29,12 @@ Commands:
 
 Options:
   -c, --config PATH  Configuration file (default:
-                     training/halfkp64-scratch-v1/unattended_mmto_20260806.json)
+                     training/halfkp64-scratch-v1/unattended_mmto_recovery_20260808.json)
   -h, --help         Show this help.
 
 Environment:
   HALFKP_MMTO_CONFIG  Alternative default configuration path.
-  HALFKP_MMTO_UNIT    Alternative systemd unit name.
+  HALFKP_MMTO_UNIT    Unit override; must match the reviewed config profile.
 EOF
 }
 
@@ -70,6 +74,20 @@ if [[ "$CONFIG" != /* ]]; then
   CONFIG="$ROOT_DIR/$CONFIG"
 fi
 
+case "$(readlink -f "$CONFIG")" in
+  "$(readlink -f "$RECOVERY_CONFIG")")
+    EXPECTED_UNIT="halfkp-mmto-full-recovery-20260808"
+    CONFLICTING_UNIT="halfkp-mmto-unattended-20260806"
+    UNIT_FILE="$ROOT_DIR/scripts/systemd/halfkp-mmto-full-recovery-20260808.service"
+    ;;
+  "$(readlink -f "$LEGACY_CONFIG")")
+    EXPECTED_UNIT="halfkp-mmto-unattended-20260806"
+    CONFLICTING_UNIT="halfkp-mmto-full-recovery-20260808"
+    UNIT_FILE="$ROOT_DIR/scripts/systemd/halfkp-mmto-unattended-20260806.service"
+    ;;
+esac
+UNIT="${UNIT:-$EXPECTED_UNIT}"
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
@@ -88,25 +106,31 @@ require_systemd() {
     die "the per-user systemd manager is unavailable"
 }
 
+require_reviewed_profile() {
+  [[ -n "$EXPECTED_UNIT" && -n "$UNIT_FILE" ]] ||
+    die "service operations support only a reviewed config/unit profile"
+  [[ "${UNIT%.service}" == "$EXPECTED_UNIT" ]] ||
+    die "unit/config mismatch: expected $EXPECTED_UNIT for $(basename "$CONFIG")"
+}
+
 require_persistent_service() {
+  require_reviewed_profile
   [[ -f "$UNIT_FILE" ]] || die "service unit not found: $UNIT_FILE"
   [[ "$(readlink -f "$ROOT_DIR")" == "$(readlink -f "$HOME/shogi_rust")" ]] ||
     die "persistent unit expects the repository at $HOME/shogi_rust"
-  [[ "$(readlink -f "$CONFIG")" == "$(readlink -f "$DEFAULT_CONFIG")" ]] ||
-    die "persistent start supports only the frozen default configuration"
-  [[ "${UNIT%.service}" == "halfkp-mmto-unattended-20260806" ]] ||
-    die "persistent start supports only unit halfkp-mmto-unattended-20260806"
   [[ "$(loginctl show-user "$USER" --property=Linger --value)" == "yes" ]] ||
     die "user lingering is disabled; run: loginctl enable-linger $USER"
 }
 
 service_state() {
-  systemctl --user show "$UNIT" --property=ActiveState --value 2>/dev/null ||
+  local unit="${1:-$UNIT}"
+  systemctl --user show "$unit" --property=ActiveState --value 2>/dev/null ||
     printf 'not-found\n'
 }
 
 service_is_running() {
-  case "$(service_state)" in
+  local unit="${1:-$UNIT}"
+  case "$(service_state "$unit")" in
     active|activating|reloading|deactivating)
       return 0
       ;;
@@ -132,9 +156,15 @@ do_start() {
   if service_is_running; then
     die "$UNIT is already $(service_state); refusing a duplicate run"
   fi
+  if [[ -n "$CONFLICTING_UNIT" ]] && service_is_running "$CONFLICTING_UNIT"; then
+    die "$CONFLICTING_UNIT is $(service_state "$CONFLICTING_UNIT"); stop it before starting $UNIT"
+  fi
 
   supervisor validate
 
+  if [[ -n "$CONFLICTING_UNIT" ]]; then
+    systemctl --user disable --now "$CONFLICTING_UNIT" >/dev/null 2>&1 || true
+  fi
   systemctl --user enable "$UNIT_FILE"
   systemctl --user daemon-reload
   systemctl --user reset-failed "$UNIT" >/dev/null 2>&1 || true
@@ -145,6 +175,7 @@ do_start() {
 
 do_status() {
   require_command systemctl
+  require_reviewed_profile
   printf 'unit: %s\nstate: %s\n' "$UNIT" "$(service_state)"
   if [[ -f "$SUPERVISOR" && -f "$CONFIG" ]]; then
     supervisor status
@@ -155,11 +186,13 @@ do_status() {
 
 do_logs() {
   require_command journalctl
+  require_reviewed_profile
   journalctl --user --unit="$UNIT" --no-pager --lines=200
 }
 
 do_stop() {
   require_command systemctl
+  require_reviewed_profile
   local request_failed=0
   if [[ ! -f "$SUPERVISOR" || ! -f "$CONFIG" ]] ||
      ! supervisor request-stop; then

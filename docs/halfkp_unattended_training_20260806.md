@@ -1,5 +1,8 @@
 # HalfKP MMTO 長期無人学習運用設計
 
+> 2026-08-08更新: このunitのrunはPhase C outer 1で安全停止した。旧runを変更せず、
+> `docs/halfkp_full_mmto_recovery_20260808.md`の新config・新unitでPhase Cを再実行する。
+
 - 制定日: 2026-08-06
 - 対象lineage: `halfkp64-scratch-v1`
 - 実行計画: `docs/halfkp_next_training_strategy_20260806.md`

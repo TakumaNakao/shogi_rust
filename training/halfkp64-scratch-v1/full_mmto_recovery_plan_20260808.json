@@ -1,0 +1,130 @@
+{
+  "schema": "halfkp_full_mmto_recovery_plan_v1",
+  "decided_at": "2026-08-08",
+  "lineage_id": "halfkp64-scratch-v1",
+  "status": "approved_for_unattended_execution_runtime_status_is_authoritative",
+  "human_plan": "docs/halfkp_full_mmto_recovery_20260808.md",
+  "config": "training/halfkp64-scratch-v1/unattended_mmto_recovery_20260808.json",
+  "run_root": "runs/halfkp64-scratch-v1/unattended-mmto-full-lr1e-4-20260808-v1",
+  "decision": {
+    "workflow_mode": "phase_c_scaled_recovery",
+    "start_from": "accepted_generation2_zero_adagrad",
+    "learning_rate": 0.0001,
+    "output_learning_rate_ratio": 0.1,
+    "max_outer": 4,
+    "automatic_rate_fallback": false,
+    "automatic_rate_sweep": false,
+    "relax_safety_caps": false,
+    "reuse_failed_partial": false,
+    "reuse_phase_b_model_as_init": false,
+    "rerun_phase_a_or_b": false,
+    "automatic_promotion": false
+  },
+  "exclusions": {
+    "kpp_or_v2_5_0_as_init": false,
+    "kpp_or_v2_5_0_as_teacher_or_target": false,
+    "kpp_or_v2_5_0_for_training_match_or_selection": false,
+    "v2_5_0_final_comparison_after_candidate_freeze_only": true
+  },
+  "prior_result": {
+    "phase_b": {
+      "train_roots": 100000,
+      "train_pairs": 10375690,
+      "learning_rate": 0.0003,
+      "model_sha256": "eccd82e96447182dea152967298f2361bc7ffa34c353e5b81b3bcb572bcbd9c7",
+      "score": 0.572,
+      "paired_ci95": [
+        0.531,
+        0.612
+      ],
+      "games": 500,
+      "loss_delta_mean": -0.03795726736700742,
+      "loss_delta_ci95_upper": -0.03581002362663455,
+      "feature_delta": 0.014716741,
+      "hidden_delta": 0.010908246,
+      "output_delta": 0.0013823584,
+      "role": "preserved_diagnostic_incumbent_not_training_init"
+    },
+    "failed_phase_c": {
+      "train_roots": 570875,
+      "train_pairs": 56035622,
+      "learning_rate": 0.0003,
+      "feature_delta": 0.033063922,
+      "hidden_delta": 0.019872695,
+      "output_delta": 0.0027041882,
+      "completed_outer": 0,
+      "model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+      "optimizer_sha256": "f4f97edc7e2815cffbcd54911d35831df6ca4f0f0000a6708808465a7d264e7b",
+      "unsafe_update_persisted": false
+    }
+  },
+  "learning_rate_basis": {
+    "full_to_phase_b_pair_ratio": 5.40066463,
+    "adagrad_sqrt_equivalent_learning_rate": 0.0001291,
+    "observed_delta_matched_learning_rate": 0.0001335,
+    "selected_learning_rate": 0.0001,
+    "predicted_delta_at_selected_rate": {
+      "feature": 0.0110213073,
+      "hidden": 0.0066242317,
+      "output": 0.0009013961
+    },
+    "reason": "single previously reviewed rate with material cap margin and sufficient full-data dose"
+  },
+  "fixed_inputs": {
+    "parent_generation": 2,
+    "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "dataset_manifest_sha256": "d8da8088b02d3d0200aad2ecb061691c6c418173a16fe32819f03088af48708f",
+    "train_sha256": "c35673d69c9306f1dd4b1f2f32714adce4a43e7c1a086141bd6b7246b680eee6",
+    "valid_sha256": "3ce8745dbeb094a6a3f357494eb94aa5f57a716437bda66dd0ca13060f075f96",
+    "train_roots": 570875,
+    "valid_roots": 90759,
+    "audit_roots": 6099,
+    "paired_match_pairs": 250,
+    "paired_match_games": 500
+  },
+  "safety": {
+    "max_feature_or_hidden_delta_per_outer": 0.02,
+    "max_output_delta_per_outer": 0.004,
+    "gradient_clip_norm": 1.0,
+    "hard_stop": [
+      "provenance_or_sha_mismatch",
+      "non_finite_value",
+      "illegal_move_or_search_failure",
+      "bound_rejection",
+      "material_change",
+      "parameter_bound_touched",
+      "outer_delta_limit_exceeded",
+      "archive_or_checkpoint_inconsistency",
+      "fixed_audit_does_not_improve",
+      "paired_match_statistically_clear_regression"
+    ],
+    "on_lr1e_4_delta_or_bound_failure": "stop_without_fallback_or_cap_relaxation"
+  },
+  "outer_policy": {
+    "outer_1_to_2": {
+      "require_fixed_audit_loss_delta_below": 0.0,
+      "require_paired_safety": true,
+      "stop_if_score_below": 0.475,
+      "and_ci_upper_below": 0.5,
+      "catastrophic_ci_upper_below": 0.45
+    },
+    "outer_2_to_3_and_outer_3_to_4": {
+      "min_score": 0.525,
+      "require_score_not_below_previous_outer": true,
+      "require_fixed_audit_loss_delta_ci95_upper_below": 0.0,
+      "require_paired_safety": true
+    },
+    "outer_4_final_quality": "apply_same_extension_gate_against_outer_3",
+    "outer_5": "forbidden"
+  },
+  "post_run_decision": {
+    "compare_against": [
+      "accepted_generation2_parent",
+      "preserved_phase_b_incumbent"
+    ],
+    "if_full_improves_play_strength": "freeze_best_safe_scratch_candidate_then_compare_to_v2_5_0",
+    "if_offline_only_or_no_parent_improvement": "run_one_mmto_plus_terminal_wdl_100k_ab",
+    "if_wdl_ab_fails": "move_to_scratch_only_selfplay_tdleaf_or_rootstrap",
+    "forbid_fine_lr_seed_or_outer_sweep": true
+  }
+}

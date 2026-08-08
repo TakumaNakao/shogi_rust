@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import signal
 import stat
@@ -28,6 +29,8 @@ TRAIN_LOCK_SCHEMA = "halfkp_mmto_unattended_train_lock_v1"
 ARCHIVE_SCHEMA = "halfkp_mmto_outer_archive_v1"
 AUDIT_MARKER_SCHEMA = "halfkp_mmto_unattended_audit_v1"
 LINEAGE_ID = "halfkp64-scratch-v1"
+FULL_PIPELINE_MODE = "full_pipeline"
+PHASE_C_RECOVERY_MODE = "phase_c_scaled_recovery"
 
 
 class SupervisorError(RuntimeError):
@@ -167,6 +170,14 @@ def require_finite(value: Any, label: str = "value") -> None:
             require_finite(item, f"{label}.{key}")
 
 
+def is_finite_number(value: Any) -> bool:
+    return bool(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
 def artifact_metadata(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise TerminalBlocked(f"artifact is missing: {path}")
@@ -240,6 +251,17 @@ class Supervisor:
             raise TerminalBlocked(f"config.{name} must be an object")
         return value
 
+    def workflow_mode(self) -> str:
+        workflow = self.config.get("workflow")
+        if workflow is None:
+            return FULL_PIPELINE_MODE
+        if not isinstance(workflow, dict):
+            raise TerminalBlocked("config.workflow must be an object")
+        mode = workflow.get("mode")
+        if mode not in {FULL_PIPELINE_MODE, PHASE_C_RECOVERY_MODE}:
+            raise TerminalBlocked(f"unsupported workflow mode: {mode}")
+        return str(mode)
+
     @staticmethod
     def positive_int(value: Any, label: str) -> int:
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -269,6 +291,33 @@ class Supervisor:
 
     def validate_frozen_policy(self) -> None:
         """Reject config drift that could silently expand the unattended run."""
+        workflow_mode = self.workflow_mode()
+        if workflow_mode == PHASE_C_RECOVERY_MODE:
+            workflow = self.section("workflow")
+            if set(workflow) != {"mode", "prior_run_root", "evidence"}:
+                raise TerminalBlocked("recovery workflow shape changed")
+            prior_run_root = workflow.get("prior_run_root")
+            if not isinstance(prior_run_root, str):
+                raise TerminalBlocked("workflow.prior_run_root must be a path")
+            evidence = workflow.get("evidence")
+            expected_evidence = {
+                "status",
+                "phase_b_archive_manifest",
+                "phase_b_model",
+                "phase_b_audit_marker",
+                "phase_b_match_report",
+                "phase_c_failure_log",
+                "phase_c_checkpoint",
+                "phase_c_train_lock",
+            }
+            if not isinstance(evidence, dict) or set(evidence) != expected_evidence:
+                raise TerminalBlocked("recovery evidence set changed")
+            for name, entry in evidence.items():
+                if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
+                    raise TerminalBlocked(
+                        f"workflow.evidence.{name} needs only path and sha256"
+                    )
+
         service = self.section("service")
         for key, expected in (
             ("heartbeat_seconds", 60),
@@ -370,6 +419,18 @@ class Supervisor:
             0.525,
             "phases.C.extension_gate",
         )
+        if workflow_mode == PHASE_C_RECOVERY_MODE:
+            self.exact_number(phase_c, "learning_rate", 0.0001, "phases.C")
+            if "fallback_learning_rate" in phase_c or "fallback_output_dir" in phase_c:
+                raise TerminalBlocked("phase C recovery must not define an automatic fallback")
+            if service.get("unit_file") != (
+                "scripts/systemd/halfkp-mmto-full-recovery-20260808.service"
+            ):
+                raise TerminalBlocked("recovery service.unit_file changed")
+        elif "learning_rate" in phase_c:
+            raise TerminalBlocked(
+                "full pipeline phase C must inherit the reviewed Phase B rate"
+            )
 
         output_paths = [
             self.resolve(phase_b["output_dir"]),
@@ -510,6 +571,218 @@ class Supervisor:
         if not path.is_file() or sha256_file(path) != expected:
             raise TerminalBlocked(f"{label} SHA-256 mismatch: {path}")
         return path
+
+    def verify_recovery_evidence(self) -> dict[str, Any]:
+        """Verify the immutable evidence that authorizes skipping phases A and B."""
+        if self.workflow_mode() != PHASE_C_RECOVERY_MODE:
+            raise TerminalBlocked("recovery evidence is only valid in recovery mode")
+        workflow = self.section("workflow")
+        evidence = workflow.get("evidence")
+        if not isinstance(evidence, dict):
+            raise TerminalBlocked("workflow.evidence must be an object")
+        prior_value = workflow.get("prior_run_root")
+        if not isinstance(prior_value, str):
+            raise TerminalBlocked("workflow.prior_run_root must be a path")
+        prior_root = self.resolve(prior_value)
+        if not prior_root.is_dir() or prior_root == self.run_root:
+            raise TerminalBlocked("recovery prior run root is missing or not distinct")
+        if prior_root in self.run_root.parents or self.run_root in prior_root.parents:
+            raise TerminalBlocked("recovery run roots must not contain one another")
+
+        paths: dict[str, Path] = {}
+        for name, entry in evidence.items():
+            if not isinstance(entry, dict):
+                raise TerminalBlocked(f"workflow.evidence.{name} must be an object")
+            path = self._verify_declared(entry, f"workflow.evidence.{name}")
+            try:
+                path.relative_to(prior_root)
+            except ValueError as error:
+                raise TerminalBlocked(
+                    f"recovery evidence escapes prior run root: {path}"
+                ) from error
+            paths[name] = path
+
+        expected_names = {
+            "status",
+            "phase_b_archive_manifest",
+            "phase_b_model",
+            "phase_b_audit_marker",
+            "phase_b_match_report",
+            "phase_c_failure_log",
+            "phase_c_checkpoint",
+            "phase_c_train_lock",
+        }
+        if set(paths) != expected_names:
+            raise TerminalBlocked("recovery evidence set is incomplete")
+
+        parent_sha = self.section("parent")["model"]["sha256"]
+        phase_c = self.section("phases")["C"]
+        dataset_sha = phase_c["dataset"]["manifest"]["sha256"]
+
+        status = load_json(paths["status"])
+        if (
+            status.get("schema") != STATUS_SCHEMA
+            or status.get("status") != "blocked"
+            or status.get("current_phase") != "C"
+            or status.get("current_outer") != 1
+            or not isinstance(status.get("config_sha256"), str)
+        ):
+            raise TerminalBlocked("prior run status does not attest a blocked Phase C outer 1")
+
+        archive = load_json(paths["phase_b_archive_manifest"])
+        phase_b_model_sha = sha256_file(paths["phase_b_model"])
+        archive_files = {
+            entry.get("path"): entry
+            for entry in archive.get("files", [])
+            if isinstance(entry, dict)
+        }
+        if (
+            archive.get("schema") != ARCHIVE_SCHEMA
+            or archive.get("config_sha256") != status["config_sha256"]
+            or archive.get("phase") != "B"
+            or archive.get("outer") != 1
+            or archive.get("model_sha256") != phase_b_model_sha
+            or archive_files.get("model.bin", {}).get("sha256") != phase_b_model_sha
+            or archive_files.get("model.bin", {}).get("bytes")
+            != paths["phase_b_model"].stat().st_size
+            or paths["phase_b_model"]
+            != paths["phase_b_archive_manifest"].parent / "model.bin"
+        ):
+            raise TerminalBlocked("prior Phase B archive evidence is inconsistent")
+
+        audit = load_json(paths["phase_b_audit_marker"])
+        if (
+            audit.get("schema") != AUDIT_MARKER_SCHEMA
+            or audit.get("config_sha256") != status["config_sha256"]
+            or audit.get("phase") != "B"
+            or audit.get("outer") != 1
+            or audit.get("model_sha256") != phase_b_model_sha
+            or audit.get("offline_improves") is not True
+            or audit.get("offline_strong_improvement") is not True
+            or not is_finite_number(audit.get("loss_delta_mean"))
+            or not is_finite_number(audit.get("loss_delta_ci95_upper"))
+            or float(audit["loss_delta_mean"]) >= 0.0
+            or float(audit["loss_delta_ci95_upper"]) >= 0.0
+        ):
+            raise TerminalBlocked("prior Phase B audit evidence is inconsistent")
+        require_finite(audit, "recovery_phase_b_audit")
+
+        match = load_json(paths["phase_b_match_report"])
+        paired = self.section("paired_match")
+        if (
+            match.get("schema") != "halfkp_resumable_paired_match_v1"
+            or match.get("lineage_id") != LINEAGE_ID
+            or match.get("candidate_sha256") != phase_b_model_sha
+            or match.get("parent_sha256") != parent_sha
+            or match.get("openings_sha256") != paired["openings"]["sha256"]
+            or match.get("pairs") != paired["pairs"]
+            or match.get("games") != paired["pairs"] * 2
+            or match.get("passes_safety") is not True
+            or not is_finite_number(match.get("score"))
+            or not is_finite_number(match.get("paired_score_ci95_lower"))
+            or not is_finite_number(match.get("paired_score_ci95_upper"))
+            or float(match["score"]) <= 0.5
+            or float(match["paired_score_ci95_lower"]) <= 0.5
+            or not 0.0
+            <= float(match["paired_score_ci95_lower"])
+            <= float(match["paired_score_ci95_upper"])
+            <= 1.0
+        ):
+            raise TerminalBlocked("prior Phase B match evidence is inconsistent")
+        require_finite(match, "recovery_phase_b_match")
+
+        train_lock = load_json(paths["phase_c_train_lock"])
+        hyperparameters = train_lock.get("hyperparameters", {})
+        locked_dataset = train_lock.get("dataset", {})
+        if (
+            train_lock.get("schema") != TRAIN_LOCK_SCHEMA
+            or train_lock.get("config_sha256") != status["config_sha256"]
+            or train_lock.get("phase") != "C"
+            or train_lock.get("parent_generation") != 2
+            or train_lock.get("parent_model_sha256") != parent_sha
+            or not isinstance(locked_dataset, dict)
+            or not isinstance(hyperparameters, dict)
+        ):
+            raise TerminalBlocked("failed Phase C train lock is inconsistent")
+        locked_manifest = locked_dataset.get("manifest", {})
+        if (
+            not isinstance(locked_manifest, dict)
+            or locked_manifest.get("sha256") != dataset_sha
+            or not is_finite_number(hyperparameters.get("learning_rate"))
+            or float(hyperparameters["learning_rate"]) != 0.0003
+            or not is_finite_number(
+                hyperparameters.get("max_feature_delta_per_outer")
+            )
+            or float(hyperparameters["max_feature_delta_per_outer"]) != 0.02
+            or not is_finite_number(
+                hyperparameters.get("max_output_delta_per_outer")
+            )
+            or float(hyperparameters["max_output_delta_per_outer"]) != 0.004
+        ):
+            raise TerminalBlocked("failed Phase C train lock is inconsistent")
+
+        checkpoint = load_json(paths["phase_c_checkpoint"])
+        failed_model = paths["phase_c_checkpoint"].parent / "model.bin"
+        failed_optimizer = paths["phase_c_checkpoint"].parent / "optimizer.bin"
+        if (
+            checkpoint.get("schema_version") != 1
+            or checkpoint.get("completed_outer") != 0
+            or checkpoint.get("init_model_sha256") != parent_sha
+            or checkpoint.get("previous_model_sha256") != parent_sha
+            or checkpoint.get("model_sha256") != parent_sha
+            or checkpoint.get("dataset_manifest_sha256") != dataset_sha
+            or checkpoint.get("optimizer_sha256")
+            != "f4f97edc7e2815cffbcd54911d35831df6ca4f0f0000a6708808465a7d264e7b"
+            or not failed_model.is_file()
+            or sha256_file(failed_model) != parent_sha
+            or not failed_optimizer.is_file()
+            or sha256_file(failed_optimizer) != checkpoint.get("optimizer_sha256")
+        ):
+            raise TerminalBlocked("failed Phase C checkpoint was not safely rolled back")
+
+        failure_text = paths["phase_c_failure_log"].read_text(
+            encoding="utf-8", errors="replace"
+        )
+        delta = re.search(
+            r"outer delta limit exceeded: feature=([0-9.eE+-]+) "
+            r"hidden=([0-9.eE+-]+) output=([0-9.eE+-]+)",
+            failure_text,
+        )
+        if delta is None:
+            raise TerminalBlocked("failed Phase C log lacks the expected delta violation")
+        feature_delta, hidden_delta, output_delta = map(float, delta.groups())
+        if (
+            not all(
+                math.isfinite(value)
+                for value in (feature_delta, hidden_delta, output_delta)
+            )
+            or feature_delta <= 0.02
+            or output_delta >= 0.004
+            or str(paths["phase_c_failure_log"]) not in str(status.get("last_error"))
+        ):
+            raise TerminalBlocked("failed Phase C delta evidence is inconsistent")
+
+        return {
+            "schema": "halfkp_mmto_phase_c_recovery_evidence_v1",
+            "prior_run_root": str(prior_root),
+            "prior_config_sha256": status["config_sha256"],
+            "phase_b_model_sha256": phase_b_model_sha,
+            "phase_b_score": float(match["score"]),
+            "phase_b_paired_ci95": [
+                float(match["paired_score_ci95_lower"]),
+                float(match["paired_score_ci95_upper"]),
+            ],
+            "phase_b_loss_delta_mean": float(audit["loss_delta_mean"]),
+            "phase_b_loss_delta_ci95_upper": float(audit["loss_delta_ci95_upper"]),
+            "failed_learning_rate": float(hyperparameters["learning_rate"]),
+            "failed_outer_delta": {
+                "feature": feature_delta,
+                "hidden": hidden_delta,
+                "output": output_delta,
+            },
+            "failed_checkpoint_outer": checkpoint["completed_outer"],
+            "new_learning_rate": float(phase_c["learning_rate"]),
+        }
 
     def _check_ac_power(self) -> dict[str, Any]:
         supplies = Path("/sys/class/power_supply")
@@ -670,14 +943,18 @@ class Supervisor:
             raise TerminalBlocked("release build policy changed")
         if build.get("git_revision") != "lock_on_first_run":
             raise TerminalBlocked("build.git_revision must be lock_on_first_run")
+        unit_value = self.section("service").get(
+            "unit_file", "scripts/systemd/halfkp-mmto-unattended-20260806.service"
+        )
+        if not isinstance(unit_value, str):
+            raise TerminalBlocked("service.unit_file must be a path")
         critical_paths = {
             "unattended config": self.config_path,
             "unattended supervisor": Path(__file__).resolve(),
             "paired match wrapper": self.resolve(paired["wrapper"]["path"]),
             "service manager": self.workspace
             / "scripts/manage_halfkp_mmto_unattended.sh",
-            "persistent service unit": self.workspace
-            / "scripts/systemd/halfkp-mmto-unattended-20260806.service",
+            "persistent service unit": self.resolve(unit_value),
         }
         for label, path in critical_paths.items():
             self._require_git_tracked(path, label)
@@ -692,7 +969,7 @@ class Supervisor:
                 f"free disk is below {minimum_gib} GiB: {usage.free / 1024**3:.1f} GiB"
             )
         power = self._check_ac_power()
-        return {
+        result = {
             "schema": "halfkp_mmto_unattended_preflight_v1",
             "checked_at": utc_now(),
             "config_sha256": self.config_sha,
@@ -702,7 +979,11 @@ class Supervisor:
             "free_gib": usage.free / 1024**3,
             "ac_power": power,
             "parent_sha256": parent["model"]["sha256"],
+            "workflow_mode": self.workflow_mode(),
         }
+        if self.workflow_mode() == PHASE_C_RECOVERY_MODE:
+            result["recovery_evidence"] = self.verify_recovery_evidence()
+        return result
 
     def _log_tail_contains(self, path: Path, patterns: Sequence[str]) -> bool:
         if not path.exists():
@@ -1896,6 +2177,25 @@ class Supervisor:
         )
         return selected_rate, audit, match
 
+    def phase_c_extension_allowed(
+        self,
+        results: Mapping[int, tuple[Mapping[str, Any], Mapping[str, Any]]],
+        evaluated_outer: int,
+    ) -> bool:
+        audit, match = results[evaluated_outer]
+        previous_score = (
+            float(results[evaluated_outer - 1][1]["score"])
+            if evaluated_outer > 1
+            else 0.0
+        )
+        extension = self.section("phases")["C"]["extension_gate"]
+        return bool(
+            match.get("passes_safety") is True
+            and float(match["score"]) >= float(extension["min_score"])
+            and float(match["score"]) >= previous_score
+            and audit.get("offline_strong_improvement") is True
+        )
+
     def phase_c(self, identity: Mapping[str, Any], learning_rate: float) -> None:
         phase = self.section("phases")["C"]
         output_dir = self.resolve(phase["output_dir"])
@@ -1910,15 +2210,7 @@ class Supervisor:
             live_completed = value
         for outer in range(1, max_outer + 1):
             if outer >= 3:
-                previous_audit, previous_match = results[outer - 1]
-                extension = phase["extension_gate"]
-                prior_score = results[outer - 2][1]["score"] if outer > 2 else 0.0
-                if not (
-                    previous_match.get("passes_safety") is True
-                    and float(previous_match["score"]) >= float(extension["min_score"])
-                    and float(previous_match["score"]) >= float(prior_score)
-                    and previous_audit.get("offline_strong_improvement") is True
-                ):
+                if not self.phase_c_extension_allowed(results, outer - 1):
                     self.save_status(
                         status="completed",
                         terminal_reason=f"phase_C_outer_{outer - 1}_no_extension",
@@ -1954,6 +2246,15 @@ class Supervisor:
             self.completed_step(
                 f"phase_C_outer_{outer:04d}_gate", {"score": match["score"]}
             )
+        if not self.phase_c_extension_allowed(results, max_outer):
+            self.save_status(
+                status="completed",
+                terminal_reason=f"phase_C_outer_{max_outer}_no_extension",
+                current_phase=None,
+                current_step=None,
+                current_outer=None,
+            )
+            return
         self.save_status(
             status="completed",
             terminal_reason=f"phase_C_outer_{max_outer}_complete",
@@ -1980,8 +2281,13 @@ class Supervisor:
                 terminal_reason=None,
             )
             identity = self.ensure_identity()
-            self.phase_a(identity)
-            learning_rate, _, _ = self.phase_b(identity)
+            if self.workflow_mode() == PHASE_C_RECOVERY_MODE:
+                evidence = self.verify_recovery_evidence()
+                self.completed_step("phase_C_recovery_evidence_gate", evidence)
+                learning_rate = float(self.section("phases")["C"]["learning_rate"])
+            else:
+                self.phase_a(identity)
+                learning_rate, _, _ = self.phase_b(identity)
             self.phase_c(identity, learning_rate)
         except StopRequested as error:
             self.save_status(

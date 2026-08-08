@@ -157,6 +157,211 @@ class SupervisorTests(unittest.TestCase):
         )
         return path
 
+    def make_recovery_supervisor(self) -> unattended.Supervisor:
+        """Return a fresh-run supervisor for the fixed 1e-4 Phase C recovery."""
+        evidence_names = (
+            "status",
+            "phase_b_archive_manifest",
+            "phase_b_model",
+            "phase_b_audit_marker",
+            "phase_b_match_report",
+            "phase_c_failure_log",
+            "phase_c_checkpoint",
+            "phase_c_train_lock",
+        )
+        self.config["workflow"] = {
+            "mode": "phase_c_scaled_recovery",
+            "prior_run_root": str(self.workspace / "prior-run"),
+            "evidence": {
+                name: {"path": f"prior-run/{name}", "sha256": "a" * 64}
+                for name in evidence_names
+            },
+        }
+        self.config["service"]["unit_file"] = (
+            "scripts/systemd/halfkp-mmto-full-recovery-20260808.service"
+        )
+        phase_c = self.config["phases"]["C"]
+        phase_c["learning_rate"] = 0.0001
+        self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
+        return unattended.Supervisor(self.config_path)
+
+    def make_recovery_evidence_supervisor(
+        self,
+    ) -> tuple[unattended.Supervisor, dict[str, Path]]:
+        """Build a small, internally consistent prior-run evidence fixture."""
+        prior = self.workspace / "prior-failed-run"
+        archive = prior / "archives/phase-b/outer_0001"
+        evaluation = prior / "evaluations/phase-b-outer-0001"
+        phase_c = prior / "phase-c-full"
+        logs = prior / "logs"
+        for directory in (archive, evaluation / "match", phase_c, logs):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        parent_model = self.workspace / "accepted-generation-2.bin"
+        parent_model.write_bytes(b"accepted scratch generation 2")
+        parent_sha = unattended.sha256_file(parent_model)
+        incumbent_model = archive / "model.bin"
+        incumbent_model.write_bytes(b"phase B incumbent diagnostic candidate")
+        incumbent_sha = unattended.sha256_file(incumbent_model)
+        old_config_sha = "b" * 64
+        dataset_sha = self.config["phases"]["C"]["dataset"]["manifest"]["sha256"]
+
+        archive_manifest = archive / "archive_manifest.json"
+        archive_manifest.write_text(
+            json.dumps(
+                {
+                    "schema": unattended.ARCHIVE_SCHEMA,
+                    "config_sha256": old_config_sha,
+                    "phase": "B",
+                    "outer": 1,
+                    "model_sha256": incumbent_sha,
+                    "optimizer_sha256": "c" * 64,
+                    "files": [
+                        {
+                            "path": "model.bin",
+                            "sha256": incumbent_sha,
+                            "bytes": incumbent_model.stat().st_size,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        audit_marker = evaluation / "audit_completed.json"
+        audit_marker.write_text(
+            json.dumps(
+                {
+                    "schema": unattended.AUDIT_MARKER_SCHEMA,
+                    "config_sha256": old_config_sha,
+                    "phase": "B",
+                    "outer": 1,
+                    "model_sha256": incumbent_sha,
+                    "loss_delta_mean": -0.03795726736700742,
+                    "loss_delta_ci95_upper": -0.03581002362663455,
+                    "offline_improves": True,
+                    "offline_strong_improvement": True,
+                    "qnodes_per_root": 204886.45892769308,
+                }
+            ),
+            encoding="utf-8",
+        )
+        match_report = evaluation / "match/report.json"
+        match_report.write_text(
+            json.dumps(
+                {
+                    "schema": "halfkp_resumable_paired_match_v1",
+                    "lineage_id": unattended.LINEAGE_ID,
+                    "candidate_sha256": incumbent_sha,
+                    "parent_sha256": parent_sha,
+                    "openings_sha256": self.config["paired_match"]["openings"][
+                        "sha256"
+                    ],
+                    "pairs": 250,
+                    "games": 500,
+                    "score": 0.572,
+                    "paired_score_ci95_lower": 0.531,
+                    "paired_score_ci95_upper": 0.612,
+                    "passes_safety": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        failure_log = logs / "phase_c_full_train_outer_0001.attempt-01.log"
+        failure_log.write_text(
+            "outer delta limit exceeded: feature=0.033063922 "
+            "hidden=0.019872695 output=0.0027041882\n",
+            encoding="utf-8",
+        )
+        checkpoint = phase_c / "checkpoint.json"
+        checkpoint.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "completed_outer": 0,
+                    "init_model_sha256": parent_sha,
+                    "dataset_manifest_sha256": dataset_sha,
+                    "previous_model_sha256": parent_sha,
+                    "model_sha256": parent_sha,
+                    "optimizer_sha256": (
+                        "f4f97edc7e2815cffbcd54911d35831df6ca4f0f0000a6708808465a7d264e7b"
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
+        train_lock = phase_c / "unattended_train_lock.json"
+        train_lock.write_text(
+            json.dumps(
+                {
+                    "schema": unattended.TRAIN_LOCK_SCHEMA,
+                    "config_sha256": old_config_sha,
+                    "phase": "C",
+                    "parent_generation": 2,
+                    "parent_model_sha256": parent_sha,
+                    "dataset": self.config["phases"]["C"]["dataset"],
+                    "hyperparameters": {
+                        "learning_rate": 0.0003,
+                        "max_feature_delta_per_outer": 0.02,
+                        "max_output_delta_per_outer": 0.004,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (phase_c / "model.bin").write_bytes(parent_model.read_bytes())
+        (phase_c / "optimizer.bin").write_bytes(b"rolled-back zero AdaGrad state")
+        status = prior / "status.json"
+        last_error = f"step phase_c_full_train_outer_0001 failed; log={failure_log}"
+        status.write_text(
+            json.dumps(
+                {
+                    "schema": unattended.STATUS_SCHEMA,
+                    "config_sha256": old_config_sha,
+                    "status": "blocked",
+                    "current_phase": "C",
+                    "current_outer": 1,
+                    "terminal_reason": last_error,
+                    "last_error": last_error,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        paths = {
+            "status": status,
+            "phase_b_archive_manifest": archive_manifest,
+            "phase_b_model": incumbent_model,
+            "phase_b_audit_marker": audit_marker,
+            "phase_b_match_report": match_report,
+            "phase_c_failure_log": failure_log,
+            "phase_c_checkpoint": checkpoint,
+            "phase_c_train_lock": train_lock,
+        }
+        self.config["workflow"] = {
+            "mode": "phase_c_scaled_recovery",
+            "prior_run_root": str(prior),
+            "evidence": {
+                name: {
+                    "path": str(path),
+                    "sha256": unattended.sha256_file(path),
+                }
+                for name, path in paths.items()
+            },
+        }
+        self.config["phases"]["C"]["learning_rate"] = 0.0001
+        self.config["service"]["unit_file"] = (
+            "scripts/systemd/halfkp-mmto-full-recovery-20260808.service"
+        )
+        self.config["parent"] = {
+            "generation": 2,
+            "model": {"path": str(parent_model), "sha256": parent_sha},
+            "model_manifest": {"path": str(parent_model), "sha256": parent_sha},
+            "promotion_registry": {"path": str(parent_model), "sha256": parent_sha},
+            "gate_report": {"path": str(parent_model), "sha256": parent_sha},
+        }
+        self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
+        return unattended.Supervisor(self.config_path), paths
+
     def test_retry_command_rechecks_checkpoint_and_uses_separate_attempt_logs(self) -> None:
         checkpoint = self.supervisor.run_root / "trainer/checkpoint.json"
         commands: list[list[str]] = []
@@ -268,6 +473,201 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(
             self.supervisor.status["terminal_reason"],
             "phase_C_outer_3_no_extension",
+        )
+
+    def test_recovery_workflow_skips_a_and_b_and_uses_only_fixed_rate(self) -> None:
+        supervisor = self.make_recovery_supervisor()
+        identity = {"parent_sha256": "accepted-generation-2"}
+        with mock.patch.object(
+            supervisor, "validate_preflight", return_value={}
+        ), mock.patch.object(
+            supervisor, "ensure_identity", return_value=identity
+        ), mock.patch.object(
+            supervisor, "verify_recovery_evidence", return_value={"verified": True}
+        ) as verify_evidence, mock.patch.object(
+            supervisor, "completed_step"
+        ), mock.patch.object(
+            supervisor, "phase_a"
+        ) as phase_a, mock.patch.object(
+            supervisor, "phase_b"
+        ) as phase_b, mock.patch.object(
+            supervisor, "phase_c"
+        ) as phase_c:
+            supervisor.run_workflow()
+
+        phase_a.assert_not_called()
+        phase_b.assert_not_called()
+        verify_evidence.assert_called_once_with()
+        phase_c.assert_called_once_with(identity, 0.0001)
+
+    def test_recovery_policy_rejects_any_learning_rate_sweep(self) -> None:
+        supervisor = self.make_recovery_supervisor()
+        supervisor.validate_frozen_policy()
+
+        supervisor.config["phases"]["C"]["learning_rate"] = 0.00015
+        with self.assertRaisesRegex(unattended.TerminalBlocked, "learning_rate"):
+            supervisor.validate_frozen_policy()
+
+        supervisor.config["phases"]["C"]["learning_rate"] = 0.0001
+        supervisor.config["phases"]["C"]["fallback_learning_rate"] = 0.00005
+        with self.assertRaisesRegex(unattended.TerminalBlocked, "fallback"):
+            supervisor.validate_frozen_policy()
+
+    def test_recovery_training_failure_blocks_without_trying_another_rate(self) -> None:
+        supervisor = self.make_recovery_supervisor()
+        failure_log = self.workspace / "recovery-failure.log"
+        failure_log.write_text(
+            "outer delta limit exceeded: feature=0.021 hidden=0.010 output=0.001\n",
+            encoding="utf-8",
+        )
+        failure = unattended.CommandFailure("phase_c", 1, failure_log, True)
+        identity = {"parent_sha256": "accepted-generation-2"}
+        with mock.patch.object(
+            supervisor, "validate_preflight", return_value={}
+        ), mock.patch.object(
+            supervisor, "ensure_identity", return_value=identity
+        ), mock.patch.object(
+            supervisor, "verify_recovery_evidence", return_value={"verified": True}
+        ), mock.patch.object(
+            supervisor, "completed_step"
+        ), mock.patch.object(
+            supervisor, "phase_c", side_effect=failure
+        ) as phase_c:
+            supervisor.run_workflow()
+
+        phase_c.assert_called_once_with(identity, 0.0001)
+        self.assertEqual(supervisor.status["status"], "blocked")
+        self.assertIn("phase_c", supervisor.status["terminal_reason"])
+
+    def test_recovery_evidence_sha_and_semantics_are_both_fail_closed(self) -> None:
+        supervisor, paths = self.make_recovery_evidence_supervisor()
+        optimizer = paths["phase_c_checkpoint"].parent / "optimizer.bin"
+        actual_sha256_file = unattended.sha256_file
+
+        def evidence_sha(path: Path) -> str:
+            if Path(path) == optimizer:
+                return "f4f97edc7e2815cffbcd54911d35831df6ca4f0f0000a6708808465a7d264e7b"
+            return actual_sha256_file(Path(path))
+
+        with mock.patch.object(unattended, "sha256_file", side_effect=evidence_sha):
+            supervisor.verify_recovery_evidence()
+
+            paths["phase_c_failure_log"].write_text(
+                "outer delta limit exceeded: feature=0.010 hidden=0.010 output=0.001\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(unattended.TerminalBlocked, "SHA-256"):
+                supervisor.verify_recovery_evidence()
+
+            workflow = supervisor.config["workflow"]
+            workflow["evidence"]["phase_c_failure_log"]["sha256"] = evidence_sha(
+                paths["phase_c_failure_log"]
+            )
+            with self.assertRaisesRegex(
+                unattended.TerminalBlocked, "evidence|delta|failure"
+            ):
+                supervisor.verify_recovery_evidence()
+
+    def test_recovery_phase_c_uses_new_output_not_failed_run_artifacts(self) -> None:
+        supervisor, _ = self.make_recovery_evidence_supervisor()
+        failed_run = Path(supervisor.config["workflow"]["prior_run_root"])
+        output_dir = Path(supervisor.config["phases"]["C"]["output_dir"])
+        identity = {"binaries": {"trainer": {"path": "/bin/true"}}}
+        command = supervisor.trainer_command(
+            identity,
+            supervisor.config["phases"]["C"],
+            output_dir,
+            1,
+            0.0001,
+            False,
+        )
+        init_index = command.index("--init")
+        self.assertEqual(
+            command[init_index + 1],
+            str(Path(supervisor.config["parent"]["model"]["path"]).resolve()),
+        )
+        self.assertNotIn("--resume", command)
+        self.assertNotIn(str(failed_run), command)
+
+        training = {"model_sha256": "fresh"}
+        audit = {"offline_improves": True, "offline_strong_improvement": True}
+        match = {
+            "passes_safety": True,
+            "score": 0.56,
+            "paired_score_ci95_upper": 0.6,
+        }
+        with mock.patch.object(
+            supervisor, "run_training_outer", return_value=training
+        ) as run_training, mock.patch.object(
+            supervisor, "archive_outer", return_value=self.workspace / "archive"
+        ), mock.patch.object(
+            supervisor, "evaluate_outer", return_value=(audit, match)
+        ):
+            supervisor.phase_c({}, 0.0001)
+
+        first_call = run_training.call_args_list[0].args
+        self.assertEqual(first_call[1], "C")
+        self.assertEqual(first_call[3], output_dir)
+        self.assertEqual(first_call[5], 0.0001)
+        self.assertNotIn(str(failed_run), repr(run_training.call_args_list))
+
+    def test_phase_c_outer_four_must_pass_final_quality_gate(self) -> None:
+        supervisor = self.make_recovery_supervisor()
+        scores = {1: 0.53, 2: 0.54, 3: 0.55, 4: 0.52}
+
+        def evaluation(_identity, _archive, _phase, outer):
+            return (
+                {"offline_improves": True, "offline_strong_improvement": True},
+                {
+                    "passes_safety": True,
+                    "score": scores[outer],
+                    "paired_score_ci95_upper": 0.6,
+                },
+            )
+
+        with mock.patch.object(
+            supervisor, "run_training_outer", return_value={"model_sha256": "x"}
+        ), mock.patch.object(
+            supervisor, "archive_outer", return_value=self.workspace / "archive"
+        ), mock.patch.object(
+            supervisor, "evaluate_outer", side_effect=evaluation
+        ) as evaluate_outer:
+            supervisor.phase_c({}, 0.0001)
+
+        self.assertEqual(
+            [call.args[3] for call in evaluate_outer.call_args_list], [1, 2, 3, 4]
+        )
+        self.assertEqual(supervisor.status["status"], "completed")
+        self.assertEqual(
+            supervisor.status["terminal_reason"], "phase_C_outer_4_no_extension"
+        )
+
+    def test_phase_c_outer_four_records_complete_only_after_final_quality_gate(self) -> None:
+        supervisor = self.make_recovery_supervisor()
+        scores = {1: 0.53, 2: 0.54, 3: 0.55, 4: 0.56}
+
+        def evaluation(_identity, _archive, _phase, outer):
+            return (
+                {"offline_improves": True, "offline_strong_improvement": True},
+                {
+                    "passes_safety": True,
+                    "score": scores[outer],
+                    "paired_score_ci95_upper": 0.6,
+                },
+            )
+
+        with mock.patch.object(
+            supervisor, "run_training_outer", return_value={"model_sha256": "x"}
+        ), mock.patch.object(
+            supervisor, "archive_outer", return_value=self.workspace / "archive"
+        ), mock.patch.object(
+            supervisor, "evaluate_outer", side_effect=evaluation
+        ):
+            supervisor.phase_c({}, 0.0001)
+
+        self.assertEqual(supervisor.status["status"], "completed")
+        self.assertEqual(
+            supervisor.status["terminal_reason"], "phase_C_outer_4_complete"
         )
 
     def test_markerless_audit_is_deleted_and_fully_regenerated(self) -> None:

@@ -8,6 +8,9 @@
   `docs/halfkp_mmto_lr1e4_reassessment_20260802.md`
 - 制約: Phase A〜Cの無人実行でKPP由来重みおよびv2.5.0を初期値、教師、target、対局相手、選別器のいずれにも使用しない
 
+> 2026-08-08更新: Phase A/Bは完了し、Phase Cは`3e-4`のfull-data doseでdelta安全上限を超えて停止した。
+> 次の実行正本は`docs/halfkp_full_mmto_recovery_20260808.md`である。本書は停止前の判断根拠として保存する。
+
 ## 1. 決定
 
 `3e-4 outer4`をrelease候補として採用しない判断は維持する。ただし、現MMTO経路そのものを失敗として
