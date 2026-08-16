@@ -146,6 +146,17 @@ MMTO streamには2018～2019を入れない。
 [WDoor公式archive](https://wdoor.c.u-tokyo.ac.jp/shogi/)、
 [WDoor運用履歴](https://wdoor.c.u-tokyo.ac.jp/shogi/history/history.html)
 
+実取得した2020～2022のrate監査は次の通りだった。
+
+| 年 | CSA | 両者rateあり | 両者rate≥4000 |
+|---:|---:|---:|---:|
+| 2020 | 20,194 | 13,119 | 196 |
+| 2021 | 20,056 | 12,817 | 760 |
+| 2022 | 20,036 | 14,421 | 1,123 |
+
+したがって旧年度だけで現行trainを数倍にするという当初概算は成立しない。2018～2019を追加しても、旧年度は
+MMTOの主データではなくWDLの結果多様化を主用途とする。rate条件を緩和して件数を増やすことはしない。
+
 ### 6.2 filter
 
 旧年度にも現行と同じ最低品質条件を適用する。
@@ -416,11 +427,12 @@ target、候補選択へ入れない。
 | outer 4結果とv2.5.0 5秒50局監査 | 完了 | 14-36、28.0%、release不可 |
 | 次期方針策定 | 完了 | 本書 |
 | outer 4をscratch generation 3へ内部登録 | 未着手 | model/optimizer/provenance SHA固定 |
-| outer 4対scratch親 5秒50局 | 未着手 | qnodesの実時間転移を記録 |
-| 2020～2022 download / rate audit | 未着手 | 公式SHA・年度別件数を記録 |
-| 2018～2019追加判断 | 条件付き | 新規root 40万未満、またはWDL coverage不足時 |
+| outer 4対scratch親 5秒50局 | 実行中 | `match_outer4_vs_gen2_taya36_5s_50g_20260817` |
+| 2020～2022 download / rate audit | 完了 | 公式SHA・年度別件数を記録 |
+| 2018～2019 download / extract | 実行中 | 公式SHA照合済み、展開待ち |
+| 2018～2019追加判断 | 決定 | MMTO主データにはせず、WDL用へ限定 |
 | expanded dataset build / dedup audit | 未着手 | 全cross-split衝突・重複0 |
-| WDL補助とoptimizer init実装 | 未着手 | unit/golden/resume tests合格 |
+| WDL補助とoptimizer init実装 | 完了 | 関連unit test 5件合格、コミット `9826483` |
 | 100k control / treatment A/B | 未着手 | fixed audit・500局・5秒50局完了 |
 | A/B Gate判断 | 未着手 | full / self-playのどちらかへ一意に決定 |
 | expanded outer 1 | 条件付き | A/B Go後に実行・archive・評価 |
