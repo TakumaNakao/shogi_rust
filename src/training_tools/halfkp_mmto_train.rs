@@ -214,6 +214,8 @@ struct OuterMetricsFile {
     outer: usize,
     train: MetricReport,
     valid: MetricReport,
+    wdl_valid_before: WdlReport,
+    wdl_valid_after: WdlReport,
     train_diagnostics: UpdateDiagnostics,
     outer_delta: OuterDelta,
     pv_probe_best_move_unchanged: f64,
@@ -267,6 +269,13 @@ struct MetricReport {
     qnodes: u64,
 }
 
+#[derive(Default, Serialize, Clone)]
+struct WdlReport {
+    roots: usize,
+    mean_brier: f64,
+    mean_log_loss: f64,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Checkpoint {
     schema_version: u32,
@@ -296,6 +305,7 @@ struct RunManifest {
     hyperparameters: BTreeMap<&'static str, serde_json::Value>,
     last_train: MetricReport,
     last_valid_fresh: MetricReport,
+    last_wdl_valid: WdlReport,
     pv_probe_best_move_unchanged: f64,
     train_diagnostics: UpdateDiagnostics,
     outer_delta: OuterDelta,
@@ -395,6 +405,13 @@ pub fn run() -> Result<()> {
             &search_pool,
             args.search_block_roots,
         )?;
+        let wdl_valid_before = fresh_evaluate_wdl(
+            &model_path,
+            &args.valid,
+            "valid",
+            Some(args.max_valid_roots),
+            args.wdl_kappa_cp,
+        )?;
         let mut gradient = Gradient::default();
         let mut diagnostics = UpdateDiagnostics::default();
         let mut last_train = SearchMetrics::default();
@@ -455,6 +472,13 @@ pub fn run() -> Result<()> {
             &search_pool,
             args.search_block_roots,
         )?;
+        let wdl_valid_after = fresh_evaluate_wdl(
+            &model_path,
+            &args.valid,
+            "valid",
+            Some(args.max_valid_roots),
+            args.wdl_kappa_cp,
+        )?;
         let pv_unchanged = best_move_unchanged(&valid_before, &last_valid)?;
         finalize_diagnostics(&mut diagnostics);
         let model_sha = sha256_file(&model_path)?;
@@ -476,6 +500,8 @@ pub fn run() -> Result<()> {
             outer,
             train: report(&last_train),
             valid: report(&last_valid),
+            wdl_valid_before: wdl_valid_before.clone(),
+            wdl_valid_after: wdl_valid_after.clone(),
             train_diagnostics: diagnostics.clone(),
             outer_delta: OuterDelta {
                 feature_max_abs: outer_delta.feature_max_abs,
@@ -499,6 +525,7 @@ pub fn run() -> Result<()> {
             &optimizer_path,
             &last_train,
             &last_valid,
+            &wdl_valid_after,
             pv_unchanged,
             diagnostics,
             outer_delta,
@@ -1193,6 +1220,48 @@ fn fresh_evaluate(
     Ok(metrics)
 }
 
+fn fresh_evaluate_wdl(
+    model_path: &Path,
+    paths: &[PathBuf],
+    split: &str,
+    limit: Option<usize>,
+    kappa_cp: f32,
+) -> Result<WdlReport> {
+    let weights = Weights::load(model_path)?;
+    let mut report = WdlReport::default();
+    'files: for path in paths {
+        for line in BufReader::new(File::open(path)?).lines() {
+            if limit.is_some_and(|value| report.roots >= value) {
+                break 'files;
+            }
+            let record: InputRecord = serde_json::from_str(&line?)?;
+            if record.split != split {
+                return Err(anyhow!("WDL evaluation split mismatch"));
+            }
+            let Some(winner) = parse_winner(record.winner.as_deref())? else {
+                continue;
+            };
+            let position = position_from_sfen_or_usi(&record.sfen)
+                .ok_or_else(|| anyhow!("invalid WDL evaluation SFEN"))?;
+            let packed = PackedHalfKpPosition::from_position(&position)
+                .ok_or_else(|| anyhow!("WDL evaluation root lacks king"))?;
+            let target = f32::from(position.side_to_move() == winner);
+            let (probability, loss) =
+                wdl_probability_loss(weights.forward(&packed).raw, target, kappa_cp);
+            report.roots += 1;
+            report.mean_brier += f64::from(loss);
+            report.mean_log_loss += f64::from(
+                -(target * probability.max(1e-7).ln()
+                    + (1.0 - target) * (1.0 - probability).max(1e-7).ln()),
+            );
+        }
+    }
+    let count = report.roots.max(1) as f64;
+    report.mean_brier /= count;
+    report.mean_log_loss /= count;
+    Ok(report)
+}
+
 fn evaluate_block(
     block: &mut Vec<Sample>,
     search_pool: &rayon::ThreadPool,
@@ -1392,6 +1461,7 @@ fn write_run_manifest(
     optimizer_path: &Path,
     train: &SearchMetrics,
     valid: &SearchMetrics,
+    wdl_valid: &WdlReport,
     pv_probe_best_move_unchanged: f64,
     train_diagnostics: UpdateDiagnostics,
     outer_delta: OuterDelta,
@@ -1439,6 +1509,7 @@ fn write_run_manifest(
         hyperparameters,
         last_train: report(train),
         last_valid_fresh: report(valid),
+        last_wdl_valid: wdl_valid.clone(),
         pv_probe_best_move_unchanged,
         train_diagnostics,
         outer_delta,
