@@ -37,6 +37,9 @@ struct Args {
     expected_dataset_manifest_sha256: String,
     #[arg(long)]
     init: PathBuf,
+    /// Optional AdaGrad state paired with `init`; omitted means a zero-state optimizer.
+    #[arg(long)]
+    init_optimizer: Option<PathBuf>,
     #[arg(long)]
     model_manifest: PathBuf,
     #[arg(long)]
@@ -274,6 +277,8 @@ struct Checkpoint {
     previous_model_sha256: String,
     model_sha256: String,
     optimizer_sha256: String,
+    #[serde(default)]
+    init_optimizer_sha256: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -285,6 +290,7 @@ struct RunManifest {
     completed_outer: usize,
     dataset_manifest_sha256: String,
     init_model: shogi_ai::training_data::ArtifactMetadata,
+    init_optimizer: Option<shogi_ai::training_data::ArtifactMetadata>,
     output_model: shogi_ai::training_data::ArtifactMetadata,
     optimizer: shogi_ai::training_data::ArtifactMetadata,
     hyperparameters: BTreeMap<&'static str, serde_json::Value>,
@@ -306,6 +312,11 @@ pub fn run() -> Result<()> {
     let checkpoint_path = args.output_dir.join("checkpoint.json");
     let manifest_sha = sha256_file(&args.dataset_manifest)?;
     let init_sha = sha256_file(&args.init)?;
+    let init_optimizer_sha = args
+        .init_optimizer
+        .as_ref()
+        .map(|path| sha256_file(path))
+        .transpose()?;
     let search_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(args.jobs)
         .build()
@@ -317,6 +328,7 @@ pub fn run() -> Result<()> {
         if checkpoint.schema_version != CHECKPOINT_SCHEMA
             || checkpoint.init_model_sha256 != init_sha
             || checkpoint.dataset_manifest_sha256 != manifest_sha
+            || checkpoint.init_optimizer_sha256 != init_optimizer_sha
         {
             return Err(anyhow!("resume checkpoint provenance mismatch"));
         }
@@ -343,7 +355,11 @@ pub fn run() -> Result<()> {
         }
         let weights = Weights::load(&args.init)?;
         let material_bits = weights.out_w[HALFKP_HIDDEN * 2].to_bits();
-        let adagrad = weights.zeros_like();
+        let adagrad = match args.init_optimizer.as_ref() {
+            Some(path) => load_optimizer(path, &weights)
+                .with_context(|| format!("load init optimizer {}", path.display()))?,
+            None => weights.zeros_like(),
+        };
         weights.save(&model_path)?;
         save_optimizer(&optimizer_path, &adagrad)?;
         sync_file(&model_path)?;
@@ -357,6 +373,7 @@ pub fn run() -> Result<()> {
             previous_model_sha256: init_sha.clone(),
             model_sha256: sha256_file(&model_path)?,
             optimizer_sha256: sha256_file(&optimizer_path)?,
+            init_optimizer_sha256: init_optimizer_sha.clone(),
         };
         atomic_json(&checkpoint_path, &checkpoint)?;
         (weights, adagrad, 0, material_bits, init_sha.clone())
@@ -451,6 +468,7 @@ pub fn run() -> Result<()> {
             previous_model_sha256: previous_sha.clone(),
             model_sha256: model_sha.clone(),
             optimizer_sha256: optimizer_sha.clone(),
+            init_optimizer_sha256: init_optimizer_sha.clone(),
         };
         let metrics_dir = args.output_dir.join("metrics");
         fs::create_dir_all(&metrics_dir)?;
@@ -575,13 +593,7 @@ fn add_wdl_gradient(
     let target = f32::from(position.side_to_move == winner);
     let (probability, loss) = wdl_probability_loss(forward.raw, target, kappa_cp);
     let error = probability - target;
-    let d_raw = weight
-        * 2.0
-        * error
-        * probability
-        * (1.0 - probability)
-        * TARGET_SCALE
-        / kappa_cp;
+    let d_raw = weight * 2.0 * error * probability * (1.0 - probability) * TARGET_SCALE / kappa_cp;
     if !probability.is_finite() || !loss.is_finite() || !d_raw.is_finite() {
         return Err(anyhow!("non-finite WDL loss or derivative"));
     }
@@ -1417,6 +1429,11 @@ fn write_run_manifest(
         completed_outer,
         dataset_manifest_sha256: dataset_manifest_sha256.to_owned(),
         init_model: artifact_metadata(&args.init, None)?,
+        init_optimizer: args
+            .init_optimizer
+            .as_ref()
+            .map(|path| artifact_metadata(path, None))
+            .transpose()?,
         output_model: artifact_metadata(model_path, None)?,
         optimizer: artifact_metadata(optimizer_path, None)?,
         hyperparameters,
@@ -1436,7 +1453,7 @@ mod tests {
     use shogi_ai::evaluation::HALFKP_INPUTS;
 
     fn pair_fixture(side_to_move: Color) -> (Weights, Pair) {
-        let root = Position::default();
+        let mut root = Position::default();
         if side_to_move == Color::White {
             root.do_move(root.legal_moves()[0]);
         }
@@ -1568,7 +1585,7 @@ mod tests {
 
     #[test]
     fn wdl_gradient_matches_finite_difference_and_winner_sign() {
-        let mut root = Position::default();
+        let root = Position::default();
         let packed = PackedHalfKpPosition::from_position(&root).expect("packed root");
         let kappa = 600.0;
         for winner in [Color::Black, Color::White] {
@@ -1582,19 +1599,9 @@ mod tests {
             let epsilon = 1e-4;
             let analytical = gradient.out_b;
             weights.out_b += epsilon;
-            let plus = wdl_probability_loss(
-                weights.forward(&packed).raw,
-                target,
-                kappa,
-            )
-            .1;
+            let plus = wdl_probability_loss(weights.forward(&packed).raw, target, kappa).1;
             weights.out_b -= 2.0 * epsilon;
-            let minus = wdl_probability_loss(
-                weights.forward(&packed).raw,
-                target,
-                kappa,
-            )
-            .1;
+            let minus = wdl_probability_loss(weights.forward(&packed).raw, target, kappa).1;
             let numerical = (plus - minus) / (2.0 * epsilon);
             assert!(
                 (analytical - numerical).abs() < 2e-4,
