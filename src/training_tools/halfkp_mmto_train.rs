@@ -66,6 +66,12 @@ struct Args {
     /// Verification hook. Production MMTO uses exactly 1.0.
     #[arg(long, default_value_t = 1.0)]
     loss_weight: f32,
+    /// Auxiliary terminal WDL Brier-loss weight. Zero preserves MMTO-only behavior.
+    #[arg(long, default_value_t = 0.0)]
+    wdl_weight: f32,
+    /// Fixed temperature (centipawns) used by the auxiliary WDL sigmoid.
+    #[arg(long, default_value_t = 600.0)]
+    wdl_kappa_cp: f32,
     #[arg(long, default_value_t = 1.0)]
     feature_limit: f32,
     #[arg(long, default_value_t = 0.20)]
@@ -95,6 +101,8 @@ struct InputRecord {
     teacher_move: String,
     license_id: String,
     source_uri: String,
+    #[serde(default)]
+    winner: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -114,6 +122,7 @@ struct DatasetOutput {
 struct Sample {
     root: Position,
     teacher: Move,
+    winner: Option<Color>,
 }
 
 struct Leaf {
@@ -137,6 +146,8 @@ struct Gradient {
     loss_sum: f64,
     delta_hist: [u64; DELTA_HIST_BINS],
     active_derivative_pairs: u64,
+    wdl_roots: u64,
+    wdl_loss_sum: f64,
 }
 
 impl Default for Gradient {
@@ -150,6 +161,8 @@ impl Default for Gradient {
             loss_sum: 0.0,
             delta_hist: [0; DELTA_HIST_BINS],
             active_derivative_pairs: 0,
+            wdl_roots: 0,
+            wdl_loss_sum: 0.0,
         }
     }
 }
@@ -165,6 +178,8 @@ struct UpdateDiagnostics {
     active_derivative_fraction: f64,
     update_batches: u64,
     clipped_batches: u64,
+    wdl_roots: u64,
+    wdl_mean_brier: f64,
 }
 
 impl Default for UpdateDiagnostics {
@@ -178,6 +193,8 @@ impl Default for UpdateDiagnostics {
             active_derivative_fraction: 0.0,
             update_batches: 0,
             clipped_batches: 0,
+            wdl_roots: 0,
+            wdl_mean_brier: 0.0,
         }
     }
 }
@@ -516,6 +533,23 @@ fn train_block(
             .map(|sample| search_sample(Arc::clone(search_snapshot), sample, args.tau_cp))
             .collect::<Result<Vec<_>>>()
     })?;
+    if args.wdl_weight > 0.0 {
+        for sample in block.iter() {
+            let winner = sample
+                .winner
+                .ok_or_else(|| anyhow!("WDL training requires a decisive winner label"))?;
+            let packed = PackedHalfKpPosition::from_position(&sample.root)
+                .ok_or_else(|| anyhow!("WDL root lacks king"))?;
+            add_wdl_gradient(
+                weights,
+                &packed,
+                winner,
+                args.wdl_weight,
+                args.wdl_kappa_cp,
+                gradient,
+            )?;
+        }
+    }
     block.clear();
     for (pairs, sample_metrics) in searched {
         metrics.merge(&sample_metrics);
@@ -529,6 +563,41 @@ fn train_block(
     Ok(())
 }
 
+fn add_wdl_gradient(
+    weights: &Weights,
+    position: &PackedHalfKpPosition,
+    winner: Color,
+    weight: f32,
+    kappa_cp: f32,
+    gradient: &mut Gradient,
+) -> Result<()> {
+    let forward = weights.forward(position);
+    let target = f32::from(position.side_to_move == winner);
+    let (probability, loss) = wdl_probability_loss(forward.raw, target, kappa_cp);
+    let error = probability - target;
+    let d_raw = weight
+        * 2.0
+        * error
+        * probability
+        * (1.0 - probability)
+        * TARGET_SCALE
+        / kappa_cp;
+    if !probability.is_finite() || !loss.is_finite() || !d_raw.is_finite() {
+        return Err(anyhow!("non-finite WDL loss or derivative"));
+    }
+    add_position_gradient(weights, position, &forward, d_raw, gradient);
+    gradient.wdl_roots += 1;
+    gradient.wdl_loss_sum += f64::from(loss);
+    Ok(())
+}
+
+fn wdl_probability_loss(raw: f32, target: f32, kappa_cp: f32) -> (f32, f32) {
+    let x = (raw * TARGET_SCALE / kappa_cp).clamp(-80.0, 80.0);
+    let probability = 1.0 / (1.0 + (-x).exp());
+    let error = probability - target;
+    (probability, error * error)
+}
+
 fn validate_args(args: &Args) -> Result<()> {
     if args.outer_iterations == 0
         || args.search_block_roots == 0
@@ -540,6 +609,10 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.tau_cp <= 0.0
         || args.loss_weight < 0.0
         || !args.loss_weight.is_finite()
+        || args.wdl_weight < 0.0
+        || !args.wdl_weight.is_finite()
+        || args.wdl_kappa_cp <= 0.0
+        || !args.wdl_kappa_cp.is_finite()
         || args.feature_limit <= 0.0
         || args.output_limit <= 0.0
         || args.max_valid_roots == 0
@@ -657,6 +730,15 @@ fn validate_record(record: &InputRecord, expected_split: &str) -> Result<()> {
     Ok(())
 }
 
+fn parse_winner(value: Option<&str>) -> Result<Option<Color>> {
+    match value {
+        None => Ok(None),
+        Some("black") => Ok(Some(Color::Black)),
+        Some("white") => Ok(Some(Color::White)),
+        Some(other) => Err(anyhow!("invalid winner value: {other}")),
+    }
+}
+
 fn visit_samples(
     paths: &[PathBuf],
     expected_split: &str,
@@ -692,6 +774,7 @@ fn visit_samples(
             visitor(Sample {
                 root: position,
                 teacher,
+                winner: parse_winner(record.winner.as_deref())?,
             })?;
             count += 1;
         }
@@ -931,6 +1014,8 @@ fn apply_batch(
     diagnostics: &mut UpdateDiagnostics,
 ) -> Result<()> {
     diagnostics.pairs += gradient.pairs as u64;
+    diagnostics.wdl_roots += gradient.wdl_roots;
+    diagnostics.wdl_mean_brier += gradient.wdl_loss_sum;
     diagnostics.update_batches += 1;
     for (dst, src) in diagnostics.delta_hist.iter_mut().zip(gradient.delta_hist) {
         *dst += src;
@@ -1149,6 +1234,7 @@ fn finalize_diagnostics(d: &mut UpdateDiagnostics) {
     d.delta_over_tau_p90 = histogram_quantile(&d.delta_hist, total, 0.90);
     d.delta_over_tau_p99 = histogram_quantile(&d.delta_hist, total, 0.99);
     d.active_derivative_fraction /= total as f64;
+    d.wdl_mean_brier /= d.wdl_roots.max(1) as f64;
 }
 
 fn histogram_quantile(hist: &[u64; DELTA_HIST_BINS], total: u64, q: f64) -> f64 {
@@ -1302,6 +1388,8 @@ fn write_run_manifest(
     let mut hyperparameters = BTreeMap::new();
     hyperparameters.insert("tau_cp", serde_json::json!(args.tau_cp));
     hyperparameters.insert("loss_weight", serde_json::json!(args.loss_weight));
+    hyperparameters.insert("wdl_weight", serde_json::json!(args.wdl_weight));
+    hyperparameters.insert("wdl_kappa_cp", serde_json::json!(args.wdl_kappa_cp));
     hyperparameters.insert(
         "feature_learning_rate",
         serde_json::json!(args.learning_rate),
@@ -1348,7 +1436,7 @@ mod tests {
     use shogi_ai::evaluation::HALFKP_INPUTS;
 
     fn pair_fixture(side_to_move: Color) -> (Weights, Pair) {
-        let mut root = Position::default();
+        let root = Position::default();
         if side_to_move == Color::White {
             root.do_move(root.legal_moves()[0]);
         }
@@ -1475,6 +1563,48 @@ mod tests {
                 (analytical - numerical).abs() < 2e-4,
                 "side={side_to_move:?} sparse analytical={analytical} numerical={numerical}"
             );
+        }
+    }
+
+    #[test]
+    fn wdl_gradient_matches_finite_difference_and_winner_sign() {
+        let mut root = Position::default();
+        let packed = PackedHalfKpPosition::from_position(&root).expect("packed root");
+        let kappa = 600.0;
+        for winner in [Color::Black, Color::White] {
+            let mut weights = pair_fixture(Color::Black).0;
+            let mut gradient = Gradient::default();
+            add_wdl_gradient(&weights, &packed, winner, 1.0, kappa, &mut gradient)
+                .expect("WDL gradient");
+            assert_eq!(gradient.wdl_roots, 1);
+            assert!(gradient.wdl_loss_sum.is_finite());
+            let target = f32::from(winner == Color::Black);
+            let epsilon = 1e-4;
+            let analytical = gradient.out_b;
+            weights.out_b += epsilon;
+            let plus = wdl_probability_loss(
+                weights.forward(&packed).raw,
+                target,
+                kappa,
+            )
+            .1;
+            weights.out_b -= 2.0 * epsilon;
+            let minus = wdl_probability_loss(
+                weights.forward(&packed).raw,
+                target,
+                kappa,
+            )
+            .1;
+            let numerical = (plus - minus) / (2.0 * epsilon);
+            assert!(
+                (analytical - numerical).abs() < 2e-4,
+                "winner={winner:?} analytical={analytical} numerical={numerical}"
+            );
+            if winner == Color::Black {
+                assert!(analytical < 0.0);
+            } else {
+                assert!(analytical > 0.0);
+            }
         }
     }
 }
