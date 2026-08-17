@@ -1,0 +1,24 @@
+{
+  "schema": "halfkp_scratch_internal_gate_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "candidate_model_sha256": "a40af8e3ef913dc78e8272d3e6170d7a801453fa7dadd9b954bb7c945cbb431b",
+  "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+  "parent_generation": 2,
+  "evaluation": {
+    "positions": "taya36.sfen",
+    "games": 50,
+    "time_limit_ms": 5000,
+    "seed": 20260817,
+    "threads": 1,
+    "candidate_wins": 45,
+    "parent_wins": 5,
+    "draws": 0,
+    "candidate_score": 0.9,
+    "score_ci95": [0.8168, 0.9832],
+    "log": "runs/halfkp64-scratch-v1/match_outer4_vs_gen2_taya36_5s_50g_20260817/match.log"
+  },
+  "decision": "accepted_internal_scratch_parent",
+  "release_eligible": false,
+  "v250_used": false,
+  "notes": "Internal lineage promotion only; v2.5.0 remains excluded from training and candidate selection."
+}
