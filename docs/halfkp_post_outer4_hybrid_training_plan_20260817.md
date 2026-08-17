@@ -434,14 +434,14 @@ target、候補選択へ入れない。
 |---|---|---|
 | outer 4結果とv2.5.0 5秒50局監査 | 完了 | 14-36、28.0%、release不可 |
 | 次期方針策定 | 完了 | 本書 |
-| outer 4をscratch generation 3へ内部登録 | 未着手 | model/optimizer/provenance SHA固定 |
-| outer 4対scratch親 5秒50局 | 実行中 | `match_outer4_vs_gen2_taya36_5s_50g_20260817` |
+| outer 4をscratch generation 3へ内部登録 | 完了 | model SHA、Gate report SHA、lineageをregistryへ固定。release登録ではない |
+| outer 4対scratch親 5秒50局 | 完了 | 45-5-0、score 90.0%、95%区間81.68～98.32% |
 | 2020～2022 download / rate audit | 完了 | 公式SHA・年度別件数を記録 |
-| 2018～2019 download / extract | 実行中 | 公式SHA照合済み、展開待ち |
+| 2018～2019 download / extract | 完了 | 公式SHA照合、2018:47,813 CSA、2019:106,411 CSA |
 | 2018～2019追加判断 | 決定 | MMTO主データにはせず、WDL用へ限定 |
 | expanded dataset build / dedup audit | 未着手 | 全cross-split衝突・重複0 |
-| WDL補助とoptimizer init実装 | 完了 | 関連unit test 5件合格、コミット `9826483` |
-| 100k control / treatment A/B | 未着手 | fixed audit・500局・5秒50局完了 |
+| WDL補助とoptimizer init実装 | 完了 | 関連unit test 5件合格、optimizer provenance対応 |
+| 100k control / treatment A/B | 実行中 | control実行中、完了後supervisorがtreatment（WDL weight 0.1）を自動開始 |
 | A/B Gate判断 | 未着手 | full / self-playのどちらかへ一意に決定 |
 | expanded outer 1 | 条件付き | A/B Go後に実行・archive・評価 |
 | expanded outer 2 / 3 | 条件付き | 各outer Gate通過時だけ実行。outer 3はhybrid時のみ |
