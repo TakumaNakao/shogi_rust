@@ -1817,7 +1817,7 @@ TreeStrap、policy head、MCTSを実装しない。
 | I1 | WDL別正規化・sampler基盤 | 完了 | MMTO/WDL分離、固定manifest、数学test |
 | I2 | WDL/MMTO game-cluster audit | 完了 | root_key、exact-root、game bootstrap test |
 | I3 | 50k milestone resume | 完了 | active checkpoint、snapshot、current/previous復旧、build/test |
-| I4 | frozen-eval dense dataset tool | 未着手 | dataset test、audit bug修正 |
+| I4 | frozen-eval dense dataset tool | 完了 | base/eval凍結引数、prepare 4 subcommand、duplicate Gate、Rust test/build |
 | I5 | paired time/authorization | 未着手 | fixed/time resume test |
 | I6 | unattended config v2/state machine | 未着手 | E2E test |
 | I7 | implementation ready review | 未着手 | full test、tiny resume report |

@@ -128,6 +128,7 @@ pub fn run() -> Result<()> {
     report.passed = report.game_split_collisions == 0
         && report.opening_family_split_collisions == 0
         && report.network_input_split_collisions == 0
+        && report.duplicate_network_inputs_within_split == 0
         && report.illegal_teacher_moves == 0
         && report.unknown_results == 0
         && report.non_decisive_results == 0

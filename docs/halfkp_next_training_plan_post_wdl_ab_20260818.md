@@ -381,7 +381,7 @@ tracked fileを変更しない。run artifactは`runs/`へ保存し、完了後�
 | 実装・実験手順書 | 完了 | file/CLI/command/Gate/recoveryを固定 |
 | WDL別正規化・監査実装 | 実装中 | I1/I2完了、10k byte identity・norm校正・WDL fit未完了 |
 | corrected WDL treatment | 条件付き | 100k、Brier CI、500局、5秒50局 |
-| dense dataset build | 未着手 | 想定200万～260万、最低180万、新規120万、hard max 300万、衝突・重複0 |
+| dense dataset build | 実装中 | I4 builder/prepare完了、本番生成とGate未実施 |
 | unseen-root 250k pilot | 未着手 | audit改善、親500局Gate |
 | dense milestone / supervisor | 部分完了 | I3 checkpoint/resume基盤完了、専用supervisor未完了 |
 | dense outer 1 / 2 | 条件付き | 各outer archive・audit・500局 |

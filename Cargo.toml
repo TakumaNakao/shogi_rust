@@ -115,6 +115,11 @@ path = "src/bin/halfkp_mmto_train.rs"
 required-features = ["halfkp64", "training-tools"]
 
 [[bin]]
+name = "halfkp_dataset_prepare"
+path = "src/bin/halfkp_dataset_prepare.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
 name = "halfkp_mmto_audit"
 path = "src/bin/halfkp_mmto_audit.rs"
 required-features = ["halfkp64", "training-tools"]

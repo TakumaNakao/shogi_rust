@@ -17,7 +17,7 @@ use shogi_core::Color;
 use shogi_lib::Position;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,6 +49,14 @@ struct Args {
     max_games: Option<usize>,
     #[arg(long)]
     max_records: Option<usize>,
+    /// Frozen prior dataset used to preserve valid/test and exclude its inputs.
+    #[arg(long)]
+    base_dataset_manifest: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    freeze_base_eval: bool,
+    /// Supplement train cap; equivalent to --max-records for this membership build.
+    #[arg(long)]
+    max_train_records: Option<usize>,
     #[arg(long, default_value_t = 0)]
     target_opening_records: usize,
     #[arg(long, default_value_t = 0)]
@@ -166,6 +174,9 @@ struct DatasetManifest {
     opening_prefix_plies: usize,
     max_games: Option<usize>,
     max_records: Option<usize>,
+    base_dataset_manifest: Option<String>,
+    freeze_base_eval: bool,
+    max_train_records: Option<usize>,
     target_opening_records: usize,
     target_middle_records: usize,
     target_late_records: usize,
@@ -630,6 +641,9 @@ fn dataset_stage_fingerprint(args: &Args, sources: &[GameSource]) -> Result<Stri
             "opening_prefix_plies": args.opening_prefix_plies,
             "max_games": args.max_games,
             "max_records": args.max_records,
+            "base_dataset_manifest": args.base_dataset_manifest,
+            "freeze_base_eval": args.freeze_base_eval,
+            "max_train_records": args.max_train_records,
             "target_opening_records": args.target_opening_records,
             "target_middle_records": args.target_middle_records,
             "target_late_records": args.target_late_records,
@@ -678,8 +692,55 @@ fn reusable_output(output_dir: &Path, expected_fingerprint: &str) -> Result<bool
     Ok(true)
 }
 
+fn manifest_output_path(manifest_path: &Path, name: &str) -> Result<PathBuf> {
+    let value: serde_json::Value =
+        serde_json::from_reader(BufReader::new(File::open(manifest_path)?))?;
+    let base = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow!("dataset manifest has no parent"))?;
+    let output = value["output_files"]
+        .as_array()
+        .and_then(|outputs| outputs.iter().find(|item| item["path"] == name))
+        .ok_or_else(|| anyhow!("dataset manifest lacks {name}"))?;
+    let path = output["path"]
+        .as_str()
+        .ok_or_else(|| anyhow!("dataset output path is not a string"))?;
+    let resolved = base.join(path);
+    let expected = output["sha256"]
+        .as_str()
+        .ok_or_else(|| anyhow!("dataset output SHA is not a string"))?;
+    if sha256_file(&resolved)? != expected {
+        return Err(anyhow!("base dataset output SHA mismatch: {name}"));
+    }
+    Ok(resolved)
+}
+
+fn load_base_network_inputs(manifest_path: &Path) -> Result<HashMap<[u8; 32], Split>> {
+    let mut inputs = HashMap::new();
+    for name in ["train.jsonl", "valid.jsonl", "test.jsonl"] {
+        let path = manifest_output_path(manifest_path, name)?;
+        for line in BufReader::new(File::open(path)?).lines() {
+            let value: serde_json::Value = serde_json::from_str(&line?)?;
+            let sfen = value["sfen"]
+                .as_str()
+                .ok_or_else(|| anyhow!("base record lacks sfen"))?;
+            let position = shogi_ai::utils::position_from_sfen_or_usi(sfen)
+                .ok_or_else(|| anyhow!("invalid base SFEN"))?;
+            let packed = PackedHalfKpPosition::from_position(&position)
+                .ok_or_else(|| anyhow!("base position lacks king"))?;
+            let split = match name {
+                "train.jsonl" => Split::Train,
+                "valid.jsonl" => Split::Valid,
+                _ => Split::Test,
+            };
+            inputs.insert(packed.network_input_hash(), split);
+        }
+    }
+    Ok(inputs)
+}
+
 pub fn run() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
     if args.license_id.trim().is_empty() || args.source_uri.trim().is_empty() {
         return Err(anyhow!("--license-id and --source-uri must be non-empty"));
     }
@@ -704,6 +765,20 @@ pub fn run() -> Result<()> {
             "--phase-records-per-game requires three comma-separated values"
         ));
     }
+    if args.freeze_base_eval && args.base_dataset_manifest.is_none() {
+        return Err(anyhow!(
+            "--freeze-base-eval requires --base-dataset-manifest"
+        ));
+    }
+    if args.max_records.is_some() && args.max_train_records.is_some() {
+        return Err(anyhow!(
+            "use only one of --max-records and --max-train-records"
+        ));
+    }
+    if args.max_records.is_none() {
+        args.max_records = args.max_train_records;
+    }
+    let base_manifest = args.base_dataset_manifest.clone();
     let files = collect_csa_files(&args.input)?;
     let mut stats = DatasetStats::default();
     let mut sources_by_id = BTreeMap::new();
@@ -752,7 +827,10 @@ pub fn run() -> Result<()> {
         })
         .collect();
     let mut writers = create_writers(&args.output_dir)?;
-    let mut network_splits = HashMap::new();
+    let mut network_splits = match args.base_dataset_manifest.as_deref() {
+        Some(path) => load_base_network_inputs(path)?,
+        None => HashMap::new(),
+    };
 
     for (game_index, source) in sources.iter().enumerate() {
         if all_phase_targets_reached(&args, &stats) {
@@ -778,12 +856,16 @@ pub fn run() -> Result<()> {
                 continue;
             }
         };
-        let split = split_for_game_content(
-            &source.opening_family,
-            args.seed,
-            args.valid_percent,
-            args.test_percent,
-        );
+        let split = if args.freeze_base_eval {
+            Split::Train
+        } else {
+            split_for_game_content(
+                &source.opening_family,
+                args.seed,
+                args.valid_percent,
+                args.test_percent,
+            )
+        };
         match process_game(
             game_index,
             &bytes,
@@ -804,6 +886,20 @@ pub fn run() -> Result<()> {
         }
     }
     flush_writers(&mut writers)?;
+    drop(writers);
+    if args.freeze_base_eval {
+        let base_manifest = base_manifest
+            .as_deref()
+            .ok_or_else(|| anyhow!("frozen eval manifest disappeared"))?;
+        fs::copy(
+            manifest_output_path(base_manifest, "valid.jsonl")?,
+            args.output_dir.join("valid.jsonl"),
+        )?;
+        fs::copy(
+            manifest_output_path(base_manifest, "test.jsonl")?,
+            args.output_dir.join("test.jsonl"),
+        )?;
+    }
     let output_files = [
         ("train.jsonl", stats.train.records),
         ("valid.jsonl", stats.valid.records),
@@ -845,6 +941,12 @@ pub fn run() -> Result<()> {
         opening_prefix_plies: args.opening_prefix_plies,
         max_games: args.max_games,
         max_records: args.max_records,
+        base_dataset_manifest: args
+            .base_dataset_manifest
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        freeze_base_eval: args.freeze_base_eval,
+        max_train_records: args.max_train_records,
         target_opening_records: args.target_opening_records,
         target_middle_records: args.target_middle_records,
         target_late_records: args.target_late_records,
