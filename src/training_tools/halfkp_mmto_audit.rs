@@ -67,6 +67,8 @@ struct RootAudit {
     opening_family: String,
     sfen: String,
     root_hash: String,
+    /// Stable PackedHalfKP network-input identity, independent of SFEN text.
+    root_key: String,
     teacher_move: String,
     best_move: String,
     teacher_score_cp: f32,
@@ -159,6 +161,11 @@ pub fn run() -> Result<()> {
                     opening_family: block[index].opening_family.clone(),
                     sfen: block[index].sfen.clone(),
                     root_hash: hash_text(&block[index].sfen),
+                    root_key: hex_digest(
+                        &PackedHalfKpPosition::from_position(&block[index].root)
+                            .ok_or_else(|| anyhow!("audit root lacks king"))?
+                            .network_input_hash(),
+                    ),
                     teacher_move: format_move_usi(block[index].teacher),
                     best_move: format_move_usi(audit.best_move),
                     teacher_score_cp: audit.teacher_score_cp,
@@ -317,6 +324,10 @@ fn mirrored_sigmoid(delta_cp: f32, tau_cp: f32) -> f32 {
 fn hash_text(text: &str) -> String {
     let digest = Sha256::digest(text.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn hex_digest(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn sidecar_path(path: &Path) -> PathBuf {
