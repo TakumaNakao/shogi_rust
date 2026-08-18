@@ -1822,11 +1822,11 @@ TreeStrap、policy head、MCTSを実装しない。
 | I6 | unattended config v2/state machine | 未着手 | E2E test |
 | I7 | implementation ready review | 未着手 | full test、tiny resume report |
 | I8 | 最終config/runbook/input SHA lock | 未着手 | clean worktree、以後tracked変更なし |
-| A0 | WDL pool / valid split | 未着手 | pool最大100k、1,000/5,099 |
-| A1 | kappa / norm校正 | 未着手 | immutable manifests |
+| A0 | WDL pool / valid split | 完了 | pool 100,000 roots / 39,531 games、valid 1,000/5,099。pool manifest SHA `200d4e1a3c6713b9c5d3c74fd1087eea8bea05b4080cb889e9b7c33a5312c55e` |
+| A1 | kappa / norm校正 | 条件不成立 | kappa `4999.9976` が上限到達、calibration Brier `0.4741644350`、objective decisionはMMTO-only |
 | A2 | WDL-off replay | 未着手 | model/optimizer byte一致 |
 | A3 | corrected treatment | 条件付き | archive完了 |
-| A4 | corrected WDL Gate | 条件付き | hybridまたはMMTO-onlyを一意決定 |
+| A4 | corrected WDL Gate | 完了・MMTO-only | kappa境界到達のためhybridを採用せず、dense MMTOへ進む |
 | B0 | recent dense build | 未着手 | full membership/interleave |
 | B1 | old supplement | 条件付き | recent 2m未満時だけ、最大25% |
 | B2 | dense dataset Gate | 未着手 | 1.8m/new 1.2m、全衝突0 |

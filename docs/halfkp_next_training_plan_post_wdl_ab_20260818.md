@@ -379,8 +379,8 @@ tracked fileを変更しない。run artifactは`runs/`へ保存し、完了後�
 | 旧WDoor全件rate再監査 | 完了 | 2018～2022両者4000以上19,209局 |
 | 次期計画 | 完了 | 本書 |
 | 実装・実験手順書 | 完了 | file/CLI/command/Gate/recoveryを固定 |
-| WDL別正規化・監査実装 | 実装中 | I1/I2完了、10k byte identity・norm校正・WDL fit未完了 |
-| corrected WDL treatment | 条件付き | 100k、Brier CI、500局、5秒50局 |
+| WDL別正規化・監査実装 | 完了・WDL不成立 | I1/I2/I5完了。kappa上限到達のためobjectiveはMMTO-only |
+| corrected WDL treatment | 見送り | kappa最適値が上限到達、objective decision `mmto_only` |
 | dense dataset build | 実装中 | I4 builder/prepare完了、本番生成とGate未実施 |
 | paired評価 I5 | 完了 | nodes/time排他、authorization排他、taya36 USI selector、fixed/time smoke |
 | unseen-root 250k pilot | 未着手 | audit改善、親500局Gate |
