@@ -1836,7 +1836,7 @@ recent単独が2m未満だったため、旧年度補充は119,979 roots（最�
 | B0 | recent dense build | 完了 | `dense-recent-v2`: 1,880,021 train roots、membership 1,309,146 roots（新規network input条件を満たす） |
 | B1 | old supplement | 完了 | recentが2m未満のため2020～2022から119,979 rootsを補充（train比6.0%、上限25%以内） |
 | B2 | dense dataset Gate | 完了 | `dense-final-v2`: 2,000,000 train roots、監査 `passed=true`、game/opening/network split collision=0、illegal/provenance/schema mismatch=0 |
-| B3 | unseen 250k pilot | 条件付き | audit + 250-pair Gate |
+| B3 | unseen 250k pilot | 作業中 | `unseen-250k` 250,000 roots、監査 passed。MMTO-only pilotを実行中 |
 | C1 | dense outer 1 | 条件付き | archive/audit/match/decision |
 | C2 | dense outer 2 | 条件付き | outer 1 accepted時だけ |
 | F0 | best scratch凍結 | 未着手 | `best-scratch.json` |

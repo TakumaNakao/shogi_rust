@@ -383,7 +383,7 @@ tracked fileを変更しない。run artifactは`runs/`へ保存し、完了後�
 | corrected WDL treatment | 見送り | kappa最適値が上限到達、objective decision `mmto_only` |
 | dense dataset build | 完了 | `dense-final-v2`: train 2,000,000 roots。game/opening/network split collision=0、illegal/provenance/schema mismatch=0 |
 | paired評価 I5 | 完了 | nodes/time排他、authorization排他、taya36 USI selector、fixed/time smoke |
-| unseen-root 250k pilot | 未着手 | audit改善、親500局Gate |
+| unseen-root 250k pilot | 作業中 | 250,000 roots生成・監査合格、MMTO-only pilot実行中 |
 | dense milestone / supervisor | 部分完了 | I3 checkpoint/resume基盤完了、専用supervisor未完了 |
 | dense outer 1 / 2 | 条件付き | 各outer archive・audit・500局 |
 | scratch候補凍結 | 未着手 | v2.5.0非参照で一意に選択 |
