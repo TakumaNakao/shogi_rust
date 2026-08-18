@@ -260,6 +260,8 @@ fn compose_interleave(args: ComposeArgs) -> Result<()> {
     let (base, valid, test) = if let Some(path) = base_manifest {
         let path = if path.is_absolute() {
             path
+        } else if path.exists() {
+            path
         } else {
             args.membership_manifest
                 .parent()
