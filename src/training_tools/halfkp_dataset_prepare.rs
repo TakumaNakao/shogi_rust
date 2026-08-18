@@ -480,10 +480,22 @@ fn write_lines<'a>(path: &Path, lines: impl Iterator<Item = &'a Line>) -> Result
 fn manifest_path(manifest_path: &Path, value: &serde_json::Value, name: &str) -> Result<PathBuf> {
     let path = value["output_files"]
         .as_array()
-        .and_then(|files| files.iter().find(|file| file["path"] == name))
+        .and_then(|files| {
+            files.iter().find(|file| {
+                let Some(path) = file["path"].as_str() else {
+                    return false;
+                };
+                path == name
+                    || Path::new(path).file_name().and_then(|file| file.to_str()) == Some(name)
+            })
+        })
         .and_then(|file| file["path"].as_str())
         .ok_or_else(|| anyhow!("manifest lacks {name}"))?;
-    let resolved = manifest_path.parent().unwrap_or(Path::new(".")).join(path);
+    let resolved = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        manifest_path.parent().unwrap_or(Path::new(".")).join(path)
+    };
     if !resolved.exists() {
         return Err(anyhow!("missing dataset output {}", resolved.display()));
     }
