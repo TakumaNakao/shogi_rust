@@ -15,7 +15,7 @@ use shogi_ai::training_data::{
 use shogi_ai::utils::format_move_usi;
 use shogi_core::Color;
 use shogi_lib::Position;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -715,8 +715,12 @@ fn manifest_output_path(manifest_path: &Path, name: &str) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-fn load_base_network_inputs(manifest_path: &Path) -> Result<HashMap<[u8; 32], Split>> {
+fn load_base_eval_exclusions(
+    manifest_path: &Path,
+) -> Result<(HashSet<String>, HashSet<String>, HashMap<[u8; 32], Split>)> {
     let mut inputs = HashMap::new();
+    let mut eval_games = HashSet::new();
+    let mut eval_families = HashSet::new();
     for name in ["train.jsonl", "valid.jsonl", "test.jsonl"] {
         let path = manifest_output_path(manifest_path, name)?;
         for line in BufReader::new(File::open(path)?).lines() {
@@ -733,10 +737,18 @@ fn load_base_network_inputs(manifest_path: &Path) -> Result<HashMap<[u8; 32], Sp
                 "valid.jsonl" => Split::Valid,
                 _ => Split::Test,
             };
+            if matches!(split, Split::Valid | Split::Test) {
+                if let Some(game_key) = value["game_key"].as_str() {
+                    eval_games.insert(game_key.to_string());
+                }
+                if let Some(opening_family) = value["opening_family"].as_str() {
+                    eval_families.insert(opening_family.to_string());
+                }
+            }
             inputs.insert(packed.network_input_hash(), split);
         }
     }
-    Ok(inputs)
+    Ok((eval_games, eval_families, inputs))
 }
 
 pub fn run() -> Result<()> {
@@ -809,6 +821,15 @@ pub fn run() -> Result<()> {
         }
     }
     let mut sources = sources_by_id.into_values().collect::<Vec<_>>();
+    let base_eval_exclusions = match args.base_dataset_manifest.as_deref() {
+        Some(path) if args.freeze_base_eval => Some(load_base_eval_exclusions(path)?),
+        _ => None,
+    };
+    if let Some((eval_games, eval_families, _)) = &base_eval_exclusions {
+        sources.retain(|source| {
+            !eval_games.contains(&source.game_id) && !eval_families.contains(&source.opening_family)
+        });
+    }
     let stage_fingerprint = dataset_stage_fingerprint(&args, &sources)?;
     if args.reuse_if_matches && reusable_output(&args.output_dir, &stage_fingerprint)? {
         println!("reused output_dir={}", args.output_dir.display());
@@ -827,9 +848,12 @@ pub fn run() -> Result<()> {
         })
         .collect();
     let mut writers = create_writers(&args.output_dir)?;
-    let mut network_splits = match args.base_dataset_manifest.as_deref() {
-        Some(path) => load_base_network_inputs(path)?,
-        None => HashMap::new(),
+    let mut network_splits = match base_eval_exclusions {
+        Some((_, _, inputs)) => inputs,
+        None => match args.base_dataset_manifest.as_deref() {
+            Some(path) => load_base_eval_exclusions(path)?.2,
+            None => HashMap::new(),
+        },
     };
 
     for (game_index, source) in sources.iter().enumerate() {
