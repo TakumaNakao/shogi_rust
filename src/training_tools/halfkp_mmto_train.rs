@@ -98,6 +98,9 @@ struct Args {
     pv_probe_roots: usize,
     #[arg(long, default_value_t = false)]
     resume: bool,
+    /// Flush a resumable active-outer checkpoint at this many accepted roots; zero keeps outer-only checkpoints.
+    #[arg(long, default_value_t = 0)]
+    checkpoint_roots: usize,
     /// Explicit objective mode. The default preserves the legacy MMTO path.
     #[arg(long, value_enum, default_value_t = Objective::MmtoOnly)]
     objective: Objective,
@@ -358,6 +361,12 @@ struct Checkpoint {
     optimizer_sha256: String,
     #[serde(default)]
     init_optimizer_sha256: Option<String>,
+    #[serde(default)]
+    active_outer: Option<usize>,
+    #[serde(default)]
+    roots_completed: usize,
+    #[serde(default)]
+    search_snapshot_sha256: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -407,8 +416,16 @@ pub fn run() -> Result<()> {
         .build()
         .context("build MMTO search pool")?;
 
-    let (mut weights, mut adagrad, start_outer, material_bits, mut previous_sha) = if args.resume {
-        let checkpoint: Checkpoint =
+    let (
+        mut weights,
+        mut adagrad,
+        start_outer,
+        material_bits,
+        mut previous_sha,
+        mut resume_roots,
+        mut resume_snapshot_sha,
+    ) = if args.resume {
+        let mut checkpoint: Checkpoint =
             serde_json::from_reader(BufReader::new(File::open(&checkpoint_path)?))?;
         if checkpoint.schema_version != CHECKPOINT_SCHEMA
             || checkpoint.init_model_sha256 != init_sha
@@ -417,20 +434,50 @@ pub fn run() -> Result<()> {
         {
             return Err(anyhow!("resume checkpoint provenance mismatch"));
         }
-        restore_checkpoint_artifacts_if_needed(
+        if restore_checkpoint_artifacts_if_needed(
             &model_path,
             &optimizer_path,
             &checkpoint.model_sha256,
             &checkpoint.optimizer_sha256,
-        )?;
+        )
+        .is_err()
+        {
+            let previous_checkpoint_path = checkpoint_path.with_extension("previous.json");
+            let previous: Checkpoint = serde_json::from_reader(BufReader::new(
+                File::open(&previous_checkpoint_path)
+                    .with_context(|| "current and previous checkpoints are invalid")?,
+            ))?;
+            if previous.schema_version != CHECKPOINT_SCHEMA
+                || previous.init_model_sha256 != init_sha
+                || previous.dataset_manifest_sha256 != manifest_sha
+            {
+                return Err(anyhow!(
+                    "current and previous checkpoint provenance mismatch"
+                ));
+            }
+            restore_checkpoint_artifacts_if_needed(
+                &model_path,
+                &optimizer_path,
+                &previous.model_sha256,
+                &previous.optimizer_sha256,
+            )?;
+            atomic_copy(&previous_checkpoint_path, &checkpoint_path)?;
+            checkpoint = previous;
+        }
         let weights = Weights::load(&model_path)?;
         let adagrad = load_optimizer(&optimizer_path, &weights)?;
+        let start_outer = checkpoint
+            .active_outer
+            .map(|outer| outer.saturating_sub(1))
+            .unwrap_or(checkpoint.completed_outer);
         (
             weights,
             adagrad,
-            checkpoint.completed_outer,
+            start_outer,
             checkpoint.material_bits,
             checkpoint.model_sha256,
+            checkpoint.roots_completed,
+            checkpoint.search_snapshot_sha256,
         )
     } else {
         if model_path.exists() || optimizer_path.exists() || checkpoint_path.exists() {
@@ -459,9 +506,20 @@ pub fn run() -> Result<()> {
             model_sha256: sha256_file(&model_path)?,
             optimizer_sha256: sha256_file(&optimizer_path)?,
             init_optimizer_sha256: init_optimizer_sha.clone(),
+            active_outer: None,
+            roots_completed: 0,
+            search_snapshot_sha256: None,
         };
         atomic_json(&checkpoint_path, &checkpoint)?;
-        (weights, adagrad, 0, material_bits, init_sha.clone())
+        (
+            weights,
+            adagrad,
+            0,
+            material_bits,
+            init_sha.clone(),
+            0,
+            None,
+        )
     };
 
     for outer in start_outer + 1..=args.outer_iterations {
@@ -470,7 +528,15 @@ pub fn run() -> Result<()> {
         weights.save(&model_path)?;
         // EngineEvaluator owns this immutable search-side copy while `weights`
         // is updated independently throughout the streaming pass.
-        let search_snapshot = Arc::new(EngineEvaluator::new(&model_path, 0.0)?);
+        let snapshot_path = args.output_dir.join("search_snapshot.bin");
+        if let Some(expected_snapshot_sha) = resume_snapshot_sha.as_deref() {
+            if sha256_file(&snapshot_path)? != expected_snapshot_sha {
+                return Err(anyhow!("search snapshot SHA mismatch on resume"));
+            }
+        } else {
+            atomic_copy(&model_path, &snapshot_path)?;
+        }
+        let search_snapshot = Arc::new(EngineEvaluator::new(&snapshot_path, 0.0)?);
         let wdl_kappa_cp = wdl_objective
             .map(|(kappa, _)| kappa)
             .unwrap_or(args.wdl_kappa_cp);
@@ -493,33 +559,95 @@ pub fn run() -> Result<()> {
         let mut gradient = Gradient::default();
         let mut wdl_gradient = Gradient::default();
         let mut wdl_sampler = wdl_pool.clone();
+        if let Some(sampler) = wdl_sampler.as_mut() {
+            sampler.next_draw_index = resume_roots as u64;
+        }
         let mut diagnostics = UpdateDiagnostics::default();
         let mut last_train = SearchMetrics::default();
         let mut block = Vec::with_capacity(args.search_block_roots);
-        visit_samples(&args.train, "train", args.max_train_roots, |sample| {
-            block.push(sample);
-            if block.len() == args.search_block_roots {
-                train_block(
-                    &mut block,
-                    &search_pool,
-                    &search_snapshot,
-                    &mut weights,
-                    &mut adagrad,
-                    &mut gradient,
-                    &mut wdl_gradient,
-                    &mut last_train,
-                    &mut diagnostics,
-                    &args,
-                    material_bits,
-                    wdl_sampler.as_mut(),
-                    wdl_kappa_cp,
-                    wdl_objective
-                        .map(|(_, coefficient)| coefficient)
-                        .unwrap_or(0.0),
-                )?;
-            }
-            Ok(())
-        })?;
+        let mut roots_completed = resume_roots;
+        let mut next_checkpoint = if args.checkpoint_roots == 0 {
+            usize::MAX
+        } else {
+            roots_completed
+                .checked_div(args.checkpoint_roots)
+                .and_then(|value| value.checked_add(1))
+                .and_then(|value| value.checked_mul(args.checkpoint_roots))
+                .ok_or_else(|| anyhow!("checkpoint root count overflow"))?
+        };
+        visit_samples(
+            &args.train,
+            "train",
+            resume_roots,
+            args.max_train_roots,
+            |sample| {
+                block.push(sample);
+                let block_limit = if args.checkpoint_roots == 0 {
+                    args.search_block_roots
+                } else {
+                    args.search_block_roots
+                        .min(next_checkpoint - roots_completed)
+                };
+                if block.len() == block_limit {
+                    let block_roots = block.len();
+                    train_block(
+                        &mut block,
+                        &search_pool,
+                        &search_snapshot,
+                        &mut weights,
+                        &mut adagrad,
+                        &mut gradient,
+                        &mut wdl_gradient,
+                        &mut last_train,
+                        &mut diagnostics,
+                        &args,
+                        material_bits,
+                        wdl_sampler.as_mut(),
+                        wdl_kappa_cp,
+                        wdl_objective
+                            .map(|(_, coefficient)| coefficient)
+                            .unwrap_or(0.0),
+                    )?;
+                    roots_completed += block_roots;
+                    if roots_completed == next_checkpoint {
+                        if gradient.pairs != 0 {
+                            apply_batch(
+                                &mut weights,
+                                &mut adagrad,
+                                &mut gradient,
+                                &mut wdl_gradient,
+                                &args,
+                                material_bits,
+                                &mut diagnostics,
+                                wdl_objective
+                                    .map(|(_, coefficient)| coefficient)
+                                    .unwrap_or(0.0),
+                            )?;
+                        }
+                        commit_active_checkpoint(
+                            &args.output_dir,
+                            &checkpoint_path,
+                            &model_path,
+                            &optimizer_path,
+                            &weights,
+                            &adagrad,
+                            &init_sha,
+                            &manifest_sha,
+                            &init_optimizer_sha,
+                            material_bits,
+                            outer,
+                            roots_completed,
+                            &previous_sha,
+                            &snapshot_path,
+                        )?;
+                        next_checkpoint = next_checkpoint
+                            .checked_add(args.checkpoint_roots)
+                            .ok_or_else(|| anyhow!("checkpoint root count overflow"))?;
+                    }
+                }
+                Ok(())
+            },
+        )?;
         train_block(
             &mut block,
             &search_pool,
@@ -538,6 +666,8 @@ pub fn run() -> Result<()> {
                 .map(|(_, coefficient)| coefficient)
                 .unwrap_or(0.0),
         )?;
+        resume_roots = 0;
+        resume_snapshot_sha = None;
         if gradient.pairs != 0 {
             apply_batch(
                 &mut weights,
@@ -589,6 +719,9 @@ pub fn run() -> Result<()> {
             model_sha256: model_sha.clone(),
             optimizer_sha256: optimizer_sha.clone(),
             init_optimizer_sha256: init_optimizer_sha.clone(),
+            active_outer: None,
+            roots_completed: 0,
+            search_snapshot_sha256: None,
         };
         let metrics_dir = args.output_dir.join("metrics");
         fs::create_dir_all(&metrics_dir)?;
@@ -1011,6 +1144,7 @@ fn parse_winner(value: Option<&str>) -> Result<Option<Color>> {
 fn visit_samples(
     paths: &[PathBuf],
     expected_split: &str,
+    skip: usize,
     limit: Option<usize>,
     mut visitor: impl FnMut(Sample) -> Result<()>,
 ) -> Result<usize> {
@@ -1040,11 +1174,14 @@ fn visit_samples(
             if legal.len() < 2 {
                 continue;
             }
+            count += 1;
+            if count <= skip {
+                continue;
+            }
             visitor(Sample {
                 root: position,
                 teacher,
             })?;
-            count += 1;
         }
     }
     Ok(count)
@@ -1539,7 +1676,7 @@ fn fresh_evaluate(
     let evaluator = Arc::new(EngineEvaluator::new(model_path, 0.0)?);
     let mut metrics = SearchMetrics::default();
     let mut block = Vec::with_capacity(block_roots);
-    visit_samples(paths, split, limit, |sample| {
+    visit_samples(paths, split, 0, limit, |sample| {
         block.push(sample);
         if block.len() == block_roots {
             evaluate_block(&mut block, search_pool, &evaluator, tau_cp, &mut metrics)?;
@@ -1720,6 +1857,57 @@ fn read_f32s(reader: &mut impl Read, values: &mut [f32]) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn commit_active_checkpoint(
+    output_dir: &Path,
+    checkpoint_path: &Path,
+    model_path: &Path,
+    optimizer_path: &Path,
+    weights: &Weights,
+    adagrad: &Weights,
+    init_model_sha256: &str,
+    dataset_manifest_sha256: &str,
+    init_optimizer_sha256: &Option<String>,
+    material_bits: u32,
+    active_outer: usize,
+    roots_completed: usize,
+    previous_model_sha256: &str,
+    snapshot_path: &Path,
+) -> Result<()> {
+    fs::create_dir_all(output_dir)?;
+    if checkpoint_path.exists() {
+        atomic_copy(
+            checkpoint_path,
+            &checkpoint_path.with_extension("previous.json"),
+        )?;
+    }
+    if model_path.exists() {
+        atomic_copy(model_path, &model_path.with_extension("previous"))?;
+    }
+    if optimizer_path.exists() {
+        atomic_copy(optimizer_path, &optimizer_path.with_extension("previous"))?;
+    }
+    weights.save(model_path)?;
+    save_optimizer(optimizer_path, adagrad)?;
+    sync_file(model_path)?;
+    sync_file(optimizer_path)?;
+    let checkpoint = Checkpoint {
+        schema_version: CHECKPOINT_SCHEMA,
+        completed_outer: active_outer.saturating_sub(1),
+        init_model_sha256: init_model_sha256.to_owned(),
+        dataset_manifest_sha256: dataset_manifest_sha256.to_owned(),
+        material_bits,
+        previous_model_sha256: previous_model_sha256.to_owned(),
+        model_sha256: sha256_file(model_path)?,
+        optimizer_sha256: sha256_file(optimizer_path)?,
+        init_optimizer_sha256: init_optimizer_sha256.clone(),
+        active_outer: Some(active_outer),
+        roots_completed,
+        search_snapshot_sha256: Some(sha256_file(snapshot_path)?),
+    };
+    atomic_json(checkpoint_path, &checkpoint)
+}
+
 fn restore_checkpoint_artifacts_if_needed(
     model_path: &Path,
     optimizer_path: &Path,
@@ -1811,6 +1999,7 @@ fn write_run_manifest(
         serde_json::json!(args.output_learning_rate_ratio),
     );
     hyperparameters.insert("pair_batch_size", serde_json::json!(args.pair_batch_size));
+    hyperparameters.insert("checkpoint_roots", serde_json::json!(args.checkpoint_roots));
     hyperparameters.insert(
         "search_block_roots",
         serde_json::json!(args.search_block_roots),

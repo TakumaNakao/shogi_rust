@@ -1813,10 +1813,10 @@ TreeStrap、policy head、MCTSを実装しない。
 |---|---|---|---|
 | H0 | 上位計画 | 完了 | `7caae5d` |
 | H1 | 本実装・実験手順書 | 完了 | 本書 |
-| P0 | 旧WDL trainer保全 | 未着手 | SHA `329e32f5...439f`、0555 copy |
-| I1 | WDL別正規化・sampler・norm校正 | 未着手 | 数学test |
-| I2 | WDL/MMTO game-cluster audit | 未着手 | exact-root test |
-| I3 | 50k milestone resume | 未着手 | 中断有無bit identity |
+| P0 | 旧WDL trainer保全 | 完了 | SHA `329e32f5...439f`、run専用0555 copy |
+| I1 | WDL別正規化・sampler基盤 | 完了 | MMTO/WDL分離、固定manifest、数学test |
+| I2 | WDL/MMTO game-cluster audit | 完了 | root_key、exact-root、game bootstrap test |
+| I3 | 50k milestone resume | 完了 | active checkpoint、snapshot、current/previous復旧、build/test |
 | I4 | frozen-eval dense dataset tool | 未着手 | dataset test、audit bug修正 |
 | I5 | paired time/authorization | 未着手 | fixed/time resume test |
 | I6 | unattended config v2/state machine | 未着手 | E2E test |
