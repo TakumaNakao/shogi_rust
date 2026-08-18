@@ -381,7 +381,7 @@ tracked fileを変更しない。run artifactは`runs/`へ保存し、完了後�
 | 実装・実験手順書 | 完了 | file/CLI/command/Gate/recoveryを固定 |
 | WDL別正規化・監査実装 | 完了・WDL不成立 | I1/I2/I5完了。kappa上限到達のためobjectiveはMMTO-only |
 | corrected WDL treatment | 見送り | kappa最適値が上限到達、objective decision `mmto_only` |
-| dense dataset build | 実装中 | I4 builder/prepare完了、本番生成とGate未実施 |
+| dense dataset build | 完了 | `dense-final-v2`: train 2,000,000 roots。game/opening/network split collision=0、illegal/provenance/schema mismatch=0 |
 | paired評価 I5 | 完了 | nodes/time排他、authorization排他、taya36 USI selector、fixed/time smoke |
 | unseen-root 250k pilot | 未着手 | audit改善、親500局Gate |
 | dense milestone / supervisor | 部分完了 | I3 checkpoint/resume基盤完了、専用supervisor未完了 |

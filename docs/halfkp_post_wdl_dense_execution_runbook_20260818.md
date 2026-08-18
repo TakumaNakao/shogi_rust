@@ -1809,6 +1809,12 @@ TreeStrap、policy head、MCTSを実装しない。
 状態は`未着手`、`作業中`、`完了`、`条件不成立`のいずれかにする。完了時はcommitまたはartifact SHAを備考へ
 追記する。
 
+2026-08-18のPhase B実行結果: `dense-final-v2`はtrain 2,000,000 roots（SHA-256
+`fe17c799d6b80e8b4d21a2591188ae5fe79d0e40ca0e159a393244962e89f171`）となった。`game_dataset_audit`の
+reportは`runs/halfkp64-scratch-v1/post-wdl-dense-20260818-v1/derived/dense-final-v2/dataset_audit.json`に保存し、
+`passed=true`、game/opening/network-inputのsplit衝突、split内重複、違法手、provenance/schema不一致はすべて0である。
+recent単独が2m未満だったため、旧年度補充は119,979 roots（最終trainの6.0%）に限定した。
+
 | ID | 作業 | 状態 | 完了条件 / 記録 |
 |---|---|---|---|
 | H0 | 上位計画 | 完了 | `7caae5d` |
@@ -1827,9 +1833,9 @@ TreeStrap、policy head、MCTSを実装しない。
 | A2 | WDL-off replay | 未着手 | model/optimizer byte一致 |
 | A3 | corrected treatment | 条件付き | archive完了 |
 | A4 | corrected WDL Gate | 完了・MMTO-only | kappa境界到達のためhybridを採用せず、dense MMTOへ進む |
-| B0 | recent dense build | 未着手 | full membership/interleave |
-| B1 | old supplement | 条件付き | recent 2m未満時だけ、最大25% |
-| B2 | dense dataset Gate | 未着手 | 1.8m/new 1.2m、全衝突0 |
+| B0 | recent dense build | 完了 | `dense-recent-v2`: 1,880,021 train roots、membership 1,309,146 roots（新規network input条件を満たす） |
+| B1 | old supplement | 完了 | recentが2m未満のため2020～2022から119,979 rootsを補充（train比6.0%、上限25%以内） |
+| B2 | dense dataset Gate | 完了 | `dense-final-v2`: 2,000,000 train roots、監査 `passed=true`、game/opening/network split collision=0、illegal/provenance/schema mismatch=0 |
 | B3 | unseen 250k pilot | 条件付き | audit + 250-pair Gate |
 | C1 | dense outer 1 | 条件付き | archive/audit/match/decision |
 | C2 | dense outer 2 | 条件付き | outer 1 accepted時だけ |
