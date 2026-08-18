@@ -700,12 +700,24 @@ fn manifest_output_path(manifest_path: &Path, name: &str) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("dataset manifest has no parent"))?;
     let output = value["output_files"]
         .as_array()
-        .and_then(|outputs| outputs.iter().find(|item| item["path"] == name))
+        .and_then(|outputs| {
+            outputs.iter().find(|item| {
+                let Some(path) = item["path"].as_str() else {
+                    return false;
+                };
+                path == name
+                    || Path::new(path).file_name().and_then(|file| file.to_str()) == Some(name)
+            })
+        })
         .ok_or_else(|| anyhow!("dataset manifest lacks {name}"))?;
     let path = output["path"]
         .as_str()
         .ok_or_else(|| anyhow!("dataset output path is not a string"))?;
-    let resolved = base.join(path);
+    let resolved = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        base.join(path)
+    };
     let expected = output["sha256"]
         .as_str()
         .ok_or_else(|| anyhow!("dataset output SHA is not a string"))?;
