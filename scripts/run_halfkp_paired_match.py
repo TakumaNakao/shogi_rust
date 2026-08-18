@@ -90,7 +90,7 @@ class RunInputs:
     candidate_manifest: Path
     parent: Path
     parent_manifest: Path
-    registry: Path
+    registry: Path | None
     openings: Path
     output_dir: Path
     pairs: int
@@ -99,6 +99,11 @@ class RunInputs:
     max_plies: int
     bootstrap_resamples: int
     bootstrap_seed: int
+    parent_authorization: Path | None = None
+    openings_format: str = "dataset-jsonl"
+    opening_selection: str = "first-unique"
+    opening_seed: int = 0
+    time_limit_ms: int | None = None
 
 
 _active_child: subprocess.Popen[str] | None = None
@@ -200,12 +205,44 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def select_openings(path: Path, count: int) -> list[SelectedOpening]:
+def select_openings(
+    path: Path,
+    count: int,
+    openings_format: str = "dataset-jsonl",
+    opening_selection: str = "first-unique",
+    opening_seed: int = 0,
+) -> list[SelectedOpening]:
     """Mirror the Rust match loader's first-N valid unique-family selection."""
 
     if count <= 0:
         raise MatchRunnerError("pairs must be positive")
     selected: list[SelectedOpening] = []
+    if openings_format == "usi-lines":
+        try:
+            lines = [
+                (source_line, line.rstrip(b"\r\n"))
+                for source_line, line in enumerate(path.read_bytes().splitlines(), 1)
+                if line.strip()
+            ]
+        except OSError as error:
+            raise MatchRunnerError(f"cannot read opening suite {path}: {error}") from error
+        if opening_selection == "sha256-seed":
+            lines.sort(key=lambda item: hashlib.sha256(opening_seed.to_bytes(8, "little") + item[1]).hexdigest())
+        elif opening_selection != "first-unique":
+            raise MatchRunnerError(f"unknown opening selection: {opening_selection}")
+        for index, (source_line, raw_line) in enumerate(lines[:count]):
+            text = raw_line.decode("utf-8", errors="strict").strip()
+            if not text.startswith("startpos") and not text.startswith("sfen "):
+                raise MatchRunnerError(f"opening line {index + 1} is not a USI position")
+            moves = text.split()[2:] if "moves" in text.split() else []
+            # Each child receives a one-line temporary suite; Rust therefore reports
+            # the local family as usi-line-0. Keep the original source line separately.
+            selected.append(SelectedOpening(index, source_line, raw_line, "usi-line-0", text, len(moves)))
+        if len(selected) != count:
+            raise MatchRunnerError(f"requested {count} USI openings, found {len(selected)}")
+        return selected
+    if openings_format != "dataset-jsonl" or opening_selection != "first-unique":
+        raise MatchRunnerError("dataset-jsonl supports only first-unique selection")
     seen_families: set[str] = set()
     try:
         source = path.open("rb")
@@ -262,9 +299,11 @@ def _require_regular_file(path: Path, label: str, executable: bool = False) -> N
         raise MatchRunnerError(f"{label} is not executable: {path}")
 
 
-def _manifest_model_hash(path: Path, expected_model: Path) -> str:
+def _manifest_model_hash(
+    path: Path, expected_model: Path, allowed_lineages: tuple[str, ...] = (LINEAGE_ID,)
+) -> str:
     manifest = load_json(path)
-    if manifest.get("lineage_id") != LINEAGE_ID:
+    if manifest.get("lineage_id") not in allowed_lineages:
         raise MatchRunnerError(f"model manifest has wrong lineage: {path}")
     model = manifest.get("model")
     if not isinstance(model, dict) or not isinstance(model.get("sha256"), str):
@@ -282,30 +321,48 @@ def build_provenance(inputs: RunInputs, openings: Sequence[SelectedOpening]) -> 
         (inputs.candidate_manifest, "candidate manifest", False),
         (inputs.parent, "parent", False),
         (inputs.parent_manifest, "parent manifest", False),
-        (inputs.registry, "promotion registry", False),
+        *(([(inputs.registry, "promotion registry", False)] if inputs.registry is not None else [])),
+        *(([(inputs.parent_authorization, "parent authorization", False)] if inputs.parent_authorization is not None else [])),
         (inputs.openings, "opening suite", False),
     ):
         _require_regular_file(path, label, executable)
 
     openings_sha_before = sha256_file(inputs.openings)
-    current_openings = select_openings(inputs.openings, inputs.pairs)
+    if (inputs.registry is None) == (inputs.parent_authorization is None):
+        raise MatchRunnerError("exactly one of registry and parent_authorization is required")
+    if (inputs.nodes <= 0) or (inputs.time_limit_ms is not None and inputs.time_limit_ms <= 0):
+        raise MatchRunnerError("node/time budget must be positive")
+    if inputs.time_limit_ms is not None and inputs.nodes <= 0:
+        raise MatchRunnerError("time budget requires a positive compatibility node value")
+    current_openings = select_openings(inputs.openings, inputs.pairs, inputs.openings_format, inputs.opening_selection, inputs.opening_seed)
     openings_sha_after = sha256_file(inputs.openings)
     if openings_sha_before != openings_sha_after or list(openings) != current_openings:
         raise MatchRunnerError("opening suite changed while provenance was captured")
 
+    parent_lineages = (LINEAGE_ID,)
+    authorization: dict[str, Any] | None = None
+    if inputs.parent_authorization is not None:
+        authorization = load_json(inputs.parent_authorization)
+        if authorization.get("schema") != "halfkp_workflow_parent_authorization_v1":
+            raise MatchRunnerError("parent authorization has wrong schema")
+        if authorization.get("authorization_kind") == "evaluation_only_external_baseline":
+            parent_lineages = (LINEAGE_ID, "v2.5.0-kpp-derived-evaluation-only")
     candidate_hash = _manifest_model_hash(inputs.candidate_manifest, inputs.candidate)
-    parent_hash = _manifest_model_hash(inputs.parent_manifest, inputs.parent)
+    parent_hash = _manifest_model_hash(inputs.parent_manifest, inputs.parent, parent_lineages)
     if candidate_hash == parent_hash:
         raise MatchRunnerError("candidate and parent are identical")
-    registry = load_json(inputs.registry)
-    accepted = registry.get("accepted")
-    if registry.get("lineage_id") != LINEAGE_ID or not isinstance(accepted, list):
-        raise MatchRunnerError("promotion registry has wrong lineage or shape")
-    if not any(
-        isinstance(entry, dict) and entry.get("model_sha256") == parent_hash
-        for entry in accepted
-    ):
-        raise MatchRunnerError("parent is not accepted in the scratch promotion registry")
+    if inputs.registry is not None:
+        registry = load_json(inputs.registry)
+        accepted = registry.get("accepted")
+        if registry.get("lineage_id") != LINEAGE_ID or not isinstance(accepted, list):
+            raise MatchRunnerError("promotion registry has wrong lineage or shape")
+        if not any(isinstance(entry, dict) and entry.get("model_sha256") == parent_hash for entry in accepted):
+            raise MatchRunnerError("parent is not accepted in the scratch promotion registry")
+    else:
+        assert authorization is not None
+        model = authorization.get("model")
+        if not isinstance(model, dict) or model.get("sha256") != parent_hash:
+            raise MatchRunnerError("parent authorization does not match parent model")
 
     selected = [
         {
@@ -326,10 +383,15 @@ def build_provenance(inputs: RunInputs, openings: Sequence[SelectedOpening]) -> 
         "candidate_manifest_sha256": sha256_file(inputs.candidate_manifest),
         "parent_sha256": parent_hash,
         "parent_manifest_sha256": sha256_file(inputs.parent_manifest),
-        "registry_sha256": sha256_file(inputs.registry),
+        "registry_sha256": sha256_file(inputs.registry) if inputs.registry is not None else None,
+        "parent_authorization_sha256": sha256_file(inputs.parent_authorization) if inputs.parent_authorization is not None else None,
         "openings_sha256": openings_sha_after,
         "pairs": inputs.pairs,
-        "nodes": inputs.nodes,
+        "nodes": None if inputs.time_limit_ms is not None else inputs.nodes,
+        "time_limit_ms": inputs.time_limit_ms,
+        "openings_format": inputs.openings_format,
+        "opening_selection": inputs.opening_selection,
+        "opening_seed": inputs.opening_seed,
         "max_depth": inputs.max_depth,
         "max_plies": inputs.max_plies,
         "bootstrap": {
@@ -367,7 +429,8 @@ def verify_runtime_inputs(
             "parent_manifest_sha256",
             False,
         ),
-        (inputs.registry, "promotion registry", "registry_sha256", False),
+        *(([(inputs.registry, "promotion registry", "registry_sha256", False)] if inputs.registry is not None else [])),
+        *(([(inputs.parent_authorization, "parent authorization", "parent_authorization_sha256", False)] if inputs.parent_authorization is not None else [])),
         (inputs.openings, "opening suite", "openings_sha256", False),
     )
     for path, label, field, executable in checks:
@@ -470,6 +533,8 @@ def validate_child_report(
         "pairs": 1,
         "games": 2,
     }
+    if "time_limit_ms" in fingerprint_inputs:
+        expected_scalars["time_limit_ms"] = fingerprint_inputs["time_limit_ms"]
     for key, expected in expected_scalars.items():
         if report.get(key) != expected:
             raise MatchRunnerError(
@@ -700,6 +765,7 @@ def aggregate_pair_artifacts(
             "promotion_match_binary_sha256"
         ],
         "node_budget_per_move": fingerprint_inputs["nodes"],
+        "time_limit_ms": fingerprint_inputs.get("time_limit_ms"),
         "max_depth": fingerprint_inputs["max_depth"],
         "max_plies": fingerprint_inputs["max_plies"],
         "pairs": expected_pairs,
@@ -778,14 +844,18 @@ def run_child_pair(
             str(inputs.parent),
             "--parent-manifest",
             str(inputs.parent_manifest),
-            "--registry",
-            str(inputs.registry),
+            *( ["--registry", str(inputs.registry)] if inputs.registry is not None else ["--parent-authorization", str(inputs.parent_authorization)] ),
             "--openings",
             str(opening_path),
+            "--openings-format",
+            inputs.openings_format,
+            "--opening-selection",
+            inputs.opening_selection,
+            "--opening-seed",
+            str(inputs.opening_seed),
             "--pairs",
             "1",
-            "--nodes",
-            str(inputs.nodes),
+            *( ["--time-limit-ms", str(inputs.time_limit_ms)] if inputs.time_limit_ms is not None else ["--nodes", str(inputs.nodes)] ),
             "--max-depth",
             str(inputs.max_depth),
             "--max-plies",
@@ -897,7 +967,13 @@ def run(inputs: RunInputs) -> dict[str, Any]:
         except BlockingIOError as error:
             raise MatchRunnerError(f"another paired match runner holds {lock_path}") from error
 
-        openings = select_openings(inputs.openings, inputs.pairs)
+        openings = select_openings(
+            inputs.openings,
+            inputs.pairs,
+            inputs.openings_format,
+            inputs.opening_selection,
+            inputs.opening_seed,
+        )
         fingerprint_inputs, fingerprint = build_provenance(inputs, openings)
         verify_runtime_inputs(inputs, fingerprint_inputs)
         pair_dir = inputs.output_dir / "pairs"
@@ -910,7 +986,8 @@ def run(inputs: RunInputs) -> dict[str, Any]:
             "candidate_manifest": str(inputs.candidate_manifest),
             "parent": str(inputs.parent),
             "parent_manifest": str(inputs.parent_manifest),
-            "registry": str(inputs.registry),
+            "registry": str(inputs.registry) if inputs.registry is not None else None,
+            "parent_authorization": str(inputs.parent_authorization) if inputs.parent_authorization is not None else None,
             "openings": str(inputs.openings),
         }
         if not run_path.exists() and (
@@ -1011,10 +1088,16 @@ def parse_args(argv: Sequence[str] | None = None) -> RunInputs:
     parser.add_argument("--candidate-manifest", type=Path, required=True)
     parser.add_argument("--parent", type=Path, required=True)
     parser.add_argument("--parent-manifest", type=Path, required=True)
-    parser.add_argument("--registry", type=Path, required=True)
+    auth = parser.add_mutually_exclusive_group(required=True)
+    auth.add_argument("--registry", type=Path)
+    auth.add_argument("--parent-authorization", type=Path)
     parser.add_argument("--openings", type=Path, required=True)
+    parser.add_argument("--openings-format", choices=("dataset-jsonl", "usi-lines"), default="dataset-jsonl")
+    parser.add_argument("--opening-selection", choices=("first-unique", "sha256-seed"), default="first-unique")
+    parser.add_argument("--opening-seed", type=int, default=0)
     parser.add_argument("--pairs", type=int, default=250)
-    parser.add_argument("--nodes", type=int, default=20_000)
+    parser.add_argument("--nodes", type=int)
+    parser.add_argument("--time-limit-ms", type=int)
     parser.add_argument("--max-depth", type=int, default=64)
     parser.add_argument("--max-plies", type=int, default=256)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -1023,21 +1106,29 @@ def parse_args(argv: Sequence[str] | None = None) -> RunInputs:
     )
     parser.add_argument("--bootstrap-seed", type=int, default=DEFAULT_BOOTSTRAP_SEED)
     namespace = parser.parse_args(argv)
+    if namespace.nodes is not None and namespace.time_limit_ms is not None:
+        parser.error("--nodes and --time-limit-ms are mutually exclusive")
+    nodes = namespace.nodes if namespace.nodes is not None else (1 if namespace.time_limit_ms is not None else 20_000)
     return RunInputs(
         binary=namespace.binary.resolve(),
         candidate=namespace.candidate.resolve(),
         candidate_manifest=namespace.candidate_manifest.resolve(),
         parent=namespace.parent.resolve(),
         parent_manifest=namespace.parent_manifest.resolve(),
-        registry=namespace.registry.resolve(),
+        registry=namespace.registry.resolve() if namespace.registry is not None else None,
+        parent_authorization=namespace.parent_authorization.resolve() if namespace.parent_authorization is not None else None,
         openings=namespace.openings.resolve(),
         output_dir=namespace.output_dir.resolve(),
         pairs=namespace.pairs,
-        nodes=namespace.nodes,
+        nodes=nodes,
         max_depth=namespace.max_depth,
         max_plies=namespace.max_plies,
         bootstrap_resamples=namespace.bootstrap_resamples,
         bootstrap_seed=namespace.bootstrap_seed,
+        openings_format=namespace.openings_format,
+        opening_selection=namespace.opening_selection,
+        opening_seed=namespace.opening_seed,
+        time_limit_ms=namespace.time_limit_ms,
     )
 
 

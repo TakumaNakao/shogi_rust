@@ -873,7 +873,7 @@ report SHAをI8 configが要求する。旧/新10k replayはfinal P1 binaryでPh
 | I2 | `training: add game-cluster WDL and MMTO audits` | WDL binary/analyzer、MMTO root key/analyzer | audit unit test |
 | I3 | `training: add deterministic MMTO milestone resume` | checkpoint v2、snapshot、cursor、atomic recovery | tiny resume identity |
 | I4 | `training: build frozen-eval dense WDoor datasets` | builder 3引数、prepare subcommands、audit bug修正 | dataset unit/integration test |
-| I5 | `training: generalize resumable paired evaluation` | workflow authorization、time budget | pair runner test |
+| I5 | `training: generalize resumable paired evaluation` | workflow authorization、time budget、USI opening selector | pair runner test、fixed/time smoke |
 | I6 | `training: add post-WDL dense unattended workflow` | config v2、state machine、manager、systemd | supervisor E2E test |
 | I7 | `test: verify post-WDL dense workflow readiness` | full test、tiny resume identity review | 全report合格 |
 | I8 | `training: lock post-WDL dense experiment configuration` | 最終runbook/input SHA、config、進捗を同時固定 | clean worktree |
@@ -1818,7 +1818,7 @@ TreeStrap、policy head、MCTSを実装しない。
 | I2 | WDL/MMTO game-cluster audit | 完了 | root_key、exact-root、game bootstrap test |
 | I3 | 50k milestone resume | 完了 | active checkpoint、snapshot、current/previous復旧、build/test |
 | I4 | frozen-eval dense dataset tool | 完了 | base/eval凍結引数、prepare 4 subcommand、duplicate Gate、Rust test/build |
-| I5 | paired time/authorization | 未着手 | fixed/time resume test |
+| I5 | paired time/authorization | 完了 | nodes/time排他、registry/authorization排他、USI sha256 selector、fixed/time smoke。report SHA `7946bb315a9ceefaacbf136aaee61adf398a889694117c16b5dd877fe0e4e3c3` / `a0d38f06de0e5892cc92ac58d8e5d98ae838bba299ac82a48aa7b650f49680fe` |
 | I6 | unattended config v2/state machine | 未着手 | E2E test |
 | I7 | implementation ready review | 未着手 | full test、tiny resume report |
 | I8 | 最終config/runbook/input SHA lock | 未着手 | clean worktree、以後tracked変更なし |

@@ -3,8 +3,9 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use shogi_ai::ai::{SearchLimits, ShogiAI};
 use shogi_ai::evaluation::EngineEvaluator;
-use shogi_ai::sennichite::{GameHistory, SennichiteStatus};
-use shogi_ai::training_data::sha256_file;
+use shogi_ai::sennichite::SennichiteStatus;
+use shogi_ai::training_data::{sha256_file, sha256_hex};
+use shogi_ai::utils::position_and_history_from_sfen_or_usi;
 use shogi_core::{Color, PartialPosition};
 use shogi_lib::Position;
 use shogi_usi_parser::FromUsi;
@@ -28,15 +29,25 @@ struct Args {
     parent: PathBuf,
     #[arg(long)]
     parent_manifest: PathBuf,
-    #[arg(long)]
-    registry: PathBuf,
+    #[arg(long, conflicts_with = "parent_authorization")]
+    registry: Option<PathBuf>,
+    #[arg(long, conflicts_with = "registry")]
+    parent_authorization: Option<PathBuf>,
     #[arg(long)]
     openings: PathBuf,
+    #[arg(long, default_value = "dataset-jsonl")]
+    openings_format: String,
+    #[arg(long, default_value = "first-unique")]
+    opening_selection: String,
+    #[arg(long, default_value_t = 0)]
+    opening_seed: u64,
     /// Number of opening pairs; the match contains twice this many games.
     #[arg(long)]
     pairs: usize,
-    #[arg(long, default_value_t = 20_000)]
-    nodes: u64,
+    #[arg(long, conflicts_with = "time_limit_ms")]
+    nodes: Option<u64>,
+    #[arg(long, conflicts_with = "nodes")]
+    time_limit_ms: Option<u64>,
     #[arg(long, default_value_t = 64)]
     max_depth: u8,
     #[arg(long, default_value_t = 256)]
@@ -74,8 +85,8 @@ struct OpeningRecord {
 #[derive(Clone)]
 struct Opening {
     family: String,
-    sfen: String,
     ply: usize,
+    position_spec: String,
 }
 
 #[derive(Default, Serialize)]
@@ -112,7 +123,8 @@ struct Report {
     candidate_sha256: String,
     parent_sha256: String,
     openings_sha256: String,
-    node_budget_per_move: u64,
+    node_budget_per_move: Option<u64>,
+    time_limit_ms: Option<u64>,
     max_depth: u8,
     max_plies: usize,
     pairs: usize,
@@ -135,7 +147,7 @@ enum GameResult {
 
 pub fn run() -> Result<()> {
     let args = Args::parse();
-    if args.pairs == 0 || args.nodes == 0 || args.max_depth == 0 || args.max_plies == 0 {
+    if args.pairs == 0 || args.max_depth == 0 || args.max_plies == 0 {
         return Err(anyhow!(
             "pairs, nodes, max-depth, and max-plies must be positive"
         ));
@@ -143,23 +155,69 @@ pub fn run() -> Result<()> {
     if args.json.exists() {
         return Err(anyhow!("refusing to overwrite {}", args.json.display()));
     }
-    let candidate_hash = verify_model(&args.candidate, &args.candidate_manifest)?;
-    let parent_hash = verify_model(&args.parent, &args.parent_manifest)?;
-    let registry: Registry = serde_json::from_slice(&fs::read(&args.registry)?)?;
-    if registry.lineage_id != LINEAGE_ID
-        || !registry
-            .accepted
-            .iter()
-            .any(|e| e.model_sha256 == parent_hash)
-    {
+    let candidate_hash = verify_model(&args.candidate, &args.candidate_manifest, false)?;
+    let external_parent = args.parent_authorization.as_ref().is_some_and(|path| {
+        serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap_or_default())
+            .ok()
+            .and_then(|v| {
+                v.get("authorization_kind")
+                    .and_then(|x| x.as_str())
+                    .map(|k| k == "evaluation_only_external_baseline")
+            })
+            .unwrap_or(false)
+    });
+    let parent_hash = verify_model(&args.parent, &args.parent_manifest, external_parent)?;
+    match (&args.registry, &args.parent_authorization) {
+        (Some(path), None) => {
+            let registry: Registry = serde_json::from_slice(&fs::read(path)?)?;
+            if registry.lineage_id != LINEAGE_ID
+                || !registry
+                    .accepted
+                    .iter()
+                    .any(|e| e.model_sha256 == parent_hash)
+            {
+                return Err(anyhow!(
+                    "parent is not accepted in the scratch promotion registry"
+                ));
+            }
+        }
+        (None, Some(path)) => {
+            let authorization: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+            let schema = authorization.get("schema").and_then(|v| v.as_str());
+            let model_sha = authorization
+                .get("model")
+                .and_then(|v| v.get("sha256"))
+                .and_then(|v| v.as_str());
+            if schema != Some("halfkp_workflow_parent_authorization_v1")
+                || model_sha != Some(parent_hash.as_str())
+            {
+                return Err(anyhow!("parent authorization does not match parent model"));
+            }
+        }
+        _ => {
+            return Err(anyhow!(
+                "exactly one of --registry and --parent-authorization is required"
+            ))
+        }
+    }
+    if args.nodes.is_none() == args.time_limit_ms.is_none() {
         return Err(anyhow!(
-            "parent is not accepted in the scratch promotion registry"
+            "exactly one of --nodes and --time-limit-ms is required"
         ));
+    }
+    if args.nodes.is_some_and(|n| n == 0) || args.time_limit_ms.is_some_and(|t| t == 0) {
+        return Err(anyhow!("nodes and time-limit-ms must be positive"));
     }
     if candidate_hash == parent_hash {
         return Err(anyhow!("candidate and parent are identical"));
     }
-    let openings = load_openings(&args.openings, args.pairs)?;
+    let openings = load_openings(
+        &args.openings,
+        args.pairs,
+        &args.openings_format,
+        &args.opening_selection,
+        args.opening_seed,
+    )?;
     let candidate_eval = Arc::new(EngineEvaluator::new(&args.candidate, 0.0)?);
     let parent_eval = Arc::new(EngineEvaluator::new(&args.parent, 0.0)?);
     let mut candidate = ShogiAI::<_, HISTORY_CAPACITY>::new(candidate_eval);
@@ -223,6 +281,7 @@ pub fn run() -> Result<()> {
         parent_sha256: parent_hash,
         openings_sha256: sha256_file(&args.openings)?,
         node_budget_per_move: args.nodes,
+        time_limit_ms: args.time_limit_ms,
         max_depth: args.max_depth,
         max_plies: args.max_plies,
         pairs: args.pairs,
@@ -245,10 +304,12 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn verify_model(model: &Path, manifest: &Path) -> Result<String> {
+fn verify_model(model: &Path, manifest: &Path, allow_external: bool) -> Result<String> {
     let declared: ModelManifest = serde_json::from_slice(&fs::read(manifest)?)?;
     let actual = sha256_file(model)?;
-    if declared.lineage_id != LINEAGE_ID || declared.model.sha256 != actual {
+    let lineage_ok = declared.lineage_id == LINEAGE_ID
+        || (allow_external && declared.lineage_id == "v2.5.0-kpp-derived-evaluation-only");
+    if !lineage_ok || declared.model.sha256 != actual {
         return Err(anyhow!(
             "{} is not its declared scratch-lineage artifact",
             model.display()
@@ -257,7 +318,52 @@ fn verify_model(model: &Path, manifest: &Path) -> Result<String> {
     Ok(actual)
 }
 
-fn load_openings(path: &Path, count: usize) -> Result<Vec<Opening>> {
+fn load_openings(
+    path: &Path,
+    count: usize,
+    format: &str,
+    selection: &str,
+    seed: u64,
+) -> Result<Vec<Opening>> {
+    if format == "usi-lines" {
+        let mut openings = Vec::new();
+        for (line_no, line) in BufReader::new(File::open(path)?).lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if position_and_history_from_sfen_or_usi(&line).is_none() {
+                return Err(anyhow!("invalid USI opening line {}", line_no + 1));
+            }
+            openings.push(Opening {
+                family: format!("usi-line-{line_no}"),
+                ply: line.split_whitespace().skip(2).count(),
+                position_spec: line,
+            });
+        }
+        if selection == "sha256-seed" {
+            openings.sort_by_key(|opening| {
+                let mut bytes = seed.to_le_bytes().to_vec();
+                bytes.extend_from_slice(opening.position_spec.as_bytes());
+                sha256_hex(&bytes)
+            });
+        } else if selection != "first-unique" {
+            return Err(anyhow!("unknown opening selection {selection}"));
+        }
+        openings.truncate(count);
+        if openings.len() != count {
+            return Err(anyhow!(
+                "requested {count} USI openings, found {}",
+                openings.len()
+            ));
+        }
+        return Ok(openings);
+    }
+    if format != "dataset-jsonl" || selection != "first-unique" {
+        return Err(anyhow!(
+            "dataset-jsonl supports only first-unique selection"
+        ));
+    }
     let mut families = HashSet::new();
     let mut out = Vec::with_capacity(count);
     for (line_no, line) in BufReader::new(File::open(path)?).lines().enumerate() {
@@ -276,8 +382,8 @@ fn load_openings(path: &Path, count: usize) -> Result<Vec<Opening>> {
         );
         out.push(Opening {
             family: record.opening_family,
-            sfen: record.sfen,
             ply: record.ply,
+            position_spec: format!("sfen {}", record.sfen),
         });
         if out.len() == count {
             break;
@@ -300,12 +406,8 @@ fn play_game(
     args: &Args,
     counts: &mut MatchCounts,
 ) -> Result<(GameResult, String, usize)> {
-    let mut position = Position::new(
-        PartialPosition::from_usi(&format!("sfen {}", opening.sfen))
-            .map_err(|e| anyhow!("opening SFEN: {e:?}"))?,
-    );
-    let mut history = GameHistory::new();
-    history.record_initial_position(&position);
+    let (mut position, mut history) = position_and_history_from_sfen_or_usi(&opening.position_spec)
+        .ok_or_else(|| anyhow!("invalid opening position"))?;
     for played in 0..args.max_plies {
         let legal = position.legal_moves();
         if legal.is_empty() {
@@ -323,10 +425,13 @@ fn play_game(
         };
         ai.reset_for_independent_search();
         ai.sennichite_detector = history.clone();
-        let outcome = ai.search(
-            &mut position,
-            SearchLimits::new(args.max_depth, None).with_max_nodes(args.nodes),
-        );
+        let outcome = ai.search(&mut position, {
+            let limits = SearchLimits::from_millis(args.max_depth, args.time_limit_ms);
+            match args.nodes {
+                Some(nodes) => limits.with_max_nodes(nodes),
+                None => limits,
+            }
+        });
         if outcome.failed {
             counts.search_failures += 1;
             return Ok((GameResult::Draw, "search_failure".into(), played));
