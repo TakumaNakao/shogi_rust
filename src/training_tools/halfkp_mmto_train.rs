@@ -1047,12 +1047,18 @@ fn validate_lineage_and_dataset(args: &Args) -> Result<()> {
     }
     let manifest: DatasetManifest =
         serde_json::from_reader(BufReader::new(File::open(&args.dataset_manifest)?))?;
-    if manifest.schema != "rank_value_dataset_v4_manifest"
-        || manifest.min_player_rate != Some(4000)
-        || manifest.min_opponent_rate != Some(4000)
+    let supported_schema = matches!(
+        manifest.schema.as_str(),
+        "rank_value_dataset_v4_manifest"
+            | "rank_value_dataset_v6_composed_manifest"
+            | "halfkp_unseen_pilot_v1"
+    );
+    if !supported_schema
+        || manifest.min_player_rate.is_some_and(|rate| rate != 4000)
+        || manifest.min_opponent_rate.is_some_and(|rate| rate != 4000)
     {
         return Err(anyhow!(
-            "dataset manifest is not the frozen WDoor rate-4000 set"
+            "dataset manifest is not an authorized frozen WDoor rate-4000 derivative"
         ));
     }
     validate_manifest_outputs(&args.dataset_manifest, &manifest, &args.train, &args.valid)?;
@@ -1082,9 +1088,17 @@ fn validate_manifest_outputs(
         let output = manifest
             .output_files
             .iter()
-            .find(|output| output.path == Path::new(split))
+            .find(|output| {
+                output.path == Path::new(split)
+                    || output.path.file_name().and_then(|name| name.to_str()) == Some(split)
+            })
             .ok_or_else(|| anyhow!("dataset manifest lacks {split}"))?;
-        let expected = fs::canonicalize(base.join(&output.path))?;
+        let output_path = if output.path.is_absolute() {
+            output.path.clone()
+        } else {
+            base.join(&output.path)
+        };
+        let expected = fs::canonicalize(output_path)?;
         if supplied.len() != 1 || fs::canonicalize(&supplied[0])? != expected {
             return Err(anyhow!("{split} path does not match the frozen manifest"));
         }
