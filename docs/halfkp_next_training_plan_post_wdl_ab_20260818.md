@@ -6,6 +6,11 @@
 - 目的: KPP由来重みを学習へ一切使わず、CPU-onlyでv2.5.0を上回るHalfKP-64重みを作る
 - 実行方針: 小さな係数探索を繰り返さず、計画逸脱を修正した一度のA/B、Bonanza規模へ近づける
   dense MMTO、deep-search bootstrapの順に進む
+- 実装・実験手順書:
+  [`halfkp_post_wdl_dense_execution_runbook_20260818.md`](halfkp_post_wdl_dense_execution_runbook_20260818.md)
+
+本書は目的、根拠、停止条件の正本である。実装file、CLI、command、artifact、Gate順、checkpoint、障害復旧、
+進捗の運用正本は上記手順書とする。
 
 ## 1. 結論
 
@@ -373,6 +378,7 @@ tracked fileを変更しない。run artifactは`runs/`へ保存し、完了後�
 | treatment vs v2.5.0 | 完了 | 16-34、32.0%、release不可 |
 | 旧WDoor全件rate再監査 | 完了 | 2018～2022両者4000以上19,209局 |
 | 次期計画 | 完了 | 本書 |
+| 実装・実験手順書 | 完了 | file/CLI/command/Gate/recoveryを固定 |
 | WDL別正規化・監査実装 | 未着手 | tests、10k byte identity、norm校正 |
 | corrected WDL treatment | 条件付き | 100k、Brier CI、500局、5秒50局 |
 | dense dataset build | 未着手 | 想定200万～260万、最低180万、新規120万、hard max 300万、衝突・重複0 |
