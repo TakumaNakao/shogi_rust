@@ -6,6 +6,10 @@
 - 目的: KPP由来のv2.5.0重みを学習へ一切使わず、scratch HalfKP-64の実戦棋力をv2.5.0より高くする
 - 本書の範囲: 次回実装、データ構築、A/B、長期学習、評価、失敗時の次段を事前固定する
 
+> **状態（2026-08-18）:** 本書は実験前の計画と履歴を残すために保持する。WDL A/Bの実効寄与不足と
+> 旧WDoor全件再監査を反映した次の実行計画は
+> [HalfKP scratch 次期重み学習計画（WDL A/B後）](halfkp_next_training_plan_post_wdl_ab_20260818.md)を正本とする。
+
 ## 1. 結論
 
 現outer 4はscratch系列の内部親へ昇格させるが、release候補にはしない。同じ570,875 rootへMMTO outerを
@@ -150,20 +154,19 @@ MMTO streamには2018～2019を入れない。
 [WDoor公式archive](https://wdoor.c.u-tokyo.ac.jp/shogi/)、
 [WDoor運用履歴](https://wdoor.c.u-tokyo.ac.jp/shogi/history/history.html)
 
-実取得した2020～2022のrate監査は次の通りだった。
+実取得した2018～2022の全展開完了後のrate監査は次の通りだった。
 
-| 年 | CSA | 両者rateあり | 両者rate≥4000 |
-|---:|---:|---:|---:|
-| 2018 | 47,813 | 32,984 | 1,006 |
-| 2019 | 106,411 | 81,466 | 1,490 |
-| 2020 | 20,194 | 13,119 | 196 |
-| 2021 | 20,056 | 12,817 | 760 |
-| 2022 | 20,036 | 14,421 | 1,123 |
+| 年 | CSA | 両者rateあり | 両者rate≥4000 | 同条件の決着局 |
+|---:|---:|---:|---:|---:|
+| 2018 | 47,813 | 32,984 | 1,006 | 790 |
+| 2019 | 106,411 | 81,466 | 1,490 | 1,233 |
+| 2020 | 139,358 | 99,598 | 2,529 | 2,085 |
+| 2021 | 123,717 | 85,069 | 9,595 | 7,685 |
+| 2022 | 129,846 | 105,283 | 4,589 | 3,607 |
 
-したがって旧年度だけで現行trainを数倍にするという当初概算は成立しない。2018～2019を含めても、rate
-4,000以上の決着候補は2,006局程度であり、旧年度はMMTOの主データではなくWDLの結果多様化を主用途とする。
-rate条件を緩和して件数を増やすことはしない。全5年度の展開は完了し、入力CSAファイル数は2018:47,813、
-2019:106,411、2020:139,358、2021:123,717、2022:129,846である。
+合計は両者rate 4,000以上19,209局、そのうち決着15,400局である。以前ここに記載していた2020～2022の値は、
+展開途中の各約20,000 CSAだけを集計したもので無効だった。旧年度を主データにするかどうかは単純な棋譜数では
+決めず、現行splitとの重複排除後のunique root数と年度比率で決める。rate条件を緩和して件数を増やすことはしない。
 
 ### 6.2 filter
 
@@ -436,13 +439,13 @@ target、候補選択へ入れない。
 | 次期方針策定 | 完了 | 本書 |
 | outer 4をscratch generation 3へ内部登録 | 完了 | model SHA、Gate report SHA、lineageをregistryへ固定。release登録ではない |
 | outer 4対scratch親 5秒50局 | 完了 | 45-5-0、score 90.0%、95%区間81.68～98.32% |
-| 2020～2022 download / rate audit | 完了 | 公式SHA・年度別件数を記録 |
+| 2020～2022 download / rate audit | 完了・訂正済み | 全展開後の年度別件数へ訂正 |
 | 2018～2019 download / extract | 完了 | 公式SHA照合、2018:47,813 CSA、2019:106,411 CSA |
-| 2018～2019追加判断 | 決定 | MMTO主データにはせず、WDL用へ限定 |
+| 旧年度追加判断 | 更新済み | 次期計画では2020～2022を不足時のみ最大25%、2018～2019はMMTO対象外 |
 | expanded dataset build / dedup audit | 未着手 | 全cross-split衝突・重複0 |
-| WDL補助とoptimizer init実装 | 完了 | 関連unit test 5件合格、optimizer provenance対応 |
-| 100k control / treatment A/B | 実行中 | control実行中、完了後supervisorがtreatment（WDL weight 0.1）を自動開始 |
-| A/B Gate判断 | 未着手 | full / self-playのどちらかへ一意に決定 |
+| WDL補助とoptimizer init実装 | 完了・要修正 | MMTO pair数でWDL勾配まで除算する正規化不備を確認 |
+| 100k control / treatment A/B | 完了・試験不成立 | nominal 0.1の実効件数係数は約0.000964、両更新はほぼ同一 |
+| A/B Gate判断 | 完了 | 現実装はNo-Go。正規化済みterminal WDL仮説は未判定 |
 | expanded outer 1 | 条件付き | A/B Go後に実行・archive・評価 |
 | expanded outer 2 / 3 | 条件付き | 各outer Gate通過時だけ実行。outer 3はhybrid時のみ |
 | best scratch checkpoint凍結 | 未着手 | v2.5.0非参照の規則で選択 |
