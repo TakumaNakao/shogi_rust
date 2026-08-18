@@ -6,6 +6,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use shogi_ai::ai::{QsearchLeafKind, ShogiAI};
 use shogi_ai::evaluation::{EngineEvaluator, Evaluator, HALFKP_HIDDEN};
 use shogi_ai::halfkp_training::PackedHalfKpPosition;
@@ -23,6 +24,12 @@ use std::time::Instant;
 const OPTIMIZER_MAGIC: &[u8; 8] = b"MMTOAD01";
 const CHECKPOINT_SCHEMA: u32 = 1;
 const DELTA_HIST_BINS: usize = 81;
+
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
+enum Objective {
+    MmtoOnly,
+    Hybrid,
+}
 
 #[derive(Parser, Debug)]
 #[command(about = "Train scratch HalfKP with refreshed forced-qsearch MMTO leaves")]
@@ -91,6 +98,23 @@ struct Args {
     pv_probe_roots: usize,
     #[arg(long, default_value_t = false)]
     resume: bool,
+    /// Explicit objective mode. The default preserves the legacy MMTO path.
+    #[arg(long, value_enum, default_value_t = Objective::MmtoOnly)]
+    objective: Objective,
+    /// Optional deterministic pool used by corrected hybrid training.
+    #[arg(long)]
+    wdl_train: Option<PathBuf>,
+    #[arg(long)]
+    wdl_pool_manifest: Option<PathBuf>,
+    #[arg(long)]
+    expected_wdl_pool_manifest_sha256: Option<String>,
+    /// JSON manifest containing the fixed WDL temperature and coefficient.
+    #[arg(long)]
+    wdl_objective_manifest: Option<PathBuf>,
+    #[arg(long)]
+    expected_wdl_objective_manifest_sha256: Option<String>,
+    #[arg(long)]
+    wdl_sampler_seed: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -125,7 +149,52 @@ struct DatasetOutput {
 struct Sample {
     root: Position,
     teacher: Move,
-    winner: Option<Color>,
+}
+
+#[derive(Deserialize)]
+struct WdlObjectiveManifest {
+    schema: String,
+    kappa_cp: f32,
+    coefficient: f32,
+}
+
+#[derive(Clone)]
+struct WdlEntry {
+    packed: PackedHalfKpPosition,
+    winner: Color,
+    sort_key: [u8; 32],
+}
+
+#[derive(Clone)]
+struct WdlSampler {
+    games: Vec<Vec<WdlEntry>>,
+    seed: u64,
+    next_draw_index: u64,
+}
+
+impl WdlSampler {
+    fn next(&mut self) -> Result<WdlEntry> {
+        if self.games.is_empty() {
+            return Err(anyhow!("WDL pool has no eligible games"));
+        }
+        let draw_index = self.next_draw_index;
+        self.next_draw_index = self
+            .next_draw_index
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("WDL sampler draw index overflow"))?;
+        let game_index = (draw_index as usize) % self.games.len();
+        let cycle = draw_index / self.games.len() as u64;
+        let roots = &self.games[game_index];
+        let mut hasher = Sha256::new();
+        hasher.update(b"halfkp-wdl-root-v1\0");
+        hasher.update(self.seed.to_le_bytes());
+        hasher.update(cycle.to_le_bytes());
+        hasher.update((game_index as u64).to_le_bytes());
+        let digest = hasher.finalize();
+        let index = u64::from_le_bytes(digest[..8].try_into().expect("digest prefix")) as usize
+            % roots.len();
+        Ok(roots[index].clone())
+    }
 }
 
 struct Leaf {
@@ -140,6 +209,7 @@ struct Pair {
     alternative: Leaf,
 }
 
+#[derive(Clone)]
 struct Gradient {
     hidden_b: [f32; HALFKP_HIDDEN],
     out_w: [f32; HALFKP_HIDDEN * 2 + 1],
@@ -316,6 +386,11 @@ pub fn run() -> Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
     validate_lineage_and_dataset(&args)?;
+    let wdl_objective = load_wdl_objective(&args)?;
+    let wdl_pool = match wdl_objective {
+        Some(_) => Some(load_wdl_sampler(&args)?),
+        None => None,
+    };
     fs::create_dir_all(&args.output_dir)?;
     let model_path = args.output_dir.join("model.bin");
     let optimizer_path = args.output_dir.join("optimizer.bin");
@@ -396,6 +471,9 @@ pub fn run() -> Result<()> {
         // EngineEvaluator owns this immutable search-side copy while `weights`
         // is updated independently throughout the streaming pass.
         let search_snapshot = Arc::new(EngineEvaluator::new(&model_path, 0.0)?);
+        let wdl_kappa_cp = wdl_objective
+            .map(|(kappa, _)| kappa)
+            .unwrap_or(args.wdl_kappa_cp);
         let valid_before = fresh_evaluate(
             &model_path,
             &args.valid,
@@ -410,9 +488,11 @@ pub fn run() -> Result<()> {
             &args.valid,
             "valid",
             Some(args.max_valid_roots),
-            args.wdl_kappa_cp,
+            wdl_kappa_cp,
         )?;
         let mut gradient = Gradient::default();
+        let mut wdl_gradient = Gradient::default();
+        let mut wdl_sampler = wdl_pool.clone();
         let mut diagnostics = UpdateDiagnostics::default();
         let mut last_train = SearchMetrics::default();
         let mut block = Vec::with_capacity(args.search_block_roots);
@@ -426,10 +506,16 @@ pub fn run() -> Result<()> {
                     &mut weights,
                     &mut adagrad,
                     &mut gradient,
+                    &mut wdl_gradient,
                     &mut last_train,
                     &mut diagnostics,
                     &args,
                     material_bits,
+                    wdl_sampler.as_mut(),
+                    wdl_kappa_cp,
+                    wdl_objective
+                        .map(|(_, coefficient)| coefficient)
+                        .unwrap_or(0.0),
                 )?;
             }
             Ok(())
@@ -441,19 +527,29 @@ pub fn run() -> Result<()> {
             &mut weights,
             &mut adagrad,
             &mut gradient,
+            &mut wdl_gradient,
             &mut last_train,
             &mut diagnostics,
             &args,
             material_bits,
+            wdl_sampler.as_mut(),
+            wdl_kappa_cp,
+            wdl_objective
+                .map(|(_, coefficient)| coefficient)
+                .unwrap_or(0.0),
         )?;
         if gradient.pairs != 0 {
             apply_batch(
                 &mut weights,
                 &mut adagrad,
                 &mut gradient,
+                &mut wdl_gradient,
                 &args,
                 material_bits,
                 &mut diagnostics,
+                wdl_objective
+                    .map(|(_, coefficient)| coefficient)
+                    .unwrap_or(0.0),
             )?;
         }
         let outer_delta = validate_outer_delta(&before, &weights, &args, material_bits)?;
@@ -477,7 +573,7 @@ pub fn run() -> Result<()> {
             &args.valid,
             "valid",
             Some(args.max_valid_roots),
-            args.wdl_kappa_cp,
+            wdl_kappa_cp,
         )?;
         let pv_unchanged = best_move_unchanged(&valid_before, &last_valid)?;
         finalize_diagnostics(&mut diagnostics);
@@ -567,10 +663,14 @@ fn train_block(
     weights: &mut Weights,
     adagrad: &mut Weights,
     gradient: &mut Gradient,
+    wdl_gradient: &mut Gradient,
     metrics: &mut SearchMetrics,
     diagnostics: &mut UpdateDiagnostics,
     args: &Args,
     material_bits: u32,
+    mut wdl_sampler: Option<&mut WdlSampler>,
+    wdl_kappa_cp: f32,
+    wdl_coefficient: f32,
 ) -> Result<()> {
     let searched = search_pool.install(|| {
         block
@@ -578,32 +678,37 @@ fn train_block(
             .map(|sample| search_sample(Arc::clone(search_snapshot), sample, args.tau_cp))
             .collect::<Result<Vec<_>>>()
     })?;
-    if args.wdl_weight > 0.0 {
-        for sample in block.iter() {
-            let winner = sample
-                .winner
-                .ok_or_else(|| anyhow!("WDL training requires a decisive winner label"))?;
-            let packed = PackedHalfKpPosition::from_position(&sample.root)
-                .ok_or_else(|| anyhow!("WDL root lacks king"))?;
+    let samples = std::mem::take(block);
+    for (_sample, (pairs, sample_metrics)) in samples.into_iter().zip(searched) {
+        if let Some(sampler) = wdl_sampler.as_deref_mut() {
+            let entry = sampler.next()?;
             add_wdl_gradient(
                 weights,
-                &packed,
-                winner,
-                args.wdl_weight,
-                args.wdl_kappa_cp,
-                gradient,
+                &entry.packed,
+                entry.winner,
+                wdl_kappa_cp,
+                wdl_gradient,
             )?;
         }
-    }
-    block.clear();
-    for (pairs, sample_metrics) in searched {
         metrics.merge(&sample_metrics);
         for pair in pairs {
             add_pair_gradient(weights, &pair, args.tau_cp, args.loss_weight, gradient)?;
             if gradient.pairs == args.pair_batch_size {
-                apply_batch(weights, adagrad, gradient, args, material_bits, diagnostics)?;
+                apply_batch(
+                    weights,
+                    adagrad,
+                    gradient,
+                    wdl_gradient,
+                    args,
+                    material_bits,
+                    diagnostics,
+                    wdl_coefficient,
+                )?;
             }
         }
+    }
+    if wdl_gradient.wdl_roots != 0 && gradient.pairs == 0 {
+        return Err(anyhow!("WDL root was sampled without an MMTO pair"));
     }
     Ok(())
 }
@@ -612,7 +717,6 @@ fn add_wdl_gradient(
     weights: &Weights,
     position: &PackedHalfKpPosition,
     winner: Color,
-    weight: f32,
     kappa_cp: f32,
     gradient: &mut Gradient,
 ) -> Result<()> {
@@ -620,7 +724,7 @@ fn add_wdl_gradient(
     let target = f32::from(position.side_to_move == winner);
     let (probability, loss) = wdl_probability_loss(forward.raw, target, kappa_cp);
     let error = probability - target;
-    let d_raw = weight * 2.0 * error * probability * (1.0 - probability) * TARGET_SCALE / kappa_cp;
+    let d_raw = 2.0 * error * probability * (1.0 - probability) * TARGET_SCALE / kappa_cp;
     if !probability.is_finite() || !loss.is_finite() || !d_raw.is_finite() {
         return Err(anyhow!("non-finite WDL loss or derivative"));
     }
@@ -635,6 +739,132 @@ fn wdl_probability_loss(raw: f32, target: f32, kappa_cp: f32) -> (f32, f32) {
     let probability = 1.0 / (1.0 + (-x).exp());
     let error = probability - target;
     (probability, error * error)
+}
+
+fn load_wdl_objective(args: &Args) -> Result<Option<(f32, f32)>> {
+    match args.objective {
+        Objective::MmtoOnly => {
+            if args.wdl_weight != 0.0
+                || args.wdl_train.is_some()
+                || args.wdl_pool_manifest.is_some()
+                || args.wdl_objective_manifest.is_some()
+                || args.wdl_sampler_seed.is_some()
+            {
+                return Err(anyhow!(
+                    "MMTO-only mode cannot receive corrected WDL arguments"
+                ));
+            }
+            Ok(None)
+        }
+        Objective::Hybrid => {
+            if args.wdl_weight != 0.0 {
+                return Err(anyhow!(
+                    "hybrid mode uses the immutable objective manifest, not --wdl-weight"
+                ));
+            }
+            let manifest_path = args
+                .wdl_objective_manifest
+                .as_ref()
+                .ok_or_else(|| anyhow!("hybrid mode requires --wdl-objective-manifest"))?;
+            let expected_sha = args
+                .expected_wdl_objective_manifest_sha256
+                .as_deref()
+                .ok_or_else(|| anyhow!("hybrid mode requires objective manifest SHA"))?;
+            if sha256_file(manifest_path)? != expected_sha {
+                return Err(anyhow!("WDL objective manifest SHA mismatch"));
+            }
+            let manifest: WdlObjectiveManifest =
+                serde_json::from_reader(BufReader::new(File::open(manifest_path)?))?;
+            if manifest.schema != "halfkp_wdl_objective_manifest_v1"
+                || !manifest.kappa_cp.is_finite()
+                || manifest.kappa_cp <= 0.0
+                || !manifest.coefficient.is_finite()
+                || manifest.coefficient < 0.0
+            {
+                return Err(anyhow!("invalid WDL objective manifest"));
+            }
+            if args.wdl_train.is_none()
+                || args.wdl_pool_manifest.is_none()
+                || args.expected_wdl_pool_manifest_sha256.is_none()
+                || args.wdl_sampler_seed.is_none()
+            {
+                return Err(anyhow!(
+                    "hybrid mode requires WDL pool and sampler arguments"
+                ));
+            }
+            Ok(Some((manifest.kappa_cp, manifest.coefficient)))
+        }
+    }
+}
+
+fn load_wdl_sampler(args: &Args) -> Result<WdlSampler> {
+    let path = args
+        .wdl_train
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing WDL train pool"))?;
+    let manifest_path = args
+        .wdl_pool_manifest
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing WDL pool manifest"))?;
+    let expected_sha = args
+        .expected_wdl_pool_manifest_sha256
+        .as_deref()
+        .ok_or_else(|| anyhow!("missing WDL pool manifest SHA"))?;
+    if sha256_file(manifest_path)? != expected_sha {
+        return Err(anyhow!("WDL pool manifest SHA mismatch"));
+    }
+    let seed = args
+        .wdl_sampler_seed
+        .ok_or_else(|| anyhow!("missing WDL sampler seed"))?;
+    let mut grouped: HashMap<String, Vec<WdlEntry>> = HashMap::new();
+    for (line_no, line) in BufReader::new(File::open(path)?).lines().enumerate() {
+        let record: InputRecord = serde_json::from_str(&line?)
+            .with_context(|| format!("parse WDL pool {}:{}", path.display(), line_no + 1))?;
+        validate_record(&record, "train")?;
+        let winner = parse_winner(record.winner.as_deref())?
+            .ok_or_else(|| anyhow!("WDL pool contains an unlabeled root"))?;
+        let position = position_from_sfen_or_usi(&record.sfen)
+            .ok_or_else(|| anyhow!("invalid WDL pool SFEN"))?;
+        let packed = PackedHalfKpPosition::from_position(&position)
+            .ok_or_else(|| anyhow!("WDL pool root lacks king"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"halfkp-wdl-root-order-v1\0");
+        hasher.update(seed.to_le_bytes());
+        hasher.update(record.game_key.as_bytes());
+        hasher.update(record.sfen.as_bytes());
+        let sort_key: [u8; 32] = hasher.finalize().into();
+        grouped.entry(record.game_key).or_default().push(WdlEntry {
+            packed,
+            winner,
+            sort_key,
+        });
+    }
+    let mut games = grouped.into_iter().collect::<Vec<_>>();
+    for (_, roots) in &mut games {
+        roots.sort_by_key(|root| root.sort_key);
+        if roots.len() > 3 {
+            roots.truncate(3);
+        }
+    }
+    let mut ordered = Vec::with_capacity(games.len());
+    for (game_key, roots) in games {
+        let mut hasher = Sha256::new();
+        hasher.update(b"halfkp-wdl-game-v1\0");
+        hasher.update(seed.to_le_bytes());
+        hasher.update(game_key.as_bytes());
+        let digest: [u8; 32] = hasher.finalize().into();
+        ordered.push((digest, roots));
+    }
+    ordered.sort_by_key(|(digest, _)| *digest);
+    let games: Vec<Vec<WdlEntry>> = ordered.into_iter().map(|(_, roots)| roots).collect();
+    if games.is_empty() {
+        return Err(anyhow!("WDL pool has no games"));
+    }
+    Ok(WdlSampler {
+        games,
+        seed,
+        next_draw_index: 0,
+    })
 }
 
 fn validate_args(args: &Args) -> Result<()> {
@@ -813,7 +1043,6 @@ fn visit_samples(
             visitor(Sample {
                 root: position,
                 teacher,
-                winner: parse_winner(record.winner.as_deref())?,
             })?;
             count += 1;
         }
@@ -1044,7 +1273,108 @@ fn active_derivative(value: f32) -> f32 {
     f32::from(value > 0.0 && value < 1.0)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_batch(
+    weights: &mut Weights,
+    adagrad: &mut Weights,
+    gradient: &mut Gradient,
+    wdl_gradient: &mut Gradient,
+    args: &Args,
+    material_bits: u32,
+    diagnostics: &mut UpdateDiagnostics,
+    wdl_coefficient: f32,
+) -> Result<()> {
+    if wdl_gradient.wdl_roots == 0 {
+        return apply_mmto_batch(weights, adagrad, gradient, args, material_bits, diagnostics);
+    }
+    apply_combined_batch(
+        weights,
+        adagrad,
+        gradient,
+        wdl_gradient,
+        args,
+        material_bits,
+        diagnostics,
+        wdl_coefficient,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_combined_batch(
+    weights: &mut Weights,
+    adagrad: &mut Weights,
+    gradient: &mut Gradient,
+    wdl_gradient: &mut Gradient,
+    args: &Args,
+    material_bits: u32,
+    diagnostics: &mut UpdateDiagnostics,
+    wdl_coefficient: f32,
+) -> Result<()> {
+    let coefficient = wdl_coefficient;
+    if !coefficient.is_finite() || coefficient < 0.0 {
+        return Err(anyhow!("invalid WDL objective coefficient"));
+    }
+    if gradient.pairs == 0 {
+        return Err(anyhow!("WDL batch has no MMTO pairs"));
+    }
+    let mmto_pairs = gradient.pairs;
+    let mut combined = gradient.clone();
+    project_center_mirror_sparse_gradient(&mut combined.sparse);
+    let mut normalized_wdl = wdl_gradient.clone();
+    project_center_mirror_sparse_gradient(&mut normalized_wdl.sparse);
+    scale_gradient(&mut combined, 1.0 / mmto_pairs as f32);
+    scale_gradient(
+        &mut normalized_wdl,
+        coefficient / wdl_gradient.wdl_roots.max(1) as f32,
+    );
+    add_gradient(&mut combined, &normalized_wdl);
+    combined.pairs = 1;
+    combined.out_w[HALFKP_HIDDEN * 2] = 0.0;
+    apply_mmto_batch(
+        weights,
+        adagrad,
+        &mut combined,
+        args,
+        material_bits,
+        diagnostics,
+    )?;
+    diagnostics.pairs += mmto_pairs.saturating_sub(1) as u64;
+    *gradient = Gradient::default();
+    *wdl_gradient = Gradient::default();
+    Ok(())
+}
+
+fn scale_gradient(gradient: &mut Gradient, scale: f32) {
+    gradient.out_b *= scale;
+    for value in gradient.hidden_b.iter_mut().chain(&mut gradient.out_w) {
+        *value *= scale;
+    }
+    for values in gradient.sparse.values_mut() {
+        for value in values {
+            *value *= scale;
+        }
+    }
+}
+
+fn add_gradient(dst: &mut Gradient, src: &Gradient) {
+    dst.hidden_b
+        .iter_mut()
+        .zip(src.hidden_b)
+        .for_each(|(dst, src)| *dst += src);
+    dst.out_w
+        .iter_mut()
+        .zip(src.out_w)
+        .for_each(|(dst, src)| *dst += src);
+    dst.out_b += src.out_b;
+    for (&feature, source) in &src.sparse {
+        let target = dst.sparse.entry(feature).or_insert([0.0; HALFKP_HIDDEN]);
+        for h in 0..HALFKP_HIDDEN {
+            target[h] += source[h];
+        }
+    }
+}
+
+fn apply_mmto_batch(
     weights: &mut Weights,
     adagrad: &mut Weights,
     gradient: &mut Gradient,
@@ -1590,6 +1920,46 @@ mod tests {
     }
 
     #[test]
+    fn normalized_mmto_and_wdl_components_are_combined_separately() {
+        let mut mmto = Gradient::default();
+        mmto.pairs = 4;
+        mmto.out_b = 8.0;
+        let mut wdl = Gradient::default();
+        wdl.wdl_roots = 2;
+        wdl.out_b = 6.0;
+        scale_gradient(&mut mmto, 0.25);
+        scale_gradient(&mut wdl, 0.5 * 0.25);
+        add_gradient(&mut mmto, &wdl);
+        assert_eq!(mmto.out_b.to_bits(), 2.75f32.to_bits());
+        assert_eq!(mmto.pairs, 4);
+        assert_eq!(wdl.wdl_roots, 2);
+    }
+
+    #[test]
+    fn wdl_sampler_sequence_is_deterministic() {
+        let packed = PackedHalfKpPosition::from_position(&Position::default()).expect("packed");
+        let entry = |value: u8| WdlEntry {
+            packed: packed.clone(),
+            winner: Color::Black,
+            sort_key: [value; 32],
+        };
+        let sampler = WdlSampler {
+            games: vec![vec![entry(1), entry(2)], vec![entry(3)]],
+            seed: 20260822,
+            next_draw_index: 0,
+        };
+        let mut left = sampler.clone();
+        let mut right = sampler;
+        let left_keys = (0..16)
+            .map(|_| left.next().expect("left sample").sort_key)
+            .collect::<Vec<_>>();
+        let right_keys = (0..16)
+            .map(|_| right.next().expect("right sample").sort_key)
+            .collect::<Vec<_>>();
+        assert_eq!(left_keys, right_keys);
+    }
+
+    #[test]
     fn mirrored_sigmoid_derivative_matches_finite_difference() {
         let tau = 36.63;
         for delta in [-100.0f32, -10.0, 0.0, 10.0, 100.0] {
@@ -1662,7 +2032,7 @@ mod tests {
         for winner in [Color::Black, Color::White] {
             let mut weights = pair_fixture(Color::Black).0;
             let mut gradient = Gradient::default();
-            add_wdl_gradient(&weights, &packed, winner, 1.0, kappa, &mut gradient)
+            add_wdl_gradient(&weights, &packed, winner, kappa, &mut gradient)
                 .expect("WDL gradient");
             assert_eq!(gradient.wdl_roots, 1);
             assert!(gradient.wdl_loss_sum.is_finite());
