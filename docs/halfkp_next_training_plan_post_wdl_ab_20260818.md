@@ -386,7 +386,7 @@ tracked fileを変更しない。run artifactは`runs/`へ保存し、完了後�
 | unseen-root 250k pilot | 完了・Gate不合格 | 250,000 roots、監査合格。pilot score 48.2%、Wilson下限43.85% |
 | dense milestone / supervisor | 部分完了 | I3 checkpoint/resume基盤完了、専用supervisor未完了 |
 | dense outer 1 / 2 | 条件付き | 各outer archive・audit・500局 |
-| scratch候補凍結 | 未着手 | v2.5.0非参照で一意に選択 |
+| scratch候補凍結 | 完了・Gate停止 | `best-scratch.json`でouter 4を選択。v2.5.0非参照 |
 | v2.5.0開発対局 | 未着手 | taya36 5秒50局 |
 | deep-search pilot | 完了・Gate不合格 | completed depth≥4対応後も教師成功率train 50.38% / valid 50.60%で95%条件未達。学習・self-playは停止 |
 | scratch self-play | 条件付き | deep-search pilot通過時のみ |
