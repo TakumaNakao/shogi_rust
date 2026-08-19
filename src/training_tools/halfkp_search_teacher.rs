@@ -248,8 +248,7 @@ impl TeacherSession {
         let stats = outcome.stats;
         match outcome.root {
             Some(root_result)
-                if !outcome.failed
-                    && root_result.completed_depth >= min_completed_depth
+                if root_result.completed_depth >= min_completed_depth
                     && root_result.score.is_some() =>
             {
                 let best_move = root_result.best_move;
