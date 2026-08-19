@@ -388,7 +388,7 @@ tracked fileを変更しない。run artifactは`runs/`へ保存し、完了後�
 | dense outer 1 / 2 | 条件付き | 各outer archive・audit・500局 |
 | scratch候補凍結 | 未着手 | v2.5.0非参照で一意に選択 |
 | v2.5.0開発対局 | 未着手 | taya36 5秒50局 |
-| deep-search pilot | 作業中 | dense pilot不合格を受け、completed depth≥4対応を実装し10k root教師生成中 |
+| deep-search pilot | 完了・Gate不合格 | completed depth≥4対応後も教師成功率train 50.38% / valid 50.60%で95%条件未達。学習・self-playは停止 |
 | scratch self-play | 条件付き | deep-search pilot通過時のみ |
 | 2026 reserve最終対局 | 未着手 | 5秒50局、結果をrelease判定へ記録 |
 

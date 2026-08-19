@@ -1844,7 +1844,7 @@ recent単独が2m未満だったため、旧年度補充は119,979 roots（最�
 | F0 | best scratch凍結 | 未着手 | `best-scratch.json` |
 | E0 | taya36 5秒50局 | 条件付き | best凍結後のみ |
 | E1 | 2026 reserve 5秒50局 | 条件付き | taya score >50%時だけ |
-| D0 | deep-search pilot手順書 | 作業中 | node cap時のcompleted depth≥4採用を実装、教師生成pilotを開始 |
+| D0 | deep-search pilot手順書 | 完了・Gate不合格 | 10k/2k teacher生成完了。成功率train 50.38% / valid 50.60%で95%条件未達、学習・self-playは開始せず |
 
 ## 19. 実験終了後のGit記録
 
