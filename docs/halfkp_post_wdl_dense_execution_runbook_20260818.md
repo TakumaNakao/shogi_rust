@@ -1836,13 +1836,15 @@ recent単独が2m未満だったため、旧年度補充は119,979 roots（最�
 | B0 | recent dense build | 完了 | `dense-recent-v2`: 1,880,021 train roots、membership 1,309,146 roots（新規network input条件を満たす） |
 | B1 | old supplement | 完了 | recentが2m未満のため2020～2022から119,979 rootsを補充（train比6.0%、上限25%以内） |
 | B2 | dense dataset Gate | 完了 | `dense-final-v2`: 2,000,000 train roots、監査 `passed=true`、game/opening/network split collision=0、illegal/provenance/schema mismatch=0 |
-| B3 | unseen 250k pilot | 作業中 | `unseen-250k` 250,000 roots、監査 passed。MMTO-only pilotを実行中 |
+| B3 | unseen 250k pilot | 完了 | 250,000 roots、dataset監査 passed、pilot outer 1完了 |
+| B5 | pilot audit/match | 完了・Gate不合格 | fresh audit 90,759 roots passed。250-pair match score 48.2%、Wilson下限43.85%、安全Gateのみ合格 |
+| B6 | pilot decision | 条件不成立 | `pilot-decision.json`、`best-scratch.json`を作成。outer 4を選択しPhase Dへ |
 | C1 | dense outer 1 | 条件付き | archive/audit/match/decision |
 | C2 | dense outer 2 | 条件付き | outer 1 accepted時だけ |
 | F0 | best scratch凍結 | 未着手 | `best-scratch.json` |
 | E0 | taya36 5秒50局 | 条件付き | best凍結後のみ |
 | E1 | 2026 reserve 5秒50局 | 条件付き | taya score >50%時だけ |
-| D0 | deep-search pilot手順書 | 条件付き | Phase D trigger時だけ |
+| D0 | deep-search pilot手順書 | 作業中 | node cap時のcompleted depth≥4採用を実装、教師生成pilotを開始 |
 
 ## 19. 実験終了後のGit記録
 
