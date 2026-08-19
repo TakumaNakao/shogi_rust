@@ -60,6 +60,9 @@ struct Args {
     selection_depth: u8,
     #[arg(long, default_value_t = 4)]
     teacher_depth: u8,
+    /// Minimum fully completed iterative-deepening depth accepted under a node cap.
+    #[arg(long, default_value_t = 4)]
+    min_completed_depth: u8,
     #[arg(long, default_value_t = 20_000)]
     max_nodes_per_search: u64,
     #[arg(long, default_value_t = 8)]
@@ -162,6 +165,7 @@ struct MoveScore {
     score: f32,
     packed: PackedHalfKpPosition,
     best_move: Move,
+    completed_depth: u8,
     nodes: u64,
     qnodes: u64,
 }
@@ -196,6 +200,7 @@ impl TeacherSession {
                 score: SCORE_CLAMP_CP,
                 packed,
                 best_move: mv,
+                completed_depth: depth,
                 nodes: 0,
                 qnodes: 0,
             });
@@ -214,6 +219,7 @@ impl TeacherSession {
                 score: -sanitize_score(child_score),
                 packed,
                 best_move: mv,
+                completed_depth: depth,
                 nodes: stats.nodes,
                 qnodes: stats.quiescence_nodes,
             }),
@@ -225,7 +231,13 @@ impl TeacherSession {
         }
     }
 
-    fn score_root(&mut self, position: &Position, depth: u8, max_nodes: u64) -> ScoreMove {
+    fn score_root(
+        &mut self,
+        position: &Position,
+        depth: u8,
+        min_completed_depth: u8,
+        max_nodes: u64,
+    ) -> ScoreMove {
         let mut root = position.clone();
         self.ai.reset_for_independent_search();
         self.ai.sennichite_detector.record_initial_position(&root);
@@ -237,7 +249,7 @@ impl TeacherSession {
         match outcome.root {
             Some(root_result)
                 if !outcome.failed
-                    && root_result.completed_depth == depth
+                    && root_result.completed_depth >= min_completed_depth
                     && root_result.score.is_some() =>
             {
                 let best_move = root_result.best_move;
@@ -250,6 +262,7 @@ impl TeacherSession {
                     score: sanitize_score(root_result.score.expect("checked above")),
                     packed,
                     best_move,
+                    completed_depth: root_result.completed_depth,
                     nodes: stats.nodes,
                     qnodes: stats.quiescence_nodes,
                 })
@@ -266,6 +279,8 @@ impl TeacherSession {
 pub fn run() -> Result<()> {
     let args = Args::parse();
     if args.teacher_depth == 0
+        || args.min_completed_depth == 0
+        || args.min_completed_depth > args.teacher_depth
         || args.selection_depth == 0
         || args.max_nodes_per_search == 0
         || args.candidate_top == 0
@@ -322,6 +337,7 @@ pub fn run() -> Result<()> {
         search_limits: serde_json::json!({
             "selection_depth": args.selection_depth,
             "teacher_depth": args.teacher_depth,
+            "min_completed_depth": args.min_completed_depth,
             "max_nodes_per_search": args.max_nodes_per_search,
             "value_only": args.value_only,
             "candidate_top": args.candidate_top,
@@ -731,6 +747,7 @@ fn process_line_inner(
                     score: scored.score,
                     packed: scored.packed.clone(),
                     best_move: scored.best_move,
+                    completed_depth: scored.completed_depth,
                     nodes: 0,
                     qnodes: 0,
                 })
@@ -743,6 +760,7 @@ fn process_line_inner(
                     score: scored.score,
                     packed: scored.packed.clone(),
                     best_move: scored.best_move,
+                    completed_depth: scored.completed_depth,
                     nodes: 0,
                     qnodes: 0,
                 })
@@ -851,8 +869,12 @@ fn process_value_only(
     args: &Args,
     session: &mut TeacherSession,
 ) -> Processed {
-    let scored = match session.score_root(&position, args.teacher_depth, args.max_nodes_per_search)
-    {
+    let scored = match session.score_root(
+        &position,
+        args.teacher_depth,
+        args.min_completed_depth,
+        args.max_nodes_per_search,
+    ) {
         ScoreMove::Complete(scored) => scored,
         ScoreMove::ResourceLimited { nodes, qnodes } => {
             return failed_with_metrics(
@@ -908,7 +930,7 @@ fn process_value_only(
             position_hash: PositionHasher::calculate_hash(&position),
             ply: input.ply.unwrap_or(0),
             phase,
-            teacher_depth: args.teacher_depth,
+            teacher_depth: scored.completed_depth,
             result: (!randomized)
                 .then(|| result_for(&input, position.side_to_move()))
                 .flatten(),
