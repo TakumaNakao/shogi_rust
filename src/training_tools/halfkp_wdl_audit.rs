@@ -153,18 +153,16 @@ fn load_samples(model: &Path, input: &Path) -> Result<Vec<Sample>> {
     Ok(samples)
 }
 
-fn probability(raw_cp: f32, target: f32, kappa_cp: f32) -> f32 {
-    let x = (raw_cp * 600.0 / kappa_cp).clamp(-80.0, 80.0);
-    let p = 1.0 / (1.0 + (-x).exp());
-    let _ = target;
-    p
+fn probability(raw_cp: f32, kappa_cp: f32) -> f32 {
+    let x = (raw_cp / kappa_cp).clamp(-80.0, 80.0);
+    1.0 / (1.0 + (-x).exp())
 }
 
 fn brier(samples: &[Sample], kappa_cp: f32) -> f64 {
     samples
         .iter()
         .map(|s| {
-            let d = f64::from(probability(s.raw_cp, s.target, kappa_cp) - s.target);
+            let d = f64::from(probability(s.raw_cp, kappa_cp) - s.target);
             d * d
         })
         .sum::<f64>()
@@ -246,7 +244,7 @@ fn evaluate(
     let samples = load_samples(model, input)?;
     let mut writer = BufWriter::new(File::create(output)?);
     for sample in &samples {
-        let p = probability(sample.raw_cp, sample.target, manifest.kappa_cp);
+        let p = probability(sample.raw_cp, manifest.kappa_cp);
         serde_json::to_writer(
             &mut writer,
             &EvaluationRecord {
@@ -259,4 +257,16 @@ fn evaluate(
         writer.write_all(b"\n")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::probability;
+
+    #[test]
+    fn probability_uses_cp_and_kappa_on_the_same_scale() {
+        let expected = 1.0_f32 / (1.0 + (-1.0_f32).exp());
+        let actual = probability(600.0, 600.0);
+        assert!((actual - expected).abs() < 1.0e-6);
+    }
 }

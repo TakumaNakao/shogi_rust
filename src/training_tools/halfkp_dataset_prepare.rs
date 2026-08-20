@@ -21,6 +21,7 @@ struct Cli {
 enum Command {
     WdlPool(WdlPoolArgs),
     WdlValidSplit(WdlValidSplitArgs),
+    WdlValidReextract(WdlValidReextractArgs),
     ComposeInterleave(ComposeArgs),
     UnseenPilot(UnseenArgs),
 }
@@ -51,6 +52,27 @@ struct WdlValidSplitArgs {
     input: PathBuf,
     #[arg(long)]
     input_manifest: PathBuf,
+    #[arg(long)]
+    output_dir: PathBuf,
+    #[arg(long)]
+    seed: u64,
+    #[arg(long)]
+    calibration_games: usize,
+    #[arg(long)]
+    audit_games: usize,
+}
+
+/// Rebuild the WDL calibration/audit split from a complete CSA extraction.
+/// Reference files provide the frozen game universe, while the new extraction
+/// supplies all phases (including loser endgames).
+#[derive(Args, Debug)]
+struct WdlValidReextractArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    input_manifest: PathBuf,
+    #[arg(long, required = true)]
+    reference: Vec<PathBuf>,
     #[arg(long)]
     output_dir: PathBuf,
     #[arg(long)]
@@ -135,6 +157,7 @@ pub fn run() -> Result<()> {
     match Cli::parse().command {
         Command::WdlPool(args) => wdl_pool(args),
         Command::WdlValidSplit(args) => wdl_valid_split(args),
+        Command::WdlValidReextract(args) => wdl_valid_reextract(args),
         Command::ComposeInterleave(args) => compose_interleave(args),
         Command::UnseenPilot(args) => unseen_pilot(args),
     }
@@ -245,6 +268,191 @@ fn wdl_valid_split(args: WdlValidSplitArgs) -> Result<()> {
         args.calibration_games + args.audit_games,
         ordered.len(),
     )
+}
+
+#[derive(Deserialize)]
+struct ReextractRecord {
+    game_key: String,
+    #[serde(default)]
+    phase: String,
+    side_to_move: String,
+    winner: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WdlValidStats {
+    schema: &'static str,
+    seed: u64,
+    reference_games: usize,
+    matched_games: usize,
+    calibration_games: usize,
+    audit_games: usize,
+    calibration_records: usize,
+    audit_records: usize,
+    calibration_strata: BTreeMap<String, usize>,
+    audit_strata: BTreeMap<String, usize>,
+}
+
+fn wdl_valid_reextract(args: WdlValidReextractArgs) -> Result<()> {
+    if args.calibration_games == 0 || args.audit_games == 0 {
+        return Err(anyhow!(
+            "calibration and audit game counts must be positive"
+        ));
+    }
+    let _ = sha256_file(&args.input_manifest)?;
+    let mut reference_games = HashSet::new();
+    for reference in &args.reference {
+        for line in BufReader::new(File::open(reference)?).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value: serde_json::Value = serde_json::from_str(&line)
+                .with_context(|| format!("parse reference {}", reference.display()))?;
+            if let Some(game) = value.get("game_key").and_then(|v| v.as_str()) {
+                reference_games.insert(game.to_owned());
+            }
+        }
+    }
+    if reference_games.is_empty() {
+        return Err(anyhow!("reference files contain no game_key"));
+    }
+
+    let mut games = BTreeMap::<String, Vec<Line>>::new();
+    for (line_no, raw) in BufReader::new(File::open(&args.input)?).lines().enumerate() {
+        let raw = raw?;
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let record: ReextractRecord = serde_json::from_str(&raw)
+            .with_context(|| format!("parse {}:{}", args.input.display(), line_no + 1))?;
+        if !reference_games.contains(&record.game_key)
+            || record.winner.is_none()
+            || !matches!(record.phase.as_str(), "opening" | "middlegame" | "endgame")
+        {
+            continue;
+        }
+        if !matches!(record.side_to_move.as_str(), "black" | "white") {
+            return Err(anyhow!("invalid side_to_move at line {}", line_no + 1));
+        }
+        let position = load_position_from_raw(&raw, &args.input, line_no + 1)?;
+        let input_hash = PackedHalfKpPosition::from_position(&position)
+            .ok_or_else(|| anyhow!("position lacks king at line {}", line_no + 1))?
+            .network_input_hash();
+        games
+            .entry(record.game_key.clone())
+            .or_default()
+            .push(Line {
+                raw,
+                game: record.game_key,
+                phase: record.phase.clone(),
+                input_hash,
+                digest: digest(args.seed, &[&record.phase, &record.side_to_move]),
+            });
+    }
+    let mut ordered = games.into_iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|(game, _)| digest(args.seed, &[game]));
+    let needed = args.calibration_games + args.audit_games;
+    if ordered.len() < needed {
+        return Err(anyhow!(
+            "only {} reference games found in reextract, need {}",
+            ordered.len(),
+            needed
+        ));
+    }
+    let calibration_games = &ordered[..args.calibration_games];
+    let audit_games = &ordered[args.calibration_games..needed];
+    let calibration_path = args.output_dir.join("calibration.jsonl");
+    let audit_path = args.output_dir.join("audit.jsonl");
+    let calibration_records = calibration_games
+        .iter()
+        .flat_map(|(_, lines)| lines)
+        .map(|line| rewrite_split(&line.raw, "valid"))
+        .collect::<Result<Vec<_>>>()?;
+    let audit_records = audit_games
+        .iter()
+        .flat_map(|(_, lines)| lines)
+        .map(|line| rewrite_split(&line.raw, "valid"))
+        .collect::<Result<Vec<_>>>()?;
+    write_raw_lines(&calibration_path, &calibration_records)?;
+    write_raw_lines(&audit_path, &audit_records)?;
+
+    let stats = WdlValidStats {
+        schema: "halfkp_wdl_valid_reextract_stats_v1",
+        seed: args.seed,
+        reference_games: reference_games.len(),
+        matched_games: ordered.len(),
+        calibration_games: calibration_games.len(),
+        audit_games: audit_games.len(),
+        calibration_records: calibration_records.len(),
+        audit_records: audit_records.len(),
+        calibration_strata: strata_counts(&calibration_records)?,
+        audit_strata: strata_counts(&audit_records)?,
+    };
+    fs::create_dir_all(&args.output_dir)?;
+    fs::write(
+        args.output_dir.join("stats.json"),
+        serde_json::to_vec_pretty(&stats)?,
+    )?;
+    write_manifest(
+        &args.output_dir,
+        "halfkp_wdl_valid_reextract_v1",
+        "reference_game_hash_split_with_full_phase_v1",
+        args.seed,
+        &[(&args.input, &args.input_manifest)],
+        &[
+            &calibration_path,
+            &audit_path,
+            &args.output_dir.join("stats.json"),
+        ],
+        calibration_records.len() + audit_records.len(),
+        needed,
+    )
+}
+
+fn load_position_from_raw(raw: &str, path: &Path, line_no: usize) -> Result<shogi_lib::Position> {
+    let value: serde_json::Value = serde_json::from_str(raw)?;
+    let sfen = value
+        .get("sfen")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("missing sfen at {}:{}", path.display(), line_no))?;
+    position_from_sfen_or_usi(sfen)
+        .ok_or_else(|| anyhow!("invalid sfen at {}:{}", path.display(), line_no))
+}
+
+fn rewrite_split(raw: &str, split: &str) -> Result<String> {
+    let mut value: serde_json::Value = serde_json::from_str(raw)?;
+    value["split"] = serde_json::Value::String(split.to_owned());
+    Ok(serde_json::to_string(&value)?)
+}
+
+fn strata_counts(lines: &[String]) -> Result<BTreeMap<String, usize>> {
+    let mut counts = BTreeMap::new();
+    for raw in lines {
+        let record: ReextractRecord = serde_json::from_str(raw)?;
+        let winner = record.winner.as_deref().unwrap_or("unknown");
+        let target = if winner == record.side_to_move {
+            "win"
+        } else {
+            "loss"
+        };
+        *counts
+            .entry(format!("{target}/{}", record.phase))
+            .or_insert(0) += 1;
+    }
+    Ok(counts)
+}
+
+fn write_raw_lines(path: &Path, lines: &[String]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut writer = BufWriter::new(File::create(path)?);
+    for line in lines {
+        writeln!(writer, "{line}")?;
+    }
+    writer.flush()?;
+    Ok(())
 }
 
 fn compose_interleave(args: ComposeArgs) -> Result<()> {
