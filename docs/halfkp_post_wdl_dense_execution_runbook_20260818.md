@@ -1,5 +1,9 @@
 # HalfKP scratch post-WDL dense 実装・実験手順書
 
+> **2026-08-20追記:** WDL監査のscale不整合により、本書のPhase A decisionと、そのdecisionから進んだ
+> Phase B/Dは比較履歴としてのみ有効である。次の作業は
+> [`halfkp_v250_breakthrough_plan_20260820.md`](halfkp_v250_breakthrough_plan_20260820.md) を正本とする。
+
 - 制定日: 2026-08-18
 - 状態: 実装開始前の正本
 - 対象lineage: `halfkp64-scratch-v1`

@@ -1,5 +1,9 @@
 # HalfKP scratch 次期重み学習計画（WDL A/B後）
 
+> **2026-08-20追記:** `halfkp_wdl_audit`のcp/WDL変換に600倍のscale不整合が見つかり、
+> 本書のWDL棄却と、それを前提にした後続分岐は無効になった。履歴として本書を残し、次の正本は
+> [`halfkp_v250_breakthrough_plan_20260820.md`](halfkp_v250_breakthrough_plan_20260820.md) とする。
+
 - 決定日: 2026-08-18
 - lineage: `halfkp64-scratch-v1`
 - 現行内部親: scratch generation 3 / full MMTO outer 4
