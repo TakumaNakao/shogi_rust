@@ -124,8 +124,12 @@ zero AdaGradでは初回preconditioningが勾配係数をほぼ相殺するた�
   次段の候補学習に利用可能かを確認する診断である。
 - 旧WDL decisionはscale bugとsplit不一致のため無効のままとし、今回のmanifest/statsを新しい根拠とする。
 
-残りのPhase 0作業は、WDL/MMTO update norm校正、trainer側の同一変換回帰、fit後kappaのrun manifest保存、
-およびWDL-off byte identityの確認である。これらを終えるまで大規模学習には進まない。
+残りのPhase 0作業は、WDL-off byte identityとfit後kappaの再現確認である。WDL/MMTO update norm校正は、
+既存hybrid実装の独立正規化を利用する簡素化方針へ変更した。
+
+MMTO経路のcp/WDL変換テストも追加済みである。norm校正については、既存MMTO実装がWDL成分を独立正規化して
+結合するため、Phase 1では係数0.1を安全側の固定値として一度だけ実測し、診断値を保存する簡素化方針を採った。
+係数を結果に応じて再調整する探索は行わない。
 
 ## 5. Phase 1: repaired objective 100k pilot
 
@@ -244,7 +248,7 @@ TDLeaf、league、policy headは実装しない。
 | 旧WDL decision | 無効 | artifactを残しscale bugとsplit不一致を記録 |
 | 新計画 | 完了 | 本書 |
 | Phase 0 指標修復 | 進行中（WDL Gate合格） | norm校正、trainer回帰、manifest保存、byte identity |
-| Phase 1 repaired 100k | 未着手 | 親500局、必要時最大1,000局Gate |
+| Phase 1 repaired 100k | 実行中（resumable） | outer metrics、delta、安全Gate、親500局 |
 | repaired 2M outer | 条件付き | Phase 1通過時だけ最大1 outer |
 | Phase 2 qsearch-leaf pilot | 未着手 | 25k学習と親対局Gate |
 | Phase 3 self-play | 条件付き | Phase 2通過後。失敗時は200-game smokeだけ |
