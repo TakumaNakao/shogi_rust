@@ -689,7 +689,7 @@ pub fn run() -> Result<()> {
         kappa_cp,
         ..base_options
     };
-    let run_fingerprint = training_fingerprint(&args)?;
+    let run_fingerprint = training_fingerprint(&args, kappa_cp)?;
     let (mut weights, mut optimizer, mut swa, start_epoch, mut best, mut stale) =
         initialize_training(&args, &run_fingerprint)?;
     let maxima = weights.validate_parameter_limits(args.output_limit, "training weights")?;
@@ -951,6 +951,7 @@ pub fn run() -> Result<()> {
         &selected_validation,
         &final_valid_metrics,
         final_test_metrics.as_ref(),
+        kappa_cp,
     )?;
     Ok(())
 }
@@ -1219,7 +1220,7 @@ fn epoch_search_mix(args: &Args, epoch: usize) -> f32 {
     args.search_mix + (end - args.search_mix) * progress
 }
 
-fn training_fingerprint(args: &Args) -> Result<String> {
+fn training_fingerprint(args: &Args, effective_kappa_cp: f32) -> Result<String> {
     fn datasets(paths: &[PathBuf]) -> Result<Vec<serde_json::Value>> {
         paths
             .iter()
@@ -1257,7 +1258,7 @@ fn training_fingerprint(args: &Args) -> Result<String> {
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,
             "output_learning_rate": args.output_learning_rate,
-            "kappa_cp": args.kappa_cp,
+            "kappa_cp": effective_kappa_cp,
             "search_mix": args.search_mix,
             "value_weight": args.value_weight,
             "search_mix_end": args.search_mix_end,
@@ -1286,6 +1287,7 @@ fn training_fingerprint(args: &Args) -> Result<String> {
             "allow_legacy_teacher_semantics": args.allow_legacy_teacher_semantics,
         },
     });
+    value["hyperparameters"]["effective_kappa_cp"] = serde_json::json!(effective_kappa_cp);
     value["hyperparameters"]["game_vs_search_weight"] =
         serde_json::json!(args.game_vs_search_weight);
     value["hyperparameters"]["save_last_epoch"] = serde_json::json!(args.save_last_epoch);
@@ -1304,6 +1306,7 @@ fn write_training_manifest(
     selected_validation: &Metrics,
     last_validation: &Metrics,
     final_test: Option<&Metrics>,
+    effective_kappa_cp: f32,
 ) -> Result<()> {
     fn dataset_artifacts(paths: &[PathBuf]) -> Result<Vec<ArtifactMetadata>> {
         paths
@@ -1363,7 +1366,7 @@ fn write_training_manifest(
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,
             "output_learning_rate": args.output_learning_rate,
-            "kappa_cp": args.kappa_cp,
+            "kappa_cp": effective_kappa_cp,
             "search_mix": args.search_mix,
             "value_weight": args.value_weight,
             "search_mix_end": args.search_mix_end,
@@ -2669,6 +2672,13 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn wdl_probability_uses_cp_and_kappa_on_same_scale() {
+        let expected = 1.0_f32 / (1.0 + (-1.0_f32).exp());
+        let actual = sigmoid(600.0 / 600.0);
+        assert!((actual - expected).abs() < 1.0e-6);
     }
 
     #[test]
