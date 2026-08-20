@@ -111,6 +111,22 @@ zero AdaGradでは初回preconditioningが勾配係数をほぼ相殺するた�
 
 完了条件は、scale test、finite difference、WDL off byte identity、再現実行、artifact SHA検証の全合格である。
 
+### 4.1 2026-08-20時点の実施結果
+
+- `halfkp_wdl_audit`の変換を`sigmoid(raw_cp / kappa_cp)`へ修正し、600cp/600cpのscale testを追加した。
+- 元CSA 2018--2025を同じ高レート・決着・合法手条件で再抽出した。147,871局面から旧validゲーム集合に
+  6,078ゲームが一致し、calibration 1,000ゲーム（2,338局面）とaudit 5,000ゲーム（11,568局面）を
+  ゲーム非重複で生成した。敗者endgameはcalibration 506局面、audit 2,398局面で非zeroである。
+- scratch outer4（`unattended-mmto-full-lr1e-4-20260808-v1/phase-c-full-lr1e-4`）で校正した結果、
+  `kappa=1352.7871cp`、audit Brierは0.24037368、held-out target平均の定数priorは0.24989945だった。
+  ゲームbootstrap 2,000回のBrier改善（prior−model）は点推定0.02203880、95%区間[0.01759882, 0.02663101]
+  で、WDL Gate（base-rateを上回ること）は通過した。これは既存重みを採用する判定ではなく、正しいWDL教師が
+  次段の候補学習に利用可能かを確認する診断である。
+- 旧WDL decisionはscale bugとsplit不一致のため無効のままとし、今回のmanifest/statsを新しい根拠とする。
+
+残りのPhase 0作業は、WDL/MMTO update norm校正、trainer側の同一変換回帰、fit後kappaのrun manifest保存、
+およびWDL-off byte identityの確認である。これらを終えるまで大規模学習には進まない。
+
 ## 5. Phase 1: repaired objective 100k pilot
 
 outer 4重みから、次の候補を1個だけ作る。
@@ -227,7 +243,7 @@ TDLeaf、league、policy headは実装しない。
 | 学習実装監査 | 完了 | WDL scaleバグ、loss飽和、AdaGrad減衰を特定 |
 | 旧WDL decision | 無効 | artifactを残しscale bugとsplit不一致を記録 |
 | 新計画 | 完了 | 本書 |
-| Phase 0 指標修復 | 未着手 | testとcorrected calibration/audit合格 |
+| Phase 0 指標修復 | 進行中（WDL Gate合格） | norm校正、trainer回帰、manifest保存、byte identity |
 | Phase 1 repaired 100k | 未着手 | 親500局、必要時最大1,000局Gate |
 | repaired 2M outer | 条件付き | Phase 1通過時だけ最大1 outer |
 | Phase 2 qsearch-leaf pilot | 未着手 | 25k学習と親対局Gate |
