@@ -2258,4 +2258,11 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn wdl_probability_uses_raw_score_and_kappa_on_same_cp_scale() {
+        let (probability, _) = wdl_probability_loss(0.6, 1.0, 600.0);
+        let expected = 1.0_f32 / (1.0 + (-1.0_f32).exp());
+        assert!((probability - expected).abs() < 1.0e-6);
+    }
 }
