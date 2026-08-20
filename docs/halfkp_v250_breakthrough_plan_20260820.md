@@ -118,9 +118,10 @@ zero AdaGradでは初回preconditioningが勾配係数をほぼ相殺するた�
   6,078ゲームが一致し、calibration 1,000ゲーム（2,338局面）とaudit 5,000ゲーム（11,568局面）を
   ゲーム非重複で生成した。敗者endgameはcalibration 506局面、audit 2,398局面で非zeroである。
 - scratch outer4（`unattended-mmto-full-lr1e-4-20260808-v1/phase-c-full-lr1e-4`）で校正した結果、
-  `kappa=1352.7871cp`、audit Brierは0.24037368、held-out target平均の定数priorは0.24989945だった。
-  ゲームbootstrap 2,000回のBrier改善（prior−model）は点推定0.02203880、95%区間[0.01759882, 0.02663101]
-  で、WDL Gate（base-rateを上回ること）は通過した。これは既存重みを採用する判定ではなく、正しいWDL教師が
+  `kappa=1352.7871cp`、audit Brierは0.24037368だった。calibrationだけのtarget平均0.49230111を
+  定数priorとしてauditへ適用すると、ゲームbootstrap 2,000回のBrier改善（prior−model）は点推定
+  0.02276581、95%区間[0.01808777, 0.02726637]で、WDL Gate（base-rateを上回ること）は通過した。
+  これは既存重みを採用する判定ではなく、正しいWDL教師が
   次段の候補学習に利用可能かを確認する診断である。
 - 旧WDL decisionはscale bugとsplit不一致のため無効のままとし、今回のmanifest/statsを新しい根拠とする。
 
