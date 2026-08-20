@@ -249,7 +249,7 @@ TDLeaf、league、policy headは実装しない。
 | 旧WDL decision | 無効 | artifactを残しscale bugとsplit不一致を記録 |
 | 新計画 | 完了 | 本書 |
 | Phase 0 指標修復 | 進行中（WDL Gate合格） | norm校正、trainer回帰、manifest保存、byte identity |
-| Phase 1 repaired 100k | 実行中（resumable） | outer metrics、delta、安全Gate、親500局 |
+| Phase 1 repaired 100k | 学習完了・親Gate実行中 | outer metrics、delta、安全Gate、親500局 |
 | repaired 2M outer | 条件付き | Phase 1通過時だけ最大1 outer |
 | Phase 2 qsearch-leaf pilot | 未着手 | 25k学習と親対局Gate |
 | Phase 3 self-play | 条件付き | Phase 2通過後。失敗時は200-game smokeだけ |
