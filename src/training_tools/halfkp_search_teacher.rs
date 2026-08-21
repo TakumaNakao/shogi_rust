@@ -9,7 +9,7 @@ use shogi_ai::evaluation::EngineEvaluator;
 use shogi_ai::halfkp_training::{
     read_search_teacher_manifest, PackedHalfKpPosition, SearchTeacherCandidate,
     SearchTeacherProvenance, SearchTeacherRecord, SearchTeacherWriter, CANDIDATE_GAME_MOVE,
-    CANDIDATE_RANDOM, CANDIDATE_SEARCH_BEST, CANDIDATE_TACTICAL,
+    CANDIDATE_QSEARCH_LEAF, CANDIDATE_RANDOM, CANDIDATE_SEARCH_BEST, CANDIDATE_TACTICAL,
 };
 use shogi_ai::position_hash::PositionHasher;
 use shogi_ai::training_data::{
@@ -56,6 +56,9 @@ struct Args {
     /// Search each root once and emit one codec-compatible PV child.
     #[arg(long, default_value_t = false)]
     value_only: bool,
+    /// Store the exact qsearch leaf reached after the selected root move.
+    #[arg(long, default_value_t = false)]
+    qsearch_leaf: bool,
     #[arg(long, default_value_t = 2)]
     selection_depth: u8,
     #[arg(long, default_value_t = 4)]
@@ -237,6 +240,7 @@ impl TeacherSession {
         depth: u8,
         min_completed_depth: u8,
         max_nodes: u64,
+        qsearch_leaf: bool,
     ) -> ScoreMove {
         let mut root = position.clone();
         self.ai.reset_for_independent_search();
@@ -252,18 +256,44 @@ impl TeacherSession {
                     && root_result.score.is_some() =>
             {
                 let best_move = root_result.best_move;
-                let mut child = position.clone();
-                child.do_move(best_move);
-                let Some(packed) = PackedHalfKpPosition::from_position(&child) else {
-                    return ScoreMove::Failed;
+                let mut qnodes = stats.quiescence_nodes;
+                let (score, packed) = if qsearch_leaf {
+                    let mut trace_position = position.clone();
+                    let Some(trace) = self
+                        .ai
+                        .forced_move_qsearch_leaf_trace(&mut trace_position, best_move)
+                    else {
+                        return ScoreMove::Failed;
+                    };
+                    if !trace.has_exact_evaluation_leaf() {
+                        return ScoreMove::Failed;
+                    }
+                    let Some(leaf) = trace.leaf.as_ref() else {
+                        return ScoreMove::Failed;
+                    };
+                    let Some(packed) = PackedHalfKpPosition::from_position(leaf) else {
+                        return ScoreMove::Failed;
+                    };
+                    qnodes = self.ai.quiescence_nodes_searched();
+                    (sanitize_score(trace.score), packed)
+                } else {
+                    let mut child = position.clone();
+                    child.do_move(best_move);
+                    let Some(packed) = PackedHalfKpPosition::from_position(&child) else {
+                        return ScoreMove::Failed;
+                    };
+                    (
+                        sanitize_score(root_result.score.expect("checked above")),
+                        packed,
+                    )
                 };
                 ScoreMove::Complete(MoveScore {
-                    score: sanitize_score(root_result.score.expect("checked above")),
+                    score,
                     packed,
                     best_move,
                     completed_depth: root_result.completed_depth,
                     nodes: stats.nodes,
-                    qnodes: stats.quiescence_nodes,
+                    qnodes,
                 })
             }
             _ if stats.nodes >= max_nodes => ScoreMove::ResourceLimited {
@@ -290,9 +320,10 @@ pub fn run() -> Result<()> {
         || args
             .hard_teacher_depth
             .is_some_and(|depth| depth < args.teacher_depth)
+        || (args.qsearch_leaf && !args.value_only)
     {
         return Err(anyhow!(
-            "depth, candidate-top, and chunk-size must be positive"
+            "invalid depth/candidate settings or qsearch-leaf mode (requires --value-only)"
         ));
     }
     require_accepted_parent(
@@ -339,6 +370,12 @@ pub fn run() -> Result<()> {
             "min_completed_depth": args.min_completed_depth,
             "max_nodes_per_search": args.max_nodes_per_search,
             "value_only": args.value_only,
+            "qsearch_leaf": args.qsearch_leaf,
+            "qsearch_leaf_semantics": if args.qsearch_leaf {
+                Some("forced_root_move_qsearch_leaf_v1")
+            } else {
+                None
+            },
             "candidate_top": args.candidate_top,
             "tactical_candidate_limit": args.tactical_candidate_limit,
             "audit_all_legal_recall": args.audit_all_legal_recall,
@@ -873,6 +910,7 @@ fn process_value_only(
         args.teacher_depth,
         args.min_completed_depth,
         args.max_nodes_per_search,
+        args.qsearch_leaf,
     ) {
         ScoreMove::Complete(scored) => scored,
         ScoreMove::ResourceLimited { nodes, qnodes } => {
@@ -904,6 +942,9 @@ fn process_value_only(
         );
     };
     let mut flags = CANDIDATE_SEARCH_BEST;
+    if args.qsearch_leaf {
+        flags |= CANDIDATE_QSEARCH_LEAF;
+    }
     if Some(scored.best_move) == game_move {
         flags |= CANDIDATE_GAME_MOVE;
     }

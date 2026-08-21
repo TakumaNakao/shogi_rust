@@ -22,6 +22,8 @@ pub const CANDIDATE_SEARCH_BEST: u8 = 1;
 pub const CANDIDATE_GAME_MOVE: u8 = 2;
 pub const CANDIDATE_RANDOM: u8 = 4;
 pub const CANDIDATE_TACTICAL: u8 = 8;
+/// Candidate child was obtained from the exact training qsearch leaf API.
+pub const CANDIDATE_QSEARCH_LEAF: u8 = 16;
 pub const SEARCH_TEACHER_SEMANTICS_VERSION: u32 = 3;
 pub const SEARCH_TEACHER_SEMANTICS_ID: &str = "jsa-complete-check-interval-v1";
 
