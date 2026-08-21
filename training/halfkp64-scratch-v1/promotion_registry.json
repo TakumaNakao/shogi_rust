@@ -72,7 +72,7 @@
       "gate_report_sha256": "d9af5bdc3e50764ba2b15dc6b4765fc72e94e7810edbdb4a4b1627cb9b8c98c4",
       "decision": "accepted_treestrap_lite_gate",
       "accepted_at": "2026-08-22T00:35:00+09:00",
-      "decision_commit": "pending"
+      "decision_commit": "4c4f2c8"
     }
   ],
   "rejected": [
