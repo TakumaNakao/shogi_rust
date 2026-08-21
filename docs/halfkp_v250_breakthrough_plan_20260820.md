@@ -262,7 +262,7 @@ TDLeaf、league、policy headは実装しない。
 | Phase 2 qsearch-leaf pilot | 完了・親Gate不合格（44.4%、paired CI下限40.0%、安全違反0） | 追加調整せずPhase 3の200局smokeへ |
 | Phase 3 self-play | 完了（200局smoke、安全違反0） | 同一モデルのため棋力差判定は不可、TreeStrapへ |
 | TreeStrap-lite pilot | 完了・親Gate合格（500局、score 52.1%、paired CI下限47.9%、安全違反0） | 100,000 rootsへ拡張し同一Gate |
-| TreeStrap-lite 100k | 未着手 | 100,000 train roots、重複除去valid、2 epoch学習、親Gate |
+| TreeStrap-lite 100k | 進行中（再開可能パイプライン稼働） | 100,000 train roots、重複除去valid、2 epoch学習、親Gate |
 | v2.5.0最終比較 | 条件付き | best scratch凍結後だけ |
 
 Phase 1・Phase 2の親Gate不合格を受け、MMTO/WDLの係数・LR再調整は行わない。200局self-play smokeは
