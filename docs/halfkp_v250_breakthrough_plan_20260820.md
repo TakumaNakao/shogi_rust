@@ -158,12 +158,19 @@ pilot合格時だけ、構築済み200万unique rootへ最大1 outer拡張する
 
 ## 6. Phase 2: qsearch-leaf search-value pilot
 
+Phase 1の親Gateは `runs/halfkp64-scratch-v1/phase1-wdl-pilot-20260820-resumable/match-20k-500g/report.json`
+に記録した。候補243勝・親252勝・引分5（score 49.1%、paired bootstrap 95% CI 44.9--53.3%）で、
+安全監査違反は0件だったため不採用とした。これはWDL係数や学習率を再調整する根拠ではなく、次の教師表現を
+比較するための停止条件である。
+
 Phase 1の結果にかかわらず、大幅改善の主経路は探索値学習へ移す。NNUEでは評価関数が実際に呼ばれるqsearch
 末端を学習対象にするのが自然である。YaneuraOuの公式手順も、通常局面をqsearch PV leafへ置換し、自己対局生成と
 再学習を反復する構成を採る。
 
-既存`--value-only`はroot scoreと直後のbest childしか保存せず、qsearch exact leaf経路は未実装である。次の
-最小拡張を先に行う。
+既存`--value-only`はroot scoreと直後のbest childしか保存せず、qsearch exact leaf経路は未実装だった。
+`halfkp_search_teacher --value-only --qsearch-leaf` として、既存の
+`forced_move_qsearch_leaf_trace` APIを用いる最小拡張を実装した。保存する候補には
+`CANDIDATE_QSEARCH_LEAF`を付与し、manifestに `forced_root_move_qsearch_leaf_v1` を記録する。
 
 1. completed iterative-deepeningのPVを合法にreplayし、末端をfull-window qsearchしてexact leafを保存する。
 2. root/leaf parity、手番符号、mate、千日手、terminal、exact/lower/upper boundをcodecへ明記する。
@@ -249,12 +256,12 @@ TDLeaf、league、policy headは実装しない。
 | 旧WDL decision | 無効 | artifactを残しscale bugとsplit不一致を記録 |
 | 新計画 | 完了 | 本書 |
 | Phase 0 指標修復 | 進行中（WDL Gate合格） | norm校正、trainer回帰、manifest保存、byte identity |
-| Phase 1 repaired 100k | 学習完了・親Gate実行中 | outer metrics、delta、安全Gate、親500局 |
+| Phase 1 repaired 100k | 完了・親Gate不合格（49.1%、paired CI下限44.9%、安全違反0） | 追加調整せずPhase 2へ |
 | repaired 2M outer | 条件付き | Phase 1通過時だけ最大1 outer |
-| Phase 2 qsearch-leaf pilot | 未着手 | 25k学習と親対局Gate |
+| Phase 2 qsearch-leaf pilot | 教師生成中（実装・Smoke完了） | 25k/5k生成、最大2 epoch、親対局Gate |
 | Phase 3 self-play | 条件付き | Phase 2通過後。失敗時は200-game smokeだけ |
 | TreeStrap-lite | 条件付き | plateauまたは200-game smoke不合格時に10k exact node |
 | v2.5.0最終比較 | 条件付き | best scratch凍結後だけ |
 
-次に行う唯一の作業はPhase 0である。Phase 0の修正と再校正が完了する前に、200万root学習、LR増加、
-deep-search大規模生成、自己対局を開始しない。
+Phase 1の親Gate不合格を受け、MMTO/WDLの係数・LR再調整は行わずPhase 2へ移行した。現在は
+qsearch leaf教師の25k/5k生成を実行中であり、完了後に最大2 epoch学習と親対局Gateを行う。
