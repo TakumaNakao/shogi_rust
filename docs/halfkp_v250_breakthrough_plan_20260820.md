@@ -260,8 +260,8 @@ TDLeaf、league、policy headは実装しない。
 | Phase 1 repaired 100k | 完了・親Gate不合格（49.1%、paired CI下限44.9%、安全違反0） | 追加調整せずPhase 2へ |
 | repaired 2M outer | 条件付き | Phase 1通過時だけ最大1 outer |
 | Phase 2 qsearch-leaf pilot | 完了・親Gate不合格（44.4%、paired CI下限40.0%、安全違反0） | 追加調整せずPhase 3の200局smokeへ |
-| Phase 3 self-play | 実行中（200局smoke、20k nodes/手） | on-policy分布での有効性確認 |
-| TreeStrap-lite | 条件付き | plateauまたは200-game smoke不合格時に10k exact node |
+| Phase 3 self-play | 完了（200局smoke、安全違反0） | 同一モデルのため棋力差判定は不可、TreeStrapへ |
+| TreeStrap-lite | 学習完了・親Gate実行中（245/50 roots、7,738 search-leaf候補） | 250 opening-pair/20k nodes Gate |
 | v2.5.0最終比較 | 条件付き | best scratch凍結後だけ |
 
 Phase 1・Phase 2の親Gate不合格を受け、MMTO/WDLの係数・LR再調整は行わない。次はWDoor分布の
