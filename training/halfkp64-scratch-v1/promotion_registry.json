@@ -70,7 +70,7 @@
       "model_sha256": "489cc659adcb144e050ca2f46b7cd2d6e18c02956dda7b6fc8e7bbf2e7572005",
       "generation": 4,
       "gate_report_sha256": "d9af5bdc3e50764ba2b15dc6b4765fc72e94e7810edbdb4a4b1627cb9b8c98c4",
-      "decision": "accepted_treestrap_lite_gate",
+      "decision": "accepted_promotion_match",
       "accepted_at": "2026-08-22T00:35:00+09:00",
       "decision_commit": "4c4f2c8"
     }
