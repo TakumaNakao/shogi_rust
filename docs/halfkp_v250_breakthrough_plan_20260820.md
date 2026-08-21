@@ -260,7 +260,7 @@ TDLeaf、league、policy headは実装しない。
 | Phase 1 repaired 100k | 完了・親Gate不合格（49.1%、paired CI下限44.9%、安全違反0） | 追加調整せずPhase 2へ |
 | repaired 2M outer | 条件付き | Phase 1通過時だけ最大1 outer |
 | Phase 2 qsearch-leaf pilot | 完了・親Gate不合格（44.4%、paired CI下限40.0%、安全違反0） | 追加調整せずPhase 3の200局smokeへ |
-| Phase 3 self-play | 次工程（200局smoke） | on-policy分布での有効性確認 |
+| Phase 3 self-play | 実行中（200局smoke、20k nodes/手） | on-policy分布での有効性確認 |
 | TreeStrap-lite | 条件付き | plateauまたは200-game smoke不合格時に10k exact node |
 | v2.5.0最終比較 | 条件付き | best scratch凍結後だけ |
 
