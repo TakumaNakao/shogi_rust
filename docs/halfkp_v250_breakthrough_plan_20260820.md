@@ -172,7 +172,8 @@ Phase 1の結果にかかわらず、大幅改善の主経路は探索値学習�
 `forced_move_qsearch_leaf_trace` APIを用いる最小拡張を実装した。保存する候補には
 `CANDIDATE_QSEARCH_LEAF`を付与し、manifestに `forced_root_move_qsearch_leaf_v1` を記録する。
 
-1. completed iterative-deepeningのPVを合法にreplayし、末端をfull-window qsearchしてexact leafを保存する。
+1. pilotではcompleted root searchのbest moveを合法に適用し、full-window qsearchしてexact leafを保存する
+   （`forced_root_move_qsearch_leaf_v1`）。PV全体のreplayはpilot通過後の拡張候補とする。
 2. root/leaf parity、手番符号、mate、千日手、terminal、exact/lower/upper boundをcodecへ明記する。
    exactでない値を両側回帰へ入れない。
 3. PV合法性、root scoreと符号変換leaf scoreの整合、exact/static/terminal率、save/resume identityをtestする。
