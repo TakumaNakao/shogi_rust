@@ -76,6 +76,19 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
             return None;
         }
         self.begin_eval_context(position);
+        // A preceding bounded alpha-beta search may have left its node/time
+        // guard at the cap.  The leaf probe is an explicitly separate,
+        // bounded training operation, so it must not inherit that guard.
+        let previous_limits = (
+            self.start_time,
+            self.time_limit,
+            self.node_limit,
+            self.next_time_check_nodes,
+        );
+        self.start_time = None;
+        self.time_limit = None;
+        self.node_limit = None;
+        self.next_time_check_nodes = 0;
         let moved_by = position.side_to_move();
         self.make_move(position, root_move);
         self.sennichite_detector
@@ -98,6 +111,12 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         self.sennichite_detector.unrecord_last_position();
         self.undo_move(position, root_move);
 
+        (
+            self.start_time,
+            self.time_limit,
+            self.node_limit,
+            self.next_time_check_nodes,
+        ) = previous_limits;
         result.map(|mut trace| {
             trace.score = -trace.score;
             trace.pv.insert(0, root_move);
