@@ -59,6 +59,10 @@ struct Args {
     /// Store the exact qsearch leaf reached after the selected root move.
     #[arg(long, default_value_t = false)]
     qsearch_leaf: bool,
+    /// Collect up to 32 legal root moves as exact qsearch leaves for the
+    /// bounded TreeStrap-lite pilot.
+    #[arg(long, default_value_t = false)]
+    treestrap_lite: bool,
     #[arg(long, default_value_t = 2)]
     selection_depth: u8,
     #[arg(long, default_value_t = 4)]
@@ -303,6 +307,33 @@ impl TeacherSession {
             _ => ScoreMove::Failed,
         }
     }
+
+    fn score_qsearch_leaf(&mut self, position: &Position, mv: Move) -> ScoreMove {
+        let mut trace_position = position.clone();
+        let Some(trace) = self
+            .ai
+            .forced_move_qsearch_leaf_trace(&mut trace_position, mv)
+        else {
+            return ScoreMove::Failed;
+        };
+        if !trace.has_exact_evaluation_leaf() {
+            return ScoreMove::Failed;
+        }
+        let Some(leaf) = trace.leaf.as_ref() else {
+            return ScoreMove::Failed;
+        };
+        let Some(packed) = PackedHalfKpPosition::from_position(leaf) else {
+            return ScoreMove::Failed;
+        };
+        ScoreMove::Complete(MoveScore {
+            score: sanitize_score(trace.score),
+            packed,
+            best_move: mv,
+            completed_depth: 0,
+            nodes: 0,
+            qnodes: self.ai.quiescence_nodes_searched(),
+        })
+    }
 }
 
 pub fn run() -> Result<()> {
@@ -321,6 +352,8 @@ pub fn run() -> Result<()> {
             .hard_teacher_depth
             .is_some_and(|depth| depth < args.teacher_depth)
         || (args.qsearch_leaf && !args.value_only)
+        || (args.treestrap_lite && !args.value_only)
+        || (args.treestrap_lite && args.qsearch_leaf)
     {
         return Err(anyhow!(
             "invalid depth/candidate settings or qsearch-leaf mode (requires --value-only)"
@@ -373,6 +406,12 @@ pub fn run() -> Result<()> {
             "qsearch_leaf": args.qsearch_leaf,
             "qsearch_leaf_semantics": if args.qsearch_leaf {
                 Some("forced_root_move_qsearch_leaf_v1")
+            } else {
+                None
+            },
+            "treestrap_lite": args.treestrap_lite,
+            "treestrap_lite_semantics": if args.treestrap_lite {
+                Some("root_legal_moves_qsearch_leaf_bucket_v1")
             } else {
                 None
             },
@@ -609,15 +648,27 @@ fn process_line_inner(
     let game_move = game_move.filter(|mv| legal_moves.contains(mv));
 
     if args.value_only {
-        return process_value_only(
-            input,
-            position,
-            game_move,
-            illegal_teacher,
-            randomized,
-            args,
-            session,
-        );
+        return if args.treestrap_lite {
+            process_treestrap_lite(
+                input,
+                position,
+                game_move,
+                illegal_teacher,
+                randomized,
+                args,
+                session,
+            )
+        } else {
+            process_value_only(
+                input,
+                position,
+                game_move,
+                illegal_teacher,
+                randomized,
+                args,
+                session,
+            )
+        };
     }
 
     let mut search_calls = 0u64;
@@ -990,6 +1041,162 @@ fn process_value_only(
         search_calls: 1,
         search_nodes: scored.nodes,
         qsearch_nodes: scored.qnodes,
+        elapsed_micros: 0,
+        recall_eligible: false,
+        recall_hit: false,
+        excluded_check: false,
+    }
+}
+
+fn process_treestrap_lite(
+    input: InputRecord,
+    position: Position,
+    game_move: Option<Move>,
+    illegal_teacher: bool,
+    randomized: bool,
+    args: &Args,
+    session: &mut TeacherSession,
+) -> Processed {
+    let root_scored = match session.score_root(
+        &position,
+        args.teacher_depth,
+        args.min_completed_depth,
+        args.max_nodes_per_search,
+        false,
+    ) {
+        ScoreMove::Complete(scored) => scored,
+        ScoreMove::ResourceLimited { nodes, qnodes } => {
+            return failed_with_metrics(
+                false,
+                illegal_teacher,
+                false,
+                true,
+                false,
+                1,
+                nodes,
+                qnodes,
+            );
+        }
+        ScoreMove::Failed => {
+            return failed_with_metrics(false, illegal_teacher, true, false, false, 1, 0, 0);
+        }
+    };
+    let legal_moves = position.legal_moves();
+    let mut selected = Vec::with_capacity(32);
+    selected.push(root_scored.best_move);
+    selected.extend(
+        legal_moves
+            .iter()
+            .copied()
+            .filter(|mv| *mv != root_scored.best_move)
+            .take(31),
+    );
+    let mut candidates = Vec::with_capacity(selected.len());
+    let mut search_calls = 1u64;
+    let mut qsearch_nodes = root_scored.qnodes;
+    let mut search_failed = false;
+    for mv in selected {
+        search_calls += 1;
+        let scored = match session.score_qsearch_leaf(&position, mv) {
+            ScoreMove::Complete(scored) => scored,
+            ScoreMove::ResourceLimited { .. } => continue,
+            ScoreMove::Failed => {
+                search_failed = true;
+                continue;
+            }
+        };
+        qsearch_nodes = qsearch_nodes.max(scored.qnodes);
+        let mut flags = CANDIDATE_QSEARCH_LEAF;
+        if mv == root_scored.best_move {
+            flags |= CANDIDATE_SEARCH_BEST;
+        }
+        if Some(mv) == game_move {
+            flags |= CANDIDATE_GAME_MOVE;
+        }
+        if is_tactical_move(&position, mv) {
+            flags |= CANDIDATE_TACTICAL;
+        }
+        candidates.push(SearchTeacherCandidate {
+            flags,
+            score_cp: scored.score,
+            child: scored.packed,
+        });
+    }
+    if !candidates
+        .iter()
+        .any(|candidate| candidate.flags & CANDIDATE_SEARCH_BEST != 0)
+    {
+        return failed_with_metrics(
+            false,
+            illegal_teacher,
+            true,
+            false,
+            false,
+            search_calls,
+            root_scored.nodes,
+            root_scored.qnodes,
+        );
+    }
+    if candidates.len() < 2 {
+        return failed_with_metrics(
+            false,
+            illegal_teacher,
+            search_failed,
+            false,
+            false,
+            search_calls,
+            root_scored.nodes,
+            root_scored.qnodes,
+        );
+    }
+    candidates.sort_by(|lhs, rhs| rhs.score_cp.total_cmp(&lhs.score_cp));
+    let Some(root) = PackedHalfKpPosition::from_position(&position) else {
+        return failed_with_metrics(
+            true,
+            illegal_teacher,
+            false,
+            false,
+            false,
+            search_calls,
+            root_scored.nodes,
+            root_scored.qnodes,
+        );
+    };
+    let phase = if randomized {
+        phase_for_ply(
+            input
+                .ply
+                .unwrap_or(0)
+                .saturating_add(u16::from(args.randomize_max_plies)),
+        )
+    } else {
+        input
+            .phase
+            .as_deref()
+            .map(phase_code)
+            .unwrap_or_else(|| phase_for_ply(input.ply.unwrap_or(0)))
+    };
+    Processed {
+        record: Some(SearchTeacherRecord {
+            position_hash: PositionHasher::calculate_hash(&position),
+            ply: input.ply.unwrap_or(0),
+            phase,
+            teacher_depth: root_scored.completed_depth,
+            result: (!randomized)
+                .then(|| result_for(&input, position.side_to_move()))
+                .flatten(),
+            root_search_score_cp: root_scored.score,
+            sample_weight: input.sample_weight.unwrap_or(1.0).clamp(0.01, 10.0),
+            root,
+            candidates,
+        }),
+        parse_failed: false,
+        illegal_teacher,
+        search_failed: false,
+        resource_limited: false,
+        search_calls,
+        search_nodes: root_scored.nodes,
+        qsearch_nodes,
         elapsed_micros: 0,
         recall_eligible: false,
         recall_hit: false,
