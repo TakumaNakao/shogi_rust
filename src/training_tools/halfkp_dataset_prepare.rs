@@ -2,8 +2,11 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use shogi_ai::halfkp_training::PackedHalfKpPosition;
-use shogi_ai::training_data::sha256_file;
+use shogi_ai::halfkp_training::{
+    read_search_teacher_manifest, PackedHalfKpPosition, SearchTeacherProvenance,
+    SearchTeacherReader, SearchTeacherWriter,
+};
+use shogi_ai::training_data::{artifact_metadata, sha256_file};
 use shogi_ai::utils::position_from_sfen_or_usi;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
@@ -24,6 +27,7 @@ enum Command {
     WdlValidReextract(WdlValidReextractArgs),
     ComposeInterleave(ComposeArgs),
     UnseenPilot(UnseenArgs),
+    FilterHkstNetworkOverlap(FilterHkstArgs),
 }
 
 #[derive(Args, Debug)]
@@ -119,6 +123,22 @@ struct UnseenArgs {
     balance: String,
 }
 
+/// Remove validation HKST records whose root or candidate network input is
+/// present in one of the fixed training HKST files.  The search trainer treats
+/// this overlap as a hard data-leakage error, so filtering is explicit and
+/// preserves the original teacher provenance in a new manifest.
+#[derive(Args, Debug)]
+struct FilterHkstArgs {
+    #[arg(long, required = true)]
+    train: Vec<PathBuf>,
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    max_records: Option<usize>,
+}
+
 #[derive(Deserialize)]
 struct LineRecord {
     game_key: String,
@@ -160,7 +180,86 @@ pub fn run() -> Result<()> {
         Command::WdlValidReextract(args) => wdl_valid_reextract(args),
         Command::ComposeInterleave(args) => compose_interleave(args),
         Command::UnseenPilot(args) => unseen_pilot(args),
+        Command::FilterHkstNetworkOverlap(args) => filter_hkst_network_overlap(args),
     }
+}
+
+fn filter_hkst_network_overlap(args: FilterHkstArgs) -> Result<()> {
+    let input_manifest = read_search_teacher_manifest(&args.input)?
+        .ok_or_else(|| anyhow!("{} has no HKST manifest", args.input.display()))?;
+    let mut train_inputs = HashSet::new();
+    for path in &args.train {
+        let mut reader = SearchTeacherReader::open(path)?;
+        while let Some(record) = reader.read_record()? {
+            train_inputs.insert(record.root.network_input_hash());
+            train_inputs.extend(
+                record
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.child.network_input_hash()),
+            );
+        }
+    }
+    let mut search_limits = input_manifest.search_limits.clone();
+    if let Some(object) = search_limits.as_object_mut() {
+        object.insert(
+            "network_overlap_filter".to_string(),
+            serde_json::json!({
+                "version": 1,
+                "train_files": args.train,
+                "excluded_any_root_or_candidate": true,
+            }),
+        );
+    }
+    let mut writer = SearchTeacherWriter::create(&args.output)?;
+    writer.set_provenance(SearchTeacherProvenance {
+        environment: input_manifest.environment,
+        inputs: vec![artifact_metadata(
+            &args.input,
+            Some(input_manifest.records),
+        )?],
+        model: input_manifest.model,
+        engine_binary: input_manifest.engine_binary,
+        feature_profile: input_manifest.feature_profile,
+        search_limits,
+        jobs: input_manifest.jobs,
+        random_seeds: input_manifest.random_seeds,
+        phase_policy_version: input_manifest.phase_policy_version,
+        split_policy_version: input_manifest.split_policy_version,
+        parent_manifest_sha256: input_manifest.parent_manifest_sha256,
+    });
+    let mut reader = SearchTeacherReader::open(&args.input)?;
+    let mut kept = 0usize;
+    let mut excluded = 0usize;
+    let max_records = args.max_records.unwrap_or(usize::MAX);
+    while kept < max_records {
+        let Some(record) = reader.read_record()? else {
+            break;
+        };
+        let overlaps = std::iter::once(record.root.network_input_hash()).chain(
+            record
+                .candidates
+                .iter()
+                .map(|candidate| candidate.child.network_input_hash()),
+        );
+        if overlaps.clone().any(|hash| train_inputs.contains(&hash)) {
+            excluded += 1;
+            continue;
+        }
+        writer.write_record(&record)?;
+        kept += 1;
+    }
+    let records = writer.finish()?;
+    println!(
+        "filter_hkst input={} output={} train_inputs={} kept={} excluded={} records={}",
+        args.input.display(),
+        args.output.display(),
+        train_inputs.len(),
+        kept,
+        excluded,
+        records
+    );
+    Ok(())
 }
 
 fn load_lines(path: &Path, seed: u64) -> Result<Vec<Line>> {
