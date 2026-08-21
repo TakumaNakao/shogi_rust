@@ -259,7 +259,7 @@ TDLeaf、league、policy headは実装しない。
 | Phase 0 指標修復 | 進行中（WDL Gate合格） | norm校正、trainer回帰、manifest保存、byte identity |
 | Phase 1 repaired 100k | 完了・親Gate不合格（49.1%、paired CI下限44.9%、安全違反0） | 追加調整せずPhase 2へ |
 | repaired 2M outer | 条件付き | Phase 1通過時だけ最大1 outer |
-| Phase 2 qsearch-leaf pilot | 教師生成中（実装・Smoke完了） | 25k/5k生成、最大2 epoch、親対局Gate |
+| Phase 2 qsearch-leaf pilot | 学習完了・親Gate実行中（25k/5k、実効24,485/4,896、分割重複0） | 250 opening-pair/20k nodes Gate |
 | Phase 3 self-play | 条件付き | Phase 2通過後。失敗時は200-game smokeだけ |
 | TreeStrap-lite | 条件付き | plateauまたは200-game smoke不合格時に10k exact node |
 | v2.5.0最終比較 | 条件付き | best scratch凍結後だけ |
