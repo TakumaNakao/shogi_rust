@@ -54,6 +54,10 @@ struct Args {
     max_plies: usize,
     #[arg(long)]
     json: PathBuf,
+    /// Run both colors with the same accepted model. This is an on-policy
+    /// self-play smoke and is never promotion-eligible.
+    #[arg(long, default_value_t = false)]
+    self_play: bool,
 }
 
 #[derive(Deserialize)]
@@ -135,6 +139,7 @@ struct Report {
     passes_noninferiority: bool,
     passes_safety: bool,
     promotion_gate_passed: bool,
+    self_play: bool,
     counts: MatchCounts,
     game_reports: Vec<GameReport>,
 }
@@ -208,7 +213,7 @@ pub fn run() -> Result<()> {
     if args.nodes.is_some_and(|n| n == 0) || args.time_limit_ms.is_some_and(|t| t == 0) {
         return Err(anyhow!("nodes and time-limit-ms must be positive"));
     }
-    if candidate_hash == parent_hash {
+    if candidate_hash == parent_hash && !args.self_play {
         return Err(anyhow!("candidate and parent are identical"));
     }
     let openings = load_openings(
@@ -291,7 +296,8 @@ pub fn run() -> Result<()> {
         passes_point_score: score >= 0.5,
         passes_noninferiority: lower >= 0.475,
         passes_safety: safety,
-        promotion_gate_passed: score >= 0.5 && lower >= 0.475 && safety,
+        promotion_gate_passed: !args.self_play && score >= 0.5 && lower >= 0.475 && safety,
+        self_play: args.self_play,
         counts,
         game_reports: games,
     };
