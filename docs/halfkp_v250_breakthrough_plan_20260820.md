@@ -262,10 +262,12 @@ TDLeaf、league、policy headは実装しない。
 | Phase 2 qsearch-leaf pilot | 完了・親Gate不合格（44.4%、paired CI下限40.0%、安全違反0） | 追加調整せずPhase 3の200局smokeへ |
 | Phase 3 self-play | 完了（200局smoke、安全違反0） | 同一モデルのため棋力差判定は不可、TreeStrapへ |
 | TreeStrap-lite pilot | 完了・親Gate合格（500局、score 52.1%、paired CI下限47.9%、安全違反0） | 100,000 rootsへ拡張し同一Gate |
-| TreeStrap-lite 100k | 進行中（再開可能パイプライン稼働） | 100,000 train roots、重複除去valid、2 epoch学習、親Gate |
+| TreeStrap-lite 100k | 完了・親Gate合格（500局、score 52.2%、paired CI下限48.0%、安全違反0） | 同一条件で500k rootsへ拡張 |
+| TreeStrap-lite 500k | 進行中（世代5をaccepted登録済み） | 500,000 train roots、重複除去valid、2 epoch学習、親Gate |
 | v2.5.0最終比較 | 条件付き | best scratch凍結後だけ |
 
 Phase 1・Phase 2の親Gate不合格を受け、MMTO/WDLの係数・LR再調整は行わない。200局self-play smokeは
 安全性確認を完了し、TreeStrap-lite pilotが親Gateを通過した。したがって次は、同じ教師・学習条件を
-変えずにWDoorの100,000 rootsへ拡張する。100k Gateを通過した場合だけ500k rootsへ進み、不合格なら
-同じ条件の再試行や過剰な実装追加は行わず、on-policy世代学習へ方針を切り替える。
+変えずにWDoorの100,000 rootsへ拡張し、Gateを通過した。世代5をacceptedとして登録し、同じ教師・学習条件で
+500,000 rootsへ進む。500k Gateが不合格なら、同じ条件の再試行や過剰な実装追加は行わず、on-policy世代学習へ
+方針を切り替える。

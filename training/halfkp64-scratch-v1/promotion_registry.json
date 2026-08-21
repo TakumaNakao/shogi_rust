@@ -73,6 +73,14 @@
       "decision": "accepted_promotion_match",
       "accepted_at": "2026-08-22T00:35:00+09:00",
       "decision_commit": "4c4f2c8"
+    },
+    {
+      "model_sha256": "976a6626e4bbc3beaeb1172a05d87ea422ececfd8de729f4489880d0dd1abd82",
+      "generation": 5,
+      "gate_report_sha256": "0411d6bb5fe5d5289c2f6f84d4024845621c6288d50d1dc70002976abe4cff2c",
+      "decision": "accepted_promotion_match",
+      "accepted_at": "2026-08-22T05:50:00+09:00",
+      "decision_commit": "0f84b1e"
     }
   ],
   "rejected": [
