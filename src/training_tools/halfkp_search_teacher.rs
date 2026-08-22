@@ -31,6 +31,11 @@ use std::time::Instant;
 
 const HISTORY_CAPACITY: usize = 256;
 const SCORE_CLAMP_CP: f32 = 6000.0;
+// Qsearch and alpha-beta both recurse while a Rayon worker processes one
+// root.  Rayon leaves worker stacks at the platform default unless this is
+// set explicitly; a rare long checking sequence exhausted that stack during
+// the 500k-root run.  Keep the budget explicit and record it in provenance.
+const SEARCH_TEACHER_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Parser, Debug)]
 #[command(about = "Generate packed HalfKP teachers using this engine's own alpha-beta search")]
@@ -374,6 +379,7 @@ pub fn run() -> Result<()> {
         Some(
             rayon::ThreadPoolBuilder::new()
                 .num_threads(args.jobs)
+                .stack_size(SEARCH_TEACHER_THREAD_STACK_BYTES)
                 .build()?,
         )
     } else {
@@ -428,6 +434,7 @@ pub fn run() -> Result<()> {
             "skip_positions": args.skip_positions,
             "max_positions": args.max_positions,
             "sample_stride": args.sample_stride,
+            "thread_stack_bytes": SEARCH_TEACHER_THREAD_STACK_BYTES,
         }),
         jobs: Some(
             pool.as_ref()

@@ -263,7 +263,7 @@ TDLeaf、league、policy headは実装しない。
 | Phase 3 self-play | 完了（200局smoke、安全違反0） | 同一モデルのため棋力差判定は不可、TreeStrapへ |
 | TreeStrap-lite pilot | 完了・親Gate合格（500局、score 52.1%、paired CI下限47.9%、安全違反0） | 100,000 rootsへ拡張し同一Gate |
 | TreeStrap-lite 100k | 完了・親Gate合格（500局、score 52.2%、paired CI下限48.0%、安全違反0） | 同一条件で500k rootsへ拡張 |
-| TreeStrap-lite 500k | 進行中（世代5をaccepted登録済み） | 500,000 train roots、重複除去valid、2 epoch学習、親Gate |
+| TreeStrap-lite 500k | スタックオーバーフローで中断、修正済み・再開待ち | 修正版で500,000 train roots、重複除去valid、2 epoch学習、親Gate |
 | v2.5.0最終比較 | 条件付き | best scratch凍結後だけ |
 
 Phase 1・Phase 2の親Gate不合格を受け、MMTO/WDLの係数・LR再調整は行わない。200局self-play smokeは
@@ -271,3 +271,7 @@ Phase 1・Phase 2の親Gate不合格を受け、MMTO/WDLの係数・LR再調整�
 変えずにWDoorの100,000 rootsへ拡張し、Gateを通過した。世代5をacceptedとして登録し、同じ教師・学習条件で
 500,000 rootsへ進む。500k Gateが不合格なら、同じ条件の再試行や過剰な実装追加は行わず、on-policy世代学習へ
 方針を切り替える。
+
+500k教師生成では約146k rootでRayon workerのデフォルトスタックが枯渇した。教師生成専用プールに
+16MiBの明示的なworker stackを設定し、設定値を教師manifestのprovenanceへ記録した。停止地点付近の
+200 rootを8並列で再実行して完了することを確認した後、未完了一時ファイルを採用せず500k全体を再生成する。
