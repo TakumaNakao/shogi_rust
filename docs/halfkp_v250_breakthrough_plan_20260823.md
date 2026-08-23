@@ -229,3 +229,5 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 Brierを改善し、固定20,000 nodes・500局で50.8%を得たが、paired CI下限が46.6%でstrict Gateを通らなかった。
 計画の例外条件（点推定50%以上、validation改善、CI不確定）に該当するため、同一設定で500k root・最大16 epochを
 一度だけ実施する。500kでもGate不通過なら、教師量だけを増やさずPhase 1目的関数を再監査する。
+長時間処理の後段は`scripts/run_halfkp_preserved_target_phase3.sh`で再開可能にし、教師完了後のvalid生成・重複除外・
+学習・Gateを既存artifactを上書きせず自動実行する。
