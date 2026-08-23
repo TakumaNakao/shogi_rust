@@ -1,5 +1,9 @@
 # HalfKP scratch v2.5.0超え再計画
 
+> **2026-08-23追記:** 本計画は、TreeStrap系列の教師・目的関数・昇格Gate監査を反映した
+> [`halfkp_v250_breakthrough_plan_20260823.md`](halfkp_v250_breakthrough_plan_20260823.md) に置き換えられた。
+> 本書は実験履歴として保持し、以後の正本にはしない。
+
 - 制定日: 2026-08-20
 - 対象lineage: `halfkp64-scratch-v1`
 - 現在の最良scratch: full MMTO outer 4、model SHA-256 `a40af8e3...431b`
