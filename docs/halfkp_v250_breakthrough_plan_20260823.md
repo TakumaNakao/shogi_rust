@@ -216,13 +216,15 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | 学習コード監査 | 完了 | root/leaf、符号、candidate weight、optimizer、Gateを照合 |
 | 一次資料調査 | 完了 | NNUE、やねうら王、MMTO、TreeStrapを照合 |
 | generation 6最終評価 | 完了・不採用 | v2.5.0へ8-42、16.0% |
-| generation 4～6 | 再分類待ち | experimentalへ移しgen3をaccepted headに戻す |
-| Phase 0 Gate・artifact修復 | 次の作業 | 回帰testとopening splitを完了 |
-| Phase 1 preserved-target leaf | 未着手 | semantic/unit/gradient test合格 |
-| Phase 2 25k/100k証明 | 条件付き | 100k候補が転移条件を満たす |
+| generation 4～6 | 完了・実験扱い | strict paired Gate不合格としてregistryから除外 |
+| Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
+| Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
+| Phase 2 25k/100k証明 | 100k教師生成中 | 100k候補が転移条件を満たす |
 | Phase 3 500k/2M長期学習 | 条件付き | 厳格な親Gate合格 |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 最終候補のみ | screenと独立確認の両方を通過 |
 
-次の実装作業はPhase 0である。Gateとlineageを正さずに新しい学習を開始してはならない。
+25k smokeは意味論・損失の技術確認に限定し、棋力判定には使わない。現在はgeneration 3を固定親として
+100k rootのteacherを生成中である。100k候補がstrict Gateを通らない場合は、同じ教師を無制限に増量せず、
+原因を記録してPhase 1の目的関数を再監査する。
