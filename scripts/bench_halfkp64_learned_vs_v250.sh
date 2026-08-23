@@ -17,7 +17,6 @@ SEED="${SEED:-20260720}"
 THREADS="${THREADS:-0}"
 JOBS="${JOBS:-1}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/data/bench_halfkp64_learned_vs_v250_${TIME_LIMIT_MS}ms_${GAMES}g_seed${SEED}}"
-FORCE="${FORCE:-0}"
 
 if (( GAMES < 2 || GAMES % 2 != 0 )); then
   echo "GAMES must be an even number >= 2 for paired side swaps" >&2
@@ -34,14 +33,10 @@ if [[ "$NEW_WEIGHTS" -ef "$BASELINE_WEIGHTS" ]]; then
   echo "NEW_WEIGHTS and BASELINE_WEIGHTS must be different files" >&2
   exit 2
 fi
-if [[ -e "$OUT_DIR/match.log" && "$FORCE" != "1" ]]; then
+if [[ -e "$OUT_DIR" ]]; then
   echo "result already exists: $OUT_DIR/match.log" >&2
-  echo "set FORCE=1 to replace it, or choose another OUT_DIR" >&2
+  echo "choose a new OUT_DIR; benchmark artifacts are immutable" >&2
   exit 2
-fi
-
-if [[ "$FORCE" == "1" ]]; then
-  rm -rf "$OUT_DIR"
 fi
 mkdir -p "$OUT_DIR"
 

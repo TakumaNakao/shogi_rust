@@ -35,6 +35,11 @@ COMPLETED_SCHEMA = "halfkp_resumable_paired_match_completed_v1"
 FINGERPRINT_SCHEMA = "halfkp_resumable_paired_match_fingerprint_v1"
 DEFAULT_BOOTSTRAP_RESAMPLES = 100_000
 DEFAULT_BOOTSTRAP_SEED = 20260806
+# A promotion is a superiority claim, not merely non-inferiority.  Pair-level
+# child reports retain the historical diagnostics; only the aggregate report
+# may promote a candidate.
+PROMOTION_MIN_SCORE = 0.525
+PROMOTION_MIN_PAIRED_LOWER = 0.5
 COUNT_KEYS = (
     "candidate_wins",
     "parent_wins",
@@ -787,8 +792,14 @@ def aggregate_pair_artifacts(
         "passes_point_score": score >= 0.5,
         "passes_noninferiority": wilson_lower >= 0.475,
         "passes_paired_noninferiority": paired_lower >= 0.475,
+        "passes_superiority_point": score >= PROMOTION_MIN_SCORE,
+        "passes_paired_superiority": paired_lower > PROMOTION_MIN_PAIRED_LOWER,
         "passes_safety": safety,
-        "promotion_gate_passed": score >= 0.5 and wilson_lower >= 0.475 and safety,
+        "promotion_gate_passed": (
+            score >= PROMOTION_MIN_SCORE
+            and paired_lower > PROMOTION_MIN_PAIRED_LOWER
+            and safety
+        ),
         "counts": counts,
         "pair_artifacts": list(artifact_metadata),
         "game_reports": game_reports,

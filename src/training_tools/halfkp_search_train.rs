@@ -11,7 +11,8 @@ use shogi_ai::evaluation::{
 };
 use shogi_ai::halfkp_training::{
     read_search_teacher_manifest, PackedHalfKpPosition, SearchTeacherReader, SearchTeacherRecord,
-    CANDIDATE_GAME_MOVE, SEARCH_TEACHER_SEMANTICS_ID, SEARCH_TEACHER_SEMANTICS_VERSION,
+    CANDIDATE_GAME_MOVE, CANDIDATE_QSEARCH_LEAF, CANDIDATE_SEARCH_BEST,
+    SEARCH_TEACHER_SEMANTICS_ID, SEARCH_TEACHER_SEMANTICS_VERSION,
 };
 use shogi_ai::training_data::{
     artifact_metadata, capture_run_environment, sha256_file, sha256_hex, ArtifactMetadata,
@@ -1696,6 +1697,35 @@ fn fit_kappa_datasets(
         .map_or(600.0, |(kappa, _)| kappa as f32))
 }
 
+fn value_target_for_record(
+    record: &SearchTeacherRecord,
+) -> (&PackedHalfKpPosition, f32, Option<f32>) {
+    let value_candidate = record.candidates.iter().find(|candidate| {
+        candidate.flags & (CANDIDATE_SEARCH_BEST | CANDIDATE_QSEARCH_LEAF)
+            == (CANDIDATE_SEARCH_BEST | CANDIDATE_QSEARCH_LEAF)
+    });
+    let value_position = value_candidate
+        .map(|candidate| &candidate.child)
+        .unwrap_or(&record.root);
+    let target_score_cp = value_candidate.map_or(record.root_search_score_cp, |candidate| {
+        if candidate.child.side_to_move == record.root.side_to_move {
+            record.root_search_score_cp
+        } else {
+            -record.root_search_score_cp
+        }
+    });
+    let target_result = record.result.map(|result| {
+        value_candidate.map_or(result, |candidate| {
+            if candidate.child.side_to_move == record.root.side_to_move {
+                result
+            } else {
+                1.0 - result
+            }
+        })
+    });
+    (value_position, target_score_cp, target_result)
+}
+
 fn compute_record_gradient(
     weights: &Weights,
     record: &SearchTeacherRecord,
@@ -1708,12 +1738,12 @@ fn compute_record_gradient(
         rank_loss: 0.0,
         pairs: 0,
     };
-    let root_forward = weights.forward(&record.root);
-    let model_cp = root_forward.raw * TARGET_SCALE;
+    let (value_position, target_score_cp, target_result) = value_target_for_record(record);
+    let value_forward = weights.forward(value_position);
+    let model_cp = value_forward.raw * TARGET_SCALE;
     let model_p = sigmoid(model_cp / options.kappa_cp);
-    let search_p = sigmoid(record.root_search_score_cp / options.kappa_cp);
-    let target = record
-        .result
+    let search_p = sigmoid(target_score_cp / options.kappa_cp);
+    let target = target_result
         .map(|result| options.search_mix * search_p + (1.0 - options.search_mix) * result)
         .unwrap_or(search_p);
     let error = model_p - target;
@@ -1729,8 +1759,8 @@ fn compute_record_gradient(
     let d_score_cp = d_probability * model_p * (1.0 - model_p) / options.kappa_cp;
     add_position_gradient(
         weights,
-        &record.root,
-        &root_forward,
+        value_position,
+        &value_forward,
         d_score_cp * TARGET_SCALE,
         &mut gradient,
     );
@@ -1742,7 +1772,15 @@ fn compute_record_gradient(
         .collect::<Vec<_>>();
     let utilities = forwards
         .iter()
-        .map(|forward| -forward.raw * TARGET_SCALE)
+        .zip(&record.candidates)
+        .map(|(forward, candidate)| {
+            let utility = forward.raw * TARGET_SCALE;
+            if candidate.child.side_to_move == record.root.side_to_move {
+                utility
+            } else {
+                -utility
+            }
+        })
         .collect::<Vec<_>>();
     let teacher_best = record
         .candidates
@@ -2261,17 +2299,24 @@ fn evaluate_record(
     record: &SearchTeacherRecord,
     options: &TrainOptions,
 ) -> Metrics {
-    let root_score = weights.forward(&record.root).raw * TARGET_SCALE;
-    let model_p = sigmoid(root_score / options.kappa_cp);
-    let search_p = sigmoid(record.root_search_score_cp / options.kappa_cp);
-    let target = record
-        .result
+    let (value_position, target_score_cp, target_result) = value_target_for_record(record);
+    let model_score = weights.forward(value_position).raw * TARGET_SCALE;
+    let model_p = sigmoid(model_score / options.kappa_cp);
+    let search_p = sigmoid(target_score_cp / options.kappa_cp);
+    let target = target_result
         .map(|result| options.search_mix * search_p + (1.0 - options.search_mix) * result)
         .unwrap_or(search_p);
     let utilities = record
         .candidates
         .iter()
-        .map(|candidate| -weights.forward(&candidate.child).raw * TARGET_SCALE)
+        .map(|candidate| {
+            let utility = weights.forward(&candidate.child).raw * TARGET_SCALE;
+            if candidate.child.side_to_move == record.root.side_to_move {
+                utility
+            } else {
+                -utility
+            }
+        })
         .collect::<Vec<_>>();
     let teacher_best = record
         .candidates
@@ -2290,7 +2335,7 @@ fn evaluate_record(
         records: 1,
         known_results: usize::from(record.result.is_some()),
         value_loss: ((model_p - target).powi(2) * record.sample_weight) as f64,
-        search_abs_error: (root_score - record.root_search_score_cp).abs() as f64,
+        search_abs_error: (model_score - target_score_cp).abs() as f64,
         top1_matches: usize::from(teacher_best == model_best),
         regret_sum: (record.candidates[teacher_best].score_cp
             - record.candidates[model_best].score_cp) as f64,
@@ -2305,7 +2350,7 @@ fn evaluate_record(
     let phase = (record.phase as usize).min(2);
     metrics.phase_records[phase] = 1;
     metrics.phase_brier[phase] = metrics.value_loss;
-    if let Some(result) = record.result {
+    if let Some(result) = target_result {
         let model_probability = model_p.clamp(1e-7, 1.0 - 1e-7);
         let teacher_probability = search_p.clamp(1e-7, 1.0 - 1e-7);
         let sample_weight = record.sample_weight as f64;
@@ -2377,7 +2422,14 @@ fn evaluate_record(
         let selector_utilities = record
             .candidates
             .iter()
-            .map(|candidate| -game_rank_selector.forward(&candidate.child).raw * TARGET_SCALE)
+            .map(|candidate| {
+                let utility = game_rank_selector.forward(&candidate.child).raw * TARGET_SCALE;
+                if candidate.child.side_to_move == record.root.side_to_move {
+                    utility
+                } else {
+                    -utility
+                }
+            })
             .collect::<Vec<_>>();
         if let Some(pair) = select_game_rank_pair(
             record,
@@ -3241,6 +3293,33 @@ mod tests {
             (analytic - numerical).abs() < 1e-4,
             "analytic={analytic} numerical={numerical}"
         );
+    }
+
+    #[test]
+    fn preserved_qsearch_leaf_target_flips_score_and_result_by_side() {
+        let position = Position::default();
+        let root = PackedHalfKpPosition::from_position(&position).expect("start position");
+        let mut leaf = root.clone();
+        leaf.side_to_move = Color::White;
+        let record = SearchTeacherRecord {
+            position_hash: PositionHasher::calculate_hash(&position),
+            ply: 0,
+            phase: 0,
+            teacher_depth: 4,
+            result: Some(1.0),
+            root_search_score_cp: 120.0,
+            sample_weight: 1.0,
+            root,
+            candidates: vec![SearchTeacherCandidate {
+                flags: CANDIDATE_SEARCH_BEST | CANDIDATE_QSEARCH_LEAF,
+                score_cp: 120.0,
+                child: leaf,
+            }],
+        };
+        let (target_position, target_score, target_result) = value_target_for_record(&record);
+        assert_eq!(Color::White, target_position.side_to_move);
+        assert_eq!(-120.0, target_score);
+        assert_eq!(Some(0.0), target_result);
     }
 
     fn game_vs_search_fixture() -> (Weights, SearchTeacherRecord, TrainOptions) {

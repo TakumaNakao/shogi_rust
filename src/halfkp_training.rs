@@ -24,8 +24,11 @@ pub const CANDIDATE_RANDOM: u8 = 4;
 pub const CANDIDATE_TACTICAL: u8 = 8;
 /// Candidate child was obtained from the exact training qsearch leaf API.
 pub const CANDIDATE_QSEARCH_LEAF: u8 = 16;
-pub const SEARCH_TEACHER_SEMANTICS_VERSION: u32 = 3;
-pub const SEARCH_TEACHER_SEMANTICS_ID: &str = "jsa-complete-check-interval-v1";
+/// Version 4 keeps the completed alpha-beta target when the input is replaced
+/// by a qsearch PV leaf.  Older HKST files used the qsearch score itself and
+/// are intentionally rejected by the training tools.
+pub const SEARCH_TEACHER_SEMANTICS_VERSION: u32 = 4;
+pub const SEARCH_TEACHER_SEMANTICS_ID: &str = "deep-search-target-v1";
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct SearchTeacherManifest {

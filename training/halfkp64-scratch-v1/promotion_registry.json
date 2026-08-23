@@ -65,33 +65,12 @@
       "decision": "accepted_internal_scratch_parent",
       "accepted_at": "2026-08-17T10:30:00+09:00",
       "decision_commit": "ea947f8"
-    },
-    {
-      "model_sha256": "489cc659adcb144e050ca2f46b7cd2d6e18c02956dda7b6fc8e7bbf2e7572005",
-      "generation": 4,
-      "gate_report_sha256": "d9af5bdc3e50764ba2b15dc6b4765fc72e94e7810edbdb4a4b1627cb9b8c98c4",
-      "decision": "accepted_promotion_match",
-      "accepted_at": "2026-08-22T00:35:00+09:00",
-      "decision_commit": "4c4f2c8"
-    },
-    {
-      "model_sha256": "976a6626e4bbc3beaeb1172a05d87ea422ececfd8de729f4489880d0dd1abd82",
-      "generation": 5,
-      "gate_report_sha256": "0411d6bb5fe5d5289c2f6f84d4024845621c6288d50d1dc70002976abe4cff2c",
-      "decision": "accepted_promotion_match",
-      "accepted_at": "2026-08-22T05:50:00+09:00",
-      "decision_commit": "0f84b1e"
-    },
-    {
-      "model_sha256": "07e852ef6b74a5bbac962e74434be9fb6c240eb2606b6063c117042acfe3d722",
-      "generation": 6,
-      "gate_report_sha256": "b58a8cc14de8eae43d2eba5bcd8899a53e415f12d792e22ba080b936d1b72a0b",
-      "decision": "accepted_promotion_match",
-      "accepted_at": "2026-08-22T22:03:29+09:00",
-      "decision_commit": "402385f"
     }
   ],
   "rejected": [
+    {"model_sha256": "489cc659adcb144e050ca2f46b7cd2d6e18c02956dda7b6fc8e7bbf2e7572005", "generation": 4, "reason": "2026-08-24-strict-paired-gate-invalidated-noninferiority-only"},
+    {"model_sha256": "976a6626e4bbc3beaeb1172a05d87ea422ececfd8de729f4489880d0dd1abd82", "generation": 5, "reason": "2026-08-24-strict-paired-gate-invalidated-noninferiority-only"},
+    {"model_sha256": "07e852ef6b74a5bbac962e74434be9fb6c240eb2606b6063c117042acfe3d722", "generation": 6, "reason": "2026-08-24-strict-paired-gate-invalidated-v250-screen-failed"},
     {"model_sha256": "6b97c93d46f8b607996f6dc4a607184ae15a55ba121eb60f385a3b892fb1494c", "reason": "exact_v1_diagnostic"},
     {"model_sha256": "0f32c7965d83152811e398fe707d310b4477f3468463b4ea37b301bd8a304c0d", "reason": "exact_v1_diagnostic"},
     {"model_sha256": "6b5c81afce62c37c23d445bb7d1c7fb8b4c3a501d29add65aacde1ed3edc8c37", "reason": "exact_v1_diagnostic"},

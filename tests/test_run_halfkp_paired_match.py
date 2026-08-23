@@ -177,6 +177,9 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(report["counts"]["candidate_black_wins"], 1)
         self.assertEqual(report["counts"]["candidate_white_wins"], 1)
         self.assertTrue(report["passes_safety"])
+        self.assertTrue(report["passes_superiority_point"])
+        self.assertFalse(report["passes_paired_superiority"])
+        self.assertFalse(report["promotion_gate_passed"])
         self.assertEqual(
             report["paired_score_ci95_lower"],
             report["opening_pair_bootstrap"]["ci95_lower"],

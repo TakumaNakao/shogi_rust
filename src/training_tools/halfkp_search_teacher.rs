@@ -284,7 +284,14 @@ impl TeacherSession {
                         return ScoreMove::Failed;
                     };
                     qnodes = self.ai.quiescence_nodes_searched();
-                    (sanitize_score(trace.score), packed)
+                    // The leaf is only a distributional replacement for the
+                    // network input.  Preserve the completed alpha-beta root
+                    // target; using trace.score here trains the network to
+                    // reproduce its own qsearch output.
+                    (
+                        sanitize_score(root_result.score.expect("checked above")),
+                        packed,
+                    )
                 } else {
                     let mut child = position.clone();
                     child.do_move(best_move);
@@ -411,7 +418,7 @@ pub fn run() -> Result<()> {
             "value_only": args.value_only,
             "qsearch_leaf": args.qsearch_leaf,
             "qsearch_leaf_semantics": if args.qsearch_leaf {
-                Some("forced_root_move_qsearch_leaf_v1")
+                Some("deep_search_target_on_qsearch_leaf_v1")
             } else {
                 None
             },
