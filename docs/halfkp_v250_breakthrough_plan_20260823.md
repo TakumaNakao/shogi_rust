@@ -219,12 +219,13 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | generation 4～6 | 完了・実験扱い | strict paired Gate不合格としてregistryから除外 |
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
-| Phase 2 25k/100k証明 | 100k教師生成中 | 100k候補が転移条件を満たす |
-| Phase 3 500k/2M長期学習 | 条件付き | 厳格な親Gate合格 |
+| Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
+| Phase 3 500k/2M長期学習 | 500k拡張中 | 同一設定の500k候補が厳格な親Gateに合格 |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 最終候補のみ | screenと独立確認の両方を通過 |
 
-25k smokeは意味論・損失の技術確認に限定し、棋力判定には使わない。現在はgeneration 3を固定親として
-100k rootのteacherを生成中である。100k候補がstrict Gateを通らない場合は、同じ教師を無制限に増量せず、
-原因を記録してPhase 1の目的関数を再監査する。
+25k smokeは意味論・損失の技術確認に限定した。generation 3を固定親にした100k root候補はvalidation
+Brierを改善し、固定20,000 nodes・500局で50.8%を得たが、paired CI下限が46.6%でstrict Gateを通らなかった。
+計画の例外条件（点推定50%以上、validation改善、CI不確定）に該当するため、同一設定で500k root・最大16 epochを
+一度だけ実施する。500kでもGate不通過なら、教師量だけを増やさずPhase 1目的関数を再監査する。
