@@ -220,7 +220,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
-| Phase 3 500k/2M長期学習 | 5k budget比較・2M raw構築中 | 1,000局: 56.2%、paired CI 54.03～58.38%、安全違反0。5k比較後に2M再ラベル |
+| Phase 3 500k/2M長期学習 | 5k budget比較完了・2M raw構築中 | 1,000局: 56.2%、paired CI 54.03～58.38%、安全違反0。100k nodesで2M再ラベル |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 最終候補のみ | screenと独立確認の両方を通過 |
@@ -256,3 +256,12 @@ train logでも`game_vs_search_eligible=0`、`game_rank_eligible=0`を確認し�
 次は2M raw rootを新規に作り、frozen 5k subsetで50k/200k nodes教師のscore・best move安定性を比較する。
 2025年以前を含む2018～2025 WDoor（2026 reserveは未使用）から、accepted generation 4 scratchモデルをteacherとして使う。
 KPP由来重みは初期値・教師・評価のいずれにも使用しない。
+
+### 探索budget pilot結果（2026-08-25）
+
+同一5,000-root pilot（実出力は検索完了件数が異なる）を50k/100k/200k nodesで比較した。
+50kは4,894件、100kは4,934件、200kは4,953件を生成した。qsearch leaf network-input一致率は50k対100kで76.8%、
+100k対200kで82.8%、root scoreのPearson相関はそれぞれ0.966、0.966だった。100k対200kのscore絶対差は平均48.2cp、
+中央値0cpで、50k対200kの平均100.5cpより安定していた。
+従って2Mの最小十分budgetは100k nodes/rootとし、200kへの倍増は行わない。教師生成は1 root/1 best qsearch leaf、
+search/result=0.8/0.2、最大16 epochを固定する。
