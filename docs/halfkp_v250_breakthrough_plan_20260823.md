@@ -220,7 +220,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
-| Phase 3 500k/2M長期学習 | 500k完了・1,000局延長待ち | 500k: 52.6%、paired CI 48.3～56.9%。Gate規定に従い同一条件で最大1,000局へ延長 |
+| Phase 3 500k/2M長期学習 | 500k完了・1,000局延長実行中 | 500k: 52.6%、paired CI 48.3～56.9%。同一条件・未使用reserveで最大1,000局へ延長 |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 最終候補のみ | screenと独立確認の両方を通過 |
