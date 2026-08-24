@@ -220,7 +220,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
-| Phase 3 500k/2M長期学習 | 1,000局Gate通過・2M準備中 | 1,000局: 56.2%、paired CI 54.03～58.38%、安全違反0。5k budget比較後に2M再ラベル |
+| Phase 3 500k/2M長期学習 | 5k budget比較・2M raw構築中 | 1,000局: 56.2%、paired CI 54.03～58.38%、安全違反0。5k比較後に2M再ラベル |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 最終候補のみ | screenと独立確認の両方を通過 |
@@ -254,3 +254,5 @@ train logでも`game_vs_search_eligible=0`、`game_rank_eligible=0`を確認し�
 候補は56.2%、paired bootstrap 95% CI [54.025%, 58.375%]、探索失敗・非合法手・non-finite scoreは0件で、
 `paired_superiority`を含む厳格Promotion Gateを通過した。これは500k候補をaccepted scratch親として扱う根拠になる。
 次は2M raw rootを新規に作り、frozen 5k subsetで50k/200k nodes教師のscore・best move安定性を比較する。
+2025年以前を含む2018～2025 WDoor（2026 reserveは未使用）から、accepted generation 4 scratchモデルをteacherとして使う。
+KPP由来重みは初期値・教師・評価のいずれにも使用しない。
