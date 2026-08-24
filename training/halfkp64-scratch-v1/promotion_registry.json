@@ -65,6 +65,14 @@
       "decision": "accepted_internal_scratch_parent",
       "accepted_at": "2026-08-17T10:30:00+09:00",
       "decision_commit": "ea947f8"
+    },
+    {
+      "model_sha256": "a26bb5a8a602053471fac99bb8c46d5a0e6a5fa2bfce79964f9ecccb616b123f",
+      "generation": 4,
+      "gate_report_sha256": "0db4c7c860ea342d235617bbffb51ba17f9f975f6c2b8d64c156657f0aee5ce6",
+      "decision": "accepted_promotion_match",
+      "accepted_at": "2026-08-25T07:46:05+09:00",
+      "decision_commit": "4a01be3"
     }
   ],
   "rejected": [
