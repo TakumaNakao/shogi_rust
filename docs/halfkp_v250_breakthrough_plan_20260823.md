@@ -220,7 +220,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
-| Phase 3 500k/2M長期学習 | 500k完了・1,000局延長実行中 | 500k: 52.6%、paired CI 48.3～56.9%。同一条件・未使用reserveで最大1,000局へ延長 |
+| Phase 3 500k/2M長期学習 | 1,000局Gate通過・2M準備中 | 1,000局: 56.2%、paired CI 54.03～58.38%、安全違反0。5k budget比較後に2M再ラベル |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 最終候補のみ | screenと独立確認の両方を通過 |
@@ -247,3 +247,10 @@ validのleaf手番はrootと同一16,254件、反転31,693件で、可変PVの�
 従って`halfkp_search_objective_eval`の「no eligible game-vs-search records」は異常ではなく、このPhaseの設計どおりである。
 train logでも`game_vs_search_eligible=0`、`game_rank_eligible=0`を確認した。目的関数の未適用を不具合と誤認してrank教師へ
 切り替えず、まず統計的Gateを確定させる。
+
+### 1,000局延長結果（2026-08-25）
+
+未使用の`final_openings_seed20260730_2000.jsonl`から1,000 opening-pair（2,000局）を同じ20,000 nodes/手条件で実行した。
+候補は56.2%、paired bootstrap 95% CI [54.025%, 58.375%]、探索失敗・非合法手・non-finite scoreは0件で、
+`paired_superiority`を含む厳格Promotion Gateを通過した。これは500k候補をaccepted scratch親として扱う根拠になる。
+次は2M raw rootを新規に作り、frozen 5k subsetで50k/200k nodes教師のscore・best move安定性を比較する。
