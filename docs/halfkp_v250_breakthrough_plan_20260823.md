@@ -220,7 +220,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
-| Phase 3 500k/2M長期学習 | 500k拡張中 | 同一設定の500k候補が厳格な親Gateに合格 |
+| Phase 3 500k/2M長期学習 | 500k完了・1,000局延長待ち | 500k: 52.6%、paired CI 48.3～56.9%。Gate規定に従い同一条件で最大1,000局へ延長 |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 最終候補のみ | screenと独立確認の両方を通過 |
@@ -231,3 +231,19 @@ Brierを改善し、固定20,000 nodes・500局で50.8%を得たが、paired CI�
 一度だけ実施する。500kでもGate不通過なら、教師量だけを増やさずPhase 1目的関数を再監査する。
 長時間処理の後段は`scripts/run_halfkp_preserved_target_phase3.sh`で再開可能にし、教師完了後のvalid生成・重複除外・
 学習・Gateを既存artifactを上書きせず自動実行する。
+
+### 500k監査結果（2026-08-24）
+
+500k教師は492,934件（検索失敗2,802、resource limit 3,555）を生成し、train/valid入力重複除外後のvalidは47,947件だった。
+教師manifestはsemantics v4 (`deep-search-target-v1`)、`qsearch_leaf=true`、`treestrap_lite=false`、rootの完了探索値保持を示している。
+validのleaf手番はrootと同一16,254件、反転31,693件で、可変PVの符号反転経路が実データで使われている。
+
+16 epochのvalidation Brierは0.01110860（25k: 0.01188181、100k: 0.01145858）まで改善したが、固定20,000 nodes・250 opening-pair
+(500局) は52.6%、paired bootstrap 95% CI [48.3%, 56.9%]で、`paired_superiority`下限>50%を満たさず不採用となった。
+安全違反は0件で、点推定52.5%以上かつCIのみ不確定というPhase 0の延長条件には該当するため、2Mへの増量はせず、未使用の
+`final_openings_seed20260730_2000.jsonl`先頭1,000 pairで同条件の延長評価を行う。
+
+目的関数監査では、`value-only`教師が各rootに最善qsearch leaf 1件だけを持つため、game-vs-searchの適格pairは0件となった。
+従って`halfkp_search_objective_eval`の「no eligible game-vs-search records」は異常ではなく、このPhaseの設計どおりである。
+train logでも`game_vs_search_eligible=0`、`game_rank_eligible=0`を確認した。目的関数の未適用を不具合と誤認してrank教師へ
+切り替えず、まず統計的Gateを確定させる。
