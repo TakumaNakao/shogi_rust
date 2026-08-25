@@ -20,10 +20,47 @@ REGISTRY="$ROOT_DIR/training/halfkp64-scratch-v1/promotion_registry.json"
 GATE_REPORT="$ROOT_DIR/runs/halfkp64-scratch-v1/phase3-500k-preserved-target-qleaf-20260824/match-20k-1000g-finalreserve-20260824/report.json"
 MODEL="$RUN_DIR/model-2m-100k.bin"
 VALID_FILTERED="$RUN_DIR/valid-2m-100k.filtered.hkst"
+MIN_RAW_RECORDS="${MIN_RAW_RECORDS:-1900000}"
 
 [[ -s "$PARENT" && -s "$PARENT_MANIFEST" && -s "$REGISTRY" && -s "$GATE_REPORT" ]] || {
   echo "accepted scratch parent artifacts are missing" >&2
   exit 2
+}
+
+validate_raw_manifest() {
+  python3 - "$RAW_DIR/manifest.json" "$MIN_RAW_RECORDS" <<'PY'
+import json
+import math
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+minimum_records = int(sys.argv[2])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+stats = manifest.get("stats", {})
+written = int(stats.get("records_written", 0))
+if written < minimum_records:
+    raise SystemExit(
+        f"raw dataset has only {written} records; required at least {minimum_records}"
+    )
+minimum_percent = float(manifest.get("target_minimum_percent", 95)) / 100.0
+for phase, target_key in (
+    ("opening", "target_opening_records"),
+    ("middle", "target_middle_records"),
+    ("late", "target_late_records"),
+):
+    target = int(manifest.get(target_key, 0))
+    actual = int(stats.get("phase", {}).get(phase, 0))
+    required = math.ceil(target * minimum_percent)
+    if actual < required:
+        raise SystemExit(
+            f"raw {phase} phase has {actual} records; required at least {required}"
+        )
+for kind in ("train", "valid", "test"):
+    output = manifest_path.parent / f"{kind}.jsonl"
+    if not output.is_file() or output.stat().st_size == 0:
+        raise SystemExit(f"raw dataset is missing non-empty {output}")
+PY
 }
 
 wait_for_raw() {
@@ -38,6 +75,7 @@ wait_for_raw() {
     fi
     sleep 60
   done
+  validate_raw_manifest
 }
 
 make_shards() {
