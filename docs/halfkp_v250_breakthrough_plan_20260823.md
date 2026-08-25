@@ -220,7 +220,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
-| Phase 3 500k/2M長期学習 | 1.18M候補の未使用1,000局Gate実行中 | Gate不合格時だけrate 3,000へ広げ、2M以上を再構築して再ラベル |
+| Phase 3 500k/2M長期学習 | 1.18M Gate合格・2M拡張を実行中 | 2M以上をrate 3,000以上で再構築し、同条件で再学習・比較 |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 最終候補のみ | screenと独立確認の両方を通過 |
@@ -276,3 +276,10 @@ raw builderはrate 4,000条件ではopening/middle目標の95%に届かず終了
 `run_halfkp_phase3_2m_preserved_target.sh`をfail-closed化した。Gateが不合格の場合は
 `scripts/watch_phase3_gate_and_expand.sh`が自動的にrate 3,000の2018～2025 WDoorを再構築し、2M以上を満たすまで停止したうえで
 同じ100k nodes教師・16 epoch学習を再開する。Gate合格時はこの増量を行わない。
+
+### 2M拡張の実行開始（2026-08-26）
+
+1.18M候補はGateを56.45%（paired 95% CI 54.28～58.63%、安全違反0件）で通過したが、データ量の効果を
+確認するため、rate 3,000以上の2018～2025 WDoorから2M局面を別runへ構築している。2M候補はgen4親から、
+同じteacher semantics v4・100k nodes/root・同じ16 epoch条件で再学習し、1.18M候補と同一Gateおよび
+新規holdoutで比較する。既存1.18M成果物は上書きしない。
