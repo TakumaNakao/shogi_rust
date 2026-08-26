@@ -220,7 +220,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
-| Phase 3 500k/2M長期学習 | 1.18M Gate合格・2M拡張を実行中 | 2M以上をrate 3,000以上で再構築し、同条件で再学習・比較 |
+| Phase 3 500k/2M長期学習 | 2Mモデル完成・1.18Mとの直接Gate実行中 | 2Mが1.18Mを上回るかを同一openingで判定 |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 最終候補のみ | screenと独立確認の両方を通過 |
@@ -283,3 +283,9 @@ raw builderはrate 4,000条件ではopening/middle目標の95%に届かず終了
 確認するため、rate 3,000以上の2018～2025 WDoorから2M局面を別runへ構築している。2M候補はgen4親から、
 同じteacher semantics v4・100k nodes/root・同じ16 epoch条件で再学習し、1.18M候補と同一Gateおよび
 新規holdoutで比較する。既存1.18M成果物は上書きしない。
+
+### 2M対1.18M直接Gate開始（2026-08-27）
+
+2Mモデル（raw 2,000,000局面、train 1,814,343局面）は16 epoch学習を完了した。1.18Mモデルを親にした
+同一の固定20,000 nodes/手・1,000 opening-pairで直接比較を開始している。候補優位の点推定52.5%以上、
+paired bootstrap 95%下限>50%、安全違反0を要求し、同一データ量実験のため既存1.18M Gateと同じopeningを使う。
