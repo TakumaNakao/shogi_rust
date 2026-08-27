@@ -223,7 +223,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 3 500k/2M長期学習 | 2Mモデル完成・1.18Mとの直接Gate実行中 | 2Mが1.18Mを上回るかを同一openingで判定 |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
-| v2.5.0再評価・release | 2M候補のtaya36・5秒50局を実行中 | screenと独立確認の両方を通過 |
+| v2.5.0再評価・release | 1.18M基準のtaya36・5秒50局を実行中 | 1.18M基準を確定し、次の修正版比較へ進む |
 
 25k smokeは意味論・損失の技術確認に限定した。generation 3を固定親にした100k root候補はvalidation
 Brierを改善し、固定20,000 nodes・500局で50.8%を得たが、paired CI下限が46.6%でstrict Gateを通らなかった。
@@ -295,3 +295,8 @@ paired bootstrap 95%下限>50%、安全違反0を要求し、同一データ量�
 2M候補をv2.5.0/KPP由来重みと、学習系統外のevaluation-only authorizationで比較している。taya36から
 seed固定・SHA選択した25 opening-pair（先後交換50局）、両者5秒/手、同一HalfKP探索バイナリを使用する。
 この対局結果は学習・checkpoint選択へ戻さず、v2.5.0を上回る主張の診断およびrelease判定だけに使う。
+
+### 1.18M基準のv2.5.0比較開始（2026-08-28）
+
+2M候補が1.18M候補を上回らなかったため、同じtaya36・seed・5秒/手・25 opening-pair条件で1.18M候補を
+v2.5.0と比較している。2Mとの差がデータ量によるものか、両候補に共通する教師・表現の限界かを切り分ける。
