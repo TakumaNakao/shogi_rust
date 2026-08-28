@@ -220,7 +220,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
-| Phase 3 500k/2M長期学習 | 2Mの固定node差なし・同一5秒条件を実行中 | 2Mが1.18Mを実時間でも上回るかを判定 |
+| Phase 3 500k/2M長期学習 | 同一5秒比較と高rate修正版2M構築を実行中 | 低rate希釈を避けた2Mが1.18Mを上回るかを判定 |
 | Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 1.18Mは28%（50局）で不合格 | 修正版候補のv2.5.0差を再評価 |
@@ -314,3 +314,10 @@ v2.5.0と比較している。2Mとの差がデータ量によるものか、両
 固定20,000 nodesでの2M対1.18Mは50.125%（paired CI 48.00～52.275%）だった。v2.5.0比較は時間制御で
 2Mが38%、1.18Mが28%と条件が異なるため、結論を混同しないよう、同じtaya36・5秒/手・25 pairで2Mと
 1.18Mを直接比較している。この結果は修正版データ構成を決める最後の診断とする。
+
+### 高rate修正版2Mの構築開始（2026-08-29）
+
+rate 3,000拡張で分布が低下したため、rate 4,000以上を維持し、1局あたりの抽出上限だけを
+opening/middlegame/endgame = 10/20/20へ広げた2M局面を別runで構築している。目標phaseは
+250,000/900,000/850,000とし、1.18Mのphase比率に近づける。既存の2Mモデルとは別に、
+同じgen4親・teacher semantics v4・100k nodes/root・16 epochで再学習する。
