@@ -321,3 +321,11 @@ rate 3,000拡張で分布が低下したため、rate 4,000以上を維持し、
 opening/middlegame/endgame = 10/20/20へ広げた2M局面を別runで構築している。目標phaseは
 250,000/900,000/850,000とし、1.18Mのphase比率に近づける。既存の2Mモデルとは別に、
 同じgen4親・teacher semantics v4・100k nodes/root・16 epochで再学習する。
+
+### 高rate修正版2Mの対局Gate開始（2026-08-29）
+
+高rate修正版モデル（`phase3-2m-highrate-20260829/model-2m-100k.bin`）の学習完了後、
+既存1.18Mモデル（`phase3-2m-preserved-target-20260825/model-2m-100k.bin`）を親として、
+同一の未使用1,000 opening-pair・20,000 nodes/手・先後入替で比較を開始した。
+出力は`phase3-2m-highrate-20260829/match-20k-1000g-vs-1p18m-20260829`に保存し、
+候補勝率52.5%以上、paired bootstrap 95%下限>50%、安全違反0件を昇格条件とする。
