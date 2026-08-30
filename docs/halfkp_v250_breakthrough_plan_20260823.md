@@ -221,8 +221,9 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
 | Phase 3 500k/2M長期学習 | 完了・高rate修正版2M Gate不合格、順位教師pilot停止 | 低rate希釈を避けた2Mの優位性を判定（未達） |
-| Phase 4 世代型自己対局 | 保留 | Phase 3 accepted親から1世代を完走・昇格 |
-| Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
+| Phase 4 PV再生成MMTO pilot | 実行中（2026-08-30） | gen3 scratch親・rate-4000 WDoor・10k root/5k valid・1 outerの動的qsearch-PV検証 |
+| Phase 5 世代型自己対局 | 保留 | PV/MMTO pilotまたはPhase 3 accepted親から1世代を完走・昇格 |
+| Phase 6 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 1.18Mは28%（50局）で不合格 | 修正版候補のv2.5.0差を再評価 |
 
 25k smokeは意味論・損失の技術確認に限定した。generation 3を固定親にした100k root候補はvalidation
@@ -362,3 +363,19 @@ candidate 8.61007971へ悪化した。accuracyは19.30%から20.87%へ上がっ�
 順位教師が適用されること自体は確認できたが、この固定条件で棋力改善へつながる証拠は得られなかった。
 学習率・順位weight・epochの後付け探索や親対局は行わず、この経路は停止する。次は同じvalue-only/TreeStrap-liteの
 微調整ではなく、PV末端を更新ごとに再生成するMMTOまたはscratch-only自己対局を別計画として再評価する。
+
+### PV末端再生成MMTO pilot開始（2026-08-30）
+
+順位教師pilotの停止を受け、既存の`halfkp_mmto_train`を「各outerで親モデルを検索スナップショットとして固定し、
+各棋譜局面の全合法手をqsearch PV末端まで再評価してから更新する」MMTO経路として再確認する。学習親はstrict scratch
+generation 3（`a40af8e3...`）に固定し、v2.5.0/KPP由来artifactはinit・教師・選択に使わない。
+
+- 入力: rate 4,000以上の2M WDoor raw manifest（train/valid game-disjoint）
+- pilot: train 10,000 root、valid 5,000 root、1 outer、feature LR `1e-4`、output比`0.1`
+- 安全: qsearch block 512、8 jobs、1,000 rootごとのatomic checkpoint、delta上限`0.02/0.004`、既存run上書き禁止
+- run: `runs/halfkp64-scratch-v1/phase4-mmto-pv-pilot-20260830-b/`
+- 起動スクリプト: [`scripts/run_halfkp_mmto_pv_pilot.sh`](../scripts/run_halfkp_mmto_pv_pilot.sh)
+
+このpilotは実装・目的関数・PV再生成の転移確認であり、完了後にoffline loss、fresh-valid、parameter healthを監査する。
+親対局はpilotが異常なく完了した場合だけ、未使用opening 250 pair（500局）を一度実施する。点推定・paired bootstrap
+ともに改善が確認できない場合は大規模MMTOや単純な学習率探索へ進まず、scratch-only自己対局へ計画を移す。
