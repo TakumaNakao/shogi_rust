@@ -220,7 +220,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
-| Phase 3 500k/2M長期学習 | 完了・高rate修正版2M Gate不合格 | 低rate希釈を避けた2Mの優位性を判定（未達） |
+| Phase 3 500k/2M長期学習 | 完了・高rate修正版2M Gate不合格、順位教師pilot停止 | 低rate希釈を避けた2Mの優位性を判定（未達） |
 | Phase 4 世代型自己対局 | 保留 | Phase 3 accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 1.18Mは28%（50局）で不合格 | 修正版候補のv2.5.0差を再評価 |
@@ -349,3 +349,16 @@ Phase 4自己対局の親にも使わない。
 これは実装クラッシュではなく現在の教師形式どおりの挙動だが、追加局面量だけでは補えない情報制約である。
 従って、次の候補ではデータ量を増やす前に、棋譜結果の価値回帰を維持しつつ、合法棋譜手と探索best手を比較する順位教師を
 小規模な固定データで導入し、目的関数が実際に適用されることを検証する。
+
+### ゲーム順位教師パイロット結果（2026-08-30）
+
+TreeStrap-lite形式で再生成した固定パイロットはtrain 22,152件、filtered valid 4,300件となり、
+validのgame-rank eligibleは2,233件（52%）だった。従って順位教師は実際に適用されることを確認した。
+ただしvalue回帰（weight 1）とgame-rank（weight 0.1）を併用した2 epochでは、valid Brierが
+0.00946879（初期）から0.00970111、0.01010565へ悪化し、game-rank目的関数もbaseline 8.50718704から
+candidate 8.61007971へ悪化した。accuracyは19.30%から20.87%へ上がったが、平均marginは3.23cp悪化しており、
+`objective_improved=false`である。
+
+順位教師が適用されること自体は確認できたが、この固定条件で棋力改善へつながる証拠は得られなかった。
+学習率・順位weight・epochの後付け探索や親対局は行わず、この経路は停止する。次は同じvalue-only/TreeStrap-liteの
+微調整ではなく、PV末端を更新ごとに再生成するMMTOまたはscratch-only自己対局を別計画として再評価する。
