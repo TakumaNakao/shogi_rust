@@ -1,13 +1,14 @@
 # HalfKP-64 重みゼロスタート学習方針
 
-- Status: **履歴・設計資料。現在の実行正本は2026-08-23再計画**
+- Status: **履歴・設計資料。現在の実行正本は2026-08-30再計画**
 - 作成日: 2026-07-21
 - 対象: v2.6.0以降のHalfKP-64評価関数
 - 前提計算機: AMD Ryzen 7 PRO 4750U、8 core / 16 thread、RAM 14 GiB、GPUなし
 
 関連文書:
 
-- [`halfkp_v250_breakthrough_plan_20260823.md`](halfkp_v250_breakthrough_plan_20260823.md)（現在の実行正本）
+- [`halfkp_training_strategy_v3_20260830.md`](halfkp_training_strategy_v3_20260830.md)（現在の実行正本）
+- [`halfkp_v250_breakthrough_plan_20260823.md`](halfkp_v250_breakthrough_plan_20260823.md)（履歴計画）
 - [`halfkp_mmto_post_step4_strategy_20260730.md`](halfkp_mmto_post_step4_strategy_20260730.md)
 - [`halfkp_prior_art_recovery_plan_20260729.md`](halfkp_prior_art_recovery_plan_20260729.md)
 - [`halfkp_performance_training_design.md`](halfkp_performance_training_design.md)
@@ -3168,3 +3169,10 @@ fresh-valid lossは`3e-5` outer 2より4.36%低かった。旧Gateに従って�
 その後のqsearch-leaf・TreeStrap系列を監査した結果、leafへ深い探索値を学習していないこと、candidateと終局結果の
 weightが0だったこと、generation 4～6の昇格判定が文書より緩かったことを確認した。最新の結果解釈と作業順は
 [`halfkp_v250_breakthrough_plan_20260823.md`](halfkp_v250_breakthrough_plan_20260823.md)を正本とする。
+
+### 2026-08-30 更新
+
+preserved-target 500kと1.18Mは厳格Gateを通過した一方、通常2M、高rate 2M、game-rank、10k PV-MMTO候補は
+親を上回らなかった。accepted headをgeneration 5へ訂正し、10k MMTOを過小doseのsemantic pilotとして再解釈した。
+十分量MMTOを一度だけ行い、その後に世代型scratch-only自己対局へ進む現行手順は
+[`halfkp_training_strategy_v3_20260830.md`](halfkp_training_strategy_v3_20260830.md)を正本とする。

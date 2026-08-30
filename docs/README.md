@@ -33,7 +33,8 @@
 
 ## HalfKP・学習
 
-- [`halfkp_next_training_plan_post_wdl_ab_20260818.md`](halfkp_next_training_plan_post_wdl_ab_20260818.md): WDL A/B後の正本計画、dense MMTO、deep-search bootstrap、進捗表
+- [`halfkp_training_strategy_v3_20260830.md`](halfkp_training_strategy_v3_20260830.md): 現行正本。accepted gen5からの十分量MMTO、世代型自己対局、Gate、進捗表
+- [`halfkp_next_training_plan_post_wdl_ab_20260818.md`](halfkp_next_training_plan_post_wdl_ab_20260818.md): WDL A/B後の履歴計画、dense MMTO、deep-search bootstrap、進捗表
 - [`halfkp_post_wdl_dense_execution_runbook_20260818.md`](halfkp_post_wdl_dense_execution_runbook_20260818.md): 上記計画の実装順、CLI、実験command、Gate、checkpoint、無人再開手順
 - [`halfkp_from_scratch_training_plan.md`](halfkp_from_scratch_training_plan.md): 現行重みを完全に隔離したHalfKP-64ゼロスタート学習計画
 - [`halfkp_full_mmto_recovery_20260808.md`](halfkp_full_mmto_recovery_20260808.md): full MMTO停止後の`1e-4`再実行計画、証拠Gate、候補選択方針

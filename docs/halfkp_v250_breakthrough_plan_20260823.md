@@ -2,10 +2,11 @@
 
 - 制定日: 2026-08-23
 - 対象lineage: `halfkp64-scratch-v1`
-- 学習へ戻す基準モデル: generation 3、SHA-256 `a40af8e3ef913dc78e8272d3e6170d7a801453fa7dadd9b954bb7c945cbb431b`
+- 当時の再開基準モデル: generation 3、SHA-256 `a40af8e3ef913dc78e8272d3e6170d7a801453fa7dadd9b954bb7c945cbb431b`
 - 目的: v2.5.0/KPP由来重みを学習へ一切使わず、CPU-onlyでv2.5.0を明確に上回るHalfKP重みを作る
 - 旧計画: [`halfkp_v250_breakthrough_plan_20260820.md`](halfkp_v250_breakthrough_plan_20260820.md)
-- 状態: 方針更新完了。次の作業はPhase 0のlineage・Gate修復
+- 状態: 実験履歴として保存。現行方針は
+  [`halfkp_training_strategy_v3_20260830.md`](halfkp_training_strategy_v3_20260830.md)
 
 ## 1. 決定
 
@@ -221,8 +222,8 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
 | Phase 3 500k/2M長期学習 | 完了・高rate修正版2M Gate不合格、順位教師pilot停止 | 低rate希釈を避けた2Mの優位性を判定（未達） |
-| Phase 4 PV再生成MMTO pilot | 学習・fresh監査完了、親Gate実行中（2026-08-30） | gen3 scratch親・rate-4000 WDoor・10k root/5k valid・1 outerの動的qsearch-PV検証 |
-| Phase 5 世代型自己対局 | 保留 | PV/MMTO pilotまたはPhase 3 accepted親から1世代を完走・昇格 |
+| Phase 4 PV再生成MMTO pilot | 完了・候補不採用 | offline pair loss改善、安全正常、親500局49.8%、paired CI 45.6～54.0% |
+| Phase 5 世代型自己対局 | v3計画へ移管 | accepted gen5または次のaccepted親から1世代を完走・昇格 |
 | Phase 6 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 1.18Mは28%（50局）で不合格 | 修正版候補のv2.5.0差を再評価 |
 
@@ -386,3 +387,14 @@ fresh監査では候補のgame-equal pair lossが親より`-0.001997`（95% boot
 目的関数の転移を次の親対局で検証している。監査artifactは
 `runs/halfkp64-scratch-v1/phase4-mmto-pv-pilot-20260830-b/audit/`、対局は同runの
 `match-20k-250g-vs-gen3-20260830/`へ保存する。
+
+### PV末端再生成MMTO pilotの親Gate結果と方針移管（2026-08-30）
+
+親500局は候補246勝・親248勝・6分、score 49.8%、paired bootstrap 95% CI [45.6%, 54.0%]、安全違反0だった。
+候補`2170cccd...`はstrict Gate不合格であり、accepted lineageにもrelease候補にも入れない。
+
+ただし10k・1 outerは過去に成功したfull MMTOのroot/pair量の約0.4%であり、候補GateをMMTO方式全体の停止判定に
+流用したのは過小doseだった。さらにregistry上のaccepted headは、preserved-targetで二段のstrict Gateを通過した
+generation 5 `61c05fe2...`であり、最短の学習親をgeneration 3へ固定する根拠はなくなった。
+以後の主経路、十分量MMTOとgeneration型自己対局の作業条件は
+[`halfkp_training_strategy_v3_20260830.md`](halfkp_training_strategy_v3_20260830.md)へ移管する。
