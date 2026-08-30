@@ -220,8 +220,8 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 0 Gate・artifact修復 | 完了（`11b2a73`） | 回帰test、Gate修正、artifact上書き禁止 |
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
-| Phase 3 500k/2M長期学習 | 同一5秒比較と高rate修正版2M構築を実行中 | 低rate希釈を避けた2Mが1.18Mを上回るかを判定 |
-| Phase 4 世代型自己対局 | 条件付き | accepted親から1世代を完走・昇格 |
+| Phase 3 500k/2M長期学習 | 完了・高rate修正版2M Gate不合格 | 低rate希釈を避けた2Mの優位性を判定（未達） |
+| Phase 4 世代型自己対局 | 保留 | Phase 3 accepted親から1世代を完走・昇格 |
 | Phase 5 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 1.18Mは28%（50局）で不合格 | 修正版候補のv2.5.0差を再評価 |
 
@@ -329,3 +329,23 @@ opening/middlegame/endgame = 10/20/20へ広げた2M局面を別runで構築し�
 同一の未使用1,000 opening-pair・20,000 nodes/手・先後入替で比較を開始した。
 出力は`phase3-2m-highrate-20260829/match-20k-1000g-vs-1p18m-20260829`に保存し、
 候補勝率52.5%以上、paired bootstrap 95%下限>50%、安全違反0件を昇格条件とする。
+
+### 高rate修正版2Mの対局Gate結果（2026-08-30）
+
+1,000 opening-pair（2,000局）が完了した。高rate修正版2Mは979勝・984敗・37分、スコア49.875%、
+paired bootstrap 95% CI [47.775%, 51.975%]で、探索失敗・非合法手・non-finite scoreは0件だった。
+安全条件は満たしたが、勝率・信頼区間の昇格条件を満たさないため不採用とする。v2.5.0のリリース候補にもせず、
+Phase 4自己対局の親にも使わない。
+
+2Mへの増量と高rate化のいずれも1.18M親を明確に上回らなかったため、次は4M/10Mへの単純拡張や大規模な学習率探索を行わず、
+教師値の分布・目的関数の適用状況を1回だけ監査する。監査で欠陥が見つかった場合に限り、修正を反映した単一条件の再学習を行う。
+欠陥が確認できなければPhase 3を打ち切り、学習方式の変更を含む次計画を再評価する。
+
+### 高rate修正版2Mの目的関数監査（2026-08-30）
+
+高rate修正版のfiltered valid（92,481件）に対して`halfkp_search_objective_eval`を実行したが、
+`no eligible game-vs-search records`で終了した。学習ログでも全epochの`game_vs_search_eligible`と`game_rank_eligible`は0であり、
+現行のone-root/one-best-leaf・value-only教師には棋譜手対探索手の順位損失が一件も入っていないことを確認した。
+これは実装クラッシュではなく現在の教師形式どおりの挙動だが、追加局面量だけでは補えない情報制約である。
+従って、次の候補ではデータ量を増やす前に、棋譜結果の価値回帰を維持しつつ、合法棋譜手と探索best手を比較する順位教師を
+小規模な固定データで導入し、目的関数が実際に適用されることを検証する。
