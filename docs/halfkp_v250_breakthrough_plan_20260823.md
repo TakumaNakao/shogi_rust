@@ -221,7 +221,7 @@ NPSと合わせて再監査する。v2.5.0との差がある現時点では、ar
 | Phase 1 preserved-target leaf | 実装完了・25k smoke合格 | semantics v4、leaf符号反転、学習検証Brier改善 |
 | Phase 2 25k/100k証明 | 完了・Gate未通過 | 100k: 50.8%、paired CI 46.6～55.0%、安全違反0 |
 | Phase 3 500k/2M長期学習 | 完了・高rate修正版2M Gate不合格、順位教師pilot停止 | 低rate希釈を避けた2Mの優位性を判定（未達） |
-| Phase 4 PV再生成MMTO pilot | 実行中（2026-08-30） | gen3 scratch親・rate-4000 WDoor・10k root/5k valid・1 outerの動的qsearch-PV検証 |
+| Phase 4 PV再生成MMTO pilot | 学習・fresh監査完了、親Gate実行中（2026-08-30） | gen3 scratch親・rate-4000 WDoor・10k root/5k valid・1 outerの動的qsearch-PV検証 |
 | Phase 5 世代型自己対局 | 保留 | PV/MMTO pilotまたはPhase 3 accepted親から1世代を完走・昇格 |
 | Phase 6 真TreeStrap | plateau時のみ | 内部node実装とpilot Gate合格 |
 | v2.5.0再評価・release | 1.18Mは28%（50局）で不合格 | 修正版候補のv2.5.0差を再評価 |
@@ -379,3 +379,10 @@ generation 3（`a40af8e3...`）に固定し、v2.5.0/KPP由来artifactはinit・
 このpilotは実装・目的関数・PV再生成の転移確認であり、完了後にoffline loss、fresh-valid、parameter healthを監査する。
 親対局はpilotが異常なく完了した場合だけ、未使用opening 250 pair（500局）を一度実施する。点推定・paired bootstrap
 ともに改善が確認できない場合は大規模MMTOや単純な学習率探索へ進まず、scratch-only自己対局へ計画を移す。
+
+fresh監査では候補のgame-equal pair lossが親より`-0.001997`（95% bootstrap CI
+`[-0.003029,-0.000965]`）改善し、regret差は`-1.28cp`（CI `[-3.22,0.55]`）、best-move遷移は
+`wrong_to_teacher=6`、`teacher_to_wrong=6`だった。候補・親とも1,000 root、qsearch bound reject 0であり、
+目的関数の転移を次の親対局で検証している。監査artifactは
+`runs/halfkp64-scratch-v1/phase4-mmto-pv-pilot-20260830-b/audit/`、対局は同runの
+`match-20k-250g-vs-gen3-20260830/`へ保存する。
