@@ -177,7 +177,7 @@ meaningful-dose MMTOと十分量の自己対局がともにaccepted親を2回改
 | value/rank/self-playコード監査 | 完了 | value経路健全、rank符号問題、自己対局生成器不足を確定 |
 | 一次資料再調査 | 完了 | NNUE、MMTO、世代型自己対局、TreeStrapを照合 |
 | PV-MMTO 10k semantic pilot | 完了・候補不採用 | offline改善、安全正常、親Gate 49.8% |
-| Phase A 500k×4 MMTO | 未着手 | safe候補1個を凍結し、親Gateまで完了 |
+| Phase A 500k×4 MMTO | 実行器実装済み・起動準備中 | safe候補1個を凍結し、親Gateまで完了 |
 | Phase B自己対局生成器 | 未着手 | 200 unique-game smoke、再開・重複・符号test合格 |
 | Phase B最初の1M世代 | Phase A後 | 学習・valid・strict親Gate完了 |
 | 世代更新 | 保留 | 最大4 accepted世代、または停止条件到達 |
