@@ -92,6 +92,12 @@ HalfKP用の自己対局教師生成器は存在しない。`halfkp_promotion_ma
 最新pilotからの単純外挿では約188M pair、約15～20日を見込む。これは保証値ではなく、進捗率と実測ETAをmanifest/logへ
 更新する。過去full MMTOの約84%のpair量になり、10kのsemantic pilotとは異なり、棋力転移を判定できる量を狙う。
 
+2026-08-30 22:11 JSTに、`scripts/run_halfkp_mmto_phaseA.sh`（commit `261c67f`）から
+`runs/halfkp64-scratch-v1/phaseA-mmto-500k-gen5-20260830`を起動した。dataset manifest、gen5 model、
+gen5 Gate reportのSHAを固定値と照合し、train 500,000 / valid 50,000 prefixの重複検査（各splitで完全一致root 0件）を
+通過している。outer単位のresumeとfresh-valid loss 2回連続悪化時の停止を有効にしている。長期runの途中で候補を
+採用せず、`metrics/outer_XXXX.json`と`checkpoint.json`が揃ったouterだけを監査対象とする。
+
 ### 4.2 監査・停止・Gate
 
 - 各outerで同じfresh game-equal validのpair loss、agreement、regret、PV遷移、parameter healthを保存する。
@@ -177,7 +183,7 @@ meaningful-dose MMTOと十分量の自己対局がともにaccepted親を2回改
 | value/rank/self-playコード監査 | 完了 | value経路健全、rank符号問題、自己対局生成器不足を確定 |
 | 一次資料再調査 | 完了 | NNUE、MMTO、世代型自己対局、TreeStrapを照合 |
 | PV-MMTO 10k semantic pilot | 完了・候補不採用 | offline改善、安全正常、親Gate 49.8% |
-| Phase A 500k×4 MMTO | 実行器実装済み・起動準備中 | safe候補1個を凍結し、親Gateまで完了 |
+| Phase A 500k×4 MMTO | 実行中（outer 1） | safe候補1個を凍結し、親Gateまで完了 |
 | Phase B自己対局生成器 | 未着手 | 200 unique-game smoke、再開・重複・符号test合格 |
 | Phase B最初の1M世代 | Phase A後 | 学習・valid・strict親Gate完了 |
 | 世代更新 | 保留 | 最大4 accepted世代、または停止条件到達 |
