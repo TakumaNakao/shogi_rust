@@ -62,7 +62,7 @@ if [[ ! -s "$RUN/model.bin" || ! -s "$RUN/model.bin.manifest.json" ]]; then
     --search-mix 0.8 --search-mix-end 0.8 --value-weight 1 \
     --rank-weight 0 --game-rank-weight 0.1 --game-vs-search-weight 0 \
     --rank-margin-cp 20 --rank-temperature-cp 100 --game-regret-cap-cp 300 \
-    --gradient-clip-norm 1 --optimizer adagrad --threads 8 \
+    --gradient-clip-norm 1 --output-limit 0.20 --optimizer adagrad --threads 8 \
     --seed 20260832 --checkpoint-dir "$RUN/checkpoints" \
     --save-last-epoch --log "$RUN/logs/train.log"
 fi
