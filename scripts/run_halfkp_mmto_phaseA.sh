@@ -20,7 +20,9 @@ MODEL_MANIFEST="${INIT}.manifest.json"
 REGISTRY="${ROOT}/training/halfkp64-scratch-v1/promotion_registry.json"
 GATE_REPORT="${ROOT}/runs/halfkp64-scratch-v1/phase3-2m-preserved-target-20260825/match-20k-1000g-gen5-reserve-20260825/report.json"
 BIN="${ROOT}/target/release/halfkp_mmto_train"
-JOBS="${HALFKP_MMTO_PHASEA_JOBS:-8}"
+# The currently running invocation keeps its inherited value (8).  A resumed
+# invocation or a later phase defaults to twelve workers on this 16-thread host.
+JOBS="${HALFKP_MMTO_PHASEA_JOBS:-12}"
 MAX_TRAIN_ROOTS=500000
 MAX_VALID_ROOTS=50000
 CHECKPOINT_ROOTS=50000
