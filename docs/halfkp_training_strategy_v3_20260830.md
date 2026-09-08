@@ -97,6 +97,8 @@ HalfKP用の自己対局教師生成器は存在しない。`halfkp_promotion_ma
 gen5 Gate reportのSHAを固定値と照合し、train 500,000 / valid 50,000 prefixの重複検査（各splitで完全一致root 0件）を
 通過している。outer単位のresumeとfresh-valid loss 2回連続悪化時の停止を有効にしている。長期runの途中で候補を
 採用せず、`metrics/outer_XXXX.json`と`checkpoint.json`が揃ったouterだけを監査対象とする。
+実行中プロセスは起動時指定の8スレッドを維持する。次回のresumeまたは後続処理は、commit `e33a7e0`で既定値を
+12スレッドへ変更して起動する。
 
 ### 4.2 監査・停止・Gate
 
