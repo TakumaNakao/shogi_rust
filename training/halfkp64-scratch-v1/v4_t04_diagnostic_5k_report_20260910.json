@@ -1,0 +1,76 @@
+{
+  "schema": "halfkp_v4_teacher_diagnostic_v1",
+  "created": "2026-09-10",
+  "root_selection": {
+    "input": "runs/halfkp64-scratch-v1/phase3-2m-preserved-target-20260825/pilot-5k/root-0000.jsonl",
+    "input_records": 5000,
+    "selection": "frozen existing pilot-5k root-0000; content keyed by position_hash, not row alignment"
+  },
+  "teacher_settings": {
+    "model_gen4_sha256": "a26bb5a8a602053471fac99bb8c46d5a0e6a5fa2bfce79964f9ecccb616b123f",
+    "model_gen5_sha256": "61c05fe287cb0c0f9b434194802e07c835476b737a37bb9d4063143c63e28637",
+    "max_nodes_per_search": 100000,
+    "teacher_depth": 8,
+    "min_completed_depth": 1,
+    "value_only": true,
+    "qsearch_leaf": true,
+    "kappa_cp_for_brier": 1352.7871,
+    "jobs_gen5": 12
+  },
+  "artifacts": {
+    "gen4": {
+      "path": "runs/halfkp64-scratch-v1/phase3-2m-preserved-target-20260825/pilot-5k/teacher-100k.hkst",
+      "sha256": "28c22c58a7610e2ea699b3da1e29185bfdc65f40aca00d620d4785ecf4e56dfe",
+      "records": 4934
+    },
+    "gen5": {
+      "path": "runs/halfkp64-scratch-v1/v4-t04-diagnostic-20260910/teacher-gen5-100k.hkst",
+      "sha256": "45a1a077d9bd05a8c59b163ded097af28b6428a2aca106a17343e57c317d32a8",
+      "records": 4933
+    }
+  },
+  "matching": {
+    "common_position_hashes": 4930,
+    "gen4_only": 4,
+    "gen5_only": 3
+  },
+  "gen4": {
+    "records": 4934,
+    "known_results": 4934,
+    "depth_distribution": {"1": 291, "2": 634, "3": 1348, "4": 1906, "5": 749, "6": 6},
+    "root_score_mean": 166.09818163650647,
+    "root_score_median": 104.66851806640625,
+    "root_result_brier": 0.2310854390277714,
+    "root_result_logloss": 0.6537296516441943
+  },
+  "gen5": {
+    "records": 4933,
+    "known_results": 4933,
+    "depth_distribution": {"1": 282, "2": 588, "3": 1337, "4": 1932, "5": 785, "6": 9},
+    "root_score_mean": 159.87316724058098,
+    "root_score_median": 95.195068359375,
+    "root_result_brier": 0.22830691700235636,
+    "root_result_logloss": 0.6481299518509401
+  },
+  "common_delta_gen5_minus_gen4": {
+    "score_mean": -7.057632222753509,
+    "score_median": -6.6473236083984375,
+    "score_p90_abs": 176.38227081298828,
+    "score_min": -1301.5404663085938,
+    "score_max": 817.4868469238281,
+    "changed_over_100_cp": 1468,
+    "changed_over_100_fraction": 0.2977687626774848,
+    "depth_changed": 618
+  },
+  "phase_delta": {
+    "opening": {"common": 1539, "score_mean": -9.825546858564765, "changed_over_100": 225},
+    "middlegame": {"common": 2611, "score_mean": -7.025793318899598, "changed_over_100": 924},
+    "endgame": {"common": 780, "score_mean": -1.7029024194830505, "changed_over_100": 319}
+  },
+  "interpretation": {
+    "teacher_update": "gen5 root target is modestly better calibrated on this fixed sample (Brier and log-loss lower) while retaining nearly identical depth distribution; this supports proceeding with gen5 re-labeling.",
+    "data_quality": "29.8% of common roots changed by over 100 cp, so re-labeling is material rather than a no-op.",
+    "capacity": "gen5 100k-node generation produced 4,933/5,000 records; 67 roots were lost to search failure, resource limits, or duplicate identity and must be budgeted in T06/T07.",
+    "gate": "No match Gate was run; this is an offline teacher diagnostic only."
+  }
+}

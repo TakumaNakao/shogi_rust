@@ -23,7 +23,7 @@
 | T01 | rank勾配の符号修正と回帰テスト | — | 完了 |
 | T02 | 外部評価不使用・親モデル・教師形式の検証 | T01 | 完了 |
 | T03 | 棋譜棚卸し、未使用game・holdoutの確定 | — | 実行中 |
-| T04 | 5k rootでgen5教師の再解析診断 | T02 | 未着手 |
+| T04 | 5k rootでgen5教師の再解析診断 | T02 | 完了 |
 | T05 | 長時間実行・checkpoint・評価出力の最小整備 | T02、T04 | 未着手 |
 | T06 | 新規棋譜の抽出、不足時の追加取得 | T03、T04 | 未着手 |
 | T07 | 本教師生成、重複除去、学習データ凍結 | T05、T06 | 未着手 |
@@ -70,6 +70,8 @@
 - 同じroot手番に揃えて探索値・best手の変化、completed depth、勝敗Brier、除外理由、root/秒、保存容量を比較する。
 - exact leaf、手番反転、completed root score保持を確認する。教師の数値が変わっただけでは改善と判定しない。
 - 完了: `diagnostic-5k/report.json`に対応件数と結果、本生成の時間・容量見積もりを保存。小規模対局Gateは実施しない。
+
+実績（2026-09-10）: 固定`pilot-5k/root-0000.jsonl`をgen4/gen5でposition hash照合し、gen5を100k nodes/root・depth 8・qsearch leaf・12 workerで再解析した。対応4,930 root、gen4 4,934件、gen5 4,933件。gen5の勝敗Brierは0.22831（gen4 0.23109）、log-lossは0.64813（0.65373）で、同じ固定局面では較正が小幅改善した。common rootの29.8%（1,468件）が100cp超変化し、再ラベルは実質的な更新である。一方、67 rootは失敗/資源制限/重複で欠落したため、T06/T07で余裕を持って抽出する。詳細は [`v4_t04_diagnostic_5k_report_20260910.json`](../training/halfkp64-scratch-v1/v4_t04_diagnostic_5k_report_20260910.json)。これは対局Gateではなく、gen5再ラベルを進めるためのオフライン診断である。
 
 ### T05 — 再開と評価の仕組みを整える
 
