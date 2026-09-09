@@ -16,12 +16,13 @@
 
 1. generation 5から500k unique root・4 outerのPV再生成MMTOを行う。
 2. 安全なcheckpointをoffline指標だけで1個に凍結し、親対局を1回だけ行う。
-3. Gate合格ならgeneration 6、不合格ならgeneration 5を親として、世代型自己対局学習を開始する。
-4. 自己対局は1M fresh root/世代を基本とし、acceptedモデルだけで次世代教師を作る。
+3. Gate合格ならgeneration 6として凍結し、独立したWDoor棋譜を追加した教師学習へ進む。不合格ならgen5から自己対局へは進まず、
+   候補を破棄して次の教師データ設計を見直す。
+4. 新規棋譜を用いたPV-MMTOで改善が続く間は世代更新を続け、棋譜教師が飽和した場合だけ自己対局を最終手段として開始する。
 
 この順序にした理由は、10k・1 outerの最新MMTOが候補としては不合格だった一方、fresh-validのpair lossと安全性は
-改善しており、過去に同じMMTO系列がscratch親を約80 Elo改善した実績があるためである。新規実装がほぼ不要で、
-最短の再現性ある賭けになる。ただし固定棋譜分布を無期限に反復せず、この十分量の試行を最後に自己対局へ切り替える。
+改善しており、過去に同じMMTO系列がscratch親を約80 Elo改善した実績があるためである。まず実績のある教師学習を、
+独立した棋譜を追加しながら飽和まで使う。固定棋譜分布の無期限反復はせず、独立棋譜で改善が止まった場合だけ自己対局へ切り替える。
 
 ## 2. 実験から確定したこと
 
@@ -116,9 +117,20 @@ Gateを起動している。Gateはpair単位で再開でき、候補はGate完�
 - 昇格は`score >= 52.5% && paired bootstrap 95%下限 > 50% && safety違反0`をすべて要求する。
 
 不合格なら、同じ固定WDoor MMTOのroot数、outer、LRを後付け変更しない。候補を破棄してgen5から自己対局へ移る。
-合格ならgeneration 6として凍結し、そのモデルから自己対局へ移る。いずれの場合もこのMMTOを連続世代化しない。
+合格ならgeneration 6として凍結する。同じ固定分布を反復せず、次節の独立棋譜拡張を一度ずつ適用してから自己対局を判断する。
 
-## 5. Phase B: 世代型scratch-only自己対局
+### 4.3 Gate合格後の独立棋譜拡張
+
+Phase A候補がstrict Gateを通過した場合は、自己対局を直ちに開始しない。gen6を親として、未使用のWDoor（まず2008～2017、
+次に未使用の2018～2025）からgame-disjointな局面を抽出し、gen6のPV qsearch値を付け直してPV-MMTOを行う。
+
+- 1回の拡張は新規1M unique root・2 outer、feature LR `1e-4`・output比 `0.1`を基本とし、12スレッドを使用する。
+- validは新規game-disjoint集合を固定し、同じ親・同じデータを単に4M/10Mへ複製しない。
+- 各拡張候補を直前のaccepted親との同一strict Gateで判定する。Gate合格かつfresh-validも改善する間だけ次の独立データへ進む。
+- fresh-validが改善しない、またはGate不合格となった拡張は採用せず、同じ教師分布での再試行は行わない。
+- 独立棋譜を使った教師拡張で2回連続して改善できなかった時点、または利用可能な高品質棋譜を使い切った時点で初めて自己対局を検討する。
+
+## 5. Phase B: 世代型scratch-only自己対局（最終手段）
 
 ### 5.1 最小実装
 
@@ -137,7 +149,7 @@ manifestを確認するだけで、対局による棋力判定は行わない。
 
 ### 5.2 最初の実効世代
 
-親はPhase A合格時のgen6、不合格時は現在のgen5とする。
+親は、独立棋譜による教師拡張が飽和した後の最後のaccepted scratch世代とする。Phase A不合格候補は親にしない。
 
 - 1,000,000 unique root/世代
 - 内訳: fresh on-policy 80%、同じ親で再ラベルしたWDoor/search replay 20%
@@ -192,8 +204,9 @@ meaningful-dose MMTOと十分量の自己対局がともにaccepted親を2回改
 | PV-MMTO 10k semantic pilot | 完了・候補不採用 | offline改善、安全正常、親Gate 49.8% |
 | Phase A 500k×4 MMTO | 完了（outer 4、loss最小） | safe候補1個を凍結し、親Gateまで完了 |
 | Phase A候補凍結・親Gate | 実行中（250 pair） | strict Gate判定・必要ならgen6登録 |
-| Phase B自己対局生成器 | 未着手 | 200 unique-game smoke、再開・重複・符号test合格 |
-| Phase B最初の1M世代 | Phase A後 | 学習・valid・strict親Gate完了 |
+| Gate合格後の独立WDoor教師拡張 | Gate合格後 | 1M root/2 outer単位で改善が続く間、strict親Gateを通過 |
+| Phase B自己対局生成器 | 教師拡張飽和後 | 200 unique-game smoke、再開・重複・符号test合格 |
+| Phase B最初の1M世代 | 教師拡張失敗後 | 学習・valid・strict親Gate完了 |
 | 世代更新 | 保留 | 最大4 accepted世代、または停止条件到達 |
 | v2.5.0再評価・release | 保留 | accepted候補を外部評価しrelease条件を判定 |
 
