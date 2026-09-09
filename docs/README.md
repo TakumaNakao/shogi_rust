@@ -34,6 +34,7 @@
 ## HalfKP・学習
 
 - [`halfkp_training_strategy_v4_20260909.md`](halfkp_training_strategy_v4_20260909.md): 現行正本。実験再監査、rank符号不具合、外部評価を使わない教師更新・独立棋譜の価値学習、進捗表
+- [`halfkp_training_v4_tasks.md`](halfkp_training_v4_tasks.md): v4の実装・実験タスクT01～T12、依存関係、完了条件、継続・停止規則
 - [`halfkp_training_strategy_v3_20260830.md`](halfkp_training_strategy_v3_20260830.md): 旧計画。十分量MMTOは完了・候補不採用、後続作業はv4へ移管
 - [`halfkp_next_training_plan_post_wdl_ab_20260818.md`](halfkp_next_training_plan_post_wdl_ab_20260818.md): WDL A/B後の履歴計画、dense MMTO、deep-search bootstrap、進捗表
 - [`halfkp_post_wdl_dense_execution_runbook_20260818.md`](halfkp_post_wdl_dense_execution_runbook_20260818.md): 上記計画の実装順、CLI、実験command、Gate、checkpoint、無人再開手順
