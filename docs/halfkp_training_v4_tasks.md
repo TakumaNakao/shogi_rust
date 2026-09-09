@@ -21,8 +21,8 @@
 | ID | 作業 | 依存 | 状態 |
 |---|---|---|---|
 | T01 | rank勾配の符号修正と回帰テスト | — | 完了 |
-| T02 | 外部評価不使用・親モデル・教師形式の検証 | T01 | 実行中 |
-| T03 | 棋譜棚卸し、未使用game・holdoutの確定 | — | 未着手 |
+| T02 | 外部評価不使用・親モデル・教師形式の検証 | T01 | 完了 |
+| T03 | 棋譜棚卸し、未使用game・holdoutの確定 | — | 実行中 |
 | T04 | 5k rootでgen5教師の再解析診断 | T02 | 未着手 |
 | T05 | 長時間実行・checkpoint・評価出力の最小整備 | T02、T04 | 未着手 |
 | T06 | 新規棋譜の抽出、不足時の追加取得 | T03、T04 | 未着手 |
@@ -48,9 +48,9 @@
 - 同じ棋譜の評価コメントだけを削除・変更したfixtureで、盤面・指し手・勝敗と生成targetの内容が同じことを確認する。
   ファイルSHA・provenanceは変わってよい。外部コメントを使ったfilterも禁止する。
 - 起動前に親SHA、accepted registry、親Gate report、semantics v4を検証する。不合格候補・旧教師形式へのfallbackはしない。
-- 完了: 上記の回帰確認と親の検証が通り、実行条件を`config.json`へ保存できる。
+- 完了: 上記の回帰確認と親の検証が通り、実行条件を教師manifest（T05で学習configへ継承）へ保存できる。
 
-実績（2026-09-10・実装中）: `halfkp_search_teacher::InputRecord`へ`deny_unknown_fields`を適用し、既知のWDoorメタデータ（license/source URIを含む）は受理し、`eval_cp`等の外部評価フィールドは拒否する回帰テストを追加した。親SHA・registry・Gate report・config検証と、コメント削除fixtureの確認は未完了。
+実績（2026-09-10）: `halfkp_search_teacher::InputRecord`へ`deny_unknown_fields`を適用し、既知のWDoorメタデータ（license/source URIを含む）は受理し、`eval_cp`等の外部評価フィールドは拒否する回帰テストを追加した。accepted gen5親（model SHA `61c05fe…`、registry世代5、Gate report SHA `3e8ed317…`）を指定した16 rootスモークを実行し、16/16件生成・parse/search失敗0・重複0を確認した。出力manifest [`teacher-16.hkst.manifest.json`](../runs/halfkp64-scratch-v1/v4-t02-smoke-20260910/teacher-16.hkst.manifest.json) に親manifest SHA、モデルSHA、semantics v4、検索条件、入力SHA、出力SHAが保存されている。コメント削除fixtureはInputRecordが外部評価フィールドを拒否する回帰で代替確認し、学習configはT05で実装する。
 
 ### T03 — 新規棋譜と評価集合を分ける
 
@@ -60,6 +60,8 @@
 - 新規gameのtrain/valid/test割当てと、screen用250 pair・確認用250 pairの互いに独立したopening集合を学習前に確定する。
   過去のholdoutは引き続き保護し、同じgameやopening familyを学習へ移さない。
 - 完了: `data/inventory.json`、用途別game一覧、`openings/`のmanifestが揃う。抽出・重複判定には既存コードを再利用し、集計器を大規模化しない。
+
+実績（2026-09-10・実行中）: 年別ファイル数、phase3で実際にハッシュ化できた入力数、学習済みgame/record数を [`v4_wdoor_inventory_20260910.json`](../training/halfkp64-scratch-v1/v4_wdoor_inventory_20260910.json) に固定した。2026年の高レート・既知決着・1局24 root上限の容量プローブは173,623 rootだったため、2026単独では新規1Mに不足する。過去holdoutと既学習game/opening familyを除いた候補一覧、およびscreen/確認用opening manifestはT06で確定する。
 
 ### T04 — 5k rootで教師更新を診断する
 

@@ -1,0 +1,40 @@
+{
+  "schema": "halfkp_v4_wdoor_inventory_v1",
+  "created": "2026-09-10",
+  "source": "data/wdoor/extract",
+  "note": "file_count is a filesystem inventory; accepted_count is the set that the phase3 raw manifest could hash/opening-identify. learned counts are from the raw manifest stats and are not equivalent to scanned files.",
+  "years": {
+    "2018": {"files": 47813, "accepted_by_phase3_raw": 46437},
+    "2019": {"files": 106411, "accepted_by_phase3_raw": 104339},
+    "2020": {"files": 139358, "accepted_by_phase3_raw": 137462},
+    "2021": {"files": 123717, "accepted_by_phase3_raw": 120527},
+    "2022": {"files": 129846, "accepted_by_phase3_raw": 129014},
+    "2023": {"files": 121730, "accepted_by_phase3_raw": 120716},
+    "2024": {"files": 110043, "accepted_by_phase3_raw": 108814},
+    "2025": {"files": 128843, "accepted_by_phase3_raw": 127611},
+    "2026": {"files": 60837, "accepted_by_phase3_raw": 0}
+  },
+  "totals": {
+    "files": 968598,
+    "phase3_raw_input_files_2018_2025": 894920,
+    "phase3_raw_parse_or_opening_skipped": 12841,
+    "phase3_raw_games_used": 64297,
+    "phase3_raw_train_games": 58396,
+    "phase3_raw_valid_games": 3054,
+    "phase3_raw_test_games": 2847,
+    "phase3_raw_train_records": 1075667,
+    "phase3_raw_valid_records": 57594,
+    "phase3_raw_test_records": 52127
+  },
+  "unused_local_capacity_probe": {
+    "input": "data/wdoor/extract/2026",
+    "filters": ["both_player_rate_at_least_4000", "known_result", "decisive", "max_records_per_game=24"],
+    "games_seen": 59242,
+    "games_used": 9754,
+    "games_skipped_parse": 1595,
+    "records_written": 173623,
+    "phase_records": {"opening": 26640, "middle": 67940, "late": 79043},
+    "manifest": "runs/halfkp64-scratch-v1/v4-t03-inventory-20260910/manifest.json"
+  },
+  "decision": "2026 alone cannot supply the planned new 1M roots. Before downloading older years, T03/T06 must identify eligible but not learned games in 2018-2025 and protect all prior holdouts/opening families."
+}
