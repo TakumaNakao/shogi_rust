@@ -850,7 +850,7 @@ pub fn run() -> Result<()> {
         if let Some(writer) = log.as_mut() {
             writeln!(
                 writer,
-                "{epoch},{seen},{:.8},{:.8},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{},{:.6},{:.6},{:.8},{},{:.6},{:.6},{:.8},{:.8}",
+                "{epoch},{seen},{:.8},{:.8},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{},{:.6},{:.6},{:.8},{},{:.6},{:.6},{:.8},{:.8},{:.8},{:.8},{:.8},{:.8}",
                 epoch_value_loss / seen.max(1) as f64,
                 epoch_rank_loss / epoch_pairs.max(1) as f64,
                 valid_metrics.value_loss / valid_metrics.records.max(1) as f64,
@@ -874,7 +874,11 @@ pub fn run() -> Result<()> {
                     / valid_metrics.game_rank_eligible.max(1) as f64,
                 valid_metrics.game_rank_objective_loss_sum
                     / valid_metrics.game_rank_weight_sum.max(f64::EPSILON),
-                score
+                score,
+                valid_metrics.model_result_brier / valid_metrics.known_results.max(1) as f64,
+                valid_metrics.model_result_log_loss / valid_metrics.known_results.max(1) as f64,
+                valid_metrics.teacher_result_brier / valid_metrics.known_results.max(1) as f64,
+                valid_metrics.teacher_result_log_loss / valid_metrics.known_results.max(1) as f64
             )?;
             writer.flush()?;
         }
@@ -1206,7 +1210,7 @@ fn create_log(path: Option<&Path>) -> Result<Option<BufWriter<File>>> {
     if !exists {
         writeln!(
             writer,
-            "epoch,train_records,train_value_loss,train_rank_loss,valid_value_loss,valid_search_mae,valid_top1,valid_pair_accuracy,valid_non_conflicting_pair_accuracy,valid_regret_cp,valid_game_vs_search_pairs,valid_game_vs_search_accuracy,valid_game_vs_search_mean_margin_cp,valid_game_vs_search_objective_loss,valid_game_rank_eligible,valid_game_rank_accuracy,valid_game_rank_mean_margin_cp,valid_game_rank_objective_loss,score"
+            "epoch,train_records,train_value_loss,train_rank_loss,valid_value_loss,valid_search_mae,valid_top1,valid_pair_accuracy,valid_non_conflicting_pair_accuracy,valid_regret_cp,valid_game_vs_search_pairs,valid_game_vs_search_accuracy,valid_game_vs_search_mean_margin_cp,valid_game_vs_search_objective_loss,valid_game_rank_eligible,valid_game_rank_accuracy,valid_game_rank_mean_margin_cp,valid_game_rank_objective_loss,score,valid_model_result_brier,valid_model_result_logloss,valid_teacher_result_brier,valid_teacher_result_logloss"
         )?;
     }
     Ok(Some(writer))
