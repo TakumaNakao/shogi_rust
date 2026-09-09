@@ -4,6 +4,8 @@
   "source": "data/wdoor/extract",
   "note": "file_count is a filesystem inventory; accepted_count is the set that the phase3 raw manifest could hash/opening-identify. learned counts are from the raw manifest stats and are not equivalent to scanned files.",
   "years": {
+    "2016": {"files": 80141, "accepted_by_phase3_raw": null},
+    "2017": {"files": 75245, "accepted_by_phase3_raw": null},
     "2018": {"files": 47813, "accepted_by_phase3_raw": 46437},
     "2019": {"files": 106411, "accepted_by_phase3_raw": 104339},
     "2020": {"files": 139358, "accepted_by_phase3_raw": 137462},
@@ -15,7 +17,7 @@
     "2026": {"files": 60837, "accepted_by_phase3_raw": 0}
   },
   "totals": {
-    "files": 968598,
+    "files": 1123984,
     "phase3_raw_input_files_2018_2025": 894920,
     "phase3_raw_parse_or_opening_skipped": 12841,
     "phase3_raw_games_used": 64297,
@@ -46,5 +48,45 @@
     "phase_records": {"opening": 14634, "middle": 32545, "late": 33190},
     "manifest": "runs/halfkp64-scratch-v1/v4-t03-unused-capacity-20260910/manifest.json"
   },
-  "decision": "After excluding every prior train/valid/test game and opening family, local 2018-2026 data contributes only 80,369 independent roots. It cannot supply the planned new 1M roots; download wdoor2017 next, then older years one at a time, while reusing the same exclusion and provenance checks."
+  "archives": {
+    "2017": {
+      "url": "https://wdoor.c.u-tokyo.ac.jp/shogi/archive/wdoor2017.7z",
+      "sha256": "31a43e57d92ad89ec17da441604922a814d565e93fe0638bc7e1a5ece249c14f",
+      "files_extracted": 75245,
+      "highrate_capacity": {
+        "filters": ["exclude prior train/valid/test game and opening families", "both_player_rate_at_least_4000", "known_result", "decisive", "max_records_per_game=24"],
+        "games_seen": 61980,
+        "games_used": 62,
+        "games_skipped_parse": 2819,
+        "records_written": 1362,
+        "phase_records": {"opening": 244, "middle": 458, "late": 660},
+        "manifest": "runs/halfkp64-scratch-v1/v4-t06-2017-capacity-20260910/manifest.json"
+      },
+      "norate_capacity": {
+        "filters": ["exclude prior train/valid/test game and opening families", "known_result", "decisive", "max_records_per_game=24"],
+        "games_seen": 52787,
+        "games_used": 48563,
+        "games_skipped_parse": 2819,
+        "records_written": 1000000,
+        "records_filtered": 4878974,
+        "phase_records": {"opening": 266100, "middle": 467483, "late": 266417},
+        "manifest": "runs/halfkp64-scratch-v1/v4-t06-2017-norate-capacity-20260910/manifest.json"
+      }
+    },
+    "2016": {
+      "url": "https://wdoor.c.u-tokyo.ac.jp/shogi/archive/wdoor2016.7z",
+      "sha256": "ea2e9919e332914c89decca0e980fb490612b7eae491e0671d7c357a6d6cc525",
+      "files_extracted": 80141,
+      "highrate_capacity": {
+        "filters": ["exclude prior train/valid/test game and opening families", "both_player_rate_at_least_4000", "known_result", "decisive", "max_records_per_game=24"],
+        "games_seen": 68557,
+        "games_used": 0,
+        "games_skipped_parse": 3462,
+        "records_written": 0,
+        "phase_records": {"opening": 0, "middle": 0, "late": 0},
+        "manifest": "runs/halfkp64-scratch-v1/v4-t06-2016-capacity-20260910/manifest.json"
+      }
+    }
+  },
+  "decision": "The highrate policy is not sufficient for the planned 1M independent roots: local 2018-2026 contributes 80,369 roots, 2017 contributes 1,362, and 2016 contributes 0. The official 2017 archive can provide 1M independent roots only when the missing historical rate metadata is not used as a quality filter; this is recorded as a separate lowrate branch, not a silent relaxation. Keep the highrate branch rejected and run a documented lowrate-vs-highrate data comparison before expensive training."
 }

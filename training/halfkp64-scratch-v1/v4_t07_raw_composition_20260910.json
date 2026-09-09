@@ -1,0 +1,44 @@
+{
+  "schema": "halfkp_v4_t07_raw_composition_v1",
+  "date": "2026-09-10",
+  "run": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910",
+  "raw_manifest": {
+    "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/raw/manifest.json",
+    "sha256": "e940dfbad58f342bff0e542a46de61a564ca3967774132ef21afef116760ceaf",
+    "freeze_base_eval": true,
+    "exclude_base_train": true
+  },
+  "composition": {
+    "new_branch": {
+      "description": "WDoor 2017, rate metadata absent branch; not mixed with highrate selection",
+      "source_manifest": "runs/halfkp64-scratch-v1/v4-t06-2017-norate-capacity-20260910/manifest.json",
+      "records": 1000000,
+      "games": 48563
+    },
+    "replay": {
+      "source": "runs/halfkp64-scratch-v1/v4-t07-replay-20260910/replay0000.jsonl",
+      "source_sha256": "b721cd24e268d8519d39ebaedf766a9ec1ddf390db5f920ff8f8653dd22880b0",
+      "records": 250000,
+      "parent_raw_manifest": "runs/halfkp64-scratch-v1/phase3-2m-preserved-target-20260825/raw/manifest.json"
+    },
+    "train": {
+      "records": 1250000,
+      "sha256": "7ca73468d1a3a5d6ddb4696ce58eb0e2d242b2516972381db20fadaf4be69624",
+      "bytes": 1027313226
+    },
+    "valid": {
+      "records": 57594,
+      "sha256": "04f55b0a62412ceda87afde8cdea56403ee467378fdd50e3cf2742f8717e7403",
+      "bytes": 47415519,
+      "origin": "frozen prior evaluation split"
+    },
+    "test": {
+      "records": 52127,
+      "sha256": "5ef89550de52ab273f922de7938d857c2c3ab4201f07f95add0c43605b99f0d2",
+      "bytes": 42860832,
+      "origin": "frozen prior evaluation split"
+    }
+  },
+  "status": "teacher_generation_in_progress",
+  "next_gate": "complete gen5 teacher shards, inspect root/candidate network-input duplicates, then freeze final-manifest before training"
+}

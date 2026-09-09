@@ -1,0 +1,52 @@
+{
+  "schema": "halfkp_v4_t06_norate_diagnostic_v1",
+  "date": "2026-09-10",
+  "source": {
+    "archive": "data/wdoor/archive/wdoor2017.7z",
+    "archive_sha256": "31a43e57d92ad89ec17da441604922a814d565e93fe0638bc7e1a5ece249c14f",
+    "official_archive_page": "https://wdoor.c.u-tokyo.ac.jp/shogi/",
+    "dataset_manifest": "runs/halfkp64-scratch-v1/v4-t06-2017-norate-capacity-20260910/manifest.json",
+    "dataset_manifest_note": "2017 rate metadata is often absent; this branch intentionally omits the rate filter and is not mixed with the highrate branch."
+  },
+  "sample": {
+    "input": "runs/halfkp64-scratch-v1/v4-t06-2017-norate-diagnostic-20260910/root0000.jsonl",
+    "input_sha256": "29a5991eeb76123b57891b3ca878ea0565a46202e790257b5bcd97363da9e2a7",
+    "input_records": 5000,
+    "teacher_output": "runs/halfkp64-scratch-v1/v4-t06-2017-norate-diagnostic-20260910/teacher-gen5-100k.hkst",
+    "teacher_output_sha256": "c31c72c0a37a7d7aca9f4c5b0e158345b3a513d0a1419fe1ff2e92bd8eda91b2",
+    "teacher_manifest_sha256": "3b5c373fa5a75f97803ed922cdb486f6c8cdd680cab8803adff494b602c8d54a",
+    "records_written": 4756,
+    "search_failed": 137,
+    "resource_limited": 107,
+    "duplicates": 0,
+    "teacher_conditions": {
+      "model_sha256": "61c05fe287cb0c0f9b434194802e07c835476b737a37bb9d4063143c63e28637",
+      "semantics_version": 4,
+      "semantics_id": "deep-search-target-v1",
+      "teacher_depth": 8,
+      "min_completed_depth": 1,
+      "max_nodes_per_search": 100000,
+      "qsearch_leaf": true,
+      "jobs": 12,
+      "seed": 20260910
+    }
+  },
+  "result_calibration": {
+    "kappa_cp": 1352.7871,
+    "known_results": 4756,
+    "teacher_result_brier": 0.20275122481778338,
+    "teacher_result_logloss": 0.5896874867367478,
+    "phase": {
+      "opening": {"records": 1641, "brier": 0.24107796005107043, "logloss": 0.6747541056750715},
+      "middlegame": {"records": 2142, "brier": 0.19827958169265963, "logloss": 0.5809466617116206},
+      "endgame": {"records": 973, "brier": 0.1479558363863246, "logloss": 0.4654619220153047}
+    },
+    "completed_depth_counts": {"1": 403, "2": 766, "3": 1220, "4": 1420, "5": 924, "6": 21, "7": 2}
+  },
+  "decision": {
+    "status": "diagnostic_pass_with_resource_warning",
+    "interpretation": "The branch yields valid gen5 teachers and a finite, reasonably calibrated result target on this sample. The score is not directly comparable to the prior highrate 5k sample because the positions and game population differ.",
+    "next_step": "Keep the 2017 rate-metadata-missing branch isolated, construct the documented new-1M plus replay-250k dataset, and evaluate its fixed validation before any gate or release decision.",
+    "not_allowed": ["Do not mix this branch silently with highrate data", "Do not use this branch as an external-AI teacher", "Do not promote a model from this diagnostic alone"]
+  }
+}

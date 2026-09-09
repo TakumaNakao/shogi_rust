@@ -24,6 +24,7 @@ MODEL="$RUN_DIR/model.bin"
 WORKERS="${WORKERS:-12}"
 MAX_EPOCH="${MAX_EPOCH:-16}"
 SEED="${SEED:-20260910}"
+TEACHERS_ONLY="${TEACHERS_ONLY:-0}"
 
 require_file() {
   [[ -s "$1" ]] || { echo "required artifact is missing or empty: $1" >&2; exit 2; }
@@ -98,6 +99,7 @@ payload = {
                   "gradient_clip_norm": 1.0, "output_limit": 0.20,
                   "seed": int(seed), "workers": int(workers),
                   "staged_targets": [4, 8, 16, 32], "requested_max_epoch": int(max_epoch)},
+    "teacher_generation_only": bool(int(__import__("os").environ.get("TEACHERS_ONLY", "0"))),
     "run_dir": str(Path(run_dir)),
     "external_evaluation_teacher": False,
 }
@@ -163,6 +165,13 @@ filter_validation() {
   for path in "$TEACHER_DIR"/valid-*.hkst; do [[ -e "$path" ]] && args+=(--valid "$path"); done
   ((${#args[@]} > 4)) || { echo "teacher shards are missing" >&2; return 1; }
   target/release/halfkp_search_split_filter "${args[@]}"
+}
+
+if_teachers_only() {
+  if [[ "$TEACHERS_ONLY" == "1" ]]; then
+    echo "v4 gen5 teacher generation complete (TEACHERS_ONLY=1): $RUN_DIR"
+    exit 0
+  fi
 }
 
 train_to_epoch() {
@@ -232,6 +241,7 @@ write_config
 make_shards
 generate_teachers
 filter_validation
+if_teachers_only
 train_to_epoch 4 0
 if ((MAX_EPOCH >= 8)); then train_to_epoch 8 1; fi
 if ((MAX_EPOCH >= 16)); then train_to_epoch 16 1; fi
