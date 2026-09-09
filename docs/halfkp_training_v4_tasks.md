@@ -24,7 +24,7 @@
 | T02 | 外部評価不使用・親モデル・教師形式の検証 | T01 | 完了 |
 | T03 | 棋譜棚卸し、未使用game・holdoutの確定 | — | 実行中 |
 | T04 | 5k rootでgen5教師の再解析診断 | T02 | 完了 |
-| T05 | 長時間実行・checkpoint・評価出力の最小整備 | T02、T04 | 未着手 |
+| T05 | 長時間実行・checkpoint・評価出力の最小整備 | T02、T04 | 実装完了・本番未実行 |
 | T06 | 新規棋譜の抽出、不足時の追加取得 | T03、T04 | 未着手 |
 | T07 | 本教師生成、重複除去、学習データ凍結 | T05、T06 | 未着手 |
 | T08 | 16 epoch学習、条件付き32 epoch | T07 | 未着手 |
@@ -86,6 +86,8 @@
   中断epochの再実行は許容する。直前の完全なcheckpointを残し、不完全な更新を完了扱いしない。
 - 完了: 小さなscratch fixtureで連続実行と分割再開が一致し、失敗時の後続処理停止・二重起動防止・端末切断後の継続を確認する。
   本番開始前にbinaryを凍結する。新しい汎用ジョブ管理frameworkは追加しない。
+
+実績（2026-09-10）: [`run_halfkp_v4_value_gen5.sh`](../scripts/run_halfkp_v4_value_gen5.sh)を追加した。accepted gen5固定、50k shard、教師manifest再利用、部分artifact上書き拒否、4/8/16の段階checkpoint、条件付き32 epoch再開、`config.json`、CSVへのmodel/teacher勝敗Brier・log-loss保存を実装。`halfkp_search_train`の既存bit-exact checkpointテストと新しい指標列のビルドを確認した。本番データでの連続/分割再開fixture確認はT07入力確定後に実施する。
 
 ### T06 — 新規棋譜を集めて抽出する
 

@@ -232,6 +232,7 @@ policy head、MCTS、network幅拡大、真TreeStrapは現段階では追加し�
 | Phase A集計・旧実験再分類・一次資料調査 | 完了 | 本書、report SHA、テスト結果を記録 |
 | rank符号修正・関連test | 完了（2026-09-10） | 同手番/逆手番の有限差分とvalue無変更を確認済み。T02のcommit記録を追記 |
 | 5k教師更新・意味/時間診断 | 完了（2026-09-10） | gen4/gen5比較、target出典・符号・所要時間を固定。再ラベルを継続 |
+| v4再開runner・checkpoint・勝敗指標ログ | 実装完了（2026-09-10） | T07データ確定後にfixture、本番4/8/16 epochを実行 |
 | 独立1M＋replay 250k構築・gen5再解析 | 未実行 | 実受理数、game数、holdout非重複、外部評価不使用 |
 | 16 epoch、条件付き32 epoch | 未実行 | 固定valid・health・checkpoint選択を記録 |
 | 親screen・独立確認 | 未実行 | 判定完了。有望候補のみ確認対局 |
