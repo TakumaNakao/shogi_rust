@@ -57,6 +57,10 @@ struct Args {
     /// Supplement train cap; equivalent to --max-records for this membership build.
     #[arg(long)]
     max_train_records: Option<usize>,
+    /// Exclude games and opening families present in the base train split.
+    /// This is required when constructing an independent follow-up corpus.
+    #[arg(long, default_value_t = false)]
+    exclude_base_train: bool,
     #[arg(long, default_value_t = 0)]
     target_opening_records: usize,
     #[arg(long, default_value_t = 0)]
@@ -177,6 +181,7 @@ struct DatasetManifest {
     base_dataset_manifest: Option<String>,
     freeze_base_eval: bool,
     max_train_records: Option<usize>,
+    exclude_base_train: bool,
     target_opening_records: usize,
     target_middle_records: usize,
     target_late_records: usize,
@@ -643,6 +648,7 @@ fn dataset_stage_fingerprint(args: &Args, sources: &[GameSource]) -> Result<Stri
             "max_records": args.max_records,
             "base_dataset_manifest": args.base_dataset_manifest,
             "freeze_base_eval": args.freeze_base_eval,
+            "exclude_base_train": args.exclude_base_train,
             "max_train_records": args.max_train_records,
             "target_opening_records": args.target_opening_records,
             "target_middle_records": args.target_middle_records,
@@ -729,6 +735,7 @@ fn manifest_output_path(manifest_path: &Path, name: &str) -> Result<PathBuf> {
 
 fn load_base_eval_exclusions(
     manifest_path: &Path,
+    include_train: bool,
 ) -> Result<(HashSet<String>, HashSet<String>, HashMap<[u8; 32], Split>)> {
     let mut inputs = HashMap::new();
     let mut eval_games = HashSet::new();
@@ -749,7 +756,7 @@ fn load_base_eval_exclusions(
                 "valid.jsonl" => Split::Valid,
                 _ => Split::Test,
             };
-            if matches!(split, Split::Valid | Split::Test) {
+            if include_train || matches!(split, Split::Valid | Split::Test) {
                 if let Some(game_key) = value["game_key"].as_str() {
                     eval_games.insert(game_key.to_string());
                 }
@@ -789,9 +796,9 @@ pub fn run() -> Result<()> {
             "--phase-records-per-game requires three comma-separated values"
         ));
     }
-    if args.freeze_base_eval && args.base_dataset_manifest.is_none() {
+    if (args.freeze_base_eval || args.exclude_base_train) && args.base_dataset_manifest.is_none() {
         return Err(anyhow!(
-            "--freeze-base-eval requires --base-dataset-manifest"
+            "--freeze-base-eval/--exclude-base-train requires --base-dataset-manifest"
         ));
     }
     if args.max_records.is_some() && args.max_train_records.is_some() {
@@ -834,7 +841,9 @@ pub fn run() -> Result<()> {
     }
     let mut sources = sources_by_id.into_values().collect::<Vec<_>>();
     let base_eval_exclusions = match args.base_dataset_manifest.as_deref() {
-        Some(path) if args.freeze_base_eval => Some(load_base_eval_exclusions(path)?),
+        Some(path) if args.freeze_base_eval || args.exclude_base_train => {
+            Some(load_base_eval_exclusions(path, args.exclude_base_train)?)
+        }
         _ => None,
     };
     if let Some((eval_games, eval_families, _)) = &base_eval_exclusions {
@@ -863,7 +872,7 @@ pub fn run() -> Result<()> {
     let mut network_splits = match base_eval_exclusions {
         Some((_, _, inputs)) => inputs,
         None => match args.base_dataset_manifest.as_deref() {
-            Some(path) => load_base_eval_exclusions(path)?.2,
+            Some(path) => load_base_eval_exclusions(path, args.exclude_base_train)?.2,
             None => HashMap::new(),
         },
     };
@@ -982,6 +991,7 @@ pub fn run() -> Result<()> {
             .as_ref()
             .map(|path| path.to_string_lossy().to_string()),
         freeze_base_eval: args.freeze_base_eval,
+        exclude_base_train: args.exclude_base_train,
         max_train_records: args.max_train_records,
         target_opening_records: args.target_opening_records,
         target_middle_records: args.target_middle_records,

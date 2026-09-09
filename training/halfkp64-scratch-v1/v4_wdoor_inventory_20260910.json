@@ -36,5 +36,15 @@
     "phase_records": {"opening": 26640, "middle": 67940, "late": 79043},
     "manifest": "runs/halfkp64-scratch-v1/v4-t03-inventory-20260910/manifest.json"
   },
-  "decision": "2026 alone cannot supply the planned new 1M roots. Before downloading older years, T03/T06 must identify eligible but not learned games in 2018-2025 and protect all prior holdouts/opening families."
+  "unused_after_prior_train_and_holdout_exclusion": {
+    "input": "data/wdoor/extract/2018..2026",
+    "filters": ["exclude prior train/valid/test game and opening families", "both_player_rate_at_least_4000", "known_result", "decisive", "max_records_per_game=24"],
+    "games_seen": 722914,
+    "games_used": 4127,
+    "games_skipped_parse": 14436,
+    "records_written": 80369,
+    "phase_records": {"opening": 14634, "middle": 32545, "late": 33190},
+    "manifest": "runs/halfkp64-scratch-v1/v4-t03-unused-capacity-20260910/manifest.json"
+  },
+  "decision": "After excluding every prior train/valid/test game and opening family, local 2018-2026 data contributes only 80,369 independent roots. It cannot supply the planned new 1M roots; download wdoor2017 next, then older years one at a time, while reusing the same exclusion and provenance checks."
 }

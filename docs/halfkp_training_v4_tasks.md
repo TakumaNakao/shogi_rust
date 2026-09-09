@@ -22,10 +22,10 @@
 |---|---|---|---|
 | T01 | rank勾配の符号修正と回帰テスト | — | 完了 |
 | T02 | 外部評価不使用・親モデル・教師形式の検証 | T01 | 完了 |
-| T03 | 棋譜棚卸し、未使用game・holdoutの確定 | — | 実行中 |
+| T03 | 棋譜棚卸し、未使用game・holdoutの確定 | — | 完了（候補不足を確認） |
 | T04 | 5k rootでgen5教師の再解析診断 | T02 | 完了 |
 | T05 | 長時間実行・checkpoint・評価出力の最小整備 | T02、T04 | 実装完了・本番未実行 |
-| T06 | 新規棋譜の抽出、不足時の追加取得 | T03、T04 | 未着手 |
+| T06 | 新規棋譜の抽出、不足時の追加取得 | T03、T04 | 実行中 |
 | T07 | 本教師生成、重複除去、学習データ凍結 | T05、T06 | 未着手 |
 | T08 | 16 epoch学習、条件付き32 epoch | T07 | 未着手 |
 | T09 | 候補1個の選定・凍結・test評価 | T08 | 未着手 |
@@ -61,7 +61,7 @@
   過去のholdoutは引き続き保護し、同じgameやopening familyを学習へ移さない。
 - 完了: `data/inventory.json`、用途別game一覧、`openings/`のmanifestが揃う。抽出・重複判定には既存コードを再利用し、集計器を大規模化しない。
 
-実績（2026-09-10・実行中）: 年別ファイル数、phase3で実際にハッシュ化できた入力数、学習済みgame/record数を [`v4_wdoor_inventory_20260910.json`](../training/halfkp64-scratch-v1/v4_wdoor_inventory_20260910.json) に固定した。2026年の高レート・既知決着・1局24 root上限の容量プローブは173,623 rootだったため、2026単独では新規1Mに不足する。過去holdoutと既学習game/opening familyを除いた候補一覧、およびscreen/確認用opening manifestはT06で確定する。
+実績（2026-09-10）: 年別ファイル数、phase3で実際にハッシュ化できた入力数、学習済みgame/record数を [`v4_wdoor_inventory_20260910.json`](../training/halfkp64-scratch-v1/v4_wdoor_inventory_20260910.json) に固定した。`dataset_build --exclude-base-train --freeze-base-eval`で過去train/valid/testのgame・opening familyを除外した結果、2018–2026の独立候補は80,369 rootのみだった。T03の棚卸し・holdout保護は完了し、1M不足のためT06でWDoor 2017から追加取得へ進む。
 
 ### T04 — 5k rootで教師更新を診断する
 
@@ -95,6 +95,8 @@
 - 両者rate>=4000、原則1棋譜24 root以下。両手番・敗者の終盤を含める。低rateの混入や同一棋譜の密度増加で不足を埋めない。
 - train新規1M、replay 250k、valid 50k、test 50kを生成後に確保できるよう、T04の除外率を使って余裕を持って抽出する。
 - 完了: 既存`dataset_build`・shard処理で候補rootを保存。必要数が確保できない場合は不足年・件数を記録し、長期学習へは進まない。
+
+実績（2026-09-10・実行中）: `dataset_build`に`--exclude-base-train`を追加し、旧trainを含む全旧splitのgame/familyを除外できるようにした。全ローカル年のcapacity probeは80,369 rootで不足と判定。WDoor公式の2017 archiveを取得・SHA検証後、同じ条件で追加候補を評価する。
 
 ### T07 — 教師を生成し、実際の学習入力を確定する
 
