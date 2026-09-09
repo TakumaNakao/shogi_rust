@@ -1,5 +1,10 @@
 # HalfKP scratch 学習方針 v3
 
+> **2026-09-09: 後続作業は[v4](halfkp_training_strategy_v4_20260909.md)へ移管。**
+> Phase Aは完了し、親Gateは246勝245敗9分、50.1%、paired 95% CI 45.7～54.5%、安全違反0で候補不採用。
+> accepted親はgen5のまま。本書内の「次は自己対局」「Gate合格後だけ棋譜拡張」等の旧分岐は実行しない。
+> v4では、旧教師の2M化を飽和とした解釈、game-equal指標の説明を補正し、gen5教師更新と独立棋譜の価値学習を優先する。
+
 - 制定日: 2026-08-30
 - 対象lineage: `halfkp64-scratch-v1`
 - 現在のaccepted head: generation 5、SHA-256
@@ -203,8 +208,8 @@ meaningful-dose MMTOと十分量の自己対局がともにaccepted親を2回改
 | 一次資料再調査 | 完了 | NNUE、MMTO、世代型自己対局、TreeStrapを照合 |
 | PV-MMTO 10k semantic pilot | 完了・候補不採用 | offline改善、安全正常、親Gate 49.8% |
 | Phase A 500k×4 MMTO | 完了（outer 4、loss最小） | safe候補1個を凍結し、親Gateまで完了 |
-| Phase A候補凍結・親Gate | 実行中（250 pair） | strict Gate判定・必要ならgen6登録 |
-| Gate合格後の独立WDoor教師拡張 | Gate合格後 | 1M root/2 outer単位で改善が続く間、strict親Gateを通過 |
+| Phase A候補凍結・親Gate | 完了・候補不採用 | 250 pair、50.1%、CI 45.7～54.5%、gen5維持 |
+| Gate合格後の独立WDoor教師拡張 | v4へ移管 | 次の教師更新・価値学習条件はv4参照 |
 | Phase B自己対局生成器 | 教師拡張飽和後 | 200 unique-game smoke、再開・重複・符号test合格 |
 | Phase B最初の1M世代 | 教師拡張失敗後 | 学習・valid・strict親Gate完了 |
 | 世代更新 | 保留 | 最大4 accepted世代、または停止条件到達 |
