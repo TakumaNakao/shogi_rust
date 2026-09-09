@@ -100,6 +100,11 @@ gen5 Gate reportのSHAを固定値と照合し、train 500,000 / valid 50,000 pr
 実行中プロセスは起動時指定の8スレッドを維持する。次回のresumeまたは後続処理は、commit `e33a7e0`で既定値を
 12スレッドへ変更して起動する。
 
+2026-09-09、outer 1～4のうちfresh-valid lossが最小で安全違反0だったouter 4を
+`candidate-outer4/model.bin`（SHA `9a1d477b…`）として凍結した。`scripts/run_halfkp_phaseA_gate.sh`
+（commit `6ce960b`）が候補manifestとselectionを再生成不能な形で保存し、gen5親との250 opening-pair / 500局
+Gateを起動している。Gateはpair単位で再開でき、候補はGate完了までaccepted registryへ追加しない。
+
 ### 4.2 監査・停止・Gate
 
 - 各outerで同じfresh game-equal validのpair loss、agreement、regret、PV遷移、parameter healthを保存する。
@@ -185,7 +190,8 @@ meaningful-dose MMTOと十分量の自己対局がともにaccepted親を2回改
 | value/rank/self-playコード監査 | 完了 | value経路健全、rank符号問題、自己対局生成器不足を確定 |
 | 一次資料再調査 | 完了 | NNUE、MMTO、世代型自己対局、TreeStrapを照合 |
 | PV-MMTO 10k semantic pilot | 完了・候補不採用 | offline改善、安全正常、親Gate 49.8% |
-| Phase A 500k×4 MMTO | 実行中（outer 1） | safe候補1個を凍結し、親Gateまで完了 |
+| Phase A 500k×4 MMTO | 完了（outer 4、loss最小） | safe候補1個を凍結し、親Gateまで完了 |
+| Phase A候補凍結・親Gate | 実行中（250 pair） | strict Gate判定・必要ならgen6登録 |
 | Phase B自己対局生成器 | 未着手 | 200 unique-game smoke、再開・重複・符号test合格 |
 | Phase B最初の1M世代 | Phase A後 | 学習・valid・strict親Gate完了 |
 | 世代更新 | 保留 | 最大4 accepted世代、または停止条件到達 |
