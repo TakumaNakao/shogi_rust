@@ -2,8 +2,8 @@
 
 - 作成: 2026-09-09
 - 方針の正本: [学習方針v4](halfkp_training_strategy_v4_20260909.md)
-- 本書は実行順、完了条件、進捗を管理する。タスク列挙時点では実装・学習は未着手。
-- 現在の次タスク: **T01**。通常の実装判断はこの手順内で進め、条件変更・不足・異常は記録する。
+- 本書は実行順、完了条件、進捗を管理する。実験結果・対応commit・成果物を追記する。
+- 現在の次タスク: **T02**。通常の実装判断はこの手順内で進め、条件変更・不足・異常は記録する。
 
 ## 共通条件
 
@@ -20,8 +20,8 @@
 
 | ID | 作業 | 依存 | 状態 |
 |---|---|---|---|
-| T01 | rank勾配の符号修正と回帰テスト | — | 未着手 |
-| T02 | 外部評価不使用・親モデル・教師形式の検証 | T01 | 未着手 |
+| T01 | rank勾配の符号修正と回帰テスト | — | 完了 |
+| T02 | 外部評価不使用・親モデル・教師形式の検証 | T01 | 実行中 |
 | T03 | 棋譜棚卸し、未使用game・holdoutの確定 | — | 未着手 |
 | T04 | 5k rootでgen5教師の再解析診断 | T02 | 未着手 |
 | T05 | 長時間実行・checkpoint・評価出力の最小整備 | T02、T04 | 未着手 |
@@ -40,6 +40,8 @@
 - root先後、good/badが同手番・逆手番となる組合せで有限差分を確認する。value-onlyの更新結果が修正前と変わらないことも確認する。
 - 完了: 前回失敗したrankテスト、valueの勾配・scale・resumeテスト、専用MMTOテストが通る。失敗をtest側の期待値変更だけで隠さない。
 
+実績（2026-09-10）: `add_rank_pair`でroot側utilityからchild側raw scoreへ戻す符号を修正し、同手番・逆手番の有限差分テストを通過させた。value経路は変更していない。`RUST_FONTCONFIG_DLOPEN=1 cargo test --locked --features halfkp64,training-tools --lib training_tools::halfkp_search_train::tests`（22件）および全libテスト（131件）を通過。対応commitは後続のT02変更とまとめて記録する。
+
 ### T02 — 学習入力の出典を保証する
 
 - 対象: `src/training_tools/dataset_build.rs`、`halfkp_search_teacher.rs`、`scratch_lineage.rs`、必要な既存テスト。
@@ -47,6 +49,8 @@
   ファイルSHA・provenanceは変わってよい。外部コメントを使ったfilterも禁止する。
 - 起動前に親SHA、accepted registry、親Gate report、semantics v4を検証する。不合格候補・旧教師形式へのfallbackはしない。
 - 完了: 上記の回帰確認と親の検証が通り、実行条件を`config.json`へ保存できる。
+
+実績（2026-09-10・実装中）: `halfkp_search_teacher::InputRecord`へ`deny_unknown_fields`を適用し、既知のWDoorメタデータ（license/source URIを含む）は受理し、`eval_cp`等の外部評価フィールドは拒否する回帰テストを追加した。親SHA・registry・Gate report・config検証と、コメント削除fixtureの確認は未完了。
 
 ### T03 — 新規棋譜と評価集合を分ける
 

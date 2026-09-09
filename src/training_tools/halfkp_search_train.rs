@@ -1878,19 +1878,34 @@ fn add_rank_pair(
     let derivative = sigmoid(x) / options.rank_temperature_cp * weight;
     gradient.rank_loss += (softplus(x) * weight) as f64;
     gradient.pairs += 1;
-    // utility(child) = -score(child)
+    // utility(child) is expressed from the root side's perspective.  The
+    // loss is softplus((utility_bad - utility_good + margin) / temperature),
+    // so minimizing it moves the good utility up and the bad utility down.
+    // Convert that derivative back through the child-side perspective before
+    // passing it to the network (whose raw score is child-side-to-move based).
+    let good_sign = if record.candidates[good_index].child.side_to_move == record.root.side_to_move
+    {
+        1.0
+    } else {
+        -1.0
+    };
+    let bad_sign = if record.candidates[bad_index].child.side_to_move == record.root.side_to_move {
+        1.0
+    } else {
+        -1.0
+    };
     add_position_gradient(
         weights,
         &record.candidates[good_index].child,
         &forwards[good_index],
-        derivative * TARGET_SCALE,
+        -derivative * good_sign * TARGET_SCALE,
         gradient,
     );
     add_position_gradient(
         weights,
         &record.candidates[bad_index].child,
         &forwards[bad_index],
-        -derivative * TARGET_SCALE,
+        derivative * bad_sign * TARGET_SCALE,
         gradient,
     );
 }
@@ -3380,8 +3395,12 @@ mod tests {
         let gradient = compute_record_gradient(&weights, &record, &options);
         assert_eq!(1, gradient.pairs);
         assert_eq!(3, gradient.positions.len());
-        assert!(gradient.positions[1].black_hidden[0] > 0.0);
-        assert!(gradient.positions[2].black_hidden[0] < 0.0);
+        // The game move is the good candidate, so minimizing the loss
+        // decreases its raw-score gradient (gradient descent raises it) and
+        // raises the bad search candidate's gradient (gradient descent lowers
+        // it).
+        assert!(gradient.positions[1].black_hidden[0] < 0.0);
+        assert!(gradient.positions[2].black_hidden[0] > 0.0);
     }
 
     #[test]
@@ -3411,8 +3430,8 @@ mod tests {
         let gradient = compute_record_gradient(&weights, &record, &options);
         assert_eq!(1, gradient.pairs);
         assert_eq!(3, gradient.positions.len());
-        assert!(gradient.positions[1].black_hidden[0] > 0.0);
-        assert!(gradient.positions[2].black_hidden[0] < 0.0);
+        assert!(gradient.positions[1].black_hidden[0] < 0.0);
+        assert!(gradient.positions[2].black_hidden[0] > 0.0);
 
         let metrics = evaluate_record(&weights, &weights, &record, &options);
         assert_eq!(1, metrics.game_rank_eligible);

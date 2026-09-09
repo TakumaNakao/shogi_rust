@@ -115,8 +115,36 @@ struct Args {
 }
 
 #[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct InputRecord {
     sfen: String,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    license_id: Option<String>,
+    #[serde(default)]
+    source_uri: Option<String>,
+    #[serde(default)]
+    schema: Option<String>,
+    #[serde(default)]
+    game_index: Option<u64>,
+    #[serde(default)]
+    game_key: Option<String>,
+    #[serde(default)]
+    opening_family: Option<String>,
+    #[serde(default)]
+    opening_stratum: Option<u16>,
+    #[serde(default)]
+    opening_alias: Option<String>,
+    #[serde(default)]
+    split: Option<String>,
+    #[serde(default)]
+    side_to_move: Option<String>,
+    #[serde(default)]
+    player_rate: Option<i32>,
+    #[serde(default)]
+    opponent_rate: Option<i32>,
     #[serde(default)]
     teacher_move: Option<String>,
     #[serde(default)]
@@ -127,6 +155,14 @@ struct InputRecord {
     ply: Option<u16>,
     #[serde(default)]
     phase: Option<String>,
+    #[serde(default)]
+    termination: Option<String>,
+    #[serde(default)]
+    is_winner_move: Option<bool>,
+    #[serde(default)]
+    legal_moves: Option<usize>,
+    #[serde(default)]
+    in_check: Option<bool>,
     #[serde(default)]
     sample_weight: Option<f32>,
 }
@@ -1333,4 +1369,48 @@ fn print_progress(stats: &Stats) {
         stats.qsearch_nodes,
         stats.duplicate
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InputRecord;
+
+    #[test]
+    fn input_rejects_external_evaluation_fields() {
+        let input = r#"{
+            "sfen":"lnsgkgsnl/1r5b1/p1ppppppp/9/9/9/P1PPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "teacher_move":"７六歩",
+            "eval_cp":1234
+        }"#;
+        assert!(serde_json::from_str::<InputRecord>(input).is_err());
+    }
+
+    #[test]
+    fn input_accepts_dataset_metadata_without_evaluation_target() {
+        let input = r#"{
+            "schema":"rank_value_dataset_v3_position",
+            "source":"sha256:game",
+            "game_key":"game",
+            "opening_family":"opening",
+            "opening_stratum":1,
+            "opening_alias":"居飛車",
+            "split":"train",
+            "side_to_move":"black",
+            "player_rate":5000,
+            "opponent_rate":5000,
+            "sfen":"lnsgkgsnl/1r5b1/p1ppppppp/9/9/9/P1PPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "teacher_move":"７六歩",
+            "license_id":"user-authorized:wdoor-public-archive",
+            "source_uri":"https://wdoor.c.u-tokyo.ac.jp/shogi/",
+            "winner":"black",
+            "result_known":true,
+            "ply":1,
+            "phase":"opening",
+            "termination":"decisive",
+            "is_winner_move":true,
+            "legal_moves":30,
+            "in_check":false
+        }"#;
+        assert!(serde_json::from_str::<InputRecord>(input).is_ok());
+    }
 }
