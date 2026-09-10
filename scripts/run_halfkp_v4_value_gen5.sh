@@ -226,6 +226,24 @@ train_to_epoch() {
   fi
   target/release/halfkp_search_train "${args[@]}"
   require_file "$MODEL"
+  # The trainer may stop before the requested target (for example, its
+  # validation patience can stop epoch 32 at epoch 24).  Name the snapshot
+  # after the completed epoch from the manifest, not after the request; a
+  # requested-epoch filename would make a later --resume run skip work that
+  # was never completed.
+  local completed_epoch
+  completed_epoch="$(python3 - "$MODEL.manifest.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    print(json.load(source)["completed_epoch"])
+PY
+)"
+  [[ "$completed_epoch" =~ ^[0-9]+$ && "$completed_epoch" -gt 0 ]] || {
+    echo "invalid completed_epoch in $MODEL.manifest.json: $completed_epoch" >&2
+    return 1
+  }
+  snapshot="$CHECKPOINT_DIR/model-epoch-${completed_epoch}.bin"
   cp "$MODEL" "$snapshot"
   cp "$MODEL.manifest.json" "$snapshot.manifest.json"
 }
