@@ -1,0 +1,42 @@
+{
+  "schema": "halfkp_v4_t07_final_manifest_v1",
+  "date": "2026-09-10",
+  "run": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910",
+  "lineage": {
+    "parent_generation": 5,
+    "parent_model_sha256": "61c05fe287cb0c0f9b434194802e07c835476b737a37bb9d4063143c63e28637",
+    "teacher_semantics_version": 4,
+    "teacher_semantics_id": "deep-search-target-v1",
+    "external_evaluation_teacher": false
+  },
+  "train": {
+    "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/final/train-dedup.hkst",
+    "manifest_sha256": "2e340647316cddbd74408d9fe80a0fa4b4aa2ac4d65649fe77bc235fbdc9e3cb",
+    "sha256": "eed504a426989159381014d21bc2bade2bd999536a9866b6bc9d63cd59178a16",
+    "bytes": 972023930,
+    "records": 1425255,
+    "unique_network_inputs": 2850479,
+    "dedup_input_records": 1525290,
+    "dedup_rejected_records": 100035,
+    "new_records": 1152203,
+    "replay_records": 273052,
+    "dedup_policy": "input order priority; reject a record if root or any candidate child network input was already retained"
+  },
+  "valid": {
+    "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/final/valid-dedup.hkst",
+    "manifest_sha256": "9806c2ca69438e8ae6c98a73f87ccedc1634e276232cc68a3e014faa14a34104",
+    "sha256": "21487a971001e10bc3097ee590ae26ea3533ebdd1743dd3a03622b6b27393a04",
+    "records": 54997,
+    "train_overlap_removed": 658
+  },
+  "test": {
+    "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/final/test-final.hkst",
+    "manifest_sha256": "baca3603e7ddda368e226ee70e336d5eb9869369262ef5f432dc17a813887bfa",
+    "sha256": "9c996d6138130b9ef6bcaebdca88d4fa50b375d0971468d95c6778d5ce48ef6c",
+    "records": 55275,
+    "train_valid_overlap_removed": 668,
+    "supplemental_records_retained": 8198
+  },
+  "status": "ready_for_training",
+  "next_step": "Run fixed v4 gen5 value training from the accepted parent; do not change data, teacher, or learning-rate settings before the first checkpoint."
+}

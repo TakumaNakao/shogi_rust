@@ -135,6 +135,11 @@ path = "src/bin/halfkp_search_split_filter.rs"
 required-features = ["training-tools"]
 
 [[bin]]
+name = "halfkp_search_dedup"
+path = "src/bin/halfkp_search_dedup.rs"
+required-features = ["training-tools"]
+
+[[bin]]
 name = "halfkp_search_objective_eval"
 path = "src/bin/halfkp_search_objective_eval.rs"
 required-features = ["halfkp64", "training-tools"]

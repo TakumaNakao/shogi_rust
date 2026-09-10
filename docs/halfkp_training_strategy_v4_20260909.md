@@ -234,9 +234,9 @@ policy head、MCTS、network幅拡大、真TreeStrapは現段階では追加し�
 | 5k教師更新・意味/時間診断 | 完了（2026-09-10） | gen4/gen5比較、target出典・符号・所要時間を固定。再ラベルを継続 |
 | v4再開runner・checkpoint・勝敗指標ログ | 実装完了（2026-09-10） | T07データ確定後にfixture、本番4/8/16 epochを実行 |
 | WDoor在庫・旧split除外capacity | 完了（2026-09-10） | 2018–2026は独立80,369 root。2017高rateは1,362、2016高rateは0。2017 rateメタデータなし分岐は独立1Mを確認 |
-| rateメタデータなし分岐の小規模診断 | 次工程 | gen5教師の結果較正・失敗率・phase/勝敗分布を高rate基準と比較し、採否を固定 |
-| 独立1M＋replay 250k構築・gen5再解析 | 条件付き | 分岐採用後に実受理数、game数、holdout非重複、外部評価不使用を確定 |
-| 16 epoch、条件付き32 epoch | 未実行 | 固定valid・health・checkpoint選択を記録 |
+| rateメタデータなし分岐の小規模診断 | 完了（2026-09-10） | gen5教師の結果較正・失敗率・phase/勝敗分布を記録し、条件付き採用 |
+| 独立1M＋replay 250k構築・gen5再解析 | 完了（2026-09-10） | dedup後train1,425,255（新規1,152,203/replay273,052）、valid54,997、test55,275。final-manifest固定 |
+| 16 epoch、条件付き32 epoch | 実行準備完了 | 固定final-manifest、valid・health・checkpoint選択を記録 |
 | 親screen・独立確認 | 未実行 | 判定完了。有望候補のみ確認対局 |
 | 2M/4M/10M・次世代教師更新 | 条件付き | 上記Cの継続条件に従う |
 | 自己対局 | 最終手段・保留 | 上記Dの診断後に判断 |

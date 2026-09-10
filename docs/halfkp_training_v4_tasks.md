@@ -26,8 +26,8 @@
 | T04 | 5k rootでgen5教師の再解析診断 | T02 | 完了 |
 | T05 | 長時間実行・checkpoint・評価出力の最小整備 | T02、T04 | 実装完了・本番未実行 |
 | T06 | 新規棋譜の抽出、不足時の追加取得 | T03、T04 | 完了（高rate不足・rate欠損分岐を診断） |
-| T07 | 本教師生成、重複除去、学習データ凍結 | T05、T06 | 教師生成中（重複検査待ち） |
-| T08 | 16 epoch学習、条件付き32 epoch | T07 | 未着手 |
+| T07 | 本教師生成、重複除去、学習データ凍結 | T05、T06 | 完了（final-manifest凍結） |
+| T08 | 16 epoch学習、条件付き32 epoch | T07 | 実行準備完了 |
 | T09 | 候補1個の選定・凍結・test評価 | T08 | 未着手 |
 | T10 | 親との250 pair screen | T09 | 未着手 |
 | T11 | 独立250 pair確認・昇格判定 | T10・有望時 | 条件付き |
@@ -106,7 +106,7 @@ T06分岐記録（2026-09-10）:
 
 実績（2026-09-10）: rateメタデータなし2017年の固定5,000 rootをgen5・100k nodes/rootで再解析した。4,756件を出力（search_failed 137、resource_limited 107、duplicates 0）。教師の勝敗Brierは0.202751、log-lossは0.589687で、opening/middlegame/endgameのphase値も有限だった。詳細は [`v4_t06_2017_norate_diagnostic_20260910.json`](../training/halfkp64-scratch-v1/v4_t06_2017_norate_diagnostic_20260910.json)。高rateサンプルとは母集団が異なるため優劣とは判定せず、分岐を条件付き採用した。2016年の同分岐から追加300,000 rootを抽出し、教師失敗・network入力重複の補充へ回す。
 
-T07入力を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/raw/`へ固定した。新規2017分岐1,000,000 root＋既存raw trainからのreplay 250,000 root、凍結valid/test（各57,594/52,127）を含む。初回教師生成はtrain 1,193,073件となり、network入力を全件一意化すると1,121,023件（新規893,312、replay227,711）だった。目標未達を補うため、2016分岐300,000 rootと追加replay 50,000 rootを抽出した。追加教師生成はgen5・semantics v4・100k nodes/root・12 workerで実行中。全shard完了後に一意化済み入力数を再計算し、学習前にfinal-manifestを凍結する。
+T07入力を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/raw/`へ固定した。新規2017分岐1,000,000 root＋既存raw trainからのreplay 250,000 root、凍結valid/test（各57,594/52,127）を含む。初回教師生成はtrain 1,193,073件となり、network入力を全件一意化すると1,121,023件（新規893,312、replay227,711）だったため、2016分岐300,000 rootと追加replay 50,000 rootを補充した。追加教師生成を完了し、dedup後の最終trainは1,425,255件（新規1,152,203、replay273,052）、valid 54,997件、test 55,275件となった。root・candidate childのnetwork入力を一意化し、train/valid/test間の重複も除去した。詳細は [`v4_t07_final_manifest_20260910.json`](../training/halfkp64-scratch-v1/v4_t07_final_manifest_20260910.json)。T07は完了とし、T08はこのmanifest以外の入力へ差し替えず開始する。
 
 ### T07 — 教師を生成し、実際の学習入力を確定する
 

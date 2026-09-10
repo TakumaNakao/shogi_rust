@@ -25,6 +25,12 @@ WORKERS="${WORKERS:-12}"
 MAX_EPOCH="${MAX_EPOCH:-16}"
 SEED="${SEED:-20260910}"
 TEACHERS_ONLY="${TEACHERS_ONLY:-0}"
+FINAL_TRAIN="${FINAL_TRAIN:-}"
+FINAL_VALID="${FINAL_VALID:-}"
+FINAL_TEST="${FINAL_TEST:-}"
+TRAIN_TEACHERS=()
+VALID_TEACHERS=()
+TEST_TEACHERS=()
 
 require_file() {
   [[ -s "$1" ]] || { echo "required artifact is missing or empty: $1" >&2; exit 2; }
@@ -60,6 +66,13 @@ for name in ("train", "valid", "test"):
 if manifest.get("freeze_base_eval") is not True:
     raise SystemExit("v4 raw dataset must freeze the prior evaluation split")
 PY
+}
+
+validate_final_teachers() {
+  for path in "$FINAL_TRAIN" "$FINAL_VALID" "$FINAL_TEST"; do
+    require_file "$path"
+    require_file "$path.manifest.json"
+  done
 }
 
 write_config() {
@@ -167,6 +180,24 @@ filter_validation() {
   target/release/halfkp_search_split_filter "${args[@]}"
 }
 
+set_teacher_inputs() {
+  if [[ -n "$FINAL_TRAIN" ]]; then
+    TRAIN_TEACHERS=("$FINAL_TRAIN")
+    VALID_TEACHERS=("$FINAL_VALID")
+    TEST_TEACHERS=("$FINAL_TEST")
+    return
+  fi
+  TRAIN_TEACHERS=()
+  VALID_TEACHERS=("$VALID_FILTERED")
+  TEST_TEACHERS=()
+  local path
+  for path in "$TEACHER_DIR"/train-*.hkst; do [[ -e "$path" ]] && TRAIN_TEACHERS+=("$path"); done
+  for path in "$TEACHER_DIR"/test-*.hkst; do [[ -e "$path" ]] && TEST_TEACHERS+=("$path"); done
+  ((${#TRAIN_TEACHERS[@]} > 0 && ${#VALID_TEACHERS[@]} > 0 && ${#TEST_TEACHERS[@]} > 0)) || {
+    echo "teacher inputs are missing" >&2; return 1;
+  }
+}
+
 if_teachers_only() {
   if [[ "$TEACHERS_ONLY" == "1" ]]; then
     echo "v4 gen5 teacher generation complete (TEACHERS_ONLY=1): $RUN_DIR"
@@ -179,9 +210,9 @@ train_to_epoch() {
   [[ -s "$snapshot" ]] && return
   mkdir -p "$CHECKPOINT_DIR"
   local args=() path
-  for path in "$TEACHER_DIR"/train-*.hkst; do [[ -e "$path" ]] && args+=(--train "$path"); done
-  args+=(--valid "$VALID_FILTERED")
-  for path in "$TEACHER_DIR"/test-*.hkst; do [[ -e "$path" ]] && args+=(--test "$path"); done
+  for path in "${TRAIN_TEACHERS[@]}"; do args+=(--train "$path"); done
+  for path in "${VALID_TEACHERS[@]}"; do args+=(--valid "$path"); done
+  for path in "${TEST_TEACHERS[@]}"; do args+=(--test "$path"); done
   args+=(--init "$PARENT" --model-manifest "$PARENT_MANIFEST" --promotion-registry "$REGISTRY"
     --gate-report "$GATE_REPORT" --parent-generation 5 --output "$MODEL" --epochs "$target_epoch"
     --batch-size 128 --learning-rate 0.0003 --output-learning-rate 0.00003 --kappa-cp 1352.7871
@@ -235,13 +266,19 @@ PY
 }
 
 validate_parent
-validate_raw
 build_tools
 write_config
-make_shards
-generate_teachers
-filter_validation
-if_teachers_only
+if [[ -n "$FINAL_TRAIN" ]]; then
+  validate_final_teachers
+  set_teacher_inputs
+else
+  validate_raw
+  make_shards
+  generate_teachers
+  filter_validation
+  if_teachers_only
+  set_teacher_inputs
+fi
 train_to_epoch 4 0
 if ((MAX_EPOCH >= 8)); then train_to_epoch 8 1; fi
 if ((MAX_EPOCH >= 16)); then train_to_epoch 16 1; fi
