@@ -104,9 +104,9 @@ T06分岐記録（2026-09-10）:
 - rateメタデータなし: 2017年の48,563局から独立1,000,000 rootを得た。WDoor古年分では対局者名にレートが記録されない形式が多く、これは実力が低いことの証明ではないが、選別不能なデータを含むため高rate集合と混ぜない。
 - 次の判定: rateメタデータなしの1Mを直ちに本番教師へ投入せず、同じgen5教師で小規模な教師品質・結果較正を確認する。問題がなければ、この分岐を新規1Mとしてreplay 250kと組み合わせ、T07の重複除去・凍結へ進む。問題があれば2017分岐を不採用として、年をさらに遡る前に不足と原因を記録する。
 
-実績（2026-09-10）: rateメタデータなし2017年の固定5,000 rootをgen5・100k nodes/rootで再解析した。4,756件を出力（search_failed 137、resource_limited 107、duplicates 0）。教師の勝敗Brierは0.202751、log-lossは0.589687で、opening/middlegame/endgameのphase値も有限だった。詳細は [`v4_t06_2017_norate_diagnostic_20260910.json`](../training/halfkp64-scratch-v1/v4_t06_2017_norate_diagnostic_20260910.json)。高rateサンプルとは母集団が異なるため優劣とは判定せず、分岐を条件付き採用した。
+実績（2026-09-10）: rateメタデータなし2017年の固定5,000 rootをgen5・100k nodes/rootで再解析した。4,756件を出力（search_failed 137、resource_limited 107、duplicates 0）。教師の勝敗Brierは0.202751、log-lossは0.589687で、opening/middlegame/endgameのphase値も有限だった。詳細は [`v4_t06_2017_norate_diagnostic_20260910.json`](../training/halfkp64-scratch-v1/v4_t06_2017_norate_diagnostic_20260910.json)。高rateサンプルとは母集団が異なるため優劣とは判定せず、分岐を条件付き採用した。2016年の同分岐から追加300,000 rootを抽出し、教師失敗・network入力重複の補充へ回す。
 
-T07入力を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/raw/`へ固定した。新規2017分岐1,000,000 root＋既存raw trainからのreplay 250,000 root、凍結valid/test（各57,594/52,127）を含む。教師生成はgen5・semantics v4・100k nodes/root・12 workerで開始済み。教師shard完了後にnetwork input重複を検査し、重複があれば学習前に除外する。教師生成中は学習を開始しない。
+T07入力を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/raw/`へ固定した。新規2017分岐1,000,000 root＋既存raw trainからのreplay 250,000 root、凍結valid/test（各57,594/52,127）を含む。初回教師生成はtrain 1,193,073件となり、network入力を全件一意化すると1,121,023件（新規893,312、replay227,711）だった。目標未達を補うため、2016分岐300,000 rootと追加replay 50,000 rootを抽出した。追加教師生成はgen5・semantics v4・100k nodes/root・12 workerで実行中。全shard完了後に一意化済み入力数を再計算し、学習前にfinal-manifestを凍結する。
 
 ### T07 — 教師を生成し、実際の学習入力を確定する
 

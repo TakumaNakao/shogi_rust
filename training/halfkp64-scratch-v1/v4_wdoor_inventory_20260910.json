@@ -85,8 +85,18 @@
         "records_written": 0,
         "phase_records": {"opening": 0, "middle": 0, "late": 0},
         "manifest": "runs/halfkp64-scratch-v1/v4-t06-2016-capacity-20260910/manifest.json"
+      },
+      "norate_capacity": {
+        "filters": ["exclude prior train/valid/test game and opening families", "known_result", "decisive", "max_records_per_game=24"],
+        "games_seen": 15697,
+        "games_used": 14187,
+        "games_skipped_parse": 3462,
+        "records_written": 300000,
+        "records_filtered": 1428331,
+        "phase_records": {"opening": 85845, "middle": 133391, "late": 80764},
+        "manifest": "runs/halfkp64-scratch-v1/v4-t06-2016-norate-capacity-20260910/manifest.json"
       }
     }
   },
-  "decision": "The highrate policy is not sufficient for the planned 1M independent roots: local 2018-2026 contributes 80,369 roots, 2017 contributes 1,362, and 2016 contributes 0. The official 2017 archive can provide 1M independent roots only when the missing historical rate metadata is not used as a quality filter; this is recorded as a separate lowrate branch, not a silent relaxation. Keep the highrate branch rejected and run a documented lowrate-vs-highrate data comparison before expensive training."
+  "decision": "The highrate policy is not sufficient for the planned 1M independent roots: local 2018-2026 contributes 80,369 roots, 2017 contributes 1,362, and 2016 contributes 0. The official 2017 archive can provide 1M independent roots only when the missing historical rate metadata is not used as a quality filter; 2016 supplies an additional 300,000-root metadata-missing branch. These branches remain isolated from the highrate branch and are used only to replace teacher-search failures and network-input duplicates; no silent quality-filter relaxation is recorded."
 }
