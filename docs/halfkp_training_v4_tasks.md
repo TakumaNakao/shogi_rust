@@ -3,7 +3,7 @@
 - 作成: 2026-09-09
 - 方針の正本: [学習方針v4](halfkp_training_strategy_v4_20260909.md)
 - 本書は実行順、完了条件、進捗を管理する。実験結果・対応commit・成果物を追記する。
-- 現在の次タスク: **T10の親screen**。通常の実装判断はこの手順内で進め、条件変更・不足・異常は記録する。
+- 現在の次タスク: **T12のv2.5.0比較**。通常の実装判断はこの手順内で進め、条件変更・不足・異常は記録する。
 
 ## 共通条件
 
@@ -30,8 +30,8 @@
 | T08 | 16 epoch学習、条件付き32 epoch | T07 | 完了（epoch24で早期停止） |
 | T09 | 候補1個の選定・凍結・test評価 | T08 | 完了（epoch24候補を凍結） |
 | T10 | 親との250 pair screen | T09 | 完了（55.7%、安全Gate合格） |
-| T11 | 独立250 pair確認・昇格判定 | T10・有望時 | 実行中（2026-09-11開始） |
-| T12 | v2.5.0比較・結果記録・次段階決定 | T10またはT11 | 未着手 |
+| T11 | 独立250 pair確認・昇格判定 | T10・有望時 | 完了（56.2%、generation6昇格） |
+| T12 | v2.5.0比較・結果記録・次段階決定 | T10またはT11 | 実行中（2026-09-11開始） |
 
 ### T01 — rank勾配の符号を直す
 
@@ -119,6 +119,10 @@ T10を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-screen-20k-250pair/
 T10は250 pair / 500局を正常完了し、候補274勝・親217勝・9分、score `0.557`となった。探索失敗・missing root・非合法手・非有限値は全て0で、安全Gateとscreenの昇格Gateを通過した。reportは`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-screen-20k-250pair/report.json`に保存した。
 
 T11確認を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-confirm-20k-250pair/`で開始した。T10と重ならないreserve 251–500行（SHA256 `0f64c426237fc9355501b36197a9f5007f97286155f7b68acc7f66478f26336a`）を使用し、20,000 nodes/手・先後交換500局・bootstrap 100,000 resamples（seed 20260911）を固定する。確認側単独でscore>=52.5%、paired 95%下限>50%、安全違反0を満たした場合のみ昇格判定へ進む。
+
+T11は250 pair / 500局を正常完了し、候補274勝・親212勝・14分、score `0.562`、paired bootstrap 95% CI `0.520–0.604`、安全違反0となった。確認側単独の昇格条件を満たしたため、候補SHA `162e17ba…`をgeneration 6としてregistryへ登録した。決定詳細は [`v4_t11_promotion_decision_20260911.json`](../training/halfkp64-scratch-v1/v4_t11_promotion_decision_20260911.json)、対応commitは`813ba7e`。
+
+T12比較を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/t12-v250-taya36-5s-50g-20260911/`で開始した。候補とv2.5.0をtaya36、両者5秒/手、50局、depth64・max256 plies、seed 20260911、threads1で比較する。比較結果はrelease判断専用で、学習教師・候補選定・registry判定へ逆流させない。
 
 ### T07 — 教師を生成し、実際の学習入力を確定する
 
