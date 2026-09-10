@@ -1,0 +1,103 @@
+{
+  "schema": "halfkp_v4_t08_training_report_v1",
+  "date": "2026-09-10",
+  "run": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910",
+  "lineage": {
+    "parent_generation": 5,
+    "parent_model_sha256": "61c05fe287cb0c0f9b434194802e07c835476b737a37bb9d4063143c63e28637",
+    "parent_manifest_sha256": "0357a5cd6275b0c773e1a4295b254bc755c2686982f2f65a91d7ef5b20a15efd",
+    "parent_gate_report_sha256": "3e8ed317d96ca64d60b188824be953cfd0656f8e1b0a3ad2a2bb1f2337627fab",
+    "final_dataset_manifest_sha256": "8d2ae42b35b8d384017b4c1601da6df6584ba51cee9f37a79716a3c723554290"
+  },
+  "inputs": {
+    "train_records": 1425255,
+    "valid_records": 54997,
+    "test_records": 55275,
+    "train_network_inputs": 2850479,
+    "valid_network_inputs": 107446,
+    "network_overlap": 0,
+    "train_sha256": "eed504a426989159381014d21bc2bade2bd999536a9866b6bc9d63cd59178a16",
+    "valid_sha256": "21487a971001e10bc3097ee590ae26ea3533ebdd1743dd3a03622b6b27393a04",
+    "test_sha256": "9c996d6138130b9ef6bcaebdca88d4fa50b375d0971468d95c6778d5ce48ef6c"
+  },
+  "configuration": {
+    "config_sha256": "457cda0240dc9f789d047a4147777d2c0504b1550d959111a7fb6a66ad42f6f4",
+    "optimizer": "adagrad",
+    "feature_learning_rate": 0.0003,
+    "output_learning_rate": 0.00003,
+    "batch_size": 128,
+    "search_mix": 0.8,
+    "value_weight": 1.0,
+    "rank_weight": 0.0,
+    "workers": 12,
+    "requested_epochs": 32,
+    "seed": 20260910
+  },
+  "training": {
+    "status": "completed_with_trainer_early_stop",
+    "completed_epoch": 24,
+    "early_stop_reason": "validation improvement remained below the trainer minimum-improvement/patience rule after epoch 22",
+    "metrics_csv": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/train.csv",
+    "checkpoints": [
+      {
+        "epoch": 4,
+        "valid_value_loss": 0.009465893570999829,
+        "valid_model_result_brier": 0.21000782,
+        "valid_model_result_logloss": 0.63342331,
+        "model_sha256": "f4ffe5260427ab2ba5eddc1daa9f51349e2dda325e971d99dec94a19edbbf7cd"
+      },
+      {
+        "epoch": 8,
+        "valid_value_loss": 0.009447098984697255,
+        "valid_model_result_brier": 0.20974965,
+        "valid_model_result_logloss": 0.63281697,
+        "model_sha256": "33c97f76cf6fb468fb3edb7d35aa5909897ccdad76906499655fc960015187d1"
+      },
+      {
+        "epoch": 16,
+        "valid_value_loss": 0.009431631854594374,
+        "valid_model_result_brier": 0.20946161,
+        "valid_model_result_logloss": 0.63213719,
+        "model_sha256": "1cc0da7f9355e87aaf8f4489cbc9a69f55db56c494ce4faf262998129565f3ef"
+      },
+      {
+        "epoch": 24,
+        "valid_value_loss": 0.009426528662339256,
+        "valid_model_result_brier": 0.20928662,
+        "valid_model_result_logloss": 0.63172021,
+        "model_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc"
+      }
+    ]
+  },
+  "parent_initial_valid": {
+    "records": 54997,
+    "value_loss": 0.00957385,
+    "model_result_brier": 0.21128797,
+    "model_result_logloss": 0.636422,
+    "evaluation_log": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/parent-eval/stdout.log"
+  },
+  "selected_candidate": {
+    "selection_rule": "minimum fixed-validation mixed value loss; ties resolve to earlier epoch",
+    "epoch": 24,
+    "model_path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/candidate/model-epoch24.bin",
+    "model_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+    "manifest_sha256": "8973f9f82eacb06cb77afe373a05173056136f4a0e3eac2919aa73a7891b7f43",
+    "valid_value_loss": 0.009426528662339256,
+    "valid_model_result_brier": 0.2092866172484341,
+    "valid_model_result_logloss": 0.6317202054647231,
+    "test_evaluation": {
+      "records": 55275,
+      "value_loss": 0.009308930055163775,
+      "model_result_brier": 0.20761537449681164,
+      "model_result_logloss": 0.6272382816431549,
+      "source": "model.bin.manifest.json final_test; evaluated after fixed validation selection"
+    }
+  },
+  "decision": {
+    "t08": "complete",
+    "t09": "candidate_frozen_test_complete",
+    "t10": "next",
+    "parent_improvement_offline": true,
+    "promotion": "not_yet; requires screen and independent confirmation"
+  }
+}

@@ -1,7 +1,7 @@
 # HalfKP scratch 学習方針 v4 — 教師更新と独立棋譜による価値学習
 
 - 決定日: 2026-09-09
-- 状態: 調査・計画策定完了。以下の修正・新規学習は未実行
+- 状態: T01–T09を実施済み。epoch24候補を凍結し、T10親screen待ち
 - 調査対象commit: `afe766b`、lineage: `halfkp64-scratch-v1`
 - accepted親: gen5、SHA `61c05fe287cb0c0f9b434194802e07c835476b737a37bb9d4063143c63e28637`
 - 本書が[旧v3](halfkp_training_strategy_v3_20260830.md)の後続作業を置き換える。
@@ -236,9 +236,10 @@ policy head、MCTS、network幅拡大、真TreeStrapは現段階では追加し�
 | WDoor在庫・旧split除外capacity | 完了（2026-09-10） | 2018–2026は独立80,369 root。2017高rateは1,362、2016高rateは0。2017 rateメタデータなし分岐は独立1Mを確認 |
 | rateメタデータなし分岐の小規模診断 | 完了（2026-09-10） | gen5教師の結果較正・失敗率・phase/勝敗分布を記録し、条件付き採用 |
 | 独立1M＋replay 250k構築・gen5再解析 | 完了（2026-09-10） | dedup後train1,425,255（新規1,152,203/replay273,052）、valid54,997、test55,275。final-manifest固定 |
-| 16 epoch、条件付き32 epoch | 実行準備完了 | 固定final-manifest、valid・health・checkpoint選択を記録 |
-| 親screen・独立確認 | 未実行 | 判定完了。有望候補のみ確認対局 |
+| 16 epoch、条件付き32 epoch | 完了（2026-09-10、epoch24停止） | valid改善・health正常、report固定 |
+| 候補選定・凍結・test | 完了（2026-09-10、epoch24） | 候補SHA `162e17ba…`、test report固定 |
+| 親screen・独立確認 | 次（T10） | 未使用250 pair screen。条件達成時のみT11 |
 | 2M/4M/10M・次世代教師更新 | 条件付き | 上記Cの継続条件に従う |
 | 自己対局 | 最終手段・保留 | 上記Dの診断後に判断 |
 
-2026-09-10時点でrank勾配の符号修正と教師入力の厳格パースを実装した。WDoor公式の2017/2016 archiveをSHA検証し、rate>=4000のままでは新規1Mに届かないことを確認した。2017年のrateメタデータなし分岐だけが1Mを満たすため、これを高rate集合と混ぜず、小規模な教師品質診断を先に行う。重みの差し替え・本番学習・不合格候補の昇格は行っていない。
+2026-09-10時点でrank勾配の符号修正、教師入力の厳格パース、rateメタデータ欠損分岐の診断、gen5教師のdedup・凍結を完了した。WDoor公式の2017/2016 archiveをSHA検証し、rate>=4000のままでは新規1Mに届かないため、rateメタデータなし分岐を高rate集合と混ぜず採用した。総train 1,425,255件でepoch32を要求したがtrainerの通常の改善停止によりepoch24で完了し、固定valid最小の候補SHA `162e17ba…`を凍結した。昇格・v2.5.0比較はまだ行わず、次はT10の未使用250 opening pair screenである。

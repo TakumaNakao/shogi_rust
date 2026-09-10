@@ -3,7 +3,7 @@
 - 作成: 2026-09-09
 - 方針の正本: [学習方針v4](halfkp_training_strategy_v4_20260909.md)
 - 本書は実行順、完了条件、進捗を管理する。実験結果・対応commit・成果物を追記する。
-- 現在の次タスク: **T06の分岐判定**。通常の実装判断はこの手順内で進め、条件変更・不足・異常は記録する。
+- 現在の次タスク: **T10の親screen**。通常の実装判断はこの手順内で進め、条件変更・不足・異常は記録する。
 
 ## 共通条件
 
@@ -24,11 +24,11 @@
 | T02 | 外部評価不使用・親モデル・教師形式の検証 | T01 | 完了 |
 | T03 | 棋譜棚卸し、未使用game・holdoutの確定 | — | 完了（候補不足を確認） |
 | T04 | 5k rootでgen5教師の再解析診断 | T02 | 完了 |
-| T05 | 長時間実行・checkpoint・評価出力の最小整備 | T02、T04 | 実装完了・本番未実行 |
+| T05 | 長時間実行・checkpoint・評価出力の最小整備 | T02、T04 | 完了（本番で再開・指標保存を確認） |
 | T06 | 新規棋譜の抽出、不足時の追加取得 | T03、T04 | 完了（高rate不足・rate欠損分岐を診断） |
 | T07 | 本教師生成、重複除去、学習データ凍結 | T05、T06 | 完了（final-manifest凍結） |
-| T08 | 16 epoch学習、条件付き32 epoch | T07 | 実行準備完了 |
-| T09 | 候補1個の選定・凍結・test評価 | T08 | 未着手 |
+| T08 | 16 epoch学習、条件付き32 epoch | T07 | 完了（epoch24で早期停止） |
+| T09 | 候補1個の選定・凍結・test評価 | T08 | 完了（epoch24候補を凍結） |
 | T10 | 親との250 pair screen | T09 | 未着手 |
 | T11 | 独立250 pair確認・昇格判定 | T10・有望時 | 条件付き |
 | T12 | v2.5.0比較・結果記録・次段階決定 | T10またはT11 | 未着手 |
@@ -107,6 +107,12 @@ T06分岐記録（2026-09-10）:
 実績（2026-09-10）: rateメタデータなし2017年の固定5,000 rootをgen5・100k nodes/rootで再解析した。4,756件を出力（search_failed 137、resource_limited 107、duplicates 0）。教師の勝敗Brierは0.202751、log-lossは0.589687で、opening/middlegame/endgameのphase値も有限だった。詳細は [`v4_t06_2017_norate_diagnostic_20260910.json`](../training/halfkp64-scratch-v1/v4_t06_2017_norate_diagnostic_20260910.json)。高rateサンプルとは母集団が異なるため優劣とは判定せず、分岐を条件付き採用した。2016年の同分岐から追加300,000 rootを抽出し、教師失敗・network入力重複の補充へ回す。
 
 T07入力を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/raw/`へ固定した。新規2017分岐1,000,000 root＋既存raw trainからのreplay 250,000 root、凍結valid/test（各57,594/52,127）を含む。初回教師生成はtrain 1,193,073件となり、network入力を全件一意化すると1,121,023件（新規893,312、replay227,711）だったため、2016分岐300,000 rootと追加replay 50,000 rootを補充した。追加教師生成を完了し、dedup後の最終trainは1,425,255件（新規1,152,203、replay273,052）、valid 54,997件、test 55,275件となった。root・candidate childのnetwork入力を一意化し、train/valid/test間の重複も除去した。詳細は [`v4_t07_final_manifest_20260910.json`](../training/halfkp64-scratch-v1/v4_t07_final_manifest_20260910.json)。T07は完了とし、T08はこのmanifest以外の入力へ差し替えず開始する。
+
+### T08/T09 実績（2026-09-10）
+
+固定final-manifestのtrain 1,425,255件、valid 54,997件、test 55,275件を、AdaGrad・feature LR 3e-4・output LR 3e-5・batch128・12 workerで学習した。epoch16の継続条件を満たしたためepoch32を要求したが、trainerのvalidation最小改善・patienceによりepoch24で正常終了した（非finite・artifact不整合なし）。valid混合value lossはepoch4 `0.00946589`、epoch8 `0.00944710`、epoch16 `0.00943163`、epoch24 `0.00942653`と改善し、モデル勝敗Brier/log-lossはepoch24で`0.20928662/0.63172021`だった。親の同一valid初期値は`0.00957385`、`0.21128797/0.636422`であり、offline指標は改善した。
+
+固定validの混合value loss最小を選ぶ規則によりepoch24を唯一の候補として`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/candidate/model-epoch24.bin`へ凍結した。凍結後の独立test（55,275件）はvalue loss `0.00930893`、モデル勝敗Brier/log-loss `0.20761537/0.62723828`。全指標、SHA、停止理由は [`v4_t08_training_report_20260910.json`](../training/halfkp64-scratch-v1/v4_t08_training_report_20260910.json) に記録した。T08/T09では昇格・v2.5.0比較を行わず、次はT10の未使用250 opening pair screenとする。
 
 ### T07 — 教師を生成し、実際の学習入力を確定する
 

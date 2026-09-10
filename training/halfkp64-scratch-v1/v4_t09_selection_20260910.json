@@ -1,0 +1,33 @@
+{
+  "schema": "halfkp_v4_candidate_selection_v1",
+  "date": "2026-09-10",
+  "run": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910",
+  "selection_rule": "minimum fixed-validation mixed value loss; ties resolve to earlier epoch",
+  "parent": {
+    "generation": 5,
+    "model_sha256": "61c05fe287cb0c0f9b434194802e07c835476b737a37bb9d4063143c63e28637",
+    "valid_value_loss": 0.00957385,
+    "valid_model_result_brier": 0.21128797,
+    "valid_model_result_logloss": 0.636422
+  },
+  "candidate": {
+    "epoch": 24,
+    "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/candidate/model-epoch24.bin",
+    "model_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+    "manifest_sha256": "8973f9f82eacb06cb77afe373a05173056136f4a0e3eac2919aa73a7891b7f43",
+    "valid_value_loss": 0.009426528662339256,
+    "valid_model_result_brier": 0.2092866172484341,
+    "valid_model_result_logloss": 0.6317202054647231,
+    "test_records": 55275,
+    "test_value_loss": 0.009308930055163775,
+    "test_model_result_brier": 0.20761537449681164,
+    "test_model_result_logloss": 0.6272382816431549
+  },
+  "health": {
+    "nonfinite": false,
+    "artifact_consistent": true,
+    "network_split_overlap": 0
+  },
+  "decision": "freeze_one_candidate_then_run_t10_parent_screen",
+  "report": "training/halfkp64-scratch-v1/v4_t08_training_report_20260910.json"
+}
