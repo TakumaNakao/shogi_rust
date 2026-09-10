@@ -29,8 +29,8 @@
 | T07 | 本教師生成、重複除去、学習データ凍結 | T05、T06 | 完了（final-manifest凍結） |
 | T08 | 16 epoch学習、条件付き32 epoch | T07 | 完了（epoch24で早期停止） |
 | T09 | 候補1個の選定・凍結・test評価 | T08 | 完了（epoch24候補を凍結） |
-| T10 | 親との250 pair screen | T09 | 実行中（2026-09-10開始） |
-| T11 | 独立250 pair確認・昇格判定 | T10・有望時 | 条件付き |
+| T10 | 親との250 pair screen | T09 | 完了（55.7%、安全Gate合格） |
+| T11 | 独立250 pair確認・昇格判定 | T10・有望時 | 実行中（2026-09-11開始） |
 | T12 | v2.5.0比較・結果記録・次段階決定 | T10またはT11 | 未着手 |
 
 ### T01 — rank勾配の符号を直す
@@ -115,6 +115,10 @@ T07入力を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/raw/`へ固定し�
 固定validの混合value loss最小を選ぶ規則によりepoch24を唯一の候補として`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/candidate/model-epoch24.bin`へ凍結した。凍結後の独立test（55,275件）はvalue loss `0.00930893`、モデル勝敗Brier/log-loss `0.20761537/0.62723828`。全指標、SHA、停止理由は [`v4_t08_training_report_20260910.json`](../training/halfkp64-scratch-v1/v4_t08_training_report_20260910.json) に記録した。T08/T09では昇格・v2.5.0比較を行わず、次はT10の未使用250 opening pair screenとする。
 
 T10を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-screen-20k-250pair/`で開始した。reserve `final_openings_seed20260730_2000.jsonl`の先頭250 unique pair、20,000 nodes/手、max depth64・256 plies、先後交換500局、paired bootstrap 100,000 resamples（seed 20260910）を固定する。resumable runnerをsetsid/nohupで実行し、pair artifact・`run.json`・reportを保存する。screen完了前に候補を差し替えず、T11確認対局や昇格へ進めない。
+
+T10は250 pair / 500局を正常完了し、候補274勝・親217勝・9分、score `0.557`となった。探索失敗・missing root・非合法手・非有限値は全て0で、安全Gateとscreenの昇格Gateを通過した。reportは`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-screen-20k-250pair/report.json`に保存した。
+
+T11確認を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-confirm-20k-250pair/`で開始した。T10と重ならないreserve 251–500行（SHA256 `0f64c426237fc9355501b36197a9f5007f97286155f7b68acc7f66478f26336a`）を使用し、20,000 nodes/手・先後交換500局・bootstrap 100,000 resamples（seed 20260911）を固定する。確認側単独でscore>=52.5%、paired 95%下限>50%、安全違反0を満たした場合のみ昇格判定へ進む。
 
 ### T07 — 教師を生成し、実際の学習入力を確定する
 
