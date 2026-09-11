@@ -70,7 +70,7 @@ PY
     rm -f "$RAW"/train.jsonl "$RAW"/valid.jsonl "$RAW"/test.jsonl "$RAW"/manifest.json.tmp
     python3 - "$RAW_NEW" "$BASE" "$RAW" "$REPLAY_TARGET" <<'PY'
 import pathlib,shutil,sys
-new,old,out,replay=map(pathlib.Path,sys.argv[1:4]); replay=int(sys.argv[4]); out.mkdir(parents=True,exist_ok=True)
+new,old,out=map(pathlib.Path,sys.argv[1:4]); replay=int(sys.argv[4]); out.mkdir(parents=True,exist_ok=True)
 with (out/'train.jsonl').open('wb') as d:
   with (new/'train.jsonl').open('rb') as s: shutil.copyfileobj(s,d)
   with (old/'train.jsonl').open('rb') as s:
