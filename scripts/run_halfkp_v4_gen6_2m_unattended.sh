@@ -51,7 +51,9 @@ build_tools() {
 build_raw() {
   mkdir -p "$RAW_NEW" "$RAW"
   if [[ ! -s "$RAW_NEW/manifest.json" ]]; then
-    if compgen -G "$RAW_NEW/*.jsonl" >/dev/null; then echo "partial raw-new"; exit 2; fi
+    # A killed dataset_build leaves ordinary JSONL files but no manifest.
+    # They are run-local and deterministic, so remove them and restart.
+    rm -f "$RAW_NEW"/*.jsonl "$RAW_NEW"/manifest.json.tmp
     target/release/dataset_build --input "$EXTRACT" --input "$ROOT_DIR/data/wdoor/extract/2016" --input "$ROOT_DIR/data/wdoor/extract/2017" \
       --output-dir "$RAW_NEW" --license-id user-authorized:wdoor-public-archive --source-uri https://wdoor.c.u-tokyo.ac.jp/shogi/ \
       --seed "$SEED" --shuffle-games --valid-percent 0 --test-percent 0 --max-records "$NEW_TARGET" --max-records-per-game 24 \
@@ -64,7 +66,7 @@ n=int(json.load(open(sys.argv[1]))['stats']['train']['records'])
 if n<int(sys.argv[2]): raise SystemExit(f'new raw records {n} < target')
 PY
   if [[ ! -s "$RAW/manifest.json" ]]; then
-    if compgen -G "$RAW/*" >/dev/null; then echo "partial raw composition"; exit 2; fi
+    rm -f "$RAW"/train.jsonl "$RAW"/valid.jsonl "$RAW"/test.jsonl "$RAW"/manifest.json.tmp
     python3 - "$RAW_NEW" "$BASE" "$RAW" "$REPLAY_TARGET" <<'PY'
 import pathlib,shutil,sys
 new,old,out,replay=map(pathlib.Path,sys.argv[1:4]); replay=int(sys.argv[4]); out.mkdir(parents=True,exist_ok=True)
@@ -108,7 +110,7 @@ make_shards() {
   mkdir -p "$SHARDS"
   for k in train valid test; do
     [[ -s "$SHARDS/$k-manifest.json" ]] && continue
-    if compgen -G "$SHARDS/$k-*.jsonl" >/dev/null; then echo "partial shards: $k"; exit 2; fi
+    rm -f "$SHARDS/$k-"*.jsonl "$SHARDS/$k-manifest.json" "$SHARDS/$k-manifest.json.tmp"
     target/release/jsonl_shard --input "$RAW/$k.jsonl" --output-prefix "$SHARDS/$k-" --lines 50000 --suffix-width 4 --parent-manifest "$RAW/manifest.json"
   done
 }
@@ -117,7 +119,7 @@ teachers() {
   for input in "$SHARDS"/train-*.jsonl "$SHARDS"/valid-*.jsonl "$SHARDS"/test-*.jsonl; do
     [[ -e "$input" ]] || continue; stem="${input##*/}"; stem="${stem%.jsonl}"; out="$TEACHERS/$stem.hkst"
     if [[ -s "$out.manifest.json" ]]; then ((i+=1)); continue; fi
-    [[ ! -e "$out" && ! -e "$out.tmp" ]] || { echo "partial teacher: $out"; exit 2; }
+    rm -f "$out" "$out.tmp" "$out.manifest.json" "$out.manifest.json.tmp"
     target/release/halfkp_search_teacher --weights "$PARENT" --input "$input" --parent-manifest "$PARENT_MANIFEST" --model-manifest "$PARENT_MANIFEST" \
       --promotion-registry "$REGISTRY" --gate-report "$GATE" --parent-generation 6 --output "$out" --value-only --qsearch-leaf --teacher-depth 8 \
       --min-completed-depth 1 --max-nodes-per-search 100000 --chunk-size 128 --jobs "$WORKERS" --seed "$((SEED+i))"
@@ -127,6 +129,7 @@ teachers() {
 dedup_filter() {
   local dedup="$RUN_DIR/train.dedup.hkst" report="$RUN_DIR/train.dedup.json" p
   if [[ ! -s "$dedup.manifest.json" ]]; then
+    rm -f "$dedup" "$dedup.tmp" "$dedup.manifest.json.tmp"
     local args=(--output "$dedup" --report "$report")
     for p in "$TEACHERS"/train-*.hkst; do [[ -e "$p" ]] && args+=(--input "$p"); done
     target/release/halfkp_search_dedup "${args[@]}"
@@ -138,6 +141,7 @@ if n<2000000: raise SystemExit(f'dedup records {n} < 2000000')
 print('dedup records',n)
 PY
   if [[ ! -s "$VALID_FILTERED.manifest.json" ]]; then
+    rm -f "$VALID_FILTERED" "$VALID_FILTERED.tmp" "$VALID_FILTERED.manifest.json.tmp"
     local args=(--output "$VALID_FILTERED" --report "$RUN_DIR/valid.filter.json")
     args+=(--train "$dedup")
     for p in "$TEACHERS"/valid-*.hkst; do [[ -e "$p" ]] && args+=(--valid "$p"); done
@@ -168,7 +172,11 @@ train_epoch() {
     --search-mix .8 --search-mix-end .8 --value-weight 1 --rank-weight 0 --game-rank-weight 0 --game-vs-search-weight 0 --loss-power 2.5
     --gradient-clip-norm 1 --output-limit .20 --optimizer adagrad --threads "$WORKERS" --seed "$SEED" --checkpoint-dir "$CHECKPOINTS" --save-last-epoch --log "$LOG"
     --train "$FINAL_TRAIN" --valid "$FINAL_VALID" --test "$FINAL_TEST")
-  if [[ -s "$MODEL.manifest.json" ]]; then args+=(--resume); elif [[ -e "$MODEL" || -e "$MODEL.tmp" ]]; then exit 2; fi
+  if [[ -s "$MODEL.manifest.json" && -s "$MODEL" ]]; then
+    args+=(--resume)
+  else
+    rm -f "$MODEL" "$MODEL.tmp" "$MODEL.manifest.json" "$MODEL.manifest.json.tmp"
+  fi
   target/release/halfkp_search_train "${args[@]}"; need "$MODEL"
   local completed; completed="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["completed_epoch"])' "$MODEL.manifest.json")"
   cp "$MODEL" "$CHECKPOINTS/model-epoch-$completed.bin"; cp "$MODEL.manifest.json" "$CHECKPOINTS/model-epoch-$completed.bin.manifest.json"
@@ -178,4 +186,3 @@ export CONFIG NEW_TARGET REPLAY_TARGET WORKERS SEED MAX_EPOCH
 write_config; build_raw; make_shards; teachers; dedup_filter
 train_epoch 4; ((MAX_EPOCH>=8)) && train_epoch 8; ((MAX_EPOCH>=16)) && train_epoch 16; ((MAX_EPOCH>=32)) && train_epoch 32
 echo "gen6 unattended 2M pipeline complete: $RUN_DIR"
-
