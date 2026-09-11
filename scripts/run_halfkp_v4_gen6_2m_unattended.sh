@@ -15,6 +15,7 @@ WORKERS="${WORKERS:-12}"; SEED="${SEED:-20260911}"; MAX_EPOCH="${MAX_EPOCH:-32}"
 NEW_TARGET="${NEW_RAW_TARGET:-1800000}"; REPLAY_TARGET="${REPLAY_RAW_TARGET:-450000}"
 MODEL="$RUN_DIR/model.bin"; LOG="$RUN_DIR/train.csv"; CONFIG="$RUN_DIR/config.json"
 VALID_FILTERED="$RUN_DIR/valid.filtered.hkst"
+TEST_FILTERED="$RUN_DIR/test.filtered.hkst"
 mkdir -p "$RUN_DIR"; exec 9>"$RUN_DIR/.lock"; flock -n 9 || exit 0
 exec > >(tee -a "$RUN_DIR/pipeline.log") 2>&1
 need() { [[ -s "$1" ]] || { echo "missing: $1" >&2; exit 2; }; }
@@ -147,9 +148,14 @@ PY
     for p in "$TEACHERS"/valid-*.hkst; do [[ -e "$p" ]] && args+=(--valid "$p"); done
     target/release/halfkp_search_split_filter "${args[@]}"
   fi
-  FINAL_TRAIN="$dedup"; FINAL_VALID="$VALID_FILTERED"; FINAL_TEST=""
-  for p in "$TEACHERS"/test-*.hkst; do [[ -e "$p" ]] && FINAL_TEST="$p"; done
-  [[ -n "$FINAL_TEST" ]] || exit 2
+  if [[ ! -s "$TEST_FILTERED.manifest.json" ]]; then
+    rm -f "$TEST_FILTERED" "$TEST_FILTERED.tmp" "$TEST_FILTERED.manifest.json.tmp"
+    local args=(--output "$TEST_FILTERED" --report "$RUN_DIR/test.filter.json")
+    args+=(--train "$dedup" --train "$VALID_FILTERED")
+    for p in "$TEACHERS"/test-*.hkst; do [[ -e "$p" ]] && args+=(--valid "$p"); done
+    target/release/halfkp_search_split_filter "${args[@]}"
+  fi
+  FINAL_TRAIN="$dedup"; FINAL_VALID="$VALID_FILTERED"; FINAL_TEST="$TEST_FILTERED"
 }
 write_config() {
   [[ -s "$CONFIG" ]] && return
