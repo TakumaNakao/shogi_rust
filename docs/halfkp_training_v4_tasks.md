@@ -3,7 +3,7 @@
 - 作成: 2026-09-09
 - 方針の正本: [学習方針v4](halfkp_training_strategy_v4_20260909.md)
 - 本書は実行順、完了条件、進捗を管理する。実験結果・対応commit・成果物を追記する。
-- 現在の次タスク: **T12のv2.5.0比較**。通常の実装判断はこの手順内で進め、条件変更・不足・異常は記録する。
+- 現在の次タスク: **T13のgeneration6教師による総train 2M拡張**。スクリプトを端末切断後も自動再開できる形で実行し、条件変更・不足・異常は記録する。
 
 ## 共通条件
 
@@ -31,7 +31,8 @@
 | T09 | 候補1個の選定・凍結・test評価 | T08 | 完了（epoch24候補を凍結） |
 | T10 | 親との250 pair screen | T09 | 完了（55.7%、安全Gate合格） |
 | T11 | 独立250 pair確認・昇格判定 | T10・有望時 | 完了（56.2%、generation6昇格） |
-| T12 | v2.5.0比較・結果記録・次段階決定 | T10またはT11 | 実行中（2026-09-11開始） |
+| T12 | v2.5.0比較・結果記録・次段階決定 | T10またはT11 | 完了（候補17勝33敗、release保留） |
+| T13 | generation6教師・総train 2M拡張、学習・checkpoint保存 | T12 | 実行中（2026-09-11開始） |
 
 ### T01 — rank勾配の符号を直す
 
@@ -122,7 +123,9 @@ T11確認を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-confirm-20k-2
 
 T11は250 pair / 500局を正常完了し、候補274勝・親212勝・14分、score `0.562`、paired bootstrap 95% CI `0.520–0.604`、安全違反0となった。確認側単独の昇格条件を満たしたため、候補SHA `162e17ba…`をgeneration 6としてregistryへ登録した。決定詳細は [`v4_t11_promotion_decision_20260911.json`](../training/halfkp64-scratch-v1/v4_t11_promotion_decision_20260911.json)、対応commitは`813ba7e`。
 
-T12比較を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/t12-v250-taya36-5s-50g-20260911/`で開始した。候補とv2.5.0をtaya36、両者5秒/手、50局、depth64・max256 plies、seed 20260911、threads1で比較する。比較結果はrelease判断専用で、学習教師・候補選定・registry判定へ逆流させない。
+T12比較を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/t12-v250-taya36-5s-50g-20260911/`で完了した。候補17勝・v2.5.0 33勝・引分0（候補score 34.0%、total-score 95% CI 20.87–47.13%、decisive 95% CI 22.44–47.85%）で、v2.5.0超えは確認できなかったためreleaseは保留した。結果は [`v4_t12_v250_comparison_20260911.json`](../training/halfkp64-scratch-v1/v4_t12_v250_comparison_20260911.json) とmatch.logへ固定した。比較はrelease判断専用で、学習教師・候補選定・registry判定へ逆流させない。
+
+T13を`runs/halfkp64-scratch-v1/v4-value-gen6-2m-20260911/`で開始する。T11でacceptedとなったgeneration6（model SHA `162e17ba…`）を唯一の教師・初期値とし、v2.5.0/KPPは読み込まない。WDoor 2015–2017から新規1,800,000 raw rootを抽出し、既存rawからreplay 450,000 rootを加え、network-input dedup後2,000,000件以上を目標とする。50k shard、teacher depth8・100k nodes/root・qsearch leaf・12 worker、AdaGrad（feature LR 3e-4/output LR 3e-5、batch128、search mix0.8）で4/8/16/32 epochを段階実行する。`scripts/run_halfkp_v4_gen6_2m_unattended.sh`はlock、部分artifact拒否、shard単位再開、epoch checkpointを備え、setsid/nohup起動後に手動確認なしで継続する。
 
 ### T07 — 教師を生成し、実際の学習入力を確定する
 
@@ -179,6 +182,14 @@ T12比較を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/t12-v250-taya36-5s-
 | CIが50%をまたぎ、validの混合target誤差が親より`1e-6`以上良く、勝敗Brier/log-lossは親より`1e-4`超悪化せず、安全正常 | 同じgen5・設定で総train 2Mへ一度拡張。新規1.6M＋replay 0.4Mとし、親の昇格とは区別 |
 | 明確な劣化、offline悪化、安全異常 | 原因を診断し、v4の原因別分岐から変更を一つ選んで記録。自動増量しない |
 | 上記の改善・増量条件を満たさない | 今回を不採用として結果を整理。方式全体の飽和とは断定しない |
+
+### T13 — generation6教師で総train 2Mへ拡張する
+
+- T12でv2.5.0超えが確認できなかったため、registryでaccepted済みのgeneration6を親としてデータ量を増やす。v2.5.0/KPP由来artifact、外部AI評価値、PVは入力に使用しない。
+- WDoor 2015–2017を`dataset_build --exclude-base-train --freeze-base-eval`で抽出し、新規raw 1.8M＋既存raw replay 450kを作る。valid/testは既存holdoutを凍結する。
+- teacher生成、network-input dedup、train/valid overlap除去を各shard manifest付きで行う。dedup後trainが2M未満なら学習を開始せず、件数と不足理由をmanifestへ残す。
+- 端末切断・プロセス再起動に備え、`scripts/run_halfkp_v4_gen6_2m_unattended.sh`をlock付きでsetsid/nohup起動する。各teacher shardと4/8/16/32 epoch checkpointを完全artifact単位で保存し、既存artifactは再生成しない。
+- 完了後、固定valid/testのoffline指標を保存し、T10/T11と同じ20k nodes/手の親Gateを行う。親改善が独立確認できた場合のみv2.5.0比較・release候補とし、改善がなければ4M/10Mへ自動拡張せず原因を再評価する。
 
 規模の呼称を統一する。初回は**新規1M・総train 1.25M**、次は**総train 2M**。
 以後の4M/10Mもreplayを含む総unique train数とし、原則80%新規＋20%replayの内訳を別記する。

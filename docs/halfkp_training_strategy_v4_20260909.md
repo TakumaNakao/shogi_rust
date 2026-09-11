@@ -1,11 +1,11 @@
 # HalfKP scratch 学習方針 v4 — 教師更新と独立棋譜による価値学習
 
 - 決定日: 2026-09-09
-- 状態: T01–T11を実施済み。generation6候補のT12 v2.5.0比較を実行中
+- 状態: T01–T12を完了。T12ではv2.5.0超えを確認できず、T13の総train 2M拡張を自動実行中
 - 調査対象commit: `afe766b`、lineage: `halfkp64-scratch-v1`
-- accepted親: gen5、SHA `61c05fe287cb0c0f9b434194802e07c835476b737a37bb9d4063143c63e28637`
+- accepted親: gen6、SHA `162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc`
 - 本書が[旧v3](halfkp_training_strategy_v3_20260830.md)の後続作業を置き換える。
-- 実行順・完了条件・進捗の詳細: [v4作業タスク](halfkp_training_v4_tasks.md)。次の作業はT01（rank符号修正）。
+- 実行順・完了条件・進捗の詳細: [v4作業タスク](halfkp_training_v4_tasks.md)。次の作業はT13（gen6教師による総train 2M拡張）。
 
 ## 1. 決定
 
@@ -239,8 +239,9 @@ policy head、MCTS、network幅拡大、真TreeStrapは現段階では追加し�
 | 16 epoch、条件付き32 epoch | 完了（2026-09-10、epoch24停止） | valid改善・health正常、report固定 |
 | 候補選定・凍結・test | 完了（2026-09-10、epoch24） | 候補SHA `162e17ba…`、test report固定 |
 | 親screen・独立確認 | 完了（T10/T11） | screen 55.7%、確認 56.2%、安全合格、gen6昇格 |
-| v2.5.0比較・結果記録 | T12実行中 | taya36・5秒・50局完了後に次段階決定 |
-| 2M/4M/10M・次世代教師更新 | 条件付き | 上記Cの継続条件に従う |
+| v2.5.0比較・結果記録 | 完了（T12） | 候補17勝33敗、34.0%。release保留。report固定 |
+| generation6教師・総train 2M拡張 | 実行中（T13） | 新規1.8M＋replay450k、dedup後2M以上、4/8/16/32 epoch checkpoint |
+| 4M/10M・次世代教師更新 | 条件付き | T13で親改善を独立確認した場合のみ規模を再決定 |
 | 自己対局 | 最終手段・保留 | 上記Dの診断後に判断 |
 
-2026-09-11時点でT10親screen（55.7%）とT11独立確認（56.2%、paired CI 52.0–60.4%、安全違反0）を完了し、候補をgeneration 6としてregistryへ昇格した。T12として、昇格候補とv2.5.0をtaya36・両者5秒・50局で比較中である。比較結果はrelease判断専用とし、学習教師へは使わない。
+2026-09-11時点でT10親screen（55.7%）とT11独立確認（56.2%、paired CI 52.0–60.4%、安全違反0）を完了し、候補をgeneration 6としてregistryへ昇格した。T12のv2.5.0比較（taya36・両者5秒・50局）は候補17勝33敗で、v2.5.0超えを確認できずreleaseを保留した。現在はT13としてgeneration6を唯一の教師にした総train 2M拡張を、shard/checkpoint単位で再開可能なスクリプトにより自動実行している。T12比較はrelease判断専用であり、学習教師へは使わない。
