@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 # Reuse the audited T13 2M teacher corpus.  The accepted gen6 model is only
 # the optimizer initialization; it is never used as a training target.
-RUN_DIR="${RUN_DIR:-$ROOT_DIR/runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-20260913}"
+RUN_DIR="${RUN_DIR:-$ROOT_DIR/runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911}"
 DATA_DIR="$ROOT_DIR/runs/halfkp64-scratch-v1/v4-value-gen6-2m-20260911"
 TRAIN="$DATA_DIR/train.dedup-expanded.hkst"
 VALID="$DATA_DIR/valid.filtered.hkst"
@@ -23,7 +23,7 @@ STAGE_STATE="$RUN_DIR/stage-state.json"
 TEST_COMPARE="$RUN_DIR/test-value-compare.json"
 CONFIG="$RUN_DIR/config.json"
 WORKERS="${WORKERS:-12}"
-SEED="${SEED:-20260913}"
+SEED="${SEED:-20260911}"
 MAX_EPOCH="${MAX_EPOCH:-32}"
 
 mkdir -p "$RUN_DIR"
