@@ -163,6 +163,10 @@ reserve 1001–1250は候補範囲であって、未使用を確認せずに採�
 学習完了後は[gen7 gate runner](../scripts/run_halfkp_v4_gen7_gate_unattended.sh)が完了artifactを検証し、F03のscreen→条件付き独立確認を自動で進める。条件未達や異常も終了理由を保存する。
 放置中に停止理由を無視して別LR・別教師・4Mへ移る処理は作らない。
 
+実行記録（2026-09-13）: F01の修正はcommit `0a408ca`、F02/F03のrunnerは`e2fe032`・`24bdbba`で固定した。
+実runは`runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/`で、`WORKERS=12`・`SEED=20260911`を明示して起動済み。
+誤seed `20260913`の初回試行は最初のepoch完了前に停止し、同ディレクトリに混ぜず別runとして監査artifactを残した。
+
 ## 7. 根拠
 
 - [T08学習結果](../training/halfkp64-scratch-v1/v4_t08_training_report_20260910.json)
