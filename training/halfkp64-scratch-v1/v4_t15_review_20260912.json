@@ -1,0 +1,118 @@
+{
+  "schema": "halfkp_v4_t15_review_v1",
+  "review_date": "2026-09-12",
+  "review_commit": "f367d2b",
+  "reports": [
+    {
+      "artifact": {
+        "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-20260911/match-screen-20k-250pair/report.json",
+        "sha256": "3fe227cfb0c9b404c85b4c689f2815fb05584e232e496578884cd5c8cf90e450"
+      },
+      "candidate_sha256": "918a7e2134ec36c6590ef17381c8bc4abb1c04f7cc4230c39d2878f280d54d08",
+      "parent_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+      "openings_sha256": "1654319ed1c5f167ea31522a9e32664009e1f7119923fb0b97e5060e990f6dec",
+      "pairs": 250,
+      "games": 500,
+      "score": 0.541,
+      "paired_score_ci95_lower": 0.498,
+      "paired_score_ci95_upper": 0.584,
+      "counts": {
+        "candidate_wins": 266,
+        "parent_wins": 225,
+        "draws": 9,
+        "candidate_black_wins": 142,
+        "candidate_white_wins": 124,
+        "search_failures": 0,
+        "missing_root_results": 0,
+        "illegal_moves": 0,
+        "non_finite_scores": 0,
+        "max_ply_draws": 9,
+        "repetition_draws": 0,
+        "perpetual_check_games": 10
+      },
+      "promotion_gate_passed": false
+    },
+    {
+      "artifact": {
+        "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-20260911/match-replication-screen-20k-250pair/report.json",
+        "sha256": "9d1c7eef196c1d2fa6c8c7328d02ed3ae0195f43d26eff09f3cd2031d304512d"
+      },
+      "candidate_sha256": "918a7e2134ec36c6590ef17381c8bc4abb1c04f7cc4230c39d2878f280d54d08",
+      "parent_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+      "openings_sha256": "5175810aec1f209f6b5d4464ee8dc6b1809ba317c46e2b5c571d215dd9efbf08",
+      "pairs": 250,
+      "games": 500,
+      "score": 0.518,
+      "paired_score_ci95_lower": 0.475,
+      "paired_score_ci95_upper": 0.561,
+      "counts": {
+        "candidate_wins": 254,
+        "parent_wins": 236,
+        "draws": 10,
+        "candidate_black_wins": 130,
+        "candidate_white_wins": 124,
+        "search_failures": 0,
+        "missing_root_results": 0,
+        "illegal_moves": 0,
+        "non_finite_scores": 0,
+        "max_ply_draws": 10,
+        "repetition_draws": 0,
+        "perpetual_check_games": 5
+      },
+      "promotion_gate_passed": false
+    }
+  ],
+  "descriptive_combined": {
+    "candidate_wins": 520,
+    "parent_wins": 461,
+    "draws": 19,
+    "games": 1000,
+    "score": 0.5295,
+    "promotion_evidence": false,
+    "note": "replication was chosen after seeing screen; no pooled promotion test"
+  },
+  "training_exposure": {
+    "gen6_records": 1425255,
+    "gen6_epochs": 24,
+    "gen6_presentations": 34206120,
+    "gen7_records": 2060908,
+    "gen7_epochs": 16,
+    "gen7_presentations": 32974528,
+    "planned_32_presentations": 65949056,
+    "planned_64_presentations": 131898112
+  },
+  "training_manifest": {
+    "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-20260911/model.bin.manifest.json",
+    "sha256": "1360ece6d72af95c998057804084f7bff440c4022641fea7af3708b3239f9500"
+  },
+  "actual_controls": {
+    "early_stop_patience": 2,
+    "min_valid_improvement": 0.000001,
+    "swa_start_epoch": 4,
+    "save_last_epoch": true,
+    "epochs": 32
+  },
+  "completed_epoch": 16,
+  "selected_epoch": 16,
+  "selected_kind": "last",
+  "valid_comparison": {
+    "records": 54693,
+    "baseline": {
+      "value_brier": 0.009467642659679384,
+      "result_brier": 0.20926431422565991,
+      "result_log_loss": 0.6315874771258265,
+      "search_mae_cp": 119.50564184921441
+    },
+    "candidate": {
+      "value_brier": 0.00938172175492269,
+      "result_brier": 0.2079067590198482,
+      "result_log_loss": 0.628223633889311,
+      "search_mae_cp": 153.5423909803091
+    }
+  },
+  "conclusion": "offline improvement; possible small playing-strength improvement, superiority unconfirmed; no evidence of established saturation",
+  "accepted_parent_generation": 6,
+  "next_experiment": "fix stopping and selection; new run from accepted gen6 on unchanged T13 data and LR; 32 epochs then conditional 64",
+  "plan": "docs/halfkp_training_followup_20260912.md",
+  "implementation_and_training_started": false
+}

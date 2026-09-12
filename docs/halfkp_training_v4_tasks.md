@@ -3,7 +3,7 @@
 - 作成: 2026-09-09
 - 方針の正本: [学習方針v4](halfkp_training_strategy_v4_20260909.md)
 - 本書は実行順、完了条件、進捗を管理する。実験結果・対応commit・成果物を追記する。
-- 現在の次タスク: **T15の独立250 pair再現screen**。T13候補はoffline改善を示したが親screenのpaired CI下限が50%未満のため、昇格・4M拡張・v2.5.0 releaseは行わない。
+- 現在の次タスク: **[9/12更新計画のF01](halfkp_training_followup_20260912.md)**（停止・best保存・評価/再開を修正）。その後、同じ2M・同じLRで32、条件付き64 epochを学習する。T15は完了、gen6維持。以下の旧手順と新計画が異なる場合、新計画を優先する。
 
 ## 共通条件
 
@@ -35,7 +35,9 @@ T01–T12の親・初期値・教師はaccepted gen5 `61c05fe287cb0c0f9b43419480
 | T12 | v2.5.0比較・結果記録・次段階決定 | T10またはT11 | 完了（候補17勝33敗、release保留） |
 | T13 | generation6教師・総train 2M拡張、学習・checkpoint保存 | T12 | 完了（2,060,908件、epoch16、親screen 54.1%だがCI下限49.8%） |
 | T14 | T13 screen/offline結果の同一split比較、次条件の決定 | T13 | 完了（候補は未昇格、gen6維持） |
-| T15 | 未使用reserveでの独立250 pair再現screen（昇格判定なし） | T14 | 実行中（2026-09-12開始） |
+| T15 | 未使用reserveでの独立250 pair再現screen（昇格判定なし） | T14 | 完了（51.8%、CI 47.5–56.1%、安全違反0） |
+| F00 | T15後の方針更新・実更新量と制御差分の確認 | T15 | 完了（9/12更新計画） |
+| F01–F04 | 停止/選択修正、2Mで32/64 epoch、候補評価 | F00 | 未実行。新計画で管理 |
 
 ### T01 — rank勾配の符号を直す
 
@@ -134,7 +136,9 @@ T13は教師・学習・checkpointを完了した。dedup後trainは2,060,908件
 
 T14では、value-only HKSTにゲーム対searchペアがないため既存の順位objective evaluatorを流用せず、[`halfkp_value_compare`](../src/training_tools/halfkp_value_compare.rs)を追加した。同一valid/test（計104,197件）でgen6親とgen7候補を比較すると、混合target value Brierは`0.00948618→0.00937846`、真の結果Brierは`0.20931956→0.20784435`、結果log-lossは`0.63393884→0.63037119`と改善した。一方、search値への絶対誤差は`120.23→153.97cp`へ悪化した。したがって候補は「学習目的・終局結果のoffline改善はあるが、棋力昇格を証明していない」状態であり、gen6をaccepted親として維持する。全値、SHA、判断は[`v4_t13_gen7_screen_offline_20260912.json`](../training/halfkp64-scratch-v1/v4_t13_gen7_screen_offline_20260912.json)に固定した。4M/10Mへの自動拡張は行わず、次はこのoffline改善とscreen不合格を分離する一つの条件固定追試を計画する。
 
-T15は、T13 screenと異なるreserve 751–1000の250 pair（500局）、同じ20,000 nodes/手・max depth64・安全Gateで再現性だけを測る。bootstrap seedは20260913、opening SHAは`5175810a…`。この試験はcandidateをregistryへ登録せず、結果が良くても直ちに昇格・release・4M拡張を行わない。再現しなければoffline改善と実戦改善の乖離を確定し、再現すれば事前に定義した確認Gateを別途設計する。
+T15は、T13 screenと異なるreserve 751–1000の250 pair（500局）、同じ20,000 nodes/手・max depth64で完了した。候補254勝・親236勝・10分、score51.8%、paired CI47.5–56.1%、安全違反0。bootstrap seedは20260913、opening SHAは`5175810a…`。gen6を維持するが、優位性未確認をofflineと実戦の乖離の確定とは扱わない。同じ候補の追加確認は終了する。
+
+9/12再検討では、T13の延べ提示数は32,974,528件で前回gen6の34,206,120件より少なく、停止設定・last選択・SWA・test評価頻度に計画との差があることを確認した。学習量不足を先に検証するため、[新計画](halfkp_training_followup_20260912.md)へ更新した。T13/T15の対局数値は有効な観測として保持する。[判断記録](../training/halfkp64-scratch-v1/v4_t15_review_20260912.json)にreport SHAを固定した。
 
 ### T07 — 教師を生成し、実際の学習入力を確定する
 
