@@ -156,11 +156,11 @@ reserve 1001–1250は候補範囲であって、未使用を確認せずに採�
 | F00 | T15集計・方針更新 | report SHA、実更新量、計画差分を記録 | 完了 |
 | F01 | 停止・best保存・評価/再開の最小修正 | 上記回帰確認、configとコードが一致 | 実装・回帰テスト完了 |
 | F02 | 同じ2Mで32、条件付き64 epoch | 中間重み/optimizer/指標保存、停止理由自動記録 | 実行中（extended runner） |
-| F03 | 候補固定、親screen・条件付き独立確認 | 最多250＋250 pair、昇格判断記録 | F02後 |
+| F03 | 候補固定、親screen・条件付き独立確認 | 最多250＋250 pair、昇格判断記録 | 完了待ち（gate runner待機中） |
 | F04 | 昇格時v2.5.0比較、次規模決定 | 50局結果、4M条件または原因別次実験を記録 | 条件付き |
 
 実装: [extended runner](../scripts/run_halfkp_v4_gen6_2m_extended.sh)を使い、既存のlock・端末切断に耐える起動・完全artifact再開を使う。
-F02→候補選択→screen→条件付き確認は自動で進め、条件未達や異常も終了理由を保存する。
+学習完了後は[gen7 gate runner](../scripts/run_halfkp_v4_gen7_gate_unattended.sh)が完了artifactを検証し、F03のscreen→条件付き独立確認を自動で進める。条件未達や異常も終了理由を保存する。
 放置中に停止理由を無視して別LR・別教師・4Mへ移る処理は作らない。
 
 ## 7. 根拠
