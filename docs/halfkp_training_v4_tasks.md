@@ -125,7 +125,7 @@ T11は250 pair / 500局を正常完了し、候補274勝・親212勝・14分、s
 
 T12比較を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/t12-v250-taya36-5s-50g-20260911/`で完了した。候補17勝・v2.5.0 33勝・引分0（候補score 34.0%、total-score 95% CI 20.87–47.13%、decisive 95% CI 22.44–47.85%）で、v2.5.0超えは確認できなかったためreleaseは保留した。結果は [`v4_t12_v250_comparison_20260911.json`](../training/halfkp64-scratch-v1/v4_t12_v250_comparison_20260911.json) とmatch.logへ固定した。比較はrelease判断専用で、学習教師・候補選定・registry判定へ逆流させない。
 
-T13を`runs/halfkp64-scratch-v1/v4-value-gen6-2m-20260911/`で開始する。T11でacceptedとなったgeneration6（model SHA `162e17ba…`）を唯一の教師・初期値とし、v2.5.0/KPPは読み込まない。WDoor 2015–2017から新規1,800,000 raw rootを抽出し、既存rawからreplay 450,000 rootを加え、network-input dedup後2,000,000件以上を目標とする。50k shard、teacher depth8・100k nodes/root・qsearch leaf・12 worker、AdaGrad（feature LR 3e-4/output LR 3e-5、batch128、search mix0.8）で4/8/16/32 epochを段階実行する。`scripts/run_halfkp_v4_gen6_2m_unattended.sh`はlock、部分artifact拒否、shard単位再開、epoch checkpointを備え、setsid/nohup起動後に手動確認なしで継続する。
+T13を`runs/halfkp64-scratch-v1/v4-value-gen6-2m-20260911/`で開始する。T11でacceptedとなったgeneration6（model SHA `162e17ba…`）を唯一の教師・初期値とし、v2.5.0/KPPは読み込まない。WDoor 2015–2017から新規1,800,000 raw rootを抽出し、既存rawからreplay 450,000 rootを加え、network-input dedup後2,000,000件以上を目標とする。主教師のdedupは1,991,525件となり目標を8,475件下回ったため、完了済みshardを捨てず、seedを変えた追加raw 100,000件の補充を自動開始した。50k shard、teacher depth8・100k nodes/root・qsearch leaf・12 worker、AdaGrad（feature LR 3e-4/output LR 3e-5、batch128、search mix0.8）で4/8/16/32 epochを段階実行する。`scripts/run_halfkp_v4_gen6_2m_unattended.sh`はlock、部分artifactの安全な再生成、shard単位再開、epoch checkpointを備え、setsid/nohup起動後に手動確認なしで継続する。
 
 ### T07 — 教師を生成し、実際の学習入力を確定する
 
