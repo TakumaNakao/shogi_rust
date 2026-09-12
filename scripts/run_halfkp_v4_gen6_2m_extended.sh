@@ -69,7 +69,8 @@ pathlib.Path(out).write_text(json.dumps({
   'kappa_cp': 1352.7871, 'search_mix': 0.8, 'value_weight': 1.0,
   'rank_weight': 0.0, 'loss_power': 2.5, 'gradient_clip_norm': 1.0,
   'output_limit': 0.20, 'early_stop_patience': 1000000,
-  'swa_start_epoch': 1000000, 'max_epoch': int(os.environ['MAX_EPOCH']),
+  'swa_start_epoch': 1000000, 'initial_epoch': int(os.environ['MAX_EPOCH']),
+  'conditional_epoch': 64,
   'workers': int(os.environ['WORKERS']), 'seed': int(os.environ['SEED']),
 }, indent=2, sort_keys=True) + '\n')
 PY
