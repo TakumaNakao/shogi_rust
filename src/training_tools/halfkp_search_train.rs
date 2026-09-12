@@ -183,11 +183,21 @@ struct CheckpointMeta {
     completed_epoch: usize,
     best_score: f64,
     stale_epochs: usize,
+    #[serde(default)]
+    selected_kind: SelectedKind,
+    #[serde(default)]
+    selected_epoch: usize,
+    #[serde(default = "default_infinite_score")]
+    selected_score: f64,
     optimizer: OptimizerKind,
     schedule_step: u64,
     schedule_weight_sum: f64,
     schedule_lr_max: f32,
     swa_count: u64,
+}
+
+fn default_infinite_score() -> f64 {
+    f64::INFINITY
 }
 
 #[derive(Serialize)]
@@ -229,13 +239,23 @@ struct TrainingRunManifest {
     teacher_manifest_sha256: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SelectedKind {
     Initial,
     Best,
     Last,
     Swa,
+}
+
+impl Default for SelectedKind {
+    fn default() -> Self {
+        Self::Initial
+    }
+}
+
+fn should_select_candidate(score: f64, selected_score: f64) -> bool {
+    score.is_finite() && score < selected_score
 }
 
 struct DenseGradient {
@@ -691,8 +711,17 @@ pub fn run() -> Result<()> {
         ..base_options
     };
     let run_fingerprint = training_fingerprint(&args, kappa_cp)?;
-    let (mut weights, mut optimizer, mut swa, start_epoch, mut best, mut stale) =
-        initialize_training(&args, &run_fingerprint)?;
+    let (
+        mut weights,
+        mut optimizer,
+        mut swa,
+        start_epoch,
+        mut best,
+        mut stale,
+        resumed_selected_kind,
+        resumed_selected_epoch,
+        resumed_selected_score,
+    ) = initialize_training(&args, &run_fingerprint)?;
     let maxima = weights.validate_parameter_limits(args.output_limit, "training weights")?;
     weights.validate_center_mirror_symmetry("training weights")?;
     match &optimizer {
@@ -727,14 +756,30 @@ pub fn run() -> Result<()> {
         &options,
     )?;
     let mut final_valid_metrics = initial.clone();
-    let mut selected_kind = SelectedKind::Initial;
-    let mut selected_epoch = 0usize;
+    let initial_score = validation_score(&initial, &options);
+    if !initial_score.is_finite() {
+        return Err(anyhow!("non-finite initial validation score"));
+    }
+    let mut selected_kind = if start_epoch == 0 {
+        SelectedKind::Initial
+    } else {
+        resumed_selected_kind
+    };
+    let mut selected_epoch = if start_epoch == 0 {
+        0
+    } else {
+        resumed_selected_epoch
+    };
     let mut selected_validation = initial.clone();
-    let mut selected_validation_score = validation_score(&initial, &options);
+    let mut selected_validation_score = if start_epoch == 0 {
+        initial_score
+    } else {
+        resumed_selected_score
+    };
     let mut completed_epoch = start_epoch;
     print_metrics("initial_valid", 0, &initial);
     if start_epoch == 0 {
-        best = validation_score(&initial, &options);
+        best = initial_score;
         initial_weights.save(&args.output)?;
         println!(
             "initial checkpoint score={best:.8} output={}",
@@ -882,9 +927,12 @@ pub fn run() -> Result<()> {
             )?;
             writer.flush()?;
         }
-        if best - score >= args.min_valid_improvement {
-            best = score;
-            stale = 0;
+        if !score.is_finite() {
+            return Err(anyhow!("non-finite validation score at epoch {epoch}"));
+        }
+        // Candidate selection is an exact minimum.  The minimum improvement
+        // threshold is reserved for plateau/early-stop accounting below.
+        if should_select_candidate(score, selected_validation_score) {
             selected.save(&args.output)?;
             selected_kind = epoch_selected_kind;
             selected_epoch = epoch;
@@ -894,6 +942,10 @@ pub fn run() -> Result<()> {
                 "best epoch={epoch} score={score:.8} output={}",
                 args.output.display()
             );
+        }
+        if best - score >= args.min_valid_improvement {
+            best = score;
+            stale = 0;
         } else {
             stale += 1;
             if stale >= args.early_stop_patience {
@@ -909,6 +961,9 @@ pub fn run() -> Result<()> {
             epoch,
             best,
             stale,
+            selected_kind,
+            selected_epoch,
+            selected_validation_score,
         )?;
         if stale >= args.early_stop_patience {
             break;
@@ -939,7 +994,7 @@ pub fn run() -> Result<()> {
             args.allow_legacy_teacher_semantics,
             &options,
         )?;
-        print_metrics("final_test", args.epochs, &test_metrics);
+        print_metrics("final_test", completed_epoch, &test_metrics);
         Some(test_metrics)
     } else {
         None
@@ -1406,7 +1461,7 @@ fn write_training_manifest(
         selected_validation_score,
         selected_validation: metrics_json(selected_validation),
         last_validation: metrics_json(last_validation),
-        final_validation: metrics_json(selected_validation),
+        final_validation: metrics_json(last_validation),
         final_test: final_test.map(metrics_json),
         model: artifact_metadata(&args.output, None)?,
         output: artifact_metadata(&args.output, None)?,
@@ -1487,7 +1542,17 @@ fn append_path_suffix(path: &Path, suffix: &str) -> PathBuf {
 fn initialize_training(
     args: &Args,
     run_fingerprint: &str,
-) -> Result<(Weights, OptimizerState, Option<SwaState>, usize, f64, usize)> {
+) -> Result<(
+    Weights,
+    OptimizerState,
+    Option<SwaState>,
+    usize,
+    f64,
+    usize,
+    SelectedKind,
+    usize,
+    f64,
+)> {
     if args.resume {
         let directory = args
             .checkpoint_dir
@@ -1563,6 +1628,9 @@ fn initialize_training(
             meta.completed_epoch,
             meta.best_score,
             meta.stale_epochs,
+            meta.selected_kind,
+            meta.selected_epoch,
+            meta.selected_score,
         ))
     } else {
         let weights = Weights::load(&args.init)?;
@@ -1579,7 +1647,17 @@ fn initialize_training(
                 }))
             }
         };
-        Ok((weights, optimizer, None, 0, f64::INFINITY, 0))
+        Ok((
+            weights,
+            optimizer,
+            None,
+            0,
+            f64::INFINITY,
+            0,
+            SelectedKind::Initial,
+            0,
+            f64::INFINITY,
+        ))
     }
 }
 
@@ -1592,6 +1670,9 @@ fn save_checkpoint(
     epoch: usize,
     best_score: f64,
     stale_epochs: usize,
+    selected_kind: SelectedKind,
+    selected_epoch: usize,
+    selected_score: f64,
 ) -> Result<()> {
     let Some(directory) = &args.checkpoint_dir else {
         return Ok(());
@@ -1649,6 +1730,9 @@ fn save_checkpoint(
         completed_epoch: epoch,
         best_score,
         stale_epochs,
+        selected_kind,
+        selected_epoch,
+        selected_score,
         optimizer: args.optimizer,
         schedule_step,
         schedule_weight_sum,
@@ -2863,6 +2947,14 @@ mod tests {
     }
 
     #[test]
+    fn candidate_selection_is_strict_and_rejects_nonfinite_scores() {
+        assert!(should_select_candidate(0.9, 1.0));
+        assert!(!should_select_candidate(1.0, 1.0));
+        assert!(!should_select_candidate(f64::NAN, 1.0));
+        assert!(!should_select_candidate(f64::INFINITY, 1.0));
+    }
+
+    #[test]
     fn rejects_manifest_with_incompatible_teacher_semantics() {
         let path = std::env::temp_dir().join(format!(
             "halfkp-search-train-semantics-{}.hkst",
@@ -3140,11 +3232,26 @@ mod tests {
             1,
             0.25,
             0,
+            SelectedKind::Best,
+            1,
+            0.25,
         )
         .expect("save checkpoint");
-        let (mut resumed, mut resumed_optimizer, _, epoch, _, _) =
-            initialize_training(&args, fingerprint).expect("resume checkpoint");
+        let (
+            mut resumed,
+            mut resumed_optimizer,
+            _,
+            epoch,
+            _,
+            _,
+            selected_kind,
+            selected_epoch,
+            selected_score,
+        ) = initialize_training(&args, fingerprint).expect("resume checkpoint");
         assert_eq!(1, epoch);
+        assert!(matches!(selected_kind, SelectedKind::Best));
+        assert_eq!(1, selected_epoch);
+        assert_eq!(0.25, selected_score);
 
         let second_uninterrupted = vec![compute_record_gradient(&uninterrupted, &record, &options)];
         apply_batch(
@@ -3230,14 +3337,29 @@ mod tests {
             2,
             0.5,
             1,
+            SelectedKind::Swa,
+            2,
+            0.4,
         )
         .expect("save checkpoint");
-        let (loaded_weights, loaded_optimizer, _, epoch, best, stale) =
-            initialize_training(&args, fingerprint).expect("resume checkpoint");
+        let (
+            loaded_weights,
+            loaded_optimizer,
+            _,
+            epoch,
+            best,
+            stale,
+            selected_kind,
+            selected_epoch,
+            selected_score,
+        ) = initialize_training(&args, fingerprint).expect("resume checkpoint");
         assert_eq!(weights.feature_emb, loaded_weights.feature_emb);
         assert_eq!(2, epoch);
         assert_eq!(0.5, best);
         assert_eq!(1, stale);
+        assert!(matches!(selected_kind, SelectedKind::Swa));
+        assert_eq!(2, selected_epoch);
+        assert_eq!(0.4, selected_score);
         let (OptimizerState::ScheduleFree(expected), OptimizerState::ScheduleFree(actual)) =
             (&optimizer, &loaded_optimizer)
         else {
