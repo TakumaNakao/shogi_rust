@@ -111,6 +111,13 @@ if not screen_pass:
     raise SystemExit(10)
 PY
 
+python3 - "$DECISION" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+decision = json.loads(path.read_text())
+decision['independent_confirmation_started'] = True
+path.write_text(json.dumps(decision, indent=2, sort_keys=True) + '\n')
+PY
 run_match "$CONFIRM_OPENINGS" "$CONFIRM_DIR" 20260917
 python3 - "$CONFIRM_DIR/report.json" "$DECISION" <<'PY'
 import json, pathlib, sys
