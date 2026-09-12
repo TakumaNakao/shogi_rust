@@ -3,12 +3,13 @@
 - 作成: 2026-09-09
 - 方針の正本: [学習方針v4](halfkp_training_strategy_v4_20260909.md)
 - 本書は実行順、完了条件、進捗を管理する。実験結果・対応commit・成果物を追記する。
-- 現在の次タスク: **T13のgeneration6教師による総train 2M拡張**。スクリプトを端末切断後も自動再開できる形で実行し、条件変更・不足・異常は記録する。
+- 現在の次タスク: **T15の独立250 pair再現screen**。T13候補はoffline改善を示したが親screenのpaired CI下限が50%未満のため、昇格・4M拡張・v2.5.0 releaseは行わない。
 
 ## 共通条件
 
-親・初期値・教師はaccepted gen5 `61c05fe287cb0c0f9b434194802e07c835476b737a37bb9d4063143c63e28637`。
-親モデルは`runs/halfkp64-scratch-v1/phase3-2m-preserved-target-20260825/model-2m-100k.bin`。
+T01–T12の親・初期値・教師はaccepted gen5 `61c05fe287cb0c0f9b434194802e07c835476b737a37bb9d4063143c63e28637`だった。
+現在のaccepted親（T13以降）はgeneration 6、SHA `162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc`である。
+親モデルは`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/candidate/model-epoch24.bin`。
 外部AI評価値、解析PV、既存KPP由来重みは教師にしない。全rank weight=0の価値学習、12 workerを基本とする。
 
 成果物は新しい`runs/halfkp64-scratch-v1/v4-value-gen5-<開始日>/`へ保存する。日付は実行日に決め、再開時は変えない。
@@ -32,7 +33,9 @@
 | T10 | 親との250 pair screen | T09 | 完了（55.7%、安全Gate合格） |
 | T11 | 独立250 pair確認・昇格判定 | T10・有望時 | 完了（56.2%、generation6昇格） |
 | T12 | v2.5.0比較・結果記録・次段階決定 | T10またはT11 | 完了（候補17勝33敗、release保留） |
-| T13 | generation6教師・総train 2M拡張、学習・checkpoint保存 | T12 | 実行中（2026-09-11開始） |
+| T13 | generation6教師・総train 2M拡張、学習・checkpoint保存 | T12 | 完了（2,060,908件、epoch16、親screen 54.1%だがCI下限49.8%） |
+| T14 | T13 screen/offline結果の同一split比較、次条件の決定 | T13 | 完了（候補は未昇格、gen6維持） |
+| T15 | 未使用reserveでの独立250 pair再現screen（昇格判定なし） | T14 | 実行中（2026-09-12開始） |
 
 ### T01 — rank勾配の符号を直す
 
@@ -126,6 +129,12 @@ T11は250 pair / 500局を正常完了し、候補274勝・親212勝・14分、s
 T12比較を`runs/halfkp64-scratch-v1/v4-value-gen5-20260910/t12-v250-taya36-5s-50g-20260911/`で完了した。候補17勝・v2.5.0 33勝・引分0（候補score 34.0%、total-score 95% CI 20.87–47.13%、decisive 95% CI 22.44–47.85%）で、v2.5.0超えは確認できなかったためreleaseは保留した。結果は [`v4_t12_v250_comparison_20260911.json`](../training/halfkp64-scratch-v1/v4_t12_v250_comparison_20260911.json) とmatch.logへ固定した。比較はrelease判断専用で、学習教師・候補選定・registry判定へ逆流させない。
 
 T13を`runs/halfkp64-scratch-v1/v4-value-gen6-2m-20260911/`で開始する。T11でacceptedとなったgeneration6（model SHA `162e17ba…`）を唯一の教師・初期値とし、v2.5.0/KPPは読み込まない。WDoor 2015–2017から新規1,800,000 raw rootを抽出し、既存rawからreplay 450,000 rootを加え、network-input dedup後2,000,000件以上を目標とする。主教師のdedupは1,991,525件となり目標を8,475件下回ったため、完了済みshardを捨てず、seedを変えた追加raw 100,000件の補充を自動開始した。50k shard、teacher depth8・100k nodes/root・qsearch leaf・12 worker、AdaGrad（feature LR 3e-4/output LR 3e-5、batch128、search mix0.8）で4/8/16/32 epochを段階実行する。`scripts/run_halfkp_v4_gen6_2m_unattended.sh`はlock、部分artifactの安全な再生成、shard単位再開、epoch checkpointを備え、setsid/nohup起動後に手動確認なしで継続する。
+
+T13は教師・学習・checkpointを完了した。dedup後trainは2,060,908件、valid 54,693件、test 49,504件。epoch16の最終候補（generation7、SHA `918a7e21…`）を固定した。未使用250 pair / 500局の親screenは候補266勝・親225勝・9分、score `0.541`、paired CI `0.498–0.584`、安全違反0だった。点推定と安全性は良好だが、事前に固定した昇格条件（paired CI下限>50%）を満たさないため、確認対局・registry昇格・releaseへは進まない。
+
+T14では、value-only HKSTにゲーム対searchペアがないため既存の順位objective evaluatorを流用せず、[`halfkp_value_compare`](../src/training_tools/halfkp_value_compare.rs)を追加した。同一valid/test（計104,197件）でgen6親とgen7候補を比較すると、混合target value Brierは`0.00948618→0.00937846`、真の結果Brierは`0.20931956→0.20784435`、結果log-lossは`0.63393884→0.63037119`と改善した。一方、search値への絶対誤差は`120.23→153.97cp`へ悪化した。したがって候補は「学習目的・終局結果のoffline改善はあるが、棋力昇格を証明していない」状態であり、gen6をaccepted親として維持する。全値、SHA、判断は[`v4_t13_gen7_screen_offline_20260912.json`](../training/halfkp64-scratch-v1/v4_t13_gen7_screen_offline_20260912.json)に固定した。4M/10Mへの自動拡張は行わず、次はこのoffline改善とscreen不合格を分離する一つの条件固定追試を計画する。
+
+T15は、T13 screenと異なるreserve 751–1000の250 pair（500局）、同じ20,000 nodes/手・max depth64・安全Gateで再現性だけを測る。bootstrap seedは20260913、opening SHAは`5175810a…`。この試験はcandidateをregistryへ登録せず、結果が良くても直ちに昇格・release・4M拡張を行わない。再現しなければoffline改善と実戦改善の乖離を確定し、再現すれば事前に定義した確認Gateを別途設計する。
 
 ### T07 — 教師を生成し、実際の学習入力を確定する
 

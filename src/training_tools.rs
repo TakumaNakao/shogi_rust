@@ -33,6 +33,7 @@ pub mod halfkp_search_train;
 pub mod halfkp_static_gate;
 pub mod halfkp_symmetry_generate;
 pub mod halfkp_train;
+pub mod halfkp_value_compare;
 pub mod halfkp_wdl_audit;
 pub mod jsonl_shard;
 pub mod kpp_learn;

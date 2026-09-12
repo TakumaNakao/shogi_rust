@@ -1,11 +1,11 @@
 # HalfKP scratch 学習方針 v4 — 教師更新と独立棋譜による価値学習
 
 - 決定日: 2026-09-09
-- 状態: T01–T12を完了。T12ではv2.5.0超えを確認できず、T13の総train 2M拡張を自動実行中
+- 状態: T01–T14を完了、T15を実行中。T13候補はoffline指標を改善したが、親screenのpaired CI下限が49.8%で昇格条件未達。accepted親はgen6のままとし、4M/10Mへの自動拡張は保留
 - 調査対象commit: `afe766b`、lineage: `halfkp64-scratch-v1`
 - accepted親: gen6、SHA `162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc`
 - 本書が[旧v3](halfkp_training_strategy_v3_20260830.md)の後続作業を置き換える。
-- 実行順・完了条件・進捗の詳細: [v4作業タスク](halfkp_training_v4_tasks.md)。次の作業はT13（gen6教師による総train 2M拡張）。
+- 実行順・完了条件・進捗の詳細: [v4作業タスク](halfkp_training_v4_tasks.md)。次の作業はT15の独立250 pair再現screenであり、候補の昇格や4M/10M投入ではない。
 
 ## 1. 決定
 
@@ -240,8 +240,10 @@ policy head、MCTS、network幅拡大、真TreeStrapは現段階では追加し�
 | 候補選定・凍結・test | 完了（2026-09-10、epoch24） | 候補SHA `162e17ba…`、test report固定 |
 | 親screen・独立確認 | 完了（T10/T11） | screen 55.7%、確認 56.2%、安全合格、gen6昇格 |
 | v2.5.0比較・結果記録 | 完了（T12） | 候補17勝33敗、34.0%。release保留。report固定 |
-| generation6教師・総train 2M拡張 | 実行中（T13） | 新規1.8M＋replay450k、dedup後2M以上、4/8/16/32 epoch checkpoint |
-| 4M/10M・次世代教師更新 | 条件付き | T13で親改善を独立確認した場合のみ規模を再決定 |
+| generation6教師・総train 2M拡張 | 完了（T13、2026-09-12） | train2,060,908、epoch16、候補SHA `918a7e21…`、checkpoint/manifest固定 |
+| T13同一split offline比較・親screen | 完了（T14、昇格未達） | value/result Brierは改善、screen score54.1%、paired CI下限49.8%、gen6維持 |
+| 独立250 pair再現screen | 実行中（T15） | reserve 751–1000、500局、安全Gate、結果が良くても自動昇格しない |
+| 4M/10M・次世代教師更新 | 保留 | 単一条件追試で親改善を確認するまで増量しない |
 | 自己対局 | 最終手段・保留 | 上記Dの診断後に判断 |
 
-2026-09-11時点でT10親screen（55.7%）とT11独立確認（56.2%、paired CI 52.0–60.4%、安全違反0）を完了し、候補をgeneration 6としてregistryへ昇格した。T12のv2.5.0比較（taya36・両者5秒・50局）は候補17勝33敗で、v2.5.0超えを確認できずreleaseを保留した。現在はT13としてgeneration6を唯一の教師にした総train 2M拡張を、shard/checkpoint単位で再開可能なスクリプトにより自動実行している。T12比較はrelease判断専用であり、学習教師へは使わない。
+2026-09-12時点でT10親screen（55.7%）とT11独立確認（56.2%、paired CI 52.0–60.4%、安全違反0）を完了し、候補をgeneration 6としてregistryへ昇格した。T12のv2.5.0比較（taya36・両者5秒・50局）は候補17勝33敗でreleaseを保留した。T13ではgen6教師による2,060,908件をepoch16まで学習し、gen7候補の同一split value/result Brierは改善したが、未使用250 pair screenは54.1%、paired CI `49.8–58.4%`で昇格条件未達だった。候補はregistryへ登録せず、gen6を親として維持する。T13の結果は4M/10Mへ自動的に増量する根拠にならないため、次はoffline改善と対局不確実性を分離する一つの条件固定追試を設計する。T12のv2.5.0比較はrelease判断専用で、学習教師へは使わない。
