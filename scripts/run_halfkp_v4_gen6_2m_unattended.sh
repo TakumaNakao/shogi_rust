@@ -16,6 +16,10 @@ NEW_TARGET="${NEW_RAW_TARGET:-1800000}"; REPLAY_TARGET="${REPLAY_RAW_TARGET:-450
 MODEL="$RUN_DIR/model.bin"; LOG="$RUN_DIR/train.csv"; CONFIG="$RUN_DIR/config.json"
 VALID_FILTERED="$RUN_DIR/valid.filtered.hkst"
 TEST_FILTERED="$RUN_DIR/test.filtered.hkst"
+SUPPLEMENT_RAW="$RUN_DIR/raw-supplement"
+SUPPLEMENT_SHARDS="$RUN_DIR/supplement-shards-50k"
+SUPPLEMENT_TEACHERS="$RUN_DIR/supplement-teachers-100k"
+SUPPLEMENT_TARGET="${SUPPLEMENT_RAW_TARGET:-100000}"
 mkdir -p "$RUN_DIR"; exec 9>"$RUN_DIR/.lock"; flock -n 9 || exit 0
 exec > >(tee -a "$RUN_DIR/pipeline.log") 2>&1
 need() { [[ -s "$1" ]] || { echo "missing: $1" >&2; exit 2; }; }
@@ -127,13 +131,71 @@ teachers() {
     ((i+=1))
   done
 }
+supplement() {
+  # The main corpus can lose a small fraction of records during search and
+  # network-input deduplication.  Add a deterministic independent slice and
+  # reuse all already completed main teachers instead of rebuilding them.
+  mkdir -p "$SUPPLEMENT_RAW" "$SUPPLEMENT_SHARDS" "$SUPPLEMENT_TEACHERS"
+  if [[ ! -s "$SUPPLEMENT_RAW/manifest.json" ]]; then
+    rm -f "$SUPPLEMENT_RAW"/*.jsonl "$SUPPLEMENT_RAW/manifest.json.tmp"
+    target/release/dataset_build --input "$EXTRACT" --input "$ROOT_DIR/data/wdoor/extract/2016" \
+      --input "$ROOT_DIR/data/wdoor/extract/2017" --output-dir "$SUPPLEMENT_RAW" \
+      --license-id user-authorized:wdoor-public-archive --source-uri https://wdoor.c.u-tokyo.ac.jp/shogi/ \
+      --seed "$((SEED+100003))" --shuffle-games --valid-percent 0 --test-percent 0 \
+      --max-records "$SUPPLEMENT_TARGET" --max-records-per-game 24 --phase-records-per-game 8 8 8 \
+      --min-ply 8 --max-ply 200 --known-result-only --base-dataset-manifest "$BASE/manifest.json" \
+      --exclude-base-train --freeze-base-eval
+  fi
+  python3 - "$SUPPLEMENT_RAW/manifest.json" "$SUPPLEMENT_TARGET" <<'PY'
+import json,sys
+n=int(json.load(open(sys.argv[1]))['stats']['train']['records'])
+if n<int(sys.argv[2]): raise SystemExit(f'supplement raw records {n} < target')
+PY
+  if [[ ! -s "$SUPPLEMENT_SHARDS/train-manifest.json" ]]; then
+    rm -f "$SUPPLEMENT_SHARDS"/train-*.jsonl "$SUPPLEMENT_SHARDS"/train-manifest.json.tmp
+    target/release/jsonl_shard --input "$SUPPLEMENT_RAW/train.jsonl" \
+      --output-prefix "$SUPPLEMENT_SHARDS/train-" --lines 50000 --suffix-width 4 \
+      --parent-manifest "$SUPPLEMENT_RAW/manifest.json"
+  fi
+  local i=0 input stem out
+  for input in "$SUPPLEMENT_SHARDS"/train-*.jsonl; do
+    [[ -e "$input" ]] || continue
+    stem="${input##*/}"; stem="${stem%.jsonl}"; out="$SUPPLEMENT_TEACHERS/$stem.hkst"
+    if [[ -s "$out.manifest.json" ]]; then ((i+=1)); continue; fi
+    rm -f "$out" "$out.tmp" "$out.manifest.json" "$out.manifest.json.tmp"
+    target/release/halfkp_search_teacher --weights "$PARENT" --input "$input" \
+      --parent-manifest "$PARENT_MANIFEST" --model-manifest "$PARENT_MANIFEST" \
+      --promotion-registry "$REGISTRY" --gate-report "$GATE" --parent-generation 6 \
+      --output "$out" --value-only --qsearch-leaf --teacher-depth 8 --min-completed-depth 1 \
+      --max-nodes-per-search 100000 --chunk-size 128 --jobs "$WORKERS" --seed "$((SEED+100003+i))"
+    ((i+=1))
+  done
+}
 dedup_filter() {
-  local dedup="$RUN_DIR/train.dedup.hkst" report="$RUN_DIR/train.dedup.json" p
+  local dedup="$RUN_DIR/train.dedup.hkst" report="$RUN_DIR/train.dedup.json" p retained
   if [[ ! -s "$dedup.manifest.json" ]]; then
     rm -f "$dedup" "$dedup.tmp" "$dedup.manifest.json.tmp"
     local args=(--output "$dedup" --report "$report")
     for p in "$TEACHERS"/train-*.hkst; do [[ -e "$p" ]] && args+=(--input "$p"); done
     target/release/halfkp_search_dedup "${args[@]}"
+  fi
+  retained="$(python3 - "$report" <<'PY'
+import json,sys
+print(int(json.load(open(sys.argv[1]))['retained_records']))
+PY
+)"
+  if ((retained < 2000000)); then
+    echo "main dedup records $retained < 2000000; creating deterministic supplement"
+    supplement
+    dedup="$RUN_DIR/train.dedup-expanded.hkst"; report="$RUN_DIR/train.dedup-expanded.json"
+    if [[ ! -s "$dedup.manifest.json" ]]; then
+      rm -f "$dedup" "$dedup.tmp" "$dedup.manifest.json.tmp"
+      local expanded_args=(--output "$dedup" --report "$report")
+      for p in "$TEACHERS"/train-*.hkst "$SUPPLEMENT_TEACHERS"/train-*.hkst; do
+        [[ -e "$p" ]] && expanded_args+=(--input "$p")
+      done
+      target/release/halfkp_search_dedup "${expanded_args[@]}"
+    fi
   fi
   python3 - "$report" <<'PY'
 import json,sys
