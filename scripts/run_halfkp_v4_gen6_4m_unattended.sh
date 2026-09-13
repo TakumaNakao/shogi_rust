@@ -110,7 +110,8 @@ x={'schema':'halfkp_v4_gen6_4m_unattended_config_v1','lineage_id':'halfkp64-scra
    'seed':int(os.environ['SEED']),'max_epoch':int(os.environ['MAX_EPOCH']),
    'teacher':{'value_only':True,'qsearch_leaf':True,'teacher_depth':8,'max_nodes_per_search':100000},
    'training':{'optimizer':'adagrad','feature_learning_rate':3e-4,'output_learning_rate':3e-5,
-               'batch_size':128,'search_mix':0.8,'value_weight':1.0,'rank_weight':0.0,'loss_power':2.5,'swa':False}}
+               'batch_size':128,'search_mix':0.8,'value_weight':1.0,'rank_weight':0.0,'loss_power':2.5,
+               'early_stop_patience':1000000,'swa':False}}
 pathlib.Path(sys.argv[1]).write_text(json.dumps(x,indent=2,sort_keys=True)+'\n')
 PY
 }
@@ -123,6 +124,7 @@ train_stage() {
     --output "$MODEL" --epochs "$target" --batch-size 128 --learning-rate .0003 --output-learning-rate .00003 --kappa-cp 1352.7871
     --search-mix .8 --search-mix-end .8 --value-weight 1 --rank-weight 0 --game-rank-weight 0 --game-vs-search-weight 0
     --loss-power 2.5 --gradient-clip-norm 1 --output-limit .20 --optimizer adagrad --threads "$WORKERS" --seed "$SEED"
+    --early-stop-patience 1000000 --min-valid-improvement .000001 --swa-start-epoch 1000000
     --checkpoint-dir "$CHECKPOINTS" --log "$LOG" --train "$FINAL_TRAIN" --max-train-records "$MAX_TRAIN_RECORDS" --valid "$VALID" --test "$TEST")
   [[ -s "$MODEL.manifest.json" && -s "$MODEL" ]] && args+=(--resume)
   target/release/halfkp_search_train "${args[@]}"
