@@ -156,8 +156,8 @@ reserve 1001–1250は候補範囲であって、未使用を確認せずに採�
 | F00 | T15集計・方針更新 | report SHA、実更新量、計画差分を記録 | 完了 |
 | F01 | 停止・best保存・評価/再開の最小修正 | 上記回帰確認、configとコードが一致 | 実装・回帰テスト完了 |
 | F02 | 同じ2Mで32、条件付き64 epoch | 中間重み/optimizer/指標保存、停止理由自動記録 | 32完了・64条件未達（best epoch15） |
-| F03 | 候補固定、親screen・条件付き独立確認 | 最多250＋250 pair、昇格判断記録 | 開発screen実行中 |
-| F04 | 昇格時v2.5.0比較、次規模決定 | 50局結果、4M条件または原因別次実験を記録 | Gate通過待ちrunner起動済み |
+| F03 | 候補固定、親screen・条件付き独立確認 | 最多250＋250 pair、昇格判断記録 | 完了・独立確認未達 |
+| F04 | 昇格時v2.5.0比較、次規模決定 | 50局結果、4M条件または原因別次実験を記録 | F03未達のため未実施 |
 
 実装: [extended runner](../scripts/run_halfkp_v4_gen6_2m_extended.sh)を使い、既存のlock・端末切断に耐える起動・完全artifact再開を使う。
 学習完了後は[gen7 gate runner](../scripts/run_halfkp_v4_gen7_gate_unattended.sh)が完了artifactを検証し、F03のscreen→条件付き独立確認を自動で進める。条件未達や異常も終了理由を保存する。
@@ -166,6 +166,9 @@ reserve 1001–1250は候補範囲であって、未使用を確認せずに採�
 実行記録（2026-09-13）: F01の修正はcommit `0a408ca`、F02/F03のrunnerは`e2fe032`・`24bdbba`で固定した。
 実runは`runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/`で、`WORKERS=12`・`SEED=20260911`を明示して起動済み。
 誤seed `20260913`の初回試行は最初のepoch完了前に停止し、同ディレクトリに混ぜず別runとして監査artifactを残した。
+
+F02/F03完了記録: 32 epochまで実行し、validの厳密bestはepoch15（score `0.0093816425`、model SHA `fc8e4cc…`）。同一test 49,504局面では親比でvalue Brier `0.00950666→0.00937528`、結果Brier `0.20938060→0.20779899`へ改善したが、search MAEは`121.04→153.93cp`へ悪化した。
+開発screen（250 pair/500局）は候補266勝・親225勝・9分、score `0.541`、paired CI `0.498–0.584`で通過。独立確認（未使用1001–1250、250 pair/500局）は候補266勝・親226勝・8分、score `0.540`、paired CI `0.500–0.581`、安全違反0だった。下限は厳格条件`>0.5`を満たさないため、candidateはregistryへ追加せず、F04のv2.5.0比較も実施しない。判定は`gate/gate-decision.json`、両match report、`completion.json`へ固定した。
 
 ## 7. 根拠
 
