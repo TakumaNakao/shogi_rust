@@ -118,9 +118,9 @@ MMTO-only再開、巨大network、新optimizer、自己対局基盤の新設は�
 | ID | 作業・完了条件 | 状態 |
 |---|---|---|
 | G00 | 結果再集計、誤った独立確認説明の訂正、後続計画決定 | 完了（本書・監査JSON） |
-| G01 | best SHA/詳細指標をcheckpointと結び付けて再開検証。currentとbestを別名保存。watcherはterminal状態と全対局完了artifactで進行 | 未実施 |
-| G02 | 全使用履歴を除外して新規確認250 familyと新規train gameを凍結。小さいfixtureで重複拒否・手番/target・指標・再開/途中終了を回帰確認 | 未実施 |
-| G03 | 新規教師を追加し4Mを凍結。件数・分布・SHA・生成時間を記録 | 未実施 |
+| G01 | best SHA/詳細指標をcheckpointと結び付けて再開検証。currentとbestを別名保存。watcherはterminal状態と全対局完了artifactで進行 | 完了（commit `9a0d49d`、trainer回帰23件成功） |
+| G02 | 全使用履歴を除外して新規確認250 familyと新規train gameを凍結。小さいfixtureで重複拒否・手番/target・指標・再開/途中終了を回帰確認 | 実行中（4M pipeline commit `334d3cc`、新規WDoor抽出開始） |
+| G03 | 新規教師を追加し4Mを凍結。件数・分布・SHA・生成時間を記録 | G02後 |
 | G04 | 4M×16学習→候補凍結→2M比screen→条件付き親確認→条件付きv2.5.0比較、終了理由を自動保存 | 未実施 |
 | G05 | 対局とphase別offlineを合わせて、拡張か教師品質診断かを一度判断 | G04後 |
 
@@ -129,6 +129,12 @@ MMTO-only再開、巨大network、新optimizer、自己対局基盤の新設は�
 G03/G04開始前にコード・実行スクリプト・binary・configのSHAを固定する。起動済みスクリプトを途中編集せず、修正は停止・checkpoint確認後に次runへ反映する。
 同一run内の完成済みshard/epoch/pairを検証して再利用し、通常の段階移行は人の確認を待たず進める。異常を握り潰して次の実験に切り替えない。
 変更と進捗は現行trainingブランチでコミットし、大容量棋譜・重みはGitに追加しない。
+
+実行記録（2026-09-13）: `scripts/run_halfkp_v4_gen6_4m_unattended.sh`をcommit `334d3cc`で固定し、
+`runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/`へ起動した。2018–2026年WDoor、raw目標2,300,000、
+教師100k nodes/depth8、12 worker、学習上限4,000,000件×16 epochを設定している。
+初回起動は設定監査で停止し、SWA/早期停止を明示した同一runへ再開した。抽出・教師・学習の各段階はmanifestとSHAを検証し、
+途中終了時は完了済みartifactから再開する。新規確認局面は学習データの使用履歴を監査してから別途固定する。
 
 ## 6. 外部事例との照合
 
