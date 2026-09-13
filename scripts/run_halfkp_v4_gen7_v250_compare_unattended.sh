@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 RUN_DIR="${RUN_DIR:-$ROOT_DIR/runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911}"
 GATE_DECISION="$RUN_DIR/gate/gate-decision.json"
+GATE_COMPLETION="$RUN_DIR/gate/gate-completed.json"
 MODEL="$RUN_DIR/model.bin"
 OUT_DIR="$RUN_DIR/v250-taya36-5s-50g"
 POLL_SECONDS="${POLL_SECONDS:-30}"
@@ -15,15 +16,21 @@ flock -n 9 || exit 0
 exec > >(tee -a "$RUN_DIR/v250-watcher/pipeline.log") 2>&1
 
 need() { [[ -s "$1" ]] || { echo "missing: $1" >&2; exit 2; }; }
-while [[ ! -s "$GATE_DECISION" ]]; do
-  echo "waiting for independent gate decision: $GATE_DECISION"
+while [[ ! -s "$GATE_COMPLETION" ]]; do
+  echo "waiting for terminal independent gate result: $GATE_COMPLETION"
   sleep "$POLL_SECONDS"
 done
 
-if ! python3 - "$GATE_DECISION" <<'PY'
-import json, sys
-x = json.load(open(sys.argv[1]))
-raise SystemExit(0 if x.get('independent_confirmation_pass') is True else 1)
+if ! python3 - "$GATE_COMPLETION" "$GATE_DECISION" <<'PY'
+import hashlib, json, pathlib, sys
+completion, decision = map(pathlib.Path, sys.argv[1:])
+x = json.loads(completion.read_text())
+if x.get('schema') != 'halfkp_gate_completion_v1':
+    raise SystemExit('gate completion schema is not terminal')
+if x.get('decision_sha256') != hashlib.sha256(decision.read_bytes()).hexdigest():
+    raise SystemExit('gate decision changed after terminal completion')
+decision_data = json.loads(decision.read_text())
+raise SystemExit(0 if decision_data.get('independent_confirmation_pass') is True else 1)
 PY
 then
   echo "independent confirmation did not pass; v2.5.0 comparison is not authorized"
@@ -31,7 +38,7 @@ then
 fi
 
 need "$MODEL"
-if [[ -s "$OUT_DIR/match.log" ]]; then
+if [[ -s "$OUT_DIR/result.json" && -s "$OUT_DIR/completed.json" ]]; then
   echo "v2.5.0 comparison already complete: $OUT_DIR"
   exit 0
 fi

@@ -17,6 +17,7 @@ REGISTRY="$ROOT_DIR/training/halfkp64-scratch-v1/promotion_registry.json"
 BINARY="$ROOT_DIR/target/release/halfkp_promotion_match"
 MATCH="$ROOT_DIR/scripts/run_halfkp_paired_match.py"
 DECISION="$GATE_DIR/gate-decision.json"
+GATE_COMPLETION="$GATE_DIR/gate-completed.json"
 POLL_SECONDS="${POLL_SECONDS:-30}"
 
 mkdir -p "$GATE_DIR"
@@ -25,6 +26,21 @@ flock -n 9 || exit 0
 exec > >(tee -a "$GATE_DIR/pipeline.log") 2>&1
 
 need() { [[ -s "$1" ]] || { echo "missing: $1" >&2; exit 2; }; }
+write_terminal_artifact() {
+  python3 - "$GATE_COMPLETION" "$DECISION" <<'PY'
+import hashlib, json, pathlib, sys, time
+completion, decision = map(pathlib.Path, sys.argv[1:])
+payload = {
+  'schema': 'halfkp_gate_completion_v1',
+  'completed_unix_secs': int(time.time()),
+  'decision_sha256': hashlib.sha256(decision.read_bytes()).hexdigest(),
+}
+temporary = completion.with_suffix(completion.suffix + '.tmp')
+temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+temporary.replace(completion)
+print('gate terminal artifact:', completion)
+PY
+}
 while [[ ! -s "$TRAINING_COMPLETION" ]]; do
   if [[ -s "$RUN_DIR/pipeline.failed" ]]; then
     echo "training pipeline reported failure" >&2
@@ -107,9 +123,16 @@ decision = {
 }
 pathlib.Path(sys.argv[2]).write_text(json.dumps(decision, indent=2, sort_keys=True) + '\n')
 print('screen_pass', screen_pass, 'score', report.get('score'))
-if not screen_pass:
-    raise SystemExit(10)
 PY
+if ! python3 - "$DECISION" <<'PY'
+import json, sys
+raise SystemExit(0 if json.load(open(sys.argv[1])).get('screen_pass') else 1)
+PY
+then
+  write_terminal_artifact
+  echo "screen gate failed; confirmation and later comparisons are not authorized"
+  exit 10
+fi
 
 python3 - "$DECISION" <<'PY'
 import json, pathlib, sys
@@ -138,3 +161,4 @@ decision_path.write_text(json.dumps(decision, indent=2, sort_keys=True) + '\n')
 print('confirmation_pass', passed, 'score', report.get('score'))
 PY
 echo "gen7 gate pipeline complete: $GATE_DIR"
+write_terminal_artifact

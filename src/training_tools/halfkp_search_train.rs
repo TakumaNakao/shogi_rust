@@ -189,6 +189,10 @@ struct CheckpointMeta {
     selected_epoch: usize,
     #[serde(default = "default_infinite_score")]
     selected_score: f64,
+    #[serde(default)]
+    selected_model_sha256: String,
+    #[serde(default)]
+    selected_validation: serde_json::Value,
     optimizer: OptimizerKind,
     schedule_step: u64,
     schedule_weight_sum: f64,
@@ -771,6 +775,35 @@ pub fn run() -> Result<()> {
         resumed_selected_epoch
     };
     let mut selected_validation = initial.clone();
+    if start_epoch > 0 {
+        let directory = args
+            .checkpoint_dir
+            .as_ref()
+            .ok_or_else(|| anyhow!("resumed training has no checkpoint directory"))?;
+        let selected_path = directory.join("selected.binary");
+        if !selected_path.is_file() {
+            return Err(anyhow!(
+                "checkpoint is missing selected model {}; refusing ambiguous resume",
+                selected_path.display()
+            ));
+        }
+        let selected_weights = Weights::load(&selected_path)?;
+        selected_validation = evaluate_datasets(
+            &selected_weights,
+            &game_rank_selector,
+            &args.valid,
+            args.max_valid_records,
+            args.eval_chunk_records,
+            args.allow_legacy_teacher_semantics,
+            &options,
+        )?;
+        let evaluated_score = validation_score(&selected_validation, &options);
+        if (evaluated_score - resumed_selected_score).abs() > 1e-12 {
+            return Err(anyhow!(
+                "checkpoint selected score does not match selected model: metadata={resumed_selected_score:.12} evaluated={evaluated_score:.12}"
+            ));
+        }
+    }
     let mut selected_validation_score = if start_epoch == 0 {
         initial_score
     } else {
@@ -964,6 +997,7 @@ pub fn run() -> Result<()> {
             selected_kind,
             selected_epoch,
             selected_validation_score,
+            &selected_validation,
         )?;
         if stale >= args.early_stop_patience {
             break;
@@ -1560,7 +1594,7 @@ fn initialize_training(
             .expect("validated checkpoint dir");
         let meta: CheckpointMeta =
             serde_json::from_reader(BufReader::new(File::open(directory.join("state.json"))?))?;
-        if meta.schema_version != 2 || meta.run_fingerprint.is_empty() {
+        if meta.schema_version < 3 || meta.run_fingerprint.is_empty() {
             if !args.allow_legacy_checkpoint {
                 return Err(anyhow!(
                     "checkpoint has no verifiable run fingerprint; pass \
@@ -1581,6 +1615,16 @@ fn initialize_training(
                     return Err(anyhow!(
                         "checkpoint file hash mismatch for {}",
                         path.display()
+                    ));
+                }
+            }
+            if meta.schema_version >= 3 {
+                let selected_path = directory.join("selected.binary");
+                if meta.selected_model_sha256.is_empty()
+                    || meta.selected_model_sha256 != sha256_file(&selected_path)?
+                {
+                    return Err(anyhow!(
+                        "checkpoint selected model hash is missing or invalid"
                     ));
                 }
             }
@@ -1673,12 +1717,21 @@ fn save_checkpoint(
     selected_kind: SelectedKind,
     selected_epoch: usize,
     selected_score: f64,
+    selected_validation: &Metrics,
 ) -> Result<()> {
     let Some(directory) = &args.checkpoint_dir else {
         return Ok(());
     };
     fs::create_dir_all(directory)?;
     weights.save(&directory.join("current.binary"))?;
+    let selected_path = directory.join("selected.binary");
+    let selected_temporary = directory.join("selected.binary.tmp");
+    if args.output.is_file() {
+        fs::copy(&args.output, &selected_temporary)?;
+    } else {
+        weights.save(&selected_temporary)?;
+    }
+    fs::rename(selected_temporary, &selected_path)?;
     let (schedule_step, schedule_weight_sum, schedule_lr_max) = match optimizer {
         OptimizerState::Adagrad(state) => {
             state.save(&directory.join("adagrad.binary"))?;
@@ -1706,7 +1759,7 @@ fn save_checkpoint(
         state.average.save(&directory.join("swa.binary"))?;
     }
     let mut file_sha256 = BTreeMap::new();
-    let mut checkpoint_files = vec!["current.binary"];
+    let mut checkpoint_files = vec!["current.binary", "selected.binary"];
     match optimizer {
         OptimizerState::Adagrad(_) => checkpoint_files.push("adagrad.binary"),
         OptimizerState::ScheduleFree(_) => {
@@ -1724,7 +1777,7 @@ fn save_checkpoint(
         file_sha256.insert(name.to_string(), sha256_file(&directory.join(name))?);
     }
     let meta = CheckpointMeta {
-        schema_version: 2,
+        schema_version: 3,
         run_fingerprint: run_fingerprint.to_string(),
         file_sha256,
         completed_epoch: epoch,
@@ -1733,6 +1786,8 @@ fn save_checkpoint(
         selected_kind,
         selected_epoch,
         selected_score,
+        selected_model_sha256: sha256_file(&selected_path)?,
+        selected_validation: metrics_json(selected_validation),
         optimizer: args.optimizer,
         schedule_step,
         schedule_weight_sum,
@@ -3235,6 +3290,7 @@ mod tests {
             SelectedKind::Best,
             1,
             0.25,
+            &Metrics::default(),
         )
         .expect("save checkpoint");
         let (
@@ -3340,6 +3396,7 @@ mod tests {
             SelectedKind::Swa,
             2,
             0.4,
+            &Metrics::default(),
         )
         .expect("save checkpoint");
         let (
