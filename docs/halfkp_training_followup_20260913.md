@@ -130,7 +130,7 @@ G03/G04開始前にコード・実行スクリプト・binary・configのSHAを�
 同一run内の完成済みshard/epoch/pairを検証して再利用し、通常の段階移行は人の確認を待たず進める。異常を握り潰して次の実験に切り替えない。
 変更と進捗は現行trainingブランチでコミットし、大容量棋譜・重みはGitに追加しない。
 
-実行記録（2026-09-13）: `scripts/run_halfkp_v4_gen6_4m_unattended.sh`をcommit `334d3cc`で固定し、
+実行記録（2026-09-13）: `scripts/run_halfkp_v4_gen6_4m_unattended.sh`をcommit `36aee2f`（設定固定は`334d3cc`）で固定し、
 `runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/`へ起動した。2018–2026年WDoor、raw目標2,300,000、
 教師100k nodes/depth8、12 worker、学習上限4,000,000件×16 epochを設定している。
 初回起動は設定監査で停止し、SWA/早期停止を明示した同一runへ再開した。抽出・教師・学習の各段階はmanifestとSHAを検証し、
