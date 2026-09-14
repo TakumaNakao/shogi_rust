@@ -1,11 +1,11 @@
 # HalfKP scratch 学習方針 v4 — 教師更新と独立棋譜による価値学習
 
 - 決定日: 2026-09-09
-- 状態: T01–T15、後続2M・32 epochと対局まで終了。運用親はgen6。9/13に確認集合の再利用とbest詳細指標の混在が判明した。最新の訂正・後続作業は[9/13更新計画](halfkp_training_followup_20260913.md)を正本とする。
+- 状態: T01–T15、後続2M・32 epochと4M・16 epochの学習・screenまで終了。運用親はgen6。4Mの2M比は49.7%で優位性未確認。最新の訂正・原因調査・後続作業は[9/14更新計画](halfkp_training_followup_20260914.md)を正本とする。
 - 調査対象commit: `afe766b`、lineage: `halfkp64-scratch-v1`
 - accepted親: gen6、SHA `162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc`
 - 本書が[旧v3](halfkp_training_strategy_v3_20260830.md)の後続作業を置き換える。
-- 実行履歴: [v4作業タスク](halfkp_training_v4_tasks.md)、[9/12計画・実行履歴](halfkp_training_followup_20260912.md)。次の作業は9/13更新計画のG01。以下の旧方針・独立確認の説明と更新計画が異なる箇所は更新計画を優先する。
+- 実行履歴: [v4作業タスク](halfkp_training_v4_tasks.md)、[9/12計画・実行履歴](halfkp_training_followup_20260912.md)、[9/13計画・実行履歴](halfkp_training_followup_20260913.md)。次の作業は9/14更新計画のH01。以下の旧方針・独立確認の説明と更新計画が異なる箇所は更新計画を優先する。
 
 ## 1. 決定
 

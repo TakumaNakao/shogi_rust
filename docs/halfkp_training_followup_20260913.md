@@ -1,5 +1,7 @@
 # HalfKP 学習方針の再検討 — 2M・32 epoch後
 
+後続作業の正本は[9/14・4M対局後の更新計画](halfkp_training_followup_20260914.md)。以下は当時の計画と実行履歴を保持する。
+
 決定日: 2026-09-13。調査対象commit: `62bfbef`。
 [9/12計画](halfkp_training_followup_20260912.md)の後続方針を本書で更新する。
 今回は調査と計画更新のみ。コード修正・追加学習・対局・registry変更は行っていない。
@@ -119,10 +121,10 @@ MMTO-only再開、巨大network、新optimizer、自己対局基盤の新設は�
 |---|---|---|
 | G00 | 結果再集計、誤った独立確認説明の訂正、後続計画決定 | 完了（本書・監査JSON） |
 | G01 | best SHA/詳細指標をcheckpointと結び付けて再開検証。currentとbestを別名保存。watcherはterminal状態と全対局完了artifactで進行 | 完了（commit `9a0d49d`、trainer回帰23件成功） |
-| G02 | 全使用履歴を除外して新規確認250 familyと新規train gameを凍結。小さいfixtureで重複拒否・手番/target・指標・再開/途中終了を回帰確認 | train game/network入力完了。確認250はG04前に新規集合を固定 |
+| G02 | 全使用履歴を除外して新規確認250 familyと新規train gameを凍結。小さいfixtureで重複拒否・手番/target・指標・再開/途中終了を回帰確認 | train監査記録あり。確認250はbase-family重複8件・全履歴監査未完のため未完了。9/14 H01へ移管 |
 | G03 | 新規教師を追加し4Mを凍結。件数・分布・SHA・生成時間を記録 | 完了（4,009,431件dedup、SHA検証済み） |
-| G04 | 4M×16学習→候補凍結→2M比screen→条件付き親確認→条件付きv2.5.0比較、終了理由を自動保存 | 実行中（4M学習epoch4 stage） |
-| G05 | 対局とphase別offlineを合わせて、拡張か教師品質診断かを一度判断 | G04後 |
+| G04 | 4M×16学習→候補凍結→2M比screen→条件付き親確認→条件付きv2.5.0比較、終了理由を自動保存 | 終了。epoch16 best、2M比245勝248敗7分・49.7%。screen未達で後続対局なし |
+| G05 | 対局とphase別offlineを合わせて、拡張か教師品質診断かを一度判断 | 完了。9/14更新計画へ。全体shuffle修正・量の比較・5k教師診断を優先 |
 
 既存CLIとrunnerを修正して使い、監視基盤を作り直さない。G01では`halfkp_search_train`のcheckpoint、`halfkp_value_compare`の同一損失による読み取り専用集計、既存watcherを対象にする。
 「再開後best更新なし」「中間false→最終true」「ログだけ存在する未完了」をテストする。補助診断の追加だけで、既存候補の選択基準を遡って変更しない。
@@ -141,6 +143,12 @@ G03/G04開始前にコード・実行スクリプト・binary・configのSHAを�
 異なる棋譜の同一定跡は学習分布の重複であり、network-inputの最終dedup（4,009,431件）とは別概念として記録する。
 4M trainと既存valid/testのnetwork-input衝突329/278件を除外し、最終valid 54,373件、test 49,234件でtrainer検査を通過した。
 configにはtrain/valid/test SHAを固定した。4M学習はepoch4 stageとして実行中である。
+
+上記の訂正・完了記録（2026-09-14夜）: 学習と2M比screenは完了した。実際のconfigは古いvalid/test参照を保持し、
+model manifestがfiltered集合の正しいSHAを記録していたため、「configにも最終SHAを固定済み」という説明を訂正する。
+実行seedは20260913。また単一dedupファイルの25k chunk内shuffleのみで、計画した新旧全体のshuffle/shard化は未実施だった。
+確認用fresh250は正規化familyの重複が見つかったため独立確認用とは扱わない（確認対局は実施されていない）。
+元artifactを上書きせず、[9/14監査記録](../training/halfkp64-scratch-v1/followup_review_20260914.json)と更新計画に詳細を残した。
 
 ## 6. 外部事例との照合
 

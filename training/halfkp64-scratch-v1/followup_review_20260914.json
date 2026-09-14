@@ -1,0 +1,677 @@
+{
+  "schema": "halfkp_followup_review_20260914_v1",
+  "date": "2026-09-14",
+  "audited_commit": "7254269d0211adc054ee53e5357ac258f84fa4ff",
+  "scope": "Result and source audit; derived read-only evaluations and tests. No new training, matches, model or registry changes.",
+  "artifacts": {
+    "config.json": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/config.json",
+      "sha256": "97436c72801053f7547fcec5799201176effe2cd8099b356cc458e5717cd29bb"
+    },
+    "model.bin.manifest.json": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/model.bin.manifest.json",
+      "sha256": "d16c7649f3e8f306fe10760ed271d950ae082916ede5b463ab8f9f114ce4b3f5"
+    },
+    "train.csv": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/train.csv",
+      "sha256": "bde876178e59882184217b869afb243d3f67948b8489aff049e6e79d9e0e5dfd"
+    },
+    "review_layout_audit.py": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/review_layout_audit.py",
+      "sha256": "69d07036f0b0561cf4384468a7035b11920f6ddcc5833a1f45152c3d104eb548"
+    },
+    "review-layout/layout.json": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/review-layout/layout.json",
+      "sha256": "4383f3ac5ea81eb5e286f2ef647bc788ddf544e81a0b277fbe35d376f3a6b2e3"
+    },
+    "gate/screen-20k-250pair-vs-2m-best/report.json": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/gate/screen-20k-250pair-vs-2m-best/report.json",
+      "sha256": "9e6e30dfd94cb45e700433403376f3b94ce59e34426287a5b901a80616dd0601"
+    },
+    "gate/gate-decision.json": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/gate/gate-decision.json",
+      "sha256": "00b5906be49769414d45fe327da2db52a7e3bb4a7314fdba40d9580459b65c1e"
+    },
+    "gate/gate-completed.json": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/gate/gate-completed.json",
+      "sha256": "988bb15170bc298acc1826257c17a56774bc1f4c3dc74315f1341a90fdf96fba"
+    }
+  },
+  "screen": {
+    "candidate_sha256": "b8fc5fbb6dd64fe5980065aaa43416d92e02e69deb9b77dbea1fc53f3f68090f",
+    "parent_sha256": "fc8e4ccbc187d433a6a642db2675b965ca7264e04ca6d67542e831cb23784512",
+    "openings_sha256": "1654319ed1c5f167ea31522a9e32664009e1f7119923fb0b97e5060e990f6dec",
+    "node_budget_per_move": 20000,
+    "pairs": 250,
+    "games": 500,
+    "score": 0.497,
+    "paired_score_ci95_lower": 0.454,
+    "paired_score_ci95_upper": 0.54,
+    "counts": {
+      "candidate_wins": 245,
+      "parent_wins": 248,
+      "draws": 7,
+      "candidate_black_wins": 132,
+      "candidate_white_wins": 113,
+      "search_failures": 0,
+      "missing_root_results": 0,
+      "illegal_moves": 0,
+      "non_finite_scores": 0,
+      "max_ply_draws": 7,
+      "repetition_draws": 0,
+      "perpetual_check_games": 7
+    }
+  },
+  "decision": {
+    "candidate_sha256": "b8fc5fbb6dd64fe5980065aaa43416d92e02e69deb9b77dbea1fc53f3f68090f",
+    "independent_confirmation_pass": false,
+    "independent_confirmation_started": false,
+    "schema": "halfkp_gen6_4m_gate_decision_v1",
+    "screen_paired_ci95": [
+      0.454,
+      0.54
+    ],
+    "screen_parent_sha256": "fc8e4ccbc187d433a6a642db2675b965ca7264e04ca6d67542e831cb23784512",
+    "screen_pass": false,
+    "screen_safety": true,
+    "screen_score": 0.497
+  },
+  "same_valid_comparisons": {
+    "review-valid-vs-gen6.json": {
+      "schema_version": 1,
+      "metric": "hkst-value-target-paired-v1",
+      "datasets": [
+        {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/valid-4m.filtered.hkst",
+          "sha256": "38b33ac0bc07cf42f6214eb81a7a782912d10aa9e5660a9878b04c56bf71ffd3"
+        }
+      ],
+      "baseline_model": {
+        "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/model.bin",
+        "sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc"
+      },
+      "candidate_model": {
+        "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/model.bin",
+        "sha256": "b8fc5fbb6dd64fe5980065aaa43416d92e02e69deb9b77dbea1fc53f3f68090f"
+      },
+      "records_read": 54373,
+      "records": 54373,
+      "known_results": 54373,
+      "sample_weight_sum": 54373,
+      "result_weight_sum": 54373,
+      "kappa_cp": 1352.7871,
+      "search_mix": 0.8,
+      "baseline": {
+        "value_brier": 0.009467430688940131,
+        "value_log_loss": 0.6588899756398445,
+        "search_abs_error_cp": 119.82218858087072,
+        "result_brier": 0.2091655819951628,
+        "result_log_loss": 0.6312405117795492
+      },
+      "candidate": {
+        "value_brier": 0.009371180619997699,
+        "value_log_loss": 0.6585990088078868,
+        "search_abs_error_cp": 157.22310869382002,
+        "result_brier": 0.20764703689374717,
+        "result_log_loss": 0.627449302860931
+      },
+      "candidate_minus_baseline": {
+        "value_brier": -0.00009625006894243247,
+        "value_log_loss": -0.00029096683195772854,
+        "search_abs_error_cp": 37.40092011294931,
+        "result_brier": -0.001518545101415636,
+        "result_log_loss": -0.003791208918618172
+      },
+      "paired_counts": {
+        "value_loss_improved": 29966,
+        "value_loss_worsened": 24407,
+        "value_loss_unchanged": 0
+      }
+    },
+    "review-valid-vs-best2m.json": {
+      "schema_version": 1,
+      "metric": "hkst-value-target-paired-v1",
+      "datasets": [
+        {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/valid-4m.filtered.hkst",
+          "sha256": "38b33ac0bc07cf42f6214eb81a7a782912d10aa9e5660a9878b04c56bf71ffd3"
+        }
+      ],
+      "baseline_model": {
+        "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/model.bin",
+        "sha256": "fc8e4ccbc187d433a6a642db2675b965ca7264e04ca6d67542e831cb23784512"
+      },
+      "candidate_model": {
+        "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/model.bin",
+        "sha256": "b8fc5fbb6dd64fe5980065aaa43416d92e02e69deb9b77dbea1fc53f3f68090f"
+      },
+      "records_read": 54373,
+      "records": 54373,
+      "known_results": 54373,
+      "sample_weight_sum": 54373,
+      "result_weight_sum": 54373,
+      "kappa_cp": 1352.7871,
+      "search_mix": 0.8,
+      "baseline": {
+        "value_brier": 0.009379966163631818,
+        "value_log_loss": 0.6586288886297631,
+        "search_abs_error_cp": 153.4708655286475,
+        "result_brier": 0.20781816868573644,
+        "result_log_loss": 0.6279035212539321
+      },
+      "candidate": {
+        "value_brier": 0.009371180619997699,
+        "value_log_loss": 0.6585990088078868,
+        "search_abs_error_cp": 157.22310869382002,
+        "result_brier": 0.20764703689374717,
+        "result_log_loss": 0.627449302860931
+      },
+      "candidate_minus_baseline": {
+        "value_brier": -0.000008785543634119361,
+        "value_log_loss": -0.000029879821876299673,
+        "search_abs_error_cp": 3.75224316517253,
+        "result_brier": -0.00017113179198927075,
+        "result_log_loss": -0.00045421839300108235
+      },
+      "paired_counts": {
+        "value_loss_improved": 27754,
+        "value_loss_worsened": 26619,
+        "value_loss_unchanged": 0
+      }
+    }
+  },
+  "phase_comparisons": {
+    "0": {
+      "gen6": {
+        "schema_version": 1,
+        "metric": "hkst-value-target-paired-v1",
+        "datasets": [
+          {
+            "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/review-layout/valid-phase-0.hkst",
+            "sha256": "550929bf454508d5bcea234957e1e331ce9a97c41b1abfb09c02817e18872692"
+          }
+        ],
+        "baseline_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/model.bin",
+          "sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc"
+        },
+        "candidate_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/model.bin",
+          "sha256": "b8fc5fbb6dd64fe5980065aaa43416d92e02e69deb9b77dbea1fc53f3f68090f"
+        },
+        "records_read": 6597,
+        "records": 6597,
+        "known_results": 6597,
+        "sample_weight_sum": 6597,
+        "result_weight_sum": 6597,
+        "kappa_cp": 1352.7871,
+        "search_mix": 0.8,
+        "baseline": {
+          "value_brier": 0.009551545155537826,
+          "value_log_loss": 0.689412978387336,
+          "search_abs_error_cp": 76.96075470317074,
+          "result_brier": 0.22885036941402045,
+          "result_log_loss": 0.6866046863474963
+        },
+        "candidate": {
+          "value_brier": 0.009686465655236984,
+          "value_log_loss": 0.6896869273310358,
+          "search_abs_error_cp": 89.7064277256088,
+          "result_brier": 0.22912030881436315,
+          "result_log_loss": 0.6871459669755191
+        },
+        "candidate_minus_baseline": {
+          "value_brier": 0.00013492049969915897,
+          "value_log_loss": 0.0002739489436998088,
+          "search_abs_error_cp": 12.74567302243807,
+          "result_brier": 0.00026993940034270025,
+          "result_log_loss": 0.0005412806280228333
+        },
+        "paired_counts": {
+          "value_loss_improved": 3253,
+          "value_loss_worsened": 3344,
+          "value_loss_unchanged": 0
+        }
+      },
+      "best2m": {
+        "schema_version": 1,
+        "metric": "hkst-value-target-paired-v1",
+        "datasets": [
+          {
+            "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/review-layout/valid-phase-0.hkst",
+            "sha256": "550929bf454508d5bcea234957e1e331ce9a97c41b1abfb09c02817e18872692"
+          }
+        ],
+        "baseline_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/model.bin",
+          "sha256": "fc8e4ccbc187d433a6a642db2675b965ca7264e04ca6d67542e831cb23784512"
+        },
+        "candidate_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/model.bin",
+          "sha256": "b8fc5fbb6dd64fe5980065aaa43416d92e02e69deb9b77dbea1fc53f3f68090f"
+        },
+        "records_read": 6597,
+        "records": 6597,
+        "known_results": 6597,
+        "sample_weight_sum": 6597,
+        "result_weight_sum": 6597,
+        "kappa_cp": 1352.7871,
+        "search_mix": 0.8,
+        "baseline": {
+          "value_brier": 0.009656432172415665,
+          "value_log_loss": 0.6896267062392774,
+          "search_abs_error_cp": 87.2906232783338,
+          "result_brier": 0.22904338555116188,
+          "result_log_loss": 0.6869886803098466
+        },
+        "candidate": {
+          "value_brier": 0.009686465655236984,
+          "value_log_loss": 0.6896869273310358,
+          "search_abs_error_cp": 89.7064277256088,
+          "result_brier": 0.22912030881436315,
+          "result_log_loss": 0.6871459669755191
+        },
+        "candidate_minus_baseline": {
+          "value_brier": 0.000030033482821319873,
+          "value_log_loss": 0.00006022109175840562,
+          "search_abs_error_cp": 2.4158044472750078,
+          "result_brier": 0.00007692326320127285,
+          "result_log_loss": 0.00015728666567249583
+        },
+        "paired_counts": {
+          "value_loss_improved": 3246,
+          "value_loss_worsened": 3351,
+          "value_loss_unchanged": 0
+        }
+      }
+    },
+    "1": {
+      "gen6": {
+        "schema_version": 1,
+        "metric": "hkst-value-target-paired-v1",
+        "datasets": [
+          {
+            "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/review-layout/valid-phase-1.hkst",
+            "sha256": "4e01a20630beb5602b932295caf19ac1bfba53420b3b2492d8588a2c33659e33"
+          }
+        ],
+        "baseline_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/model.bin",
+          "sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc"
+        },
+        "candidate_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/model.bin",
+          "sha256": "b8fc5fbb6dd64fe5980065aaa43416d92e02e69deb9b77dbea1fc53f3f68090f"
+        },
+        "records_read": 26036,
+        "records": 26036,
+        "known_results": 26036,
+        "sample_weight_sum": 26036,
+        "result_weight_sum": 26036,
+        "kappa_cp": 1352.7871,
+        "search_mix": 0.8,
+        "baseline": {
+          "value_brier": 0.010049219246451836,
+          "value_log_loss": 0.6821186135203787,
+          "search_abs_error_cp": 126.2228976885699,
+          "result_brier": 0.22585990973921102,
+          "result_log_loss": 0.6746341546099914
+        },
+        "candidate": {
+          "value_brier": 0.010267177813105856,
+          "value_log_loss": 0.6825661707912897,
+          "search_abs_error_cp": 149.2696158898364,
+          "result_brier": 0.2259975385906583,
+          "result_log_loss": 0.6748636664822193
+        },
+        "candidate_minus_baseline": {
+          "value_brier": 0.00021795856665401958,
+          "value_log_loss": 0.00044755727091094766,
+          "search_abs_error_cp": 23.046718201266486,
+          "result_brier": 0.00013762885144727455,
+          "result_log_loss": 0.00022951187222786107
+        },
+        "paired_counts": {
+          "value_loss_improved": 13069,
+          "value_loss_worsened": 12967,
+          "value_loss_unchanged": 0
+        }
+      },
+      "best2m": {
+        "schema_version": 1,
+        "metric": "hkst-value-target-paired-v1",
+        "datasets": [
+          {
+            "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/review-layout/valid-phase-1.hkst",
+            "sha256": "4e01a20630beb5602b932295caf19ac1bfba53420b3b2492d8588a2c33659e33"
+          }
+        ],
+        "baseline_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/model.bin",
+          "sha256": "fc8e4ccbc187d433a6a642db2675b965ca7264e04ca6d67542e831cb23784512"
+        },
+        "candidate_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/model.bin",
+          "sha256": "b8fc5fbb6dd64fe5980065aaa43416d92e02e69deb9b77dbea1fc53f3f68090f"
+        },
+        "records_read": 26036,
+        "records": 26036,
+        "known_results": 26036,
+        "sample_weight_sum": 26036,
+        "result_weight_sum": 26036,
+        "kappa_cp": 1352.7871,
+        "search_mix": 0.8,
+        "baseline": {
+          "value_brier": 0.010212745081429855,
+          "value_log_loss": 0.6824537794983018,
+          "search_abs_error_cp": 147.61008579841973,
+          "result_brier": 0.2258237100532089,
+          "result_log_loss": 0.6745067093073993
+        },
+        "candidate": {
+          "value_brier": 0.010267177813105856,
+          "value_log_loss": 0.6825661707912897,
+          "search_abs_error_cp": 149.2696158898364,
+          "result_brier": 0.2259975385906583,
+          "result_log_loss": 0.6748636664822193
+        },
+        "candidate_minus_baseline": {
+          "value_brier": 0.00005443273167600113,
+          "value_log_loss": 0.00011239129298790118,
+          "search_abs_error_cp": 1.6595300914166558,
+          "result_brier": 0.0001738285374494053,
+          "result_log_loss": 0.0003569571748199829
+        },
+        "paired_counts": {
+          "value_loss_improved": 12858,
+          "value_loss_worsened": 13178,
+          "value_loss_unchanged": 0
+        }
+      }
+    },
+    "2": {
+      "gen6": {
+        "schema_version": 1,
+        "metric": "hkst-value-target-paired-v1",
+        "datasets": [
+          {
+            "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/review-layout/valid-phase-2.hkst",
+            "sha256": "3146189ce6cafc4c7dcdac6ff3c7aa47978449e35242e0b5bfff5f00881453e7"
+          }
+        ],
+        "baseline_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/model.bin",
+          "sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc"
+        },
+        "candidate_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/model.bin",
+          "sha256": "b8fc5fbb6dd64fe5980065aaa43416d92e02e69deb9b77dbea1fc53f3f68090f"
+        },
+        "records_read": 21740,
+        "records": 21740,
+        "known_results": 21740,
+        "sample_weight_sum": 21740,
+        "result_weight_sum": 21740,
+        "kappa_cp": 1352.7871,
+        "search_mix": 0.8,
+        "baseline": {
+          "value_brier": 0.008745151479207163,
+          "value_log_loss": 0.6218089698908505,
+          "search_abs_error_cp": 125.16294373096872,
+          "result_brier": 0.1831989739111587,
+          "result_log_loss": 0.562471682692232
+        },
+        "candidate": {
+          "value_brier": 0.008202453927389662,
+          "value_log_loss": 0.620462117000282,
+          "search_abs_error_cp": 187.23620358764742,
+          "result_brier": 0.17915426610068907,
+          "result_log_loss": 0.5525505326489775
+        },
+        "candidate_minus_baseline": {
+          "value_brier": -0.0005426975518175014,
+          "value_log_loss": -0.0013468528905685728,
+          "search_abs_error_cp": 62.0732598566787,
+          "result_brier": -0.004044707810469617,
+          "result_log_loss": -0.009921150043254556
+        },
+        "paired_counts": {
+          "value_loss_improved": 13644,
+          "value_loss_worsened": 8096,
+          "value_loss_unchanged": 0
+        }
+      },
+      "best2m": {
+        "schema_version": 1,
+        "metric": "hkst-value-target-paired-v1",
+        "datasets": [
+          {
+            "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/review-layout/valid-phase-2.hkst",
+            "sha256": "3146189ce6cafc4c7dcdac6ff3c7aa47978449e35242e0b5bfff5f00881453e7"
+          }
+        ],
+        "baseline_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/model.bin",
+          "sha256": "fc8e4ccbc187d433a6a642db2675b965ca7264e04ca6d67542e831cb23784512"
+        },
+        "candidate_model": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/model.bin",
+          "sha256": "b8fc5fbb6dd64fe5980065aaa43416d92e02e69deb9b77dbea1fc53f3f68090f"
+        },
+        "records_read": 21740,
+        "records": 21740,
+        "known_results": 21740,
+        "sample_weight_sum": 21740,
+        "result_weight_sum": 21740,
+        "kappa_cp": 1352.7871,
+        "search_mix": 0.8,
+        "baseline": {
+          "value_brier": 0.008298729817550655,
+          "value_log_loss": 0.6206897229709201,
+          "search_abs_error_cp": 180.57216815889265,
+          "result_brier": 0.17981379744816883,
+          "result_log_loss": 0.5541617825947018
+        },
+        "candidate": {
+          "value_brier": 0.008202453927389662,
+          "value_log_loss": 0.620462117000282,
+          "search_abs_error_cp": 187.23620358764742,
+          "result_brier": 0.17915426610068907,
+          "result_log_loss": 0.5525505326489775
+        },
+        "candidate_minus_baseline": {
+          "value_brier": -0.00009627589016099336,
+          "value_log_loss": -0.00022760597063808952,
+          "search_abs_error_cp": 6.664035428754772,
+          "result_brier": -0.0006595313474797582,
+          "result_log_loss": -0.001611249945724369
+        },
+        "paired_counts": {
+          "value_loss_improved": 11650,
+          "value_loss_worsened": 10090,
+          "value_loss_unchanged": 0
+        }
+      }
+    }
+  },
+  "layout": {
+    "valid": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/valid-4m.filtered.hkst",
+      "sha256": "38b33ac0bc07cf42f6214eb81a7a782912d10aa9e5660a9878b04c56bf71ffd3",
+      "records": 54373,
+      "phase_counts": {
+        "0": 6597,
+        "1": 26036,
+        "2": 21740
+      },
+      "completed_depth_counts": {
+        "1": 6228,
+        "2": 11778,
+        "3": 17251,
+        "4": 14684,
+        "5": 4398,
+        "6": 34
+      },
+      "sample_weight_counts": {
+        "1.0": 54373
+      },
+      "prefix_2060908_phase_counts": {
+        "0": 6597,
+        "1": 26036,
+        "2": 21740
+      },
+      "remainder_phase_counts": {}
+    },
+    "train": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/train-4m.dedup.hkst",
+      "sha256": "8d8f03626187ecc59ad328032125a89bb9b0e0c738f80668eba4418365a0103c",
+      "records": 4009431,
+      "phase_counts": {
+        "0": 1192169,
+        "1": 1709235,
+        "2": 1108027
+      },
+      "completed_depth_counts": {
+        "1": 384728,
+        "2": 685998,
+        "3": 1062229,
+        "4": 1208103,
+        "5": 643121,
+        "6": 25078,
+        "7": 140,
+        "8": 34
+      },
+      "sample_weight_counts": {
+        "1.0": 4009431
+      },
+      "prefix_2060908_phase_counts": {
+        "0": 573558,
+        "1": 881415,
+        "2": 605935
+      },
+      "remainder_phase_counts": {
+        "0": 618611,
+        "1": 827820,
+        "2": 502092
+      }
+    }
+  },
+  "training": {
+    "actual_records_per_epoch": 4000000,
+    "epochs": 16,
+    "presentations": 64000000,
+    "best_epoch": 16,
+    "actual_seed": 20260913,
+    "previous_plan_seed": 20260911,
+    "chunk_records": 25000,
+    "curve": [
+      {
+        "epoch": 1,
+        "train_value_loss": 0.00320069,
+        "score": 0.00945548,
+        "valid_model_result_brier": 0.2085902
+      },
+      {
+        "epoch": 4,
+        "train_value_loss": 0.0031036,
+        "score": 0.00940386,
+        "valid_model_result_brier": 0.20815729
+      },
+      {
+        "epoch": 8,
+        "train_value_loss": 0.00306556,
+        "score": 0.00938348,
+        "valid_model_result_brier": 0.20790713
+      },
+      {
+        "epoch": 12,
+        "train_value_loss": 0.00304392,
+        "score": 0.00937521,
+        "valid_model_result_brier": 0.20775589
+      },
+      {
+        "epoch": 15,
+        "train_value_loss": 0.00303223,
+        "score": 0.00937204,
+        "valid_model_result_brier": 0.20767182
+      },
+      {
+        "epoch": 16,
+        "train_value_loss": 0.00302888,
+        "score": 0.00937118,
+        "valid_model_result_brier": 0.20764704
+      }
+    ]
+  },
+  "new_teacher_46_shard_counts": {
+    "input": 2300000,
+    "written": 2113838,
+    "duplicates": 136,
+    "parse_failed": 0,
+    "illegal_teacher": 0,
+    "search_failed": 119598,
+    "resource_limited": 66428,
+    "with_result": 2113838,
+    "with_game_move": 611371
+  },
+  "confirmed_deviations": [
+    {
+      "issue": "Only within-25000-record chunk shuffle; single dedup shard preserves old-data prefix then new-data suffix every epoch. Planned global mixing absent.",
+      "sources": [
+        "scripts/run_halfkp_v4_gen6_4m_unattended.sh",
+        "src/training_tools/halfkp_search_dedup.rs",
+        "src/training_tools/halfkp_search_train.rs:823"
+      ],
+      "causal_effect_on_strength": "unmeasured"
+    },
+    {
+      "issue": "Run config retains original 2M valid/test paths and SHAs; actual model manifest inputs identify filtered 4M evaluation sets.",
+      "interpretation": "Provenance defect, not evidence that training used the wrong evaluation sets."
+    },
+    {
+      "issue": "Proposed fresh 250 openings contain 8 normalized base-family overlaps with the available exclusion inventory; full lineage/board audit incomplete.",
+      "normalization": "opening_family.split(\"#\")[0]",
+      "game_key_overlaps_with_inventory": 0,
+      "confirmation_was_played": false,
+      "interpretation": "Not eligible for independent confirmation. Does not invalidate the completed development screen."
+    }
+  ],
+  "code_audit": {
+    "new_fatal_sign_or_gradient_bug_found": false,
+    "value_target": "0.8 * sigmoid(side-aligned completed root-search cp / 1352.7871) + 0.2 * side-aligned game outcome",
+    "input": "qsearch leaf after root best move, not full deep-search PV leaf",
+    "train_loss_power": 2.5,
+    "selection_loss_power": 2,
+    "trivial_metrics": "Value-only one-candidate top1=100% is not move prediction accuracy.",
+    "parameter_checks": "gen6, 2M best and 4M: no non-finite parameters or parameters at embedding/output hard limits; does not test activation saturation."
+  },
+  "regression": {
+    "command": "RUST_FONTCONFIG_DLOPEN=1 cargo test --release --locked --features halfkp64,training-tools --lib training_tools::halfkp_search_train::tests",
+    "environment_note": "Without RUST_FONTCONFIG_DLOPEN=1, the fontconfig dependency build fails because pkg-config is absent. No system packages were installed.",
+    "passed": 23,
+    "failed": 0,
+    "limitation": "Existing finite-difference value-gradient test uses power 2.0; extend narrowly to configured power 2.5 during implementation."
+  },
+  "interpretation": [
+    "No demonstrated 4M superiority over 2M; equivalence or regression not established.",
+    "Tiny aggregate validation improvement is driven by endgame; opening and middle mixed-target MSE and outcome Brier worsen.",
+    "Mean completed teacher depth is low; insufficient teacher quality is a hypothesis, not proven cause.",
+    "16-epoch 4M curve is still improving; undertraining remains possible, not established."
+  ],
+  "consultation": {
+    "agent": "review_4m_cause",
+    "model": "gpt-6-astra",
+    "reasoning_effort": "medium",
+    "advice": "Fix global mixing; retain epoch16 order-control and separate optional epoch32 dose. Retain planned 5k depth diagnostic. Rebuild confirmation suite before next run."
+  },
+  "sources": [
+    "https://official-stockfish.github.io/docs/nnue-pytorch-wiki/docs/nnue.html#loss-functions-and-how-to-apply-them",
+    "https://github.com/yaneurao/YaneuraOu/wiki/%E8%A9%95%E4%BE%A1%E9%96%A2%E6%95%B0%E3%81%AE%E5%AD%A6%E7%BF%92"
+  ],
+  "teacher_depth_summary": {
+    "population": "All 4009431 deduplicated records, not only first 4M used by training",
+    "mean": 3.2780581583770863,
+    "fraction_depth_le_2": 0.2670518584806672,
+    "fraction_depth_ge_6": 0.006298150535574748
+  }
+}
