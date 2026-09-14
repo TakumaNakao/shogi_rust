@@ -119,9 +119,9 @@ MMTO-only再開、巨大network、新optimizer、自己対局基盤の新設は�
 |---|---|---|
 | G00 | 結果再集計、誤った独立確認説明の訂正、後続計画決定 | 完了（本書・監査JSON） |
 | G01 | best SHA/詳細指標をcheckpointと結び付けて再開検証。currentとbestを別名保存。watcherはterminal状態と全対局完了artifactで進行 | 完了（commit `9a0d49d`、trainer回帰23件成功） |
-| G02 | 全使用履歴を除外して新規確認250 familyと新規train gameを凍結。小さいfixtureで重複拒否・手番/target・指標・再開/途中終了を回帰確認 | 実行中（4M pipeline commit `334d3cc`、新規WDoor抽出開始） |
-| G03 | 新規教師を追加し4Mを凍結。件数・分布・SHA・生成時間を記録 | G02後 |
-| G04 | 4M×16学習→候補凍結→2M比screen→条件付き親確認→条件付きv2.5.0比較、終了理由を自動保存 | 未実施 |
+| G02 | 全使用履歴を除外して新規確認250 familyと新規train gameを凍結。小さいfixtureで重複拒否・手番/target・指標・再開/途中終了を回帰確認 | train game/network入力完了。確認250はG04前に新規集合を固定 |
+| G03 | 新規教師を追加し4Mを凍結。件数・分布・SHA・生成時間を記録 | 完了（4,009,431件dedup、SHA検証済み） |
+| G04 | 4M×16学習→候補凍結→2M比screen→条件付き親確認→条件付きv2.5.0比較、終了理由を自動保存 | 実行中（4M学習epoch4 stage） |
 | G05 | 対局とphase別offlineを合わせて、拡張か教師品質診断かを一度判断 | G04後 |
 
 既存CLIとrunnerを修正して使い、監視基盤を作り直さない。G01では`halfkp_search_train`のcheckpoint、`halfkp_value_compare`の同一損失による読み取り専用集計、既存watcherを対象にする。
@@ -135,6 +135,12 @@ G03/G04開始前にコード・実行スクリプト・binary・configのSHAを�
 教師100k nodes/depth8、12 worker、学習上限4,000,000件×16 epochを設定している。
 初回起動は設定監査で停止し、SWA/早期停止を明示した同一runへ再開した。抽出・教師・学習の各段階はmanifestとSHAを検証し、
 途中終了時は完了済みartifactから再開する。新規確認局面は学習データの使用履歴を監査してから別途固定する。
+
+追加記録（2026-09-14）: 新raw 2,300,000件は既存T13 trainと`game_key`重複0、valid/testとはgame・family重複0だった。
+旧trainとは異なるgameだがopening family共有3,550件があり、「family完全独立」とは呼ばない。
+異なる棋譜の同一定跡は学習分布の重複であり、network-inputの最終dedup（4,009,431件）とは別概念として記録する。
+4M trainと既存valid/testのnetwork-input衝突329/278件を除外し、最終valid 54,373件、test 49,234件でtrainer検査を通過した。
+configにはtrain/valid/test SHAを固定した。4M学習はepoch4 stageとして実行中である。
 
 ## 6. 外部事例との照合
 
