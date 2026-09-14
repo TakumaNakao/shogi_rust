@@ -12,7 +12,8 @@ REGISTRY="$ROOT_DIR/training/halfkp64-scratch-v1/promotion_registry.json"
 GATE="$ROOT_DIR/runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-confirm-20k-250pair/report.json"
 BASE_TRAIN="$BASE_RUN/train.dedup-expanded.hkst"
 BASE_RAW_MANIFEST="$ROOT_DIR/runs/halfkp64-scratch-v1/phase3-2m-preserved-target-20260825/raw/manifest.json"
-VALID="$BASE_RUN/valid.filtered.hkst"; TEST="$BASE_RUN/test.filtered.hkst"
+BASE_VALID="$BASE_RUN/valid.filtered.hkst"; BASE_TEST="$BASE_RUN/test.filtered.hkst"
+VALID="$RUN_DIR/valid-4m.filtered.hkst"; TEST="$RUN_DIR/test-4m.filtered.hkst"
 MODEL="$RUN_DIR/model.bin"; LOG="$RUN_DIR/train.csv"; CONFIG="$RUN_DIR/config.json"
 NEW_RAW_TARGET="${NEW_RAW_TARGET:-2300000}"; MAX_TRAIN_RECORDS="${MAX_TRAIN_RECORDS:-4000000}"
 WORKERS="${WORKERS:-12}"; SEED="${SEED:-20260913}"; MAX_EPOCH="${MAX_EPOCH:-16}"
@@ -22,7 +23,7 @@ exec > >(tee -a "$RUN_DIR/pipeline.log") 2>&1
 need() { [[ -s "$1" ]] || { echo "missing: $1" >&2; exit 2; }; }
 
 validate_inputs() {
-  for p in "$PARENT" "$PARENT_MANIFEST" "$REGISTRY" "$GATE" "$BASE_TRAIN" "$BASE_RAW_MANIFEST" "$VALID" "$TEST"; do need "$p"; done
+  for p in "$PARENT" "$PARENT_MANIFEST" "$REGISTRY" "$GATE" "$BASE_TRAIN" "$BASE_RAW_MANIFEST" "$BASE_VALID" "$BASE_TEST"; do need "$p"; done
   local actual; actual="$(sha256sum "$PARENT" | awk '{print $1}')"
   [[ "$actual" == 162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc ]] || { echo "unexpected parent SHA $actual" >&2; exit 2; }
   python3 - "$BASE_TRAIN.manifest.json" "$BASE_TRAIN" <<'PY'
@@ -35,10 +36,10 @@ PY
 
 build_tools() {
   local missing=0 b
-  for b in dataset_build jsonl_shard halfkp_search_teacher halfkp_search_dedup halfkp_search_train; do [[ -x "$ROOT_DIR/target/release/$b" ]] || missing=1; done
+  for b in dataset_build jsonl_shard halfkp_search_teacher halfkp_search_dedup halfkp_search_split_filter halfkp_search_train; do [[ -x "$ROOT_DIR/target/release/$b" ]] || missing=1; done
   if ((missing)); then
     RUST_FONTCONFIG_DLOPEN=1 cargo build --release --locked --features halfkp64,training-tools \
-      --bin dataset_build --bin jsonl_shard --bin halfkp_search_teacher --bin halfkp_search_dedup --bin halfkp_search_train
+      --bin dataset_build --bin jsonl_shard --bin halfkp_search_teacher --bin halfkp_search_dedup --bin halfkp_search_split_filter --bin halfkp_search_train
   fi
 }
 
@@ -100,6 +101,18 @@ print('combined dedup records',n,'training limit',lim)
 PY
 }
 
+filter_eval() {
+  if [[ ! -s "$VALID.manifest.json" ]]; then
+    target/release/halfkp_search_split_filter --output "$VALID" --report "$RUN_DIR/valid-4m.filter.json" \
+      --train "$FINAL_TRAIN" --valid "$BASE_VALID"
+  fi
+  if [[ ! -s "$TEST.manifest.json" ]]; then
+    target/release/halfkp_search_split_filter --output "$TEST" --report "$RUN_DIR/test-4m.filter.json" \
+      --train "$FINAL_TRAIN" --train "$VALID" --valid "$BASE_TEST"
+  fi
+  need "$VALID"; need "$VALID.manifest.json"; need "$TEST"; need "$TEST.manifest.json"
+}
+
 write_config() {
   [[ -s "$CONFIG" ]] && return
   python3 - "$CONFIG" "$FINAL_TRAIN" "$VALID" "$TEST" <<'PY'
@@ -151,6 +164,6 @@ PY
 }
 
 export NEW_RAW_TARGET MAX_TRAIN_RECORDS WORKERS SEED MAX_EPOCH CONFIG
-validate_inputs; build_tools; build_raw; make_shards; make_teachers; deduplicate; write_config
+validate_inputs; build_tools; build_raw; make_shards; make_teachers; deduplicate; filter_eval; write_config
 train_stage 4; ((MAX_EPOCH >= 8)) && train_stage 8; ((MAX_EPOCH >= 12)) && train_stage 12; ((MAX_EPOCH >= 16)) && train_stage 16
 write_completion; echo "gen6 unattended 4M pipeline complete: $RUN_DIR"
