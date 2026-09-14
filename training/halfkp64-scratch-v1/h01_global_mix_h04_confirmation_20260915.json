@@ -1,0 +1,49 @@
+{
+  "schema": "halfkp_h01_h04_confirmation_record_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-15",
+  "candidate": {
+    "model_sha256": "e00b89a399dfe82f486b874aed850a8546f0d097a536538da1be7b47d02e1e24",
+    "run": "runs/halfkp64-scratch-v1/h01-global-mix-4m-20260915",
+    "selected_epoch": 22
+  },
+  "parent": {
+    "model_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+    "generation": 6,
+    "run": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/candidate/model-epoch24.bin"
+  },
+  "opening_suite": {
+    "pairs": 250,
+    "games": 500,
+    "manifest_sha256": "898b523cc41dcf6d7bc1ee3c1797ba0c393350f159bfd1cc64fdd06bc2d35f9e",
+    "checks": {
+      "train_game_overlap": 0,
+      "train_family_overlap": 0,
+      "prior_family_overlap": 0,
+      "prior_sfen_overlap": 0
+    }
+  },
+  "match": {
+    "nodes_per_move": 20000,
+    "max_depth": 64,
+    "max_plies": 256,
+    "candidate_wins": 248,
+    "parent_wins": 238,
+    "draws": 14,
+    "score": 0.51,
+    "paired_bootstrap_ci95": [0.467, 0.553],
+    "safety_violations": 0,
+    "report_sha256": "1d52dfb88566666d999363a2e4dc1c277f6af303198802ca17d4adcadcd495f7"
+  },
+  "gate": {
+    "point_score_min": 0.525,
+    "paired_lower_min": 0.5,
+    "promotion_gate_passed": false,
+    "decision": "not_promoted",
+    "reason": "gen6 superiority was not confirmed on the independent 250-pair suite"
+  },
+  "v250_match": {
+    "run": null,
+    "status": "not_run_because_gen6_gate_failed"
+  }
+}

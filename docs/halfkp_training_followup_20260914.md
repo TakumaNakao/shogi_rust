@@ -3,7 +3,7 @@
 決定日: 2026-09-14。調査対象: `7254269d0211adc054ee53e5357ac258f84fa4ff`。
 最終整理: 2026-09-15未明。
 [9/13計画](halfkp_training_followup_20260913.md)の後続作業を本書で更新する。
-今回は実データ・実装・対局の調査、既存モデルの読み取り専用評価、テストと計画更新のみ。新規学習・対局・昇格は行っていない。
+当初の調査後、H01の混合学習、H02の教師深さ監査、H03の32 epoch学習、H04のscreenおよび独立確認まで実施した。昇格は行っていない。
 数値・SHA・根拠ファイルは[監査記録](../training/halfkp64-scratch-v1/followup_review_20260914.json)に保存した。
 
 ## 1. 結論
@@ -94,10 +94,10 @@ value-onlyの候補1個に対するtop1=100%は自明で、指し手精度の根
 | ID | 作業・完了条件 | 状態 |
 |---|---|---|
 | H00 | 同一valid・phase・全教師depth・実装・対局を監査し、原因と未確定事項を記録 | 完了（本書・監査JSON） |
-| H01 | 全体混合、config整合、同一2.5乗損失の診断を最小修正。確認局面を再監査・凍結 | 実装完了。4Mをseed固定の32 shardへ分散。新runで学習予定 |
-| H02 | phase層化5k rootで100k/depth8対300k/depth12の教師品質・費用を診断 | 実行中（固定5,001 root、gen6、4 worker）。大規模再生成は未実施 |
-| H03 | 混合済み同一4Mをgen6から学習。16 epochの対照を保存し、32まで追加量を検証 | H02完了後に開始 |
-| H04 | 凍結候補1個を2M best比screen、条件付きgen6確認、条件付きv2.5.0比較 | H03後 |
+| H01 | 全体混合、config整合、同一2.5乗損失の診断を最小修正。確認局面を再監査・凍結 | 完了。4Mをseed固定の32 shardへ分散し、確認セット250件を学習・過去対局から除外して凍結 |
+| H02 | phase層化5k rootで100k/depth8対300k/depth12の教師品質・費用を診断 | 完了。300k側で完了率・深さ・値差の改善を確認。教師の大規模置換は保留 |
+| H03 | 混合済み同一4Mをgen6から学習。16 epochの対照を保存し、32まで追加量を検証 | 完了。bestはepoch22（32 epoch run）、4M/2M比のvalidation改善は小さく序中盤悪化が継続 |
+| H04 | 凍結候補1個を2M best比screen、条件付きgen6確認、条件付きv2.5.0比較 | 完了。2M screenは通過、独立gen6確認は得点率0.510・CI 0.467–0.553で不通過。v2.5.0対局は未実施 |
 | H05 | 教師改善の小規模A/B、または新親でのデータ拡張を結果から選ぶ | H04後。下記分岐に従う |
 
 ### H01: 学習データを増やさず、実験の土台を直す
@@ -158,6 +158,27 @@ seed `20260915`・root hash割当で32 HKST shardへ分配した。全shardは�
 元入力と既存4M artifactは変更していない。固定5,001 root（序盤・中盤・終盤各1,667）も作成し、
 gen6の100k/depth8教師を生成済み、300k/depth12教師を生成中である。コードと自動化スクリプトは
 commit `b7896d8`、`360d06f`に記録した。
+
+### H04実行結果（2026-09-15）
+
+H03候補（SHA `e00b89a399dfe82f486b874aed850a8546f0d097a536538da1be7b47d02e1e24`）を、
+採用済みgen6（SHA `162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc`）と、
+新規に凍結した250 opening family・500局で比較した。確認セットは学習除外リストと全過去
+paired-match artifactを照合し、game/family/SFENの重複を0件にした。dataset-jsonlの
+`split=valid`を明示して、runnerの検証条件と一致させた。
+
+結果は候補248勝・親238勝・引分14、得点率 `0.510`、paired bootstrap 95% CI
+`0.467–0.553`、安全違反0（search failure、missing root、illegal move、non-finite score
+はいずれも0）だった。得点率は点推定の最低条件52.5%とpaired下限50%の両方を満たさず、
+**昇格不可**と判定する。これは「gen6より弱い」と断定する結果ではなく、この固定条件で優位性を
+確認できなかったという意味である。証跡は以下に固定した。
+
+- 確認対局: `runs/halfkp64-scratch-v1/h01-global-mix-4m-20260915/gate/confirm-20k-250pair-vs-gen6-v2/`
+- opening manifest SHA: `898b523cc41dcf6d7bc1ee3c1797ba0c393350f159bfd1cc64fdd06bc2d35f9e`
+- report SHA: `1d52dfb88566666d999363a2e4dc1c277f6af303198802ca17d4adcadcd495f7`
+
+従ってH04の次段であるv2.5.0とのtaya36比較は実施しない。H01〜H03で観測したvalidationの
+小幅改善だけでは、対局強度の改善を裏付けられないためである。
 
 ## 5. 外部手法との整合
 
