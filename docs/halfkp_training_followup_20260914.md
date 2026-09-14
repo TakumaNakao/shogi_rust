@@ -98,7 +98,7 @@ value-onlyの候補1個に対するtop1=100%は自明で、指し手精度の根
 | H02 | phase層化5k rootで100k/depth8対300k/depth12の教師品質・費用を診断 | 完了。300k側で完了率・深さ・値差の改善を確認。教師の大規模置換は保留 |
 | H03 | 混合済み同一4Mをgen6から学習。16 epochの対照を保存し、32まで追加量を検証 | 完了。bestはepoch22（32 epoch run）、4M/2M比のvalidation改善は小さく序中盤悪化が継続 |
 | H04 | 凍結候補1個を2M best比screen、条件付きgen6確認、条件付きv2.5.0比較 | 完了。2M screenは通過、独立gen6確認は得点率0.510・CI 0.467–0.553で不通過。v2.5.0対局は未実施 |
-| H05 | 教師改善の小規模A/B、または新親でのデータ拡張を結果から選ぶ | H04後。下記分岐に従う |
+| H05 | 教師改善の小規模A/B、または新親でのデータ拡張を結果から選ぶ | 実装済み。固定500k rootで100k対300k教師を生成し、同一条件16 epoch A/Bを自動実行 |
 
 ### H01: 学習データを増やさず、実験の土台を直す
 
@@ -179,6 +179,28 @@ paired-match artifactを照合し、game/family/SFENの重複を0件にした。
 
 従ってH04の次段であるv2.5.0とのtaya36比較は実施しない。H01〜H03で観測したvalidationの
 小幅改善だけでは、対局強度の改善を裏付けられないためである。
+
+### H05実行計画（H04不通過後）
+
+H02では300kノード教師の完了率と完了深さが改善し、100kとのラベル差も確認できた。一方、
+その差が学習後の棋力に伝わるかは未測定である。そこで、H03と同じ採用済みgen6を初期値・
+教師の親に固定し、4M学習に使ったraw shardの先頭10個（各50,000 root、合計500,000件）を
+一度だけ凍結する。そこから同一root集合で次の2条件を生成する。
+
+- 100k nodes、teacher depth 8、qsearch leaf
+- 300k nodes、teacher depth 12、qsearch leaf
+
+両条件を同じvalid/test、AdaGrad、feature/output LR `3e-4/3e-5`、batch128、search mix
+0.8、loss power2.5、seed固定でgen6から16 epoch学習する。optimizer・初期値・root集合・
+提示量以外は変えない。各教師・モデル・manifest・checkpointをrun単位で保存し、validの
+混合targetとphase別指標を比較する。高深度側がoffline指標を改善しても、対局ゲートを通る
+までは親へ昇格しない。
+
+自動実行スクリプトは `scripts/run_halfkp_h05_teacher_ab.sh`、root固定と結果要約は
+`scripts/freeze_halfkp_h05_roots.py` / `scripts/summarize_halfkp_h05_teacher_ab.py` に置く。
+実行結果に応じて、300k側が明確に改善した場合だけ4M規模へ拡張し、差が小さい場合は教師
+生成の探索制限・root/leaf近似を先に再監査する。H05ではLR・optimizer・自己対局・8M/10M
+拡張を同時に変更しない。
 
 ## 5. 外部手法との整合
 
