@@ -44,7 +44,8 @@ PY
 fi
 
 run_stage() {
-  local target="$1" marker="$CHECKPOINTS/selected-through-$target.bin"
+  local target="$1"
+  local marker="$CHECKPOINTS/selected-through-$target.bin"
   [[ -s "$marker" ]] && return
   mkdir -p "$CHECKPOINTS"
   local args=(--init "$PARENT" --model-manifest "$PARENT_MANIFEST" --promotion-registry "$REGISTRY"
