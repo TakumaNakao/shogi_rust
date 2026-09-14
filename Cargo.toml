@@ -145,6 +145,11 @@ path = "src/bin/halfkp_search_dedup.rs"
 required-features = ["training-tools"]
 
 [[bin]]
+name = "halfkp_search_shuffle"
+path = "src/bin/halfkp_search_shuffle.rs"
+required-features = ["training-tools"]
+
+[[bin]]
 name = "halfkp_search_objective_eval"
 path = "src/bin/halfkp_search_objective_eval.rs"
 required-features = ["halfkp64", "training-tools"]

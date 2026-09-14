@@ -28,6 +28,7 @@ pub mod halfkp_search_gate;
 pub mod halfkp_search_objective;
 pub mod halfkp_search_objective_eval;
 pub mod halfkp_search_split_filter;
+pub mod halfkp_search_shuffle;
 pub mod halfkp_search_teacher;
 pub mod halfkp_search_train;
 pub mod halfkp_static_gate;
