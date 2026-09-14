@@ -202,6 +202,11 @@ H02では300kノード教師の完了率と完了深さが改善し、100kとの
 生成の探索制限・root/leaf近似を先に再監査する。H05ではLR・optimizer・自己対局・8M/10M
 拡張を同時に変更しない。
 
+実行開始: 2026-09-15。root固定は完了し、`JOBS=12`で100k教師を生成中。runディレクトリは
+`runs/halfkp64-scratch-v1/h05-teacher-ab-500k-20260915/`で、教師生成後に300k教師、両条件の
+16 epoch学習、`summary.json`生成まで自動継続する。初回起動時の`set -u`変数初期化エラーは
+修正済み（commit `202c20e`）。
+
 ## 5. 外部手法との整合
 
 [やねうら王の学習手順](https://github.com/yaneurao/YaneuraOu/wiki/%E8%A9%95%E4%BE%A1%E9%96%A2%E6%95%B0%E3%81%AE%E5%AD%A6%E7%BF%92)は、棋譜内の相関に対するshuffleとqsearch末端への入力置換を説明している。
