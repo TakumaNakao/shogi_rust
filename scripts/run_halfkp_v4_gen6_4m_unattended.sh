@@ -103,7 +103,7 @@ PY
 write_config() {
   [[ -s "$CONFIG" ]] && return
   python3 - "$CONFIG" <<'PY'
-import json,os,pathlib
+import json,os,pathlib,sys
 x={'schema':'halfkp_v4_gen6_4m_unattended_config_v1','lineage_id':'halfkp64-scratch-v1','parent_generation':6,
    'parent_model_sha256':'162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc',
    'base_train_records':2060908,'effective_train_records':int(os.environ['MAX_TRAIN_RECORDS']),
