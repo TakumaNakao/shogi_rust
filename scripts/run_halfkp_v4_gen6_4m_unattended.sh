@@ -102,8 +102,8 @@ PY
 
 write_config() {
   [[ -s "$CONFIG" ]] && return
-  python3 - "$CONFIG" <<'PY'
-import json,os,pathlib,sys
+  python3 - "$CONFIG" "$FINAL_TRAIN" "$VALID" "$TEST" <<'PY'
+import hashlib,json,os,pathlib,sys
 x={'schema':'halfkp_v4_gen6_4m_unattended_config_v1','lineage_id':'halfkp64-scratch-v1','parent_generation':6,
    'parent_model_sha256':'162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc',
    'base_train_records':2060908,'effective_train_records':int(os.environ['MAX_TRAIN_RECORDS']),
@@ -113,6 +113,9 @@ x={'schema':'halfkp_v4_gen6_4m_unattended_config_v1','lineage_id':'halfkp64-scra
    'training':{'optimizer':'adagrad','feature_learning_rate':3e-4,'output_learning_rate':3e-5,
                'batch_size':128,'search_mix':0.8,'value_weight':1.0,'rank_weight':0.0,'loss_power':2.5,
                'early_stop_patience':1000000,'swa':False}}
+for key,path in zip(('train_sha256','valid_sha256','test_sha256'),sys.argv[2:]):
+    h=hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest(); x[key]=h
+x['dataset_paths']={'train':sys.argv[2],'valid':sys.argv[3],'test':sys.argv[4]}
 pathlib.Path(sys.argv[1]).write_text(json.dumps(x,indent=2,sort_keys=True)+'\n')
 PY
 }
