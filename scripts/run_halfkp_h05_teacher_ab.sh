@@ -44,7 +44,8 @@ freeze_roots() {
 }
 
 teacher_stage() {
-  local label="$1" nodes="$2" depth="$3" output="$RUN_DIR/teacher-${label}.hkst"
+  local label="$1" nodes="$2" depth="$3"
+  local output="$RUN_DIR/teacher-${label}.hkst"
   if [[ -s "$output" && -s "$output.manifest.json" ]]; then return; fi
   "$TEACHER_BIN" \
     --weights "$PARENT" --input "$ROOTS" \
@@ -59,7 +60,8 @@ teacher_stage() {
 }
 
 train_stage() {
-  local label="$1" teacher="$RUN_DIR/teacher-${label}.hkst"
+  local label="$1"
+  local teacher="$RUN_DIR/teacher-${label}.hkst"
   local stage="$RUN_DIR/model-${label}.bin"
   local checkpoints="$RUN_DIR/checkpoints/${label}"
   local log="$RUN_DIR/train-${label}.csv"
