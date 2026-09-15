@@ -265,6 +265,10 @@ qsearch leafを使わずroot位置を入力にする教師を一度だけ作っ�
 棋譜の追加または探索教師の再生成へ計画を戻す。H07の判定前に8M/10M拡張、学習率変更、
 自己対局、リリース対局は行わない。
 
+H07は2026-09-15に開始した。root teacher生成は固定root 500,000件、100k nodes/depth8、
+12 workerで進行中で、qsearch leafフラグは付けていない。完了後にtrain/valid/testの重複を
+除外し、16 epoch学習と同一形式のvalue-target比較を自動実行する。
+
 ## 5. 外部手法との整合
 
 [やねうら王の学習手順](https://github.com/yaneurao/YaneuraOu/wiki/%E8%A9%95%E4%BE%A1%E9%96%A2%E6%95%B0%E3%81%AE%E5%AD%A6%E7%BF%92)は、棋譜内の相関に対するshuffleとqsearch末端への入力置換を説明している。
