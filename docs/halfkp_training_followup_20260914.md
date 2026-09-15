@@ -225,6 +225,29 @@ scoreを改善していない。この差は「深い教師ほど強い」とい
 次の単一変更候補をsearch mix `0.8→0.6`（棋譜結果比率を増加）として16 epochだけ比較する。
 この診断が完了するまで8M/10M拡張、LR変更、自己対局、昇格対局は行わない。
 
+### H05 root/leaf 整合監査とH06実行（2026-09-15）
+
+実装を再確認した。`halfkp_search_teacher::score_root`は完了したroot探索値を保持したまま、
+qsearchの厳密leafを入力位置だけに使う。`halfkp_search_train::value_target_for_record`は
+leafの手番がrootと異なる場合に探索値を反転し、勝敗ラベルも`1-result`へ反転する。
+value比較CLIも同じ変換を共有している。手番反転を含む有限差分テスト
+`preserved_qsearch_leaf_target_flips_score_and_result_by_side`を含むvalue系23テストは
+全件合格した。したがって、現時点でroot/leafの手番符号を原因とする致命的な不整合は確認
+できない（探索値そのものの近似誤差や、教師と実対局分布の差は別問題として残る）。
+
+H05のcurrent checkpointを同じ共通validで比較すると、100k側はvalue Brierが
+`+0.00010894`、search MAEが`+37.78cp`、300k側はそれぞれ`+0.00015396`、
+`+40.31cp`悪化した。一方、棋譜結果Brierは100k側`-0.00065220`、300k側
+`-0.00052527`改善した。これは更新が結果ラベル方向へ動いたことは示すが、教師探索値への
+適合を改善していないため、深さ・データ量の単純拡張をいったん止める根拠となる。
+
+次の単一変更として、既存の100k/depth8教師、固定500k root、gen6親、評価集合、optimizer、
+学習率をすべて再利用し、search mixだけを`0.8→0.6`（棋譜結果比率20%→40%）へ変更する
+H06を開始した。スクリプトは `scripts/run_halfkp_h06_mix60.sh`、出力は
+`runs/halfkp64-scratch-v1/h06-mix60-100k-20260915/` に保存し、16 epoch後にcurrent
+checkpointをvalue-target比較する。H06の結果が出るまで、教師再生成、8M/10M拡張、LR変更、
+自己対局、昇格対局は行わない。
+
 ## 5. 外部手法との整合
 
 [やねうら王の学習手順](https://github.com/yaneurao/YaneuraOu/wiki/%E8%A9%95%E4%BE%A1%E9%96%A2%E6%95%B0%E3%81%AE%E5%AD%A6%E7%BF%92)は、棋譜内の相関に対するshuffleとqsearch末端への入力置換を説明している。
