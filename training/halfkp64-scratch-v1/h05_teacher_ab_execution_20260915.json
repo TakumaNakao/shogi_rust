@@ -1,0 +1,57 @@
+{
+  "schema": "halfkp_h05_teacher_ab_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-15",
+  "parent_model_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+  "root_sample": {
+    "records": 500000,
+    "manifest": "runs/halfkp64-scratch-v1/h05-teacher-ab-500k-20260915/roots-500k.manifest.json",
+    "sha256": "7724df12a102efabe76e0af934d0bd3c6f16f003fa6083205b37bc93caf66a3b"
+  },
+  "teachers": {
+    "100k": {
+      "nodes_per_search": 100000,
+      "depth": 8,
+      "records": 460471,
+      "dataset_sha256": "983276dfe97e74a4cd86a271bdb54d3ae9f6975521d4c4860e6e18ee1cc14694",
+      "manifest_sha256": "efd974e4083539dcb91ce27c43342e402cfe1faf1c69de59a08424f94cc6ef26"
+    },
+    "300k": {
+      "nodes_per_search": 300000,
+      "depth": 12,
+      "records": 466359,
+      "dataset_sha256": "ff46112512f4e86ab6a546c089cdc0d9ec1ec9c8fecda80e2986caef2aed4500",
+      "manifest_sha256": "78433082a5fe9061d68e03fc074668f3c64ac425e38fea7f9788750718de0662"
+    }
+  },
+  "evaluation": {
+    "valid_records": 54352,
+    "valid_sha256": "82dc4167bba01722f09a4b080d574c871253969017f05002dddfac1def0c7ec2",
+    "test_records": 49219,
+    "test_sha256": "75919ea47fbb914bbc291632f947d28f93050495fb46d415818a3c64de6333e2",
+    "initial_score": 0.00946806561008401,
+    "final_score_100k": 0.009577005691849367,
+    "final_score_300k": 0.009622021062837324,
+    "selected_epoch_100k": 0,
+    "selected_epoch_300k": 0,
+    "current_checkpoint_compare": {
+      "100k": {
+        "value_brier": 0.009577005691849367,
+        "result_brier": 0.20851714032447632,
+        "search_abs_error_cp": 157.62747126034483,
+        "report_sha256": "5dad43484933e82492140d401b09acf7e1a5899400557f5d90a92428386ecd67"
+      },
+      "300k": {
+        "value_brier": 0.009622021062837324,
+        "result_brier": 0.20864408894244382,
+        "search_abs_error_cp": 160.15653533347702,
+        "report_sha256": "c16256253b645ef6e2e6cdb869545f18cb5e5e30a8f24c1d8fd18923807be112"
+      }
+    }
+  },
+  "decision": {
+    "status": "not_promoted",
+    "reason": "both teacher-depth A/B updates worsened value-target score; selected epoch remains initial gen6",
+    "next": "audit root/leaf target alignment before changing data volume, learning rate, optimizer, or self-play"
+  }
+}
