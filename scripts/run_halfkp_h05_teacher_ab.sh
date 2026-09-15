@@ -15,9 +15,12 @@ GATE="$ROOT_DIR/runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-confirm-20
 VALID="$ROOT_DIR/runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/valid-4m.filtered.hkst"
 TEST="$ROOT_DIR/runs/halfkp64-scratch-v1/v4-value-gen6-4m-20260913/test-4m.filtered.hkst"
 TEACHER_BIN="$ROOT_DIR/target/release/halfkp_search_teacher"
+FILTER_BIN="$ROOT_DIR/target/release/halfkp_search_split_filter"
 TRAIN_BIN="$ROOT_DIR/target/release/halfkp_search_train"
 ROOTS="$RUN_DIR/roots-500k.jsonl"
 ROOTS_MANIFEST="$RUN_DIR/roots-500k.manifest.json"
+VALID_H05="$RUN_DIR/valid-h05-common.hkst"
+TEST_H05="$RUN_DIR/test-h05-common.hkst"
 JOBS="${JOBS:-4}"
 WORKERS="${WORKERS:-12}"
 SEED="${SEED:-20260920}"
@@ -28,7 +31,7 @@ exec 9>"$RUN_DIR/.lock"
 flock -n 9 || { echo "H05 is already running: $RUN_DIR"; exit 0; }
 
 need() { [[ -s "$1" ]] || { echo "missing input: $1" >&2; exit 2; }; }
-for path in "$PARENT" "$PARENT_MANIFEST" "$REGISTRY" "$GATE" "$VALID" "$TEST" "$TEACHER_BIN" "$TRAIN_BIN"; do
+for path in "$PARENT" "$PARENT_MANIFEST" "$REGISTRY" "$GATE" "$VALID" "$TEST" "$TEACHER_BIN" "$FILTER_BIN" "$TRAIN_BIN"; do
   need "$path"
 done
 actual_parent="$(sha256sum "$PARENT" | awk '{print $1}')"
@@ -59,6 +62,23 @@ teacher_stage() {
   need "$output"; need "$output.manifest.json"
 }
 
+filter_eval() {
+  if [[ ! -s "$VALID_H05.manifest.json" ]]; then
+    "$FILTER_BIN" \
+      --train "$RUN_DIR/teacher-100k.hkst" --train "$RUN_DIR/teacher-300k.hkst" \
+      --valid "$VALID" --output "$VALID_H05" \
+      --report "$RUN_DIR/valid-h05-common.filter.json"
+  fi
+  if [[ ! -s "$TEST_H05.manifest.json" ]]; then
+    "$FILTER_BIN" \
+      --train "$RUN_DIR/teacher-100k.hkst" --train "$RUN_DIR/teacher-300k.hkst" \
+      --train "$VALID_H05" --valid "$TEST" --output "$TEST_H05" \
+      --report "$RUN_DIR/test-h05-common.filter.json"
+  fi
+  need "$VALID_H05"; need "$VALID_H05.manifest.json"
+  need "$TEST_H05"; need "$TEST_H05.manifest.json"
+}
+
 train_stage() {
   local label="$1"
   local teacher="$RUN_DIR/teacher-${label}.hkst"
@@ -79,7 +99,7 @@ train_stage() {
     --optimizer adagrad --threads "$WORKERS" --seed "$SEED"
     --early-stop-patience 1000000 --min-valid-improvement .000001
     --swa-start-epoch 1000000 --checkpoint-dir "$checkpoints" --log "$log"
-    --train "$teacher" --max-train-records 500000 --valid "$VALID" --test "$TEST"
+    --train "$teacher" --max-train-records 500000 --valid "$VALID_H05" --test "$TEST_H05"
   )
   if [[ -s "$stage" && -s "$stage.manifest.json" && -s "$checkpoints/current.binary" ]]; then
     args+=(--resume)
@@ -93,6 +113,7 @@ train_stage() {
 freeze_roots
 teacher_stage 100k 100000 8
 teacher_stage 300k 300000 12
+filter_eval
 train_stage 100k
 train_stage 300k
 python3 scripts/summarize_halfkp_h05_teacher_ab.py \
