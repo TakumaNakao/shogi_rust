@@ -248,6 +248,23 @@ H06を開始した。スクリプトは `scripts/run_halfkp_h06_mix60.sh`、出�
 checkpointをvalue-target比較する。H06の結果が出るまで、教師再生成、8M/10M拡張、LR変更、
 自己対局、昇格対局は行わない。
 
+H06は16 epochまで完了した。validでは初期値に対しvalue Brierが
+`0.03443124→0.03450379`（`+0.00007254`）、search MAEが`119.85→188.23cp`と悪化した。
+一方、棋譜結果Brierは`0.20916934→0.20823744`（`-0.00093189`）まで改善したが、
+H05と同じく教師探索値への適合を失っており、current checkpointは昇格しない。selected model
+はepoch0のgen6親（モデルSHA `162e17...`）のままである。結果とSHAは
+`training/halfkp64-scratch-v1/h06_mix60_execution_20260915.json`および
+`runs/halfkp64-scratch-v1/h06-mix60-100k-20260915/diagnostic/compare-current-mix60.json`
+に固定した。
+
+H05/H06から、棋譜結果比率の調整だけでは探索値を保った強化に至らないことが分かった。次は
+同じ500k root、100k nodes/depth8、gen6親、mix0.8、学習率・optimizer・epochを固定し、
+qsearch leafを使わずroot位置を入力にする教師を一度だけ作って比較する。これでqsearch leafの
+分布変換が更新を不安定化しているかを直接判定する。root入力側も初期値を下回る場合は、
+教師の自己蒸留限界と棋譜結果ノイズを分けるため、同じ固定集合での再試行を増やさず、独立
+棋譜の追加または探索教師の再生成へ計画を戻す。H07の判定前に8M/10M拡張、学習率変更、
+自己対局、リリース対局は行わない。
+
 ## 5. 外部手法との整合
 
 [やねうら王の学習手順](https://github.com/yaneurao/YaneuraOu/wiki/%E8%A9%95%E4%BE%A1%E9%96%A2%E6%95%B0%E3%81%AE%E5%AD%A6%E7%BF%92)は、棋譜内の相関に対するshuffleとqsearch末端への入力置換を説明している。

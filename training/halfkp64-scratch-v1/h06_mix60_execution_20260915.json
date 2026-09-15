@@ -1,0 +1,31 @@
+{
+  "schema": "halfkp_h06_mix60_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-15",
+  "parent_model_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+  "teacher": {
+    "path": "runs/halfkp64-scratch-v1/h05-teacher-ab-500k-20260915/teacher-100k.hkst",
+    "records": 460471,
+    "sha256": "983276dfe97e74a4cd86a271bdb54d3ae9f6975521d4c4860e6e18ee1cc14694"
+  },
+  "evaluation": {
+    "valid_records": 54352,
+    "valid_sha256": "82dc4167bba01722f09a4b080d574c871253969017f05002dddfac1def0c7ec2",
+    "test_records": 49219,
+    "test_sha256": "75919ea47fbb914bbc291632f947d28f93050495fb46d415818a3c64de6333e2",
+    "search_mix": 0.6,
+    "epochs": 16,
+    "initial_value_brier": 0.03443124487178255,
+    "final_value_brier": 0.034503785328917846,
+    "final_search_abs_error_cp": 188.2287511126299,
+    "initial_result_brier": 0.20916933566683368,
+    "final_result_brier": 0.2082374423658477,
+    "current_checkpoint_sha256": "5c9e315a113b83693883969f2ac49effbeccc4fd17a105cced7aa63732a0e5bf",
+    "compare_report_sha256": "24d37b03d686655448d1384b4b284e3ece59a6770bbb2dab310d49d7692302a4"
+  },
+  "decision": {
+    "status": "not_promoted",
+    "reason": "mix 0.6 improved game-result Brier but worsened the mixed value-target Brier and search MAE",
+    "next": "test root-input teacher against qsearch-leaf teacher with all other conditions fixed"
+  }
+}
