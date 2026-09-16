@@ -61,6 +61,11 @@ struct Args {
     /// This is required when constructing an independent follow-up corpus.
     #[arg(long, default_value_t = false)]
     exclude_base_train: bool,
+    /// Keep repeated exact positions for a subsequent move-frequency audit.
+    /// The resulting JSONL is a pre-aggregation export and must not be used
+    /// directly as a training dataset.
+    #[arg(long, default_value_t = false)]
+    preserve_position_duplicates: bool,
     #[arg(long, default_value_t = 0)]
     target_opening_records: usize,
     #[arg(long, default_value_t = 0)]
@@ -182,6 +187,7 @@ struct DatasetManifest {
     freeze_base_eval: bool,
     max_train_records: Option<usize>,
     exclude_base_train: bool,
+    preserve_position_duplicates: bool,
     target_opening_records: usize,
     target_middle_records: usize,
     target_late_records: usize,
@@ -530,16 +536,18 @@ fn process_game(
             stats.records_filtered += 1;
             continue;
         }
-        if let Some(&previous) = network_splits.get(&candidate.network_input_hash) {
-            stats.records_filtered += 1;
-            if previous != split {
-                stats.records_split_collision_filtered += 1;
-            } else {
-                stats.records_duplicate_input_filtered += 1;
+        if !args.preserve_position_duplicates {
+            if let Some(&previous) = network_splits.get(&candidate.network_input_hash) {
+                stats.records_filtered += 1;
+                if previous != split {
+                    stats.records_split_collision_filtered += 1;
+                } else {
+                    stats.records_duplicate_input_filtered += 1;
+                }
+                continue;
             }
-            continue;
+            network_splits.insert(candidate.network_input_hash, split);
         }
-        network_splits.insert(candidate.network_input_hash, split);
         write_record(writers, split, &candidate.line)?;
         increment_split_records(stats, split);
         increment_phase_count(stats, candidate.phase);
@@ -668,6 +676,7 @@ fn dataset_stage_fingerprint(args: &Args, sources: &[GameSource]) -> Result<Stri
             "exclude_loser_after_ply": args.exclude_loser_after_ply,
             "min_legal_moves": args.min_legal_moves,
             "exclude_in_check": args.exclude_in_check,
+            "preserve_position_duplicates": args.preserve_position_duplicates,
         }
     });
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
@@ -799,6 +808,11 @@ pub fn run() -> Result<()> {
     if (args.freeze_base_eval || args.exclude_base_train) && args.base_dataset_manifest.is_none() {
         return Err(anyhow!(
             "--freeze-base-eval/--exclude-base-train requires --base-dataset-manifest"
+        ));
+    }
+    if args.preserve_position_duplicates && args.base_dataset_manifest.is_some() {
+        return Err(anyhow!(
+            "--preserve-position-duplicates cannot be combined with --base-dataset-manifest"
         ));
     }
     if args.max_records.is_some() && args.max_train_records.is_some() {
@@ -992,6 +1006,7 @@ pub fn run() -> Result<()> {
             .map(|path| path.to_string_lossy().to_string()),
         freeze_base_eval: args.freeze_base_eval,
         exclude_base_train: args.exclude_base_train,
+        preserve_position_duplicates: args.preserve_position_duplicates,
         max_train_records: args.max_train_records,
         target_opening_records: args.target_opening_records,
         target_middle_records: args.target_middle_records,

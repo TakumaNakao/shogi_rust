@@ -1,6 +1,6 @@
 # 序中盤を強化する棋譜手学習計画
 
-決定日: 2026-09-16。状態: 計画決定、実装・学習は未着手。
+決定日: 2026-09-16。状態: S02のsoft-target部分を実装済み、S03の固定leaf検証・費用測定待ち。
 本書を今後の学習方針の正本とし、[9/14計画](halfkp_training_followup_20260914.md)のH07後の分岐を置き換える。
 目的は、序盤・中盤の判断を改善し、終盤の粘りを維持して、最終的にv2.5.0を上回ること。
 
@@ -140,7 +140,8 @@ L_root = sum_{i<j, c_i+c_j>0} w_ij *
   これによる終盤採用率・phase比率の変化を記録する。boundや探索失敗を静的leafに偽装しない。
 - 初期APIは既存の強制一手＋qsearch。通常探索を何手も追加する変更は同時に行わない。
 - 1 root内のpairを上記の正規化重みで合計し、root batchで平均する。合法手数の多い局面ほど重くなる旧pair平均を避ける。
-- outer全体で同一snapshotを使わず、25k rootごとに学習中重みからsnapshotを更新する。
+- 各outer/passの開始時に学習中重みからsnapshotを一度作り、そのpass内は固定する。
+  25kごとのsnapshot再作成は探索結果と更新順を複雑にするため初回では行わず、outer境界で十分に更新する。
   snapshot・optimizer・順序・root位置をcheckpointに含め、再開で対応関係を崩さない。
 
 ### データと固定条件
@@ -168,8 +169,8 @@ L_root = sum_{i<j, c_i+c_j>0} w_ij *
 
 | ID | 作業 | 完了条件・規模 | 状態 |
 |---|---|---|---|
-| S01 | 高rate棋譜をgame/phase均衡で抽出、複数着手を頻度集約、評価集合を凍結 | source・SHA・rate・棋譜数・phase・重複率・着手分布・旧holdout非重複が確認できる | 未着手 |
-| S02 | 既存MMTOにsoft-target logistic目的、root正規化、phase指標、25k単位snapshot更新を追加 | 手番別有限差分、単一着手への還元、頻度平均との勾配一致、terminal除外、再開一致を確認 | 未着手 |
+| S01 | 高rate棋譜をgame/phase均衡で抽出、複数着手を頻度集約、評価集合を凍結 | source・SHA・rate・棋譜数・phase・重複率・着手分布・旧holdout非重複が確認できる | 完了（実データ監査済み） |
+| S02 | 既存MMTOにsoft-target logistic目的、root正規化、phase指標、outer単位snapshot更新を追加 | 手番別有限差分、単一着手への還元、頻度平均との勾配一致、terminal除外、再開一致を確認 | 実装済み（再開一致はS03で確認） |
 | S03 | 小規模実装・費用確認 | 512 rootの固定leafで目的と勾配を確認、10k root×1 passで処理量・phase脱落・所要時間を測る | 未着手 |
 | S04 | 序中盤中心の本学習 | 250k unique root×8 pass、計2M root提示。2/4/8で保存・評価 | 未着手 |
 | S05 | 保存候補の実対局と終盤回帰 | 候補を対局前に1個固定し、下記の有限の対局計画を実施 | 未着手 |
@@ -187,7 +188,7 @@ S03では単一着手groupの同じ固定leaf・T=300で旧sigmoidとlogisticの
 
 初回の大規模枠は8 pass。4M×32の単純反復には戻さない。旧Phase Aの実測は2M root提示で約234時間だった。
 今回も一週間超になる可能性があるが、phase・terminal除外・snapshot更新で費用は変わるためS03で見積もり直す。
-各25k完了時に再開点、各passでcurrent・best・phase指標・残時間を保存する。
+checkpoint root境界で再開点を保存し、各outer/passでcurrent・best・phase指標・残時間を保存する。
 旧`.02/.004`の親からの差だけで機械停止せず診断値として記録し、非有限値・artifact不整合・再開不一致・
 既存formatのhard limit違反は停止する。実装異常を学習量で押し切らない。
 
