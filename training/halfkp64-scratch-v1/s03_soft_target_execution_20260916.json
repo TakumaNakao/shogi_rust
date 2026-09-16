@@ -1,0 +1,58 @@
+{
+  "schema": "halfkp_s03_soft_target_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-16",
+  "dataset_manifest": {
+    "path": "runs/halfkp64-scratch-v1/s01-move-frequency-20260916/manifest.json",
+    "sha256": "5beb724efbdb601ba12bbdf612ee66b804fd670ab8cee3752ac64ea35e614431",
+    "train_positions": 54888,
+    "valid_positions": 4910,
+    "test_positions": 6784
+  },
+  "init_model": {
+    "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/candidate/model-epoch24.bin",
+    "sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+    "used_as": "initialization_only"
+  },
+  "configuration": {
+    "train_roots": 512,
+    "valid_roots": 512,
+    "outer_iterations": 1,
+    "jobs": 4,
+    "tau_cp": 300.0,
+    "feature_learning_rate": 0.0001,
+    "output_learning_rate": 0.00001,
+    "terminal_root_policy": "exclude_frequency_root_from_gradient",
+    "root_order": "deterministic_sha256_shuffle_20260916"
+  },
+  "result": {
+    "path": "runs/halfkp64-scratch-v1/s03-soft-target-512-v3-20260916/metrics/outer_0001.json",
+    "elapsed_seconds": 363.99,
+    "train_roots": 512,
+    "train_pairs": 39655,
+    "train_loss": 0.40372763839707293,
+    "train_loss_weight_sum": 454.000001354143,
+    "valid_roots": 512,
+    "valid_pairs": 39054,
+    "valid_loss": 0.42226213964293313,
+    "valid_loss_weight_sum": 463.00000183074735,
+    "train_terminal_roots": 58,
+    "valid_terminal_roots": 49,
+    "rejected_bounds": 0,
+    "model_sha256": "f86c853ccb113ea98a921f940aa977f013891add0db839ee84149612978d2667"
+  },
+  "tests": {
+    "mmto_module_tests": 10,
+    "result": "pass",
+    "checks": [
+      "RankNet soft-target finite-difference gradient",
+      "pair weight normalization",
+      "terminal roots excluded from gradient",
+      "opening/middlegame/endgame metrics emitted"
+    ]
+  },
+  "decision": {
+    "status": "s03_complete",
+    "next": "aggregate the larger independent high-rate corpus, select 250000 unique roots at 40/40/20 phase ratio, then begin S04 8-pass training"
+  }
+}
