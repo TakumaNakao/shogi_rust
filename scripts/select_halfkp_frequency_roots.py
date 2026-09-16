@@ -30,8 +30,17 @@ def priority(seed: int, row: dict[str, Any]) -> bytes:
 
 def select_train(
     path: pathlib.Path, targets: dict[str, int], seed: int, max_per_game: int
-) -> tuple[dict[str, list[tuple[bytes, str]]], dict[str, int]]:
-    by_game: dict[str, list[tuple[bytes, str, str]]] = defaultdict(list)
+) -> tuple[dict[str, list[tuple[bytes, str]]], dict[str, int], dict[str, int]]:
+    opening_cap = (max_per_game * 2) // 5
+    middle_cap = (max_per_game * 2) // 5
+    phase_caps = {
+        "opening": opening_cap,
+        "middlegame": middle_cap,
+        "endgame": max_per_game - opening_cap - middle_cap,
+    }
+    by_game: dict[str, dict[str, list[tuple[bytes, str, str]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     seen = defaultdict(int)
     with path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -43,20 +52,19 @@ def select_train(
             key = game
             item = (priority(seed, row), line, str(row.get("position_key", "")))
             seen[phase] += 1
-            bucket = by_game[key]
+            bucket = by_game[key][phase]
             bucket.append(item)
             bucket.sort(key=lambda value: value[0])
-            if len(bucket) > max_per_game:
+            if len(bucket) > phase_caps[phase]:
                 bucket.pop()
     candidates: dict[str, list[tuple[bytes, str]]] = defaultdict(list)
-    for rows in by_game.values():
-        for item in rows:
-            row = json.loads(item[1])
-            candidates[row["phase"]].append((item[0], item[1]))
+    for phase_rows in by_game.values():
+        for phase, rows in phase_rows.items():
+            candidates[phase].extend((item[0], item[1]) for item in rows)
     for phase in PHASES:
         candidates[phase].sort(key=lambda value: value[0])
         candidates[phase] = candidates[phase][: targets[phase]]
-    return candidates, dict(seen)
+    return candidates, dict(seen), phase_caps
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -87,7 +95,7 @@ def main() -> int:
         "endgame": args.endgame,
     }
     input_train = args.input_dir / "train.jsonl"
-    candidates, seen = select_train(
+    candidates, seen, phase_caps = select_train(
         input_train, targets, args.seed, args.max_roots_per_game
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -125,6 +133,7 @@ def main() -> int:
         "min_opponent_rate": input_manifest.get("min_opponent_rate"),
         "seed": args.seed,
         "max_roots_per_game": args.max_roots_per_game,
+        "phase_roots_per_game_caps": phase_caps,
         "targets": targets,
         "seen_train_by_phase": seen,
         "selected_train_by_phase": selected,

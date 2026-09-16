@@ -1,0 +1,36 @@
+{
+  "schema": "halfkp_s04_dataset_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-16",
+  "source_union": {
+    "manifest": "runs/halfkp64-scratch-v1/s04-frequency-union-20260916/manifest.json",
+    "manifest_sha256": "2d9fe66b1e90f0089be91a9e4d0c65e191a532149e617244a5cb5973b124b08b",
+    "raw_records": 2097336,
+    "unique_positions_before_split_filter": 2059387,
+    "cross_split_collision_positions_removed": 3761,
+    "train_positions": 1834604,
+    "multi_move_train_positions": 2249,
+    "source_policy": "high-rate WDoor 2018-2025 plus independent high-rate 2026 export; no model labels"
+  },
+  "selected_train": {
+    "manifest": "runs/halfkp64-scratch-v1/s04-selected-250k-v3-20260916/manifest.json",
+    "manifest_sha256": "43d52824f0cbef4b98da6f9f99803360ea323f876a1ca04597f4b14c92cf22b4",
+    "records": 250000,
+    "phase_records": {
+      "opening": 100000,
+      "middlegame": 100000,
+      "endgame": 50000
+    },
+    "phase_caps_per_game": {
+      "opening": 3,
+      "middlegame": 3,
+      "endgame": 2
+    },
+    "max_roots_per_game": 8,
+    "train_sha256": "1555a3a5f27c3c90d398fce6b30e6f1ae1f68062e61f5f7d600039c94c02353f"
+  },
+  "decision": {
+    "status": "s04_dataset_ready",
+    "next": "run 8-pass soft-target MMTO; save checkpoints at pass 2/4/8 and evaluate phase-specific fresh qsearch metrics"
+  }
+}
