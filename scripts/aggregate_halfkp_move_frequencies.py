@@ -150,6 +150,7 @@ def write_outputs(
     output_dir: pathlib.Path,
     stats: dict[str, Any],
     source_files: list[pathlib.Path],
+    shuffle_seed: int | None,
 ) -> dict[str, Any]:
     by_position: dict[str, set[str]] = collections.defaultdict(set)
     for group in groups.values():
@@ -164,7 +165,15 @@ def write_outputs(
     }
     try:
         counters = collections.Counter()
-        for group in sorted(groups.values(), key=lambda item: (item["split"], item["position_key"])):
+        def order_key(item: dict[str, Any]) -> tuple[Any, ...]:
+            if shuffle_seed is None:
+                return (item["split"], item["position_key"])
+            digest = hashlib.sha256(
+                f"halfkp-frequency-order-v1\0{shuffle_seed}\0{item['split']}\0{item['position_key']}".encode()
+            ).digest()
+            return (item["split"], digest)
+
+        for group in sorted(groups.values(), key=order_key):
             split = group["split"]
             key = group["position_key"]
             if key in collision_positions:
@@ -221,6 +230,7 @@ def write_outputs(
         "malformed_records": stats.get("malformed_records", 0),
         "input_groups": len(groups),
         "cross_split_collision_positions": len(collision_positions),
+        "shuffle_seed": shuffle_seed,
         "output_files": [
             {
                 "path": f"{split}.jsonl",
@@ -245,9 +255,10 @@ def main() -> int:
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
     parser.add_argument("--min-player-rate", type=int)
     parser.add_argument("--min-opponent-rate", type=int)
+    parser.add_argument("--shuffle-seed", type=int, default=20260916)
     args = parser.parse_args()
     groups, stats = read_groups(args.input)
-    result = write_outputs(groups, args.output_dir, stats, args.input)
+    result = write_outputs(groups, args.output_dir, stats, args.input, args.shuffle_seed)
     result["min_player_rate"] = args.min_player_rate
     result["min_opponent_rate"] = args.min_opponent_rate
     (args.output_dir / "manifest.json").write_text(

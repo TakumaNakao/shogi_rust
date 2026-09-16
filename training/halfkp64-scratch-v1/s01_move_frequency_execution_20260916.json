@@ -13,6 +13,7 @@
       "endgame": 20000
     },
     "preserve_position_duplicates": true,
+    "shuffle_seed": 20260916,
     "cross_split_collision_policy": "exclude_position_from_all_splits"
   },
   "source_export": {
@@ -31,7 +32,7 @@
   "aggregation": {
     "script": "scripts/aggregate_halfkp_move_frequencies.py",
     "manifest": "runs/halfkp64-scratch-v1/s01-move-frequency-20260916/manifest.json",
-    "manifest_sha256": "8759c54dae381bbe1fd4fc5312cb90fb65ef31aed657960675dbd5b83395c5ed",
+    "manifest_sha256": "5beb724efbdb601ba12bbdf612ee66b804fd670ab8cee3752ac64ea35e614431",
     "raw_records": 100000,
     "input_groups": 70476,
     "cross_split_collision_positions": 1801,
