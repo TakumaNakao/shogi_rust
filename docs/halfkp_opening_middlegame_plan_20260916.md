@@ -1,6 +1,6 @@
 # 序中盤を強化する棋譜手学習計画
 
-決定日: 2026-09-16。状態: S04用25万root（序10万・中10万・終5万）の抽出完了、長時間学習待ち。
+決定日: 2026-09-16。状態: S04用25万root（序10万・中10万・終5万）の抽出完了。S03の費用測定を有限qsearchで再実施後、S04長時間学習へ進む。
 本書を今後の学習方針の正本とし、[9/14計画](halfkp_training_followup_20260914.md)のH07後の分岐を置き換える。
 目的は、序盤・中盤の判断を改善し、終盤の粘りを維持して、最終的にv2.5.0を上回ること。
 
@@ -163,6 +163,9 @@ L_root = sum_{i<j, c_i+c_j>0} w_ij *
 - AdaGradを新規に初期化し、feature LR `1e-4`、output LR `1e-5`、root batch128、clip norm1、
   output limit0.20、seed20260916、12 worker。既存material係数を固定し、推論形式・探索パラメータは維持。
   これらは初期実験の固定値で、最適値を実証したものではない。
+- 長時間ジョブではforced qsearchの1 root moveあたり追加ノード数を `5,000,000` に制限する。
+  上限到達rootはboundを静的leafへ偽装せず、`aborted_roots` として記録して勾配から除外する。
+  512 rootの費用測定では平均約22万qnode/rootだったため、通常局面を切らず病的局面だけを迂回する初期上限とする。
 - teacher-value loss、WDL補助loss、SWA、global decayは追加しない。終盤は棋譜手replay20%と回帰評価で保持を確認する。
 
 ## 5. 実装・実験タスク
@@ -171,7 +174,7 @@ L_root = sum_{i<j, c_i+c_j>0} w_ij *
 |---|---|---|---|
 | S01 | 高rate棋譜をgame/phase均衡で抽出、複数着手を頻度集約、評価集合を凍結 | source・SHA・rate・棋譜数・phase・重複率・着手分布・旧holdout非重複が確認できる | 完了（実データ監査済み） |
 | S02 | 既存MMTOにsoft-target logistic目的、root正規化、phase指標、outer単位snapshot更新を追加 | 手番別有限差分、単一着手への還元、頻度平均との勾配一致、terminal除外、再開一致を確認 | 実装済み（再開一致はS03で確認） |
-| S03 | 小規模実装・費用確認 | 512 rootの固定leafで目的と勾配を確認、10k root×1 passで処理量・phase脱落・所要時間を測る | 完了（512 root、約6.1分、terminal除外確認） |
+| S03 | 小規模実装・費用確認 | 512 rootの固定leafで目的と勾配を確認、有限qsearchで10k root×1 passの処理量・phase脱落・所要時間を測る | 512完了。無制限10k試行は病的rootで中断し、上限追加後に再実施中 |
 | S04 | 序中盤中心の本学習 | 250k unique root×8 pass、計2M root提示。2/4/8で保存・評価 | データ準備完了・学習開始待ち |
 | S05 | 保存候補の実対局と終盤回帰 | 候補を対局前に1個固定し、下記の有限の対局計画を実施 | 未着手 |
 | S06 | 結果に基づく追加学習 | 16 passへの一度だけの延長、または独立棋譜を加えた1M学習を条件付き実施 | 条件付き |
@@ -194,7 +197,7 @@ S03では単一着手groupの同じ固定leaf・T=300で旧sigmoidとlogisticの
 
 初回の大規模枠は8 pass。4M×32の単純反復には戻さない。旧Phase Aの実測は2M root提示で約234時間だった。
 今回も一週間超になる可能性があるが、phase・terminal除外・snapshot更新で費用は変わるためS03で見積もり直す。
-checkpoint root境界で再開点を保存し、各outer/passでcurrent・best・phase指標・残時間を保存する。
+checkpoint root境界で再開点を保存し、各outer/passでcurrent・best・phase指標・残時間を保存する。S04は有限qsearch上限を明示した同一コマンドをnohupで実行し、端末切断後もcheckpointから再開できるようにする。
 旧`.02/.004`の親からの差だけで機械停止せず診断値として記録し、非有限値・artifact不整合・再開不一致・
 既存formatのhard limit違反は停止する。実装異常を学習量で押し切らない。
 
