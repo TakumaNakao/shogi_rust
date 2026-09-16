@@ -181,6 +181,12 @@ S02は`src/training_tools/halfkp_mmto_train.rs`と既存audit/selector/runnerを
 `halfkp_policy_train.rs`の一手後CEを名前だけ変更して用いない。新しい汎用ジョブ基盤は作らない。
 small-setのloss改善率や一致率に恣意的な高い足切り値を置かず、S03を棋力の否定判定に使わない。
 
+実装メモ: `scripts/aggregate_halfkp_move_frequencies.py` はSQLiteの一時集計を使い、数百万局面でも
+メモリを局面数に比例させない。`scripts/select_halfkp_frequency_roots.py` はgameごとの最大8 rootと
+序盤/中盤/終盤の目標件数を適用し、選択後に決定論的に全体shuffleする。既存の重複除去済みJSONLを
+直接集約した場合は複数着手が消えているため、`dataset_build --preserve-position-duplicates` の
+原エクスポートを集計元にする。
+
 S03では単一着手groupの同じ固定leaf・T=300で旧sigmoidとlogisticの勾配を比較し、delta<0の誤順位とdelta>0の正順位を分ける。
 複数着手groupでは70:30・50:50の教師と、頻度展開したhard lossとの一致を確認する。
 これは数学・実装の診断であり、旧方式との棋力A/Bではない。本実験は目的・分布・正規化の総合変更であり、

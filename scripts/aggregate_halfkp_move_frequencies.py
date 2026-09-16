@@ -21,6 +21,7 @@ import collections
 import hashlib
 import json
 import pathlib
+import sqlite3
 import sys
 from typing import Any
 
@@ -75,8 +76,72 @@ def phase_name(value: dict[str, Any]) -> str:
     return "endgame"
 
 
-def read_groups(paths: list[pathlib.Path]) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
-    groups: dict[str, dict[str, Any]] = {}
+def read_groups(
+    paths: list[pathlib.Path], db_path: pathlib.Path
+) -> tuple[sqlite3.Connection, dict[str, int]]:
+    """Ingest records into a disk-backed aggregate.
+
+    The earlier in-memory implementation used several gigabytes for a few
+    million unique roots.  SQLite keeps the same exact grouping semantics but
+    bounds RAM usage, which is important on the CPU-only training machine.
+    """
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(db_path)
+    connection.execute("PRAGMA journal_mode=OFF")
+    connection.execute("PRAGMA synchronous=OFF")
+    connection.execute("PRAGMA temp_store=FILE")
+    connection.executescript(
+        """
+        DROP TABLE IF EXISTS groups;
+        DROP TABLE IF EXISTS moves;
+        DROP TABLE IF EXISTS phases;
+        DROP TABLE IF EXISTS game_keys;
+        DROP TABLE IF EXISTS sources;
+        CREATE TABLE groups (
+            split TEXT NOT NULL,
+            position_key TEXT NOT NULL,
+            sfen TEXT NOT NULL,
+            side_to_move TEXT NOT NULL,
+            game_key TEXT NOT NULL,
+            opening_family TEXT NOT NULL,
+            license_id TEXT NOT NULL,
+            source_uri TEXT NOT NULL,
+            total_observations INTEGER NOT NULL DEFAULT 0,
+            ply_sum INTEGER NOT NULL DEFAULT 0,
+            ply_count INTEGER NOT NULL DEFAULT 0,
+            legal_sum INTEGER NOT NULL DEFAULT 0,
+            legal_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (split, position_key)
+        );
+        CREATE TABLE moves (
+            split TEXT NOT NULL,
+            position_key TEXT NOT NULL,
+            move TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (split, position_key, move)
+        );
+        CREATE TABLE phases (
+            split TEXT NOT NULL,
+            position_key TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            count INTEGER NOT NULL,
+            PRIMARY KEY (split, position_key, phase)
+        );
+        CREATE TABLE game_keys (
+            split TEXT NOT NULL,
+            position_key TEXT NOT NULL,
+            game_key TEXT NOT NULL,
+            PRIMARY KEY (split, position_key, game_key)
+        );
+        CREATE TABLE sources (
+            split TEXT NOT NULL,
+            position_key TEXT NOT NULL,
+            source TEXT NOT NULL,
+            PRIMARY KEY (split, position_key, source)
+        );
+        CREATE INDEX groups_position ON groups(position_key);
+        """
+    )
     stats = collections.Counter()
     for path in paths:
         with path.open(encoding="utf-8") as handle:
@@ -96,68 +161,88 @@ def read_groups(paths: list[pathlib.Path]) -> tuple[dict[str, dict[str, Any]], d
                         print(f"warning: {path}:{line_number}: {error}", file=sys.stderr)
                     continue
 
-                group_key = f"{split}\0{key}"
-                group = groups.setdefault(
-                    group_key,
-                    {
-                        "split": split,
-                        "position_key": key,
-                        "sfen": sfen,
-                        "moves": collections.Counter(),
-                        "phase_counts": collections.Counter(),
-                        "plies": [],
-                        "legal_moves": [],
-                        "game_keys": set(),
-                        "sources": set(),
-                        "opening_families": set(),
-                        "license_ids": set(),
-                        "source_uris": set(),
-                        "side_to_move": str(value.get("side_to_move", "")),
-                    },
+                phase = phase_name(value)
+                side_to_move = str(value.get("side_to_move", ""))
+                game_key = str(value.get("game_key", "frequency-group"))
+                opening_family = str(value.get("opening_family", "frequency-group"))
+                license_id = str(
+                    value.get("license_id", "user-authorized:wdoor-public-archive")
                 )
-                group["moves"][move] += 1
-                group["phase_counts"][phase_name(value)] += 1
+                source_uri = str(
+                    value.get("source_uri", "https://wdoor.c.u-tokyo.ac.jp/shogi/")
+                )
+                connection.execute(
+                    """
+                    INSERT INTO groups(
+                        split,position_key,sfen,side_to_move,game_key,opening_family,
+                        license_id,source_uri,total_observations
+                    ) VALUES(?,?,?,?,?,?,?,?,1)
+                    ON CONFLICT(split,position_key) DO UPDATE SET
+                        total_observations=total_observations+1
+                    """,
+                    (
+                        split,
+                        key,
+                        sfen,
+                        side_to_move,
+                        game_key,
+                        opening_family,
+                        license_id,
+                        source_uri,
+                    ),
+                )
                 try:
-                    group["plies"].append(int(value.get("ply", 0)))
+                    ply = int(value.get("ply", 0))
                 except (TypeError, ValueError):
-                    pass
+                    ply = 0
                 try:
-                    group["legal_moves"].append(int(value.get("legal_moves", 0)))
+                    legal_moves = int(value.get("legal_moves", 0))
                 except (TypeError, ValueError):
-                    pass
-                if value.get("game_key") is not None:
-                    group["game_keys"].add(str(value["game_key"]))
-                if value.get("source") is not None:
-                    group["sources"].add(str(value["source"]))
-                if value.get("opening_family") is not None:
-                    group["opening_families"].add(str(value["opening_family"]))
-                if value.get("license_id") is not None:
-                    group["license_ids"].add(str(value["license_id"]))
-                if value.get("source_uri") is not None:
-                    group["source_uris"].add(str(value["source_uri"]))
-    return groups, dict(stats)
-
-
-def median(values: list[int]) -> int | None:
-    if not values:
-        return None
-    values = sorted(values)
-    return values[(len(values) - 1) // 2]
+                    legal_moves = 0
+                connection.execute(
+                    "UPDATE groups SET ply_sum=ply_sum+?, ply_count=ply_count+1, legal_sum=legal_sum+?, legal_count=legal_count+1 WHERE split=? AND position_key=?",
+                    (ply, legal_moves, split, key),
+                )
+                connection.execute(
+                    "INSERT INTO moves(split,position_key,move,count) VALUES(?,?,?,1) ON CONFLICT(split,position_key,move) DO UPDATE SET count=count+1",
+                    (split, key, move),
+                )
+                connection.execute(
+                    "INSERT INTO phases(split,position_key,phase,count) VALUES(?,?,?,1) ON CONFLICT(split,position_key,phase) DO UPDATE SET count=count+1",
+                    (split, key, phase),
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO game_keys(split,position_key,game_key) VALUES(?,?,?)",
+                    (split, key, game_key),
+                )
+                source = str(value.get("source", ""))
+                if source:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO sources(split,position_key,source) VALUES(?,?,?)",
+                        (split, key, source),
+                    )
+        connection.commit()
+    connection.commit()
+    return connection, dict(stats)
 
 
 def write_outputs(
-    groups: dict[str, dict[str, Any]],
+    connection: sqlite3.Connection,
     output_dir: pathlib.Path,
     stats: dict[str, Any],
     source_files: list[pathlib.Path],
     shuffle_seed: int | None,
 ) -> dict[str, Any]:
-    by_position: dict[str, set[str]] = collections.defaultdict(set)
-    for group in groups.values():
-        by_position[group["position_key"]].add(group["split"])
-    collision_positions = {
-        key for key, splits in by_position.items() if len(splits) > 1
-    }
+    connection.executescript(
+        """
+        DROP TABLE IF EXISTS collision_positions;
+        CREATE TEMP TABLE collision_positions AS
+          SELECT position_key FROM groups GROUP BY position_key HAVING COUNT(DISTINCT split)>1;
+        """
+    )
+    collision_positions = connection.execute(
+        "SELECT COUNT(*) FROM collision_positions"
+    ).fetchone()[0]
     output_dir.mkdir(parents=True, exist_ok=True)
     handles = {
         split: (output_dir / f"{split}.jsonl").open("w", encoding="utf-8")
@@ -165,51 +250,88 @@ def write_outputs(
     }
     try:
         counters = collections.Counter()
-        def order_key(item: dict[str, Any]) -> tuple[Any, ...]:
-            if shuffle_seed is None:
-                return (item["split"], item["position_key"])
-            digest = hashlib.sha256(
-                f"halfkp-frequency-order-v1\0{shuffle_seed}\0{item['split']}\0{item['position_key']}".encode()
-            ).digest()
-            return (item["split"], digest)
-
-        for group in sorted(groups.values(), key=order_key):
-            split = group["split"]
-            key = group["position_key"]
-            if key in collision_positions:
-                counters[f"cross_split_collision_{split}"] += 1
-                continue
+        if shuffle_seed is None:
+            order_sql = "g.split, g.position_key"
+            order_params: tuple[Any, ...] = ()
+        else:
+            connection.create_function(
+                "frequency_order",
+                3,
+                lambda seed, split, key: hashlib.sha256(
+                    f"halfkp-frequency-order-v1\0{seed}\0{split}\0{key}".encode()
+                ).digest(),
+            )
+            order_sql = "g.split, frequency_order(?, g.split, g.position_key)"
+            order_params = (shuffle_seed,)
+        groups_cursor = connection.execute(
+            f"""
+            SELECT g.split,g.position_key,g.sfen,g.side_to_move,g.game_key,
+                   g.opening_family,g.license_id,g.source_uri,g.total_observations,
+                   g.ply_sum,g.ply_count,g.legal_sum,g.legal_count
+            FROM groups AS g LEFT JOIN collision_positions AS c
+              ON c.position_key=g.position_key
+            WHERE c.position_key IS NULL
+            ORDER BY {order_sql}
+            """,
+            order_params,
+        )
+        for group in groups_cursor:
+            (
+                split,
+                key,
+                sfen,
+                side_to_move,
+                game_key,
+                opening_family,
+                license_id,
+                source_uri,
+                total_observations,
+                ply_sum,
+                ply_count,
+                legal_sum,
+                legal_count,
+            ) = group
             moves = [
                 {"move": move, "count": count}
-                for move, count in sorted(group["moves"].items())
+                for move, count in connection.execute(
+                    "SELECT move,count FROM moves WHERE split=? AND position_key=? ORDER BY move",
+                    (split, key),
+                )
             ]
-            phases = group["phase_counts"]
-            phase = max(PHASES, key=lambda item: (phases[item], -PHASES.index(item)))
+            phases = dict(
+                connection.execute(
+                    "SELECT phase,count FROM phases WHERE split=? AND position_key=?",
+                    (split, key),
+                ).fetchall()
+            )
+            phase = max(PHASES, key=lambda item: (phases.get(item, 0), -PHASES.index(item)))
+            unique_games = connection.execute(
+                "SELECT COUNT(*) FROM game_keys WHERE split=? AND position_key=?",
+                (split, key),
+            ).fetchone()[0]
+            source_count = connection.execute(
+                "SELECT COUNT(*) FROM sources WHERE split=? AND position_key=?",
+                (split, key),
+            ).fetchone()[0]
             row = {
                 "schema": "halfkp_move_frequency_v1",
                 "split": split,
-                "game_key": sorted(group["game_keys"])[0] if group["game_keys"] else "frequency-group",
-                "opening_family": sorted(group["opening_families"])[0]
-                if group["opening_families"]
-                else "frequency-group",
-                "license_id": sorted(group["license_ids"])[0]
-                if group["license_ids"]
-                else "user-authorized:wdoor-public-archive",
-                "source_uri": sorted(group["source_uris"])[0]
-                if group["source_uris"]
-                else "https://wdoor.c.u-tokyo.ac.jp/shogi/",
+                "game_key": game_key or "frequency-group",
+                "opening_family": opening_family or "frequency-group",
+                "license_id": license_id or "user-authorized:wdoor-public-archive",
+                "source_uri": source_uri or "https://wdoor.c.u-tokyo.ac.jp/shogi/",
                 "position_key": key,
-                "sfen": group["sfen"],
-                "side_to_move": group["side_to_move"],
+                "sfen": sfen,
+                "side_to_move": side_to_move,
                 "phase": phase,
                 "phase_counts": dict(sorted(phases.items())),
-                "ply_median": median(group["plies"]),
-                "legal_moves_median": median(group["legal_moves"]),
+                "ply_mean": (ply_sum / ply_count) if ply_count else None,
+                "legal_moves_mean": (legal_sum / legal_count) if legal_count else None,
                 "teacher_moves": moves,
-                "total_observations": sum(item["count"] for item in moves),
+                "total_observations": total_observations,
                 "unique_moves": len(moves),
-                "unique_games": len(group["game_keys"]),
-                "source_count": len(group["sources"]),
+                "unique_games": unique_games,
+                "source_count": source_count,
             }
             handles[split].write(json.dumps(row, separators=(",", ":")) + "\n")
             counters[f"positions_{split}"] += 1
@@ -228,8 +350,8 @@ def write_outputs(
         "source_sha256": source_sha256(source_files),
         "raw_records": stats.get("raw_records", 0),
         "malformed_records": stats.get("malformed_records", 0),
-        "input_groups": len(groups),
-        "cross_split_collision_positions": len(collision_positions),
+        "input_groups": connection.execute("SELECT COUNT(*) FROM groups").fetchone()[0],
+        "cross_split_collision_positions": collision_positions,
         "shuffle_seed": shuffle_seed,
         "output_files": [
             {
@@ -257,8 +379,16 @@ def main() -> int:
     parser.add_argument("--min-opponent-rate", type=int)
     parser.add_argument("--shuffle-seed", type=int, default=20260916)
     args = parser.parse_args()
-    groups, stats = read_groups(args.input)
-    result = write_outputs(groups, args.output_dir, stats, args.input, args.shuffle_seed)
+    db_path = args.output_dir / ".move_frequency.sqlite3"
+    connection, stats = read_groups(args.input, db_path)
+    try:
+        result = write_outputs(connection, args.output_dir, stats, args.input, args.shuffle_seed)
+    finally:
+        connection.close()
+        try:
+            db_path.unlink()
+        except FileNotFoundError:
+            pass
     result["min_player_rate"] = args.min_player_rate
     result["min_opponent_rate"] = args.min_opponent_rate
     (args.output_dir / "manifest.json").write_text(
