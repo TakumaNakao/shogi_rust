@@ -1,0 +1,41 @@
+{
+  "schema": "halfkp_s03_bounded_cost_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-16",
+  "dataset_manifest": {
+    "path": "runs/halfkp64-scratch-v1/s01-move-frequency-20260916/manifest.json",
+    "sha256": "5beb724efbdb601ba12bbdf612ee66b804fd670ab8cee3752ac64ea35e614431"
+  },
+  "configuration": {
+    "requested_train_roots": 10000,
+    "effective_attempted_roots": 10000,
+    "resumed_from_root": 4000,
+    "outer_iterations": 1,
+    "jobs": 12,
+    "tau_cp": 300.0,
+    "feature_learning_rate": 0.0001,
+    "output_learning_rate": 0.00001,
+    "qsearch_node_limit_per_root": 250000,
+    "checkpoint_roots": 2000,
+    "terminal_root_policy": "exclude_frequency_root_from_gradient"
+  },
+  "result": {
+    "path": "runs/halfkp64-scratch-v1/s03-soft-target-10k-20260916/metrics/outer_0001.json",
+    "elapsed_seconds_for_resumed_segment": 161.86,
+    "train_roots_completed_in_segment": 5323,
+    "train_aborted_roots_in_segment": 677,
+    "train_terminal_roots_in_segment": 289,
+    "valid_roots_completed": 909,
+    "valid_aborted_roots": 115,
+    "valid_terminal_roots": 44,
+    "train_loss": 0.4152634976156321,
+    "valid_loss": 0.41619032550847995,
+    "qnodes": 283737340,
+    "model_sha256": "4f1a893dc71bef017992089c4352d249d22f54903fb9db32d80a8b85285ed30d"
+  },
+  "decision": {
+    "status": "s03_complete",
+    "note": "The original unbounded attempt stalled on a pathological root. The bounded resumed segment reached the 10000-root checkpoint without stalling; aborted roots are explicitly excluded from the gradient and retained in metrics.",
+    "next": "start S04 250000-root, 8-pass training with the same finite qsearch limit"
+  }
+}
