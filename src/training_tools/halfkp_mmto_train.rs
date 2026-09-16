@@ -96,6 +96,11 @@ struct Args {
     max_valid_roots: usize,
     #[arg(long, default_value_t = 1024)]
     pv_probe_roots: usize,
+    /// Maximum additional qsearch nodes allowed for one forced root move.
+    /// A root that reaches the cap is audited as aborted and contributes no
+    /// gradient, so one pathological position cannot stall a long run.
+    #[arg(long, default_value_t = 5_000_000)]
+    qsearch_node_limit: u64,
     #[arg(long, default_value_t = false)]
     resume: bool,
     /// Flush a resumable active-outer checkpoint at this many accepted roots; zero keeps outer-only checkpoints.
@@ -330,6 +335,7 @@ struct SearchMetrics {
     phase_loss_sum: [f64; 3],
     phase_loss_weight_sum: [f64; 3],
     terminal_roots: usize,
+    aborted_roots: usize,
     agreement: usize,
     regret_sum_cp: f64,
     qnodes: u64,
@@ -354,6 +360,7 @@ impl SearchMetrics {
             self.phase_loss_weight_sum[index] += other.phase_loss_weight_sum[index];
         }
         self.terminal_roots += other.terminal_roots;
+        self.aborted_roots += other.aborted_roots;
         self.agreement += other.agreement;
         self.regret_sum_cp += other.regret_sum_cp;
         self.qnodes += other.qnodes;
@@ -369,6 +376,7 @@ struct MetricReport {
     loss_weight_sum: f64,
     phase: [PhaseMetric; 3],
     terminal_roots: usize,
+    aborted_roots: usize,
     agreement: f64,
     mean_regret_cp: f64,
     exact_leaves: usize,
@@ -590,6 +598,7 @@ pub fn run() -> Result<()> {
             args.tau_cp,
             &search_pool,
             args.search_block_roots,
+            args.qsearch_node_limit,
         )?;
         let wdl_valid_before = fresh_evaluate_wdl(
             &model_path,
@@ -739,6 +748,7 @@ pub fn run() -> Result<()> {
             args.tau_cp,
             &search_pool,
             args.search_block_roots,
+            args.qsearch_node_limit,
         )?;
         let wdl_valid_after = fresh_evaluate_wdl(
             &model_path,
@@ -850,7 +860,14 @@ fn train_block(
     let searched = search_pool.install(|| {
         block
             .par_iter()
-            .map(|sample| search_sample(Arc::clone(search_snapshot), sample, args.tau_cp))
+            .map(|sample| {
+                search_sample(
+                    Arc::clone(search_snapshot),
+                    sample,
+                    args.tau_cp,
+                    args.qsearch_node_limit,
+                )
+            })
             .collect::<Result<Vec<_>>>()
     })?;
     let samples = std::mem::take(block);
@@ -1059,6 +1076,7 @@ fn validate_args(args: &Args) -> Result<()> {
         || !args.wdl_kappa_cp.is_finite()
         || args.feature_limit <= 0.0
         || args.output_limit <= 0.0
+        || args.qsearch_node_limit == 0
         || args.max_valid_roots == 0
         || args.pv_probe_roots == 0
     {
@@ -1298,16 +1316,19 @@ fn search_sample(
     evaluator: Arc<EngineEvaluator>,
     sample: &Sample,
     tau_cp: f32,
+    qsearch_node_limit: u64,
 ) -> Result<(Vec<Pair>, SearchMetrics)> {
     let mut ai = ShogiAI::new(evaluator);
     ai.set_emit_info(false);
     let mut metrics = SearchMetrics::default();
-    let pairs = search_pairs(&mut ai, sample, tau_cp, &mut metrics)?;
-    let phase = sample.phase_index.min(2);
-    metrics.phase_roots[phase] += 1;
-    metrics.phase_pairs[phase] += metrics.pairs;
-    metrics.phase_loss_sum[phase] += metrics.loss_sum;
-    metrics.phase_loss_weight_sum[phase] += metrics.loss_weight_sum;
+    let pairs = search_pairs(&mut ai, sample, tau_cp, qsearch_node_limit, &mut metrics)?;
+    if metrics.roots != 0 {
+        let phase = sample.phase_index.min(2);
+        metrics.phase_roots[phase] += 1;
+        metrics.phase_pairs[phase] += metrics.pairs;
+        metrics.phase_loss_sum[phase] += metrics.loss_sum;
+        metrics.phase_loss_weight_sum[phase] += metrics.loss_weight_sum;
+    }
     Ok((pairs, metrics))
 }
 
@@ -1322,6 +1343,7 @@ fn search_pairs<E: Evaluator>(
     ai: &mut ShogiAI<E, 1024>,
     sample: &Sample,
     tau_cp: f32,
+    qsearch_node_limit: u64,
     metrics: &mut SearchMetrics,
 ) -> Result<Vec<Pair>> {
     ai.reset_for_independent_search();
@@ -1330,9 +1352,13 @@ fn search_pairs<E: Evaluator>(
     let mut root = sample.root.clone();
     let mut searched = Vec::new();
     for mv in root.legal_moves() {
-        let trace = ai
-            .forced_move_qsearch_leaf_trace(&mut root, mv)
-            .ok_or_else(|| anyhow!("forced qsearch aborted"))?;
+        let Some(trace) =
+            ai.forced_move_qsearch_leaf_trace_with_limit(&mut root, mv, Some(qsearch_node_limit))
+        else {
+            metrics.aborted_roots += 1;
+            metrics.qnodes += ai.quiescence_nodes_searched();
+            return Ok(Vec::new());
+        };
         let leaf = if trace.has_exact_evaluation_leaf() {
             let position = trace.leaf.ok_or_else(|| anyhow!("missing exact leaf"))?;
             let sign = if position.side_to_move() == root_turn {
@@ -1874,6 +1900,7 @@ fn fresh_evaluate(
     tau_cp: f32,
     search_pool: &rayon::ThreadPool,
     block_roots: usize,
+    qsearch_node_limit: u64,
 ) -> Result<SearchMetrics> {
     let evaluator = Arc::new(EngineEvaluator::new(model_path, 0.0)?);
     let mut metrics = SearchMetrics::default();
@@ -1881,11 +1908,25 @@ fn fresh_evaluate(
     visit_samples(paths, split, 0, limit, |sample| {
         block.push(sample);
         if block.len() == block_roots {
-            evaluate_block(&mut block, search_pool, &evaluator, tau_cp, &mut metrics)?;
+            evaluate_block(
+                &mut block,
+                search_pool,
+                &evaluator,
+                tau_cp,
+                qsearch_node_limit,
+                &mut metrics,
+            )?;
         }
         Ok(())
     })?;
-    evaluate_block(&mut block, search_pool, &evaluator, tau_cp, &mut metrics)?;
+    evaluate_block(
+        &mut block,
+        search_pool,
+        &evaluator,
+        tau_cp,
+        qsearch_node_limit,
+        &mut metrics,
+    )?;
     Ok(metrics)
 }
 
@@ -1936,12 +1977,13 @@ fn evaluate_block(
     search_pool: &rayon::ThreadPool,
     evaluator: &Arc<EngineEvaluator>,
     tau_cp: f32,
+    qsearch_node_limit: u64,
     metrics: &mut SearchMetrics,
 ) -> Result<()> {
     let searched = search_pool.install(|| {
         block
             .par_iter()
-            .map(|sample| search_sample(Arc::clone(evaluator), sample, tau_cp))
+            .map(|sample| search_sample(Arc::clone(evaluator), sample, tau_cp, qsearch_node_limit))
             .collect::<Result<Vec<_>>>()
     })?;
     block.clear();
@@ -1977,6 +2019,7 @@ fn report(metrics: &SearchMetrics) -> MetricReport {
                 / metrics.phase_loss_weight_sum[index].max(1.0),
         }),
         terminal_roots: metrics.terminal_roots,
+        aborted_roots: metrics.aborted_roots,
         agreement: metrics.agreement as f64 / metrics.roots.max(1) as f64,
         mean_regret_cp: metrics.regret_sum_cp / metrics.roots.max(1) as f64,
         exact_leaves: metrics.exact_leaves,
@@ -2215,6 +2258,10 @@ fn write_run_manifest(
         serde_json::json!(args.search_block_roots),
     );
     hyperparameters.insert("pv_probe_roots", serde_json::json!(args.pv_probe_roots));
+    hyperparameters.insert(
+        "qsearch_node_limit",
+        serde_json::json!(args.qsearch_node_limit),
+    );
     hyperparameters.insert("jobs", serde_json::json!(args.jobs));
     hyperparameters.insert("leaf_reuse_passes", serde_json::json!(1));
     hyperparameters.insert("l1_lambda", serde_json::json!(0));

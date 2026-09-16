@@ -72,6 +72,22 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         position: &mut Position,
         root_move: Move,
     ) -> Option<QsearchLeafTrace> {
+        self.forced_move_qsearch_leaf_trace_with_limit(position, root_move, None)
+    }
+
+    /// Forces one legal root move and bounds the additional qsearch work.
+    ///
+    /// `None` preserves the historical unbounded training probe.  A finite
+    /// limit is useful for large offline jobs: a pathological tactical root is
+    /// skipped rather than allowing one Rayon worker to occupy the run
+    /// indefinitely.  The limit is relative to this independent probe, not to
+    /// the evaluator's cumulative node counter.
+    pub fn forced_move_qsearch_leaf_trace_with_limit(
+        &mut self,
+        position: &mut Position,
+        root_move: Move,
+        qsearch_node_limit: Option<u64>,
+    ) -> Option<QsearchLeafTrace> {
         if !position.legal_moves().contains(&root_move) {
             return None;
         }
@@ -87,7 +103,8 @@ impl<E: Evaluator, const HISTORY_CAPACITY: usize> ShogiAI<E, HISTORY_CAPACITY> {
         );
         self.start_time = None;
         self.time_limit = None;
-        self.node_limit = None;
+        let node_limit_base = self.nodes_searched;
+        self.node_limit = qsearch_node_limit.and_then(|limit| node_limit_base.checked_add(limit));
         self.next_time_check_nodes = 0;
         let moved_by = position.side_to_move();
         self.make_move(position, root_move);
