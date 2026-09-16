@@ -163,7 +163,7 @@ L_root = sum_{i<j, c_i+c_j>0} w_ij *
 - AdaGradを新規に初期化し、feature LR `1e-4`、output LR `1e-5`、root batch128、clip norm1、
   output limit0.20、seed20260916、12 worker。既存material係数を固定し、推論形式・探索パラメータは維持。
   これらは初期実験の固定値で、最適値を実証したものではない。
-- 長時間ジョブではforced qsearchの1 root moveあたり追加ノード数を `5,000,000` に制限する。
+- 長時間ジョブではforced qsearchの1 rootあたり追加ノード数を `2,000,000` に制限する。
   上限到達rootはboundを静的leafへ偽装せず、`aborted_roots` として記録して勾配から除外する。
   512 rootの費用測定では平均約22万qnode/rootだったため、通常局面を切らず病的局面だけを迂回する初期上限とする。
 - teacher-value loss、WDL補助loss、SWA、global decayは追加しない。終盤は棋譜手replay20%と回帰評価で保持を確認する。

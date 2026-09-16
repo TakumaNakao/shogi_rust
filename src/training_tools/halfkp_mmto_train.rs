@@ -96,10 +96,10 @@ struct Args {
     max_valid_roots: usize,
     #[arg(long, default_value_t = 1024)]
     pv_probe_roots: usize,
-    /// Maximum additional qsearch nodes allowed for one forced root move.
+    /// Maximum additional qsearch nodes allowed for one training root.
     /// A root that reaches the cap is audited as aborted and contributes no
     /// gradient, so one pathological position cannot stall a long run.
-    #[arg(long, default_value_t = 5_000_000)]
+    #[arg(long, default_value_t = 2_000_000)]
     qsearch_node_limit: u64,
     #[arg(long, default_value_t = false)]
     resume: bool,
@@ -1350,11 +1350,23 @@ fn search_pairs<E: Evaluator>(
     ai.sennichite_detector.record_initial_position(&sample.root);
     let root_turn = sample.root.side_to_move();
     let mut root = sample.root.clone();
+    let root_qnodes_before = ai.quiescence_nodes_searched();
     let mut searched = Vec::new();
     for mv in root.legal_moves() {
-        let Some(trace) =
-            ai.forced_move_qsearch_leaf_trace_with_limit(&mut root, mv, Some(qsearch_node_limit))
-        else {
+        let qnodes_used = ai
+            .quiescence_nodes_searched()
+            .saturating_sub(root_qnodes_before);
+        let remaining_qsearch_nodes = qsearch_node_limit.saturating_sub(qnodes_used);
+        if remaining_qsearch_nodes == 0 {
+            metrics.aborted_roots += 1;
+            metrics.qnodes += ai.quiescence_nodes_searched();
+            return Ok(Vec::new());
+        }
+        let Some(trace) = ai.forced_move_qsearch_leaf_trace_with_limit(
+            &mut root,
+            mv,
+            Some(remaining_qsearch_nodes),
+        ) else {
             metrics.aborted_roots += 1;
             metrics.qnodes += ai.quiescence_nodes_searched();
             return Ok(Vec::new());
