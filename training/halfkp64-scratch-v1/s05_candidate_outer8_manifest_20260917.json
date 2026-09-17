@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "lineage_id": "halfkp64-scratch-v1",
+  "stage": "halfkp_mmto_train_s04",
+  "selected_outer": 8,
+  "parent_model_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+  "dataset_manifest_sha256": "43d52824f0cbef4b98da6f9f99803360ea323f876a1ca04597f4b14c92cf22b4",
+  "model": {
+    "path": "runs/halfkp64-scratch-v1/s04-soft-target-250k-8pass-20260916/model.bin",
+    "sha256": "b9666c6e54b0fcdef8cc4d680ad83f88daf54b14957703a5f0cfe55474c08e3d",
+    "bytes": 27003688
+  },
+  "selection_reason": "outer8 has the lowest fresh validation loss among completed outer checkpoints; phase-specific holdout metrics and S05 safety checks remain part of the final decision",
+  "teacher_policy": "no external engine labels; WDoor move-frequency soft targets only"
+}
