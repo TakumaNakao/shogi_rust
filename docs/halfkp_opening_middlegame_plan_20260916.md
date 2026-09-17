@@ -1,6 +1,6 @@
 # 序中盤を強化する棋譜手学習計画
 
-決定日: 2026-09-16。状態: S03の有限qsearch費用測定が完了し、S04の25万root・8 pass学習を開始済み。
+決定日: 2026-09-16。状態: S04の25万root・8 pass学習が完了し、S05の候補凍結・対局評価へ進む。
 本書を今後の学習方針の正本とし、[9/14計画](halfkp_training_followup_20260914.md)のH07後の分岐を置き換える。
 目的は、序盤・中盤の判断を改善し、終盤の粘りを維持して、最終的にv2.5.0を上回ること。
 
@@ -175,8 +175,8 @@ L_root = sum_{i<j, c_i+c_j>0} w_ij *
 | S01 | 高rate棋譜をgame/phase均衡で抽出、複数着手を頻度集約、評価集合を凍結 | source・SHA・rate・棋譜数・phase・重複率・着手分布・旧holdout非重複が確認できる | 完了（実データ監査済み） |
 | S02 | 既存MMTOにsoft-target logistic目的、root正規化、phase指標、outer単位snapshot更新を追加 | 手番別有限差分、単一着手への還元、頻度平均との勾配一致、terminal除外、再開一致を確認 | 実装済み（再開一致はS03で確認） |
 | S03 | 小規模実装・費用確認 | 512 rootの固定leafで目的と勾配を確認、有限qsearchで10k root×1 passの処理量・phase脱落・所要時間を測る | 完了（無制限試行の病的rootを有限上限で回避。詳細は`s03_bounded_cost_execution_20260916.json`） |
-| S04 | 序中盤中心の本学習 | 250k unique root×8 pass、計2M root提示。2/4/8で保存・評価 | 実行中（checkpoint 25k root） |
-| S05 | 保存候補の実対局と終盤回帰 | 候補を対局前に1個固定し、下記の有限の対局計画を実施 | 未着手 |
+| S04 | 序中盤中心の本学習 | 250k unique root×8 pass、計2M root提示。2/4/8で保存・評価 | 完了（outer8 valid loss 0.37745、序/中/終 0.40118/0.35928/0.39331） |
+| S05 | 保存候補の実対局と終盤回帰 | 候補を対局前に1個固定し、下記の有限の対局計画を実施 | 次に実施 |
 | S06 | 結果に基づく追加学習 | 16 passへの一度だけの延長、または独立棋譜を加えた1M学習を条件付き実施 | 条件付き |
 
 S02は`src/training_tools/halfkp_mmto_train.rs`と既存audit/selector/runnerを拡張する。
