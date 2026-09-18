@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 SCREEN_DIR="$ROOT_DIR/runs/halfkp64-scratch-v1/s05-outer8-vs-gen6-taya36-5s-25pair"
-PIPELINE_DIR="$ROOT_DIR/runs/halfkp64-scratch-v1/s05-outer8-pipeline-20260918"
+PIPELINE_DIR="$ROOT_DIR/runs/halfkp64-scratch-v1/s05-outer8-pipeline-20260918-retry1"
 CANDIDATE="$ROOT_DIR/runs/halfkp64-scratch-v1/s04-soft-target-250k-8pass-20260916/model.bin"
 CANDIDATE_MANIFEST="$ROOT_DIR/training/halfkp64-scratch-v1/s05_candidate_outer8_manifest_20260917.json"
 PARENT="$ROOT_DIR/runs/halfkp64-scratch-v1/v4-value-gen5-20260910/candidate/model-epoch24.bin"

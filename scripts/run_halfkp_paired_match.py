@@ -239,10 +239,12 @@ def select_openings(
             text = raw_line.decode("utf-8", errors="strict").strip()
             if not text.startswith("startpos") and not text.startswith("sfen "):
                 raise MatchRunnerError(f"opening line {index + 1} is not a USI position")
-            moves = text.split()[2:] if "moves" in text.split() else []
-            # Each child receives a one-line temporary suite; Rust therefore reports
-            # the local family as usi-line-0. Keep the original source line separately.
-            selected.append(SelectedOpening(index, source_line, raw_line, "usi-line-0", text, len(moves)))
+            # Mirror halfkp_promotion_match's metadata exactly.  It records the
+            # number of tokens after the first two tokens, even for an `sfen ...`
+            # line (where those tokens are board and side-to-move fields rather
+            # than a literal `moves` prefix).  Each child receives a one-line
+            # temporary suite, so the local family is always usi-line-0.
+            selected.append(SelectedOpening(index, source_line, raw_line, "usi-line-0", text, len(text.split()[2:])))
         if len(selected) != count:
             raise MatchRunnerError(f"requested {count} USI openings, found {len(selected)}")
         return selected
