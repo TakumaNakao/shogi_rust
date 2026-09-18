@@ -2,10 +2,10 @@
   "schema": "halfkp_s05_pipeline_execution_v1",
   "lineage_id": "halfkp64-scratch-v1",
   "date": "2026-09-18",
-  "status": "retrying_after_opening_identity_fix",
+  "status": "running_after_opening_identity_fix",
   "script": "scripts/run_halfkp_s05_pipeline.sh",
   "started_at": "2026-09-18T10:43:46+09:00",
-  "launcher_pid_at_start": 3802801,
+  "launcher_pid_at_start": 3805108,
   "launch_log": "runs/halfkp64-scratch-v1/s05-outer8-pipeline-20260918-launch.log",
   "pipeline_output_dir": "runs/halfkp64-scratch-v1/s05-outer8-pipeline-20260918-retry1",
   "candidate": {
