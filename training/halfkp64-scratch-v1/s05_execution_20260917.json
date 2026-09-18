@@ -2,7 +2,7 @@
   "schema": "halfkp_s05_execution_v1",
   "lineage_id": "halfkp64-scratch-v1",
   "date": "2026-09-17",
-  "status": "running",
+  "status": "screen_completed",
   "candidate": {
     "outer": 8,
     "model": "runs/halfkp64-scratch-v1/s04-soft-target-250k-8pass-20260916/model.bin",
@@ -21,7 +21,14 @@
     "max_plies": 256,
     "bootstrap_resamples": 100000,
     "bootstrap_seed": 20260917,
-    "output_dir": "runs/halfkp64-scratch-v1/s05-outer8-vs-gen6-taya36-5s-25pair"
+    "output_dir": "runs/halfkp64-scratch-v1/s05-outer8-vs-gen6-taya36-5s-25pair",
+    "candidate_wins": 30,
+    "parent_wins": 20,
+    "draws": 0,
+    "score": 0.6,
+    "paired_ci95": [0.46, 0.74],
+    "safety_violations": 0,
+    "screen_pass": true
   },
   "gates": {
     "screen": "candidate score > 0.50 and safety violations == 0",

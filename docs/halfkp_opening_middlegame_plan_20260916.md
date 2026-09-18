@@ -176,7 +176,7 @@ L_root = sum_{i<j, c_i+c_j>0} w_ij *
 | S02 | 既存MMTOにsoft-target logistic目的、root正規化、phase指標、outer単位snapshot更新を追加 | 手番別有限差分、単一着手への還元、頻度平均との勾配一致、terminal除外、再開一致を確認 | 実装済み（再開一致はS03で確認） |
 | S03 | 小規模実装・費用確認 | 512 rootの固定leafで目的と勾配を確認、有限qsearchで10k root×1 passの処理量・phase脱落・所要時間を測る | 完了（無制限試行の病的rootを有限上限で回避。詳細は`s03_bounded_cost_execution_20260916.json`） |
 | S04 | 序中盤中心の本学習 | 250k unique root×8 pass、計2M root提示。2/4/8で保存・評価 | 完了（outer8 valid loss 0.37745、序/中/終 0.40118/0.35928/0.39331） |
-| S05 | 保存候補の実対局と終盤回帰 | 候補を対局前に1個固定し、下記の有限の対局計画を実施 | gen6対taya36・5秒・50局を実行中 |
+| S05 | 保存候補の実対局と終盤回帰 | 候補を対局前に1個固定し、下記の有限の対局計画を実施 | screen完了（候補30勝20敗、score 0.60、paired CI 0.46–0.74）。終盤回帰待ち |
 | S06 | 結果に基づく追加学習 | 16 passへの一度だけの延長、または独立棋譜を加えた1M学習を条件付き実施 | 条件付き |
 
 S02は`src/training_tools/halfkp_mmto_train.rs`と既存audit/selector/runnerを拡張する。
