@@ -4,6 +4,9 @@
   "date": "2026-09-18",
   "status": "running",
   "script": "scripts/run_halfkp_s05_pipeline.sh",
+  "started_at": "2026-09-18T10:43:46+09:00",
+  "launcher_pid_at_start": 3802801,
+  "launch_log": "runs/halfkp64-scratch-v1/s05-outer8-pipeline-20260918-launch.log",
   "pipeline_output_dir": "runs/halfkp64-scratch-v1/s05-outer8-pipeline-20260918",
   "candidate": {
     "model": "runs/halfkp64-scratch-v1/s04-soft-target-250k-8pass-20260916/model.bin",
