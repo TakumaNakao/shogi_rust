@@ -2,8 +2,10 @@
   "schema": "halfkp_s06_execution_v1",
   "lineage_id": "halfkp64-scratch-v1",
   "date": "2026-09-19",
-  "status": "planned",
+  "status": "running",
   "script": "scripts/run_halfkp_s06_outer16_pipeline.sh",
+  "launcher_pid_at_start": 4091959,
+  "launch_log": "runs/halfkp64-scratch-v1/s06-outer16-eval-20260919-launch.log",
   "training": {
     "resume_from": "runs/halfkp64-scratch-v1/s04-soft-target-250k-8pass-20260916/checkpoint.json",
     "resume_completed_outer": 8,
