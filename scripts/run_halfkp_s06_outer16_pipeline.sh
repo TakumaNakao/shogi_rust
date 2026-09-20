@@ -194,7 +194,7 @@ if not decision['phase_gate']['pass']:
 PY
 
 echo "[3/5] Creating unused gen6 screen openings"
-python3 "$TAYA36" "$EVAL_DIR/gen6_screen_openings.sfen" <<'PY'
+python3 - "$TAYA36" "$EVAL_DIR/gen6_screen_openings.sfen" <<'PY'
 import pathlib
 import sys
 
@@ -244,7 +244,7 @@ if not decision['gen6_screen']['pass']:
 PY
 
 echo "[4/5] Creating independent v2.5.0 comparison openings"
-python3 "$TAYA36" "$EVAL_DIR/v250_openings.sfen" <<'PY'
+python3 - "$TAYA36" "$EVAL_DIR/v250_openings.sfen" <<'PY'
 import pathlib
 import sys
 
