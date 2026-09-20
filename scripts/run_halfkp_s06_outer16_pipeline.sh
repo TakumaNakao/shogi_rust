@@ -54,15 +54,18 @@ def sha(path):
             digest.update(chunk)
     return digest.hexdigest()
 
-if checkpoint.get('completed_outer') != 8:
-    raise SystemExit(f"expected S04 checkpoint at outer8, found {checkpoint.get('completed_outer')}")
-if checkpoint.get('model_sha256') != expected_model or sha(model_path) != expected_model:
+completed_outer = int(checkpoint.get('completed_outer', -1))
+if completed_outer < 8 or completed_outer > 16:
+    raise SystemExit(f"expected checkpoint between outer8 and outer16, found {completed_outer}")
+if completed_outer == 8 and (checkpoint.get('model_sha256') != expected_model or sha(model_path) != expected_model):
     raise SystemExit('S04 model checkpoint SHA mismatch')
+if completed_outer > 8 and checkpoint.get('model_sha256') != sha(model_path):
+    raise SystemExit('current model does not match checkpoint SHA')
 if checkpoint.get('optimizer_sha256') != sha(optimizer_path):
     raise SystemExit('S04 optimizer checkpoint SHA mismatch')
 if sha(dataset_path) != expected_dataset:
     raise SystemExit('dataset manifest SHA mismatch')
-print('S06 preflight: outer8 checkpoint and dataset are verified')
+print(f'S06 preflight: checkpoint outer{completed_outer} and dataset are verified')
 PY
 
 echo "[1/5] Resuming scratch MMTO from outer8 through outer16"
@@ -112,7 +115,8 @@ import pathlib
 import sys
 
 run_dir, eval_dir = map(pathlib.Path, sys.argv[1:3])
-dataset_sha, init_path = sys.argv[3:]
+dataset_sha = sys.argv[3]
+init_path = pathlib.Path(sys.argv[4])
 
 def sha(path):
     digest = hashlib.sha256()
