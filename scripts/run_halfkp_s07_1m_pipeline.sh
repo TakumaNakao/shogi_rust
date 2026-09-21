@@ -13,10 +13,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 BASE="$ROOT_DIR/runs/halfkp64-scratch-v1"
-RUN_TAG="s07-retry-rate2500-20260922"
+RUN_TAG="s07-retry-rate2500-v2-20260922"
 MIN_RATE=2500
 MAX_ROOTS_PER_GAME=16
-SEED=20260922
+SEED=20260923
 RAW_DIR="$BASE/${RUN_TAG}-raw"
 FREQ_DIR="$BASE/${RUN_TAG}-frequency"
 DATA_DIR="$BASE/${RUN_TAG}-selected-1m"
@@ -66,7 +66,7 @@ if [[ ! -s "$RAW_DIR/manifest.json" ]]; then
     --max-records 1500000 \
     --target-opening-records 400000 \
     --target-middle-records 700000 \
-    --target-late-records 400000 \
+    --target-late-records 300000 \
     --require-targets \
     --target-minimum-percent 95 \
     --max-records-per-game 24 \
