@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# S07: build an independent high-rate WDoor corpus from 2015--2017, preserve
+# S07 retry: build an independent WDoor corpus from 2015--2017, preserve
 # observed move frequencies as soft targets, select one million roots, and run
-# the same scratch HalfKP MMTO objective for eight outer passes. v2.5.0 is
-# evaluation only and is never read by the trainer.
+# the same scratch HalfKP MMTO objective for eight outer passes.  The original
+# S07 attempt used a 4000/4000 rate floor, but the historical 2015--2017
+# ratings are on a lower scale and yielded only 2,482 records.  This retry uses
+# a documented 2500/2500 floor and a larger per-game root cap; v2.5.0 remains
+# evaluation-only and is never read by the trainer.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 BASE="$ROOT_DIR/runs/halfkp64-scratch-v1"
-RAW_DIR="$BASE/s07-raw-2015-2017-20260921"
-FREQ_DIR="$BASE/s07-frequency-2015-2017-20260921"
-DATA_DIR="$BASE/s07-selected-1m-20260921"
-RUN_DIR="$BASE/s07-soft-target-1m-8pass-20260921"
-EVAL_DIR="$BASE/s07-eval-20260921"
+RUN_TAG="s07-retry-rate2500-20260922"
+MIN_RATE=2500
+MAX_ROOTS_PER_GAME=16
+SEED=20260922
+RAW_DIR="$BASE/${RUN_TAG}-raw"
+FREQ_DIR="$BASE/${RUN_TAG}-frequency"
+DATA_DIR="$BASE/${RUN_TAG}-selected-1m"
+RUN_DIR="$BASE/${RUN_TAG}-soft-target-1m-8pass"
+EVAL_DIR="$BASE/${RUN_TAG}-eval"
 TRAIN="$DATA_DIR/train.jsonl"
 VALID="$DATA_DIR/valid.jsonl"
 DATASET_MANIFEST="$DATA_DIR/manifest.json"
@@ -50,7 +57,7 @@ if [[ ! -s "$RAW_DIR/manifest.json" ]]; then
     --output-dir "$RAW_DIR" \
     --license-id user-authorized:wdoor-public-archive \
     --source-uri https://wdoor.c.u-tokyo.ac.jp/shogi/ \
-    --seed 20260921 \
+    --seed "$SEED" \
     --shuffle-games \
     --reuse-if-matches \
     --valid-percent 10 \
@@ -66,8 +73,8 @@ if [[ ! -s "$RAW_DIR/manifest.json" ]]; then
     --phase-records-per-game 8 12 4 \
     --min-ply 8 \
     --max-ply 200 \
-    --min-player-rate 4000 \
-    --min-opponent-rate 4000 \
+    --min-player-rate "$MIN_RATE" \
+    --min-opponent-rate "$MIN_RATE" \
     --preserve-position-duplicates
 else
   echo "reusing frozen raw dataset: $RAW_DIR"
@@ -78,17 +85,17 @@ if [[ ! -s "$FREQ_DIR/manifest.json" ]]; then
   python3 "$AGGREGATE" \
     --input "$RAW_DIR/train.jsonl" "$RAW_DIR/valid.jsonl" "$RAW_DIR/test.jsonl" \
     --output-dir "$FREQ_DIR" \
-    --min-player-rate 4000 --min-opponent-rate 4000 \
-    --shuffle-seed 20260921
+    --min-player-rate "$MIN_RATE" --min-opponent-rate "$MIN_RATE" \
+    --shuffle-seed "$SEED"
   python3 - "$FREQ_DIR/manifest.json" <<'PY'
 import json
 import pathlib
 import sys
 path = pathlib.Path(sys.argv[1])
 data = json.loads(path.read_text())
-data['min_player_rate'] = 4000
-data['min_opponent_rate'] = 4000
-data['source_policy'] = 'independent high-rate WDoor 2015-2017; observed move frequencies only'
+data['min_player_rate'] = 2500
+data['min_opponent_rate'] = 2500
+data['source_policy'] = 'independent WDoor 2015-2017; historical rate floor 2500; observed move frequencies only'
 path.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
 PY
 else
@@ -103,17 +110,17 @@ if [[ ! -s "$DATA_DIR/manifest.json" ]]; then
     --opening 300000 \
     --middlegame 500000 \
     --endgame 200000 \
-    --seed 20260921 \
-    --max-roots-per-game 8
+    --seed "$SEED" \
+    --max-roots-per-game "$MAX_ROOTS_PER_GAME"
   python3 - "$DATA_DIR/manifest.json" <<'PY'
 import json
 import pathlib
 import sys
 path = pathlib.Path(sys.argv[1])
 data = json.loads(path.read_text())
-data['min_player_rate'] = 4000
-data['min_opponent_rate'] = 4000
-data['source_policy'] = 'independent high-rate WDoor 2015-2017; frequency soft targets; no S04 source years'
+data['min_player_rate'] = 2500
+data['min_opponent_rate'] = 2500
+data['source_policy'] = 'independent WDoor 2015-2017; historical rate floor 2500; frequency soft targets; no S04 source years'
 path.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
 PY
 fi

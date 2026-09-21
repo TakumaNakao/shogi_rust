@@ -2,7 +2,12 @@
   "schema": "halfkp_s07_execution_v1",
   "lineage_id": "halfkp64-scratch-v1",
   "date": "2026-09-21",
-  "status": "running",
+  "status": "failed",
+  "failure": {
+    "stage": "raw_dataset",
+    "reason": "2015--2017 historical rate floor 4000/4000 produced only 2482 records and did not reach the required 95% phase targets",
+    "stopped_at": "2026-09-22"
+  },
   "launcher_pid_at_start": 314937,
   "launch_log": "runs/halfkp64-scratch-v1/s07-eval-20260921-launch.log",
   "script": "scripts/run_halfkp_s07_1m_pipeline.sh",
