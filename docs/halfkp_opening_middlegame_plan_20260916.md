@@ -177,7 +177,8 @@ L_root = sum_{i<j, c_i+c_j>0} w_ij *
 | S03 | 小規模実装・費用確認 | 512 rootの固定leafで目的と勾配を確認、有限qsearchで10k root×1 passの処理量・phase脱落・所要時間を測る | 完了（無制限試行の病的rootを有限上限で回避。詳細は`s03_bounded_cost_execution_20260916.json`） |
 | S04 | 序中盤中心の本学習 | 250k unique root×8 pass、計2M root提示。2/4/8で保存・評価 | 完了（outer8 valid loss 0.37745、序/中/終 0.40118/0.35928/0.39331） |
 | S05 | 保存候補の実対局と終盤回帰 | 候補を対局前に1個固定し、下記の有限の対局計画を実施 | 完了（gen6確認60%、v2.5.0比較19勝31敗・得点率38%で未採用） |
-| S06 | 結果に基づく追加学習 | outer8 checkpointから同一条件でouter16まで延長し、phase gate後に再評価 | 実行開始（詳細は`s06_execution_20260919.json`） |
+| S06 | 結果に基づく追加学習 | outer8 checkpointから同一条件でouter16まで延長し、phase gate後に再評価 | 完了（phase gate合格、v2.5.0比較43勝57敗・得点率43%） |
+| S07 | 独立棋譜1M局面への拡張 | 2015--2017高rate棋譜を頻度集約し、1M root×8 passを実行 | 開始（詳細は`s07_execution_20260921.json`） |
 
 S02は`src/training_tools/halfkp_mmto_train.rs`と既存audit/selector/runnerを拡張する。
 既存の旧objectiveは比較・再現用に残し、新しいloss名とcheckpoint fingerprintで識別する。

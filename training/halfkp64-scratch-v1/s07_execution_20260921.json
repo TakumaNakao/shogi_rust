@@ -1,0 +1,41 @@
+{
+  "schema": "halfkp_s07_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-21",
+  "status": "planned",
+  "script": "scripts/run_halfkp_s07_1m_pipeline.sh",
+  "source_policy": {
+    "years": [2015, 2016, 2017],
+    "min_player_rate": 4000,
+    "min_opponent_rate": 4000,
+    "teacher": "observed WDoor move frequencies only",
+    "external_engine_labels": false,
+    "s04_source_years_excluded": true
+  },
+  "dataset": {
+    "raw_dir": "runs/halfkp64-scratch-v1/s07-raw-2015-2017-20260921",
+    "frequency_dir": "runs/halfkp64-scratch-v1/s07-frequency-2015-2017-20260921",
+    "selected_dir": "runs/halfkp64-scratch-v1/s07-selected-1m-20260921",
+    "target_train_roots": 1000000,
+    "phase_targets": {
+      "opening": 300000,
+      "middlegame": 500000,
+      "endgame": 200000
+    },
+    "max_roots_per_game": 8
+  },
+  "training": {
+    "run_dir": "runs/halfkp64-scratch-v1/s07-soft-target-1m-8pass-20260921",
+    "initialization": "accepted scratch generation 6 (not v2.5.0)",
+    "outer_passes": 8,
+    "jobs": 12,
+    "feature_learning_rate": 0.0001,
+    "output_learning_rate_ratio": 0.1,
+    "qsearch_node_limit": 2000000
+  },
+  "evaluation": {
+    "output_dir": "runs/halfkp64-scratch-v1/s07-eval-20260921",
+    "gen6_screen": "taya36 lines 251-275, 25 pairs / 50 games, 5 seconds per move",
+    "v250_comparison": "conditional on gen6 screen; taya36 lines 276-375, 100 games, 5 seconds per move"
+  }
+}
