@@ -2,7 +2,13 @@
   "schema": "halfkp_s07_execution_v1",
   "lineage_id": "halfkp64-scratch-v1",
   "date": "2026-09-22",
-  "status": "running",
+  "status": "failed",
+  "failure": {
+    "stage": "root_selection",
+    "reason": "frequency aggregation left only 208628 opening and 552874 middlegame train roots; per-game cap16 selected 666075 instead of 1000000",
+    "observed_train_phase_roots": {"opening": 208628, "middlegame": 552874, "endgame": 240264},
+    "stopped_at": "2026-09-22"
+  },
   "launcher_pid_at_start": 331740,
   "launch_log": "runs/halfkp64-scratch-v1/s07-retry-rate2500-v2-20260922-launch.log",
   "script": "scripts/run_halfkp_s07_1m_pipeline.sh",

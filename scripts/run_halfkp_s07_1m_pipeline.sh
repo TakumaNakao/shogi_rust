@@ -13,12 +13,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 BASE="$ROOT_DIR/runs/halfkp64-scratch-v1"
-RUN_TAG="s07-retry-rate2500-v2-20260922"
+SOURCE_TAG="s07-retry-rate2500-v2-20260922"
+RUN_TAG="s07-retry-rate2500-v3-20260922"
 MIN_RATE=2500
-MAX_ROOTS_PER_GAME=16
+MAX_ROOTS_PER_GAME=64
 SEED=20260923
-RAW_DIR="$BASE/${RUN_TAG}-raw"
-FREQ_DIR="$BASE/${RUN_TAG}-frequency"
+RAW_DIR="$BASE/${SOURCE_TAG}-raw"
+FREQ_DIR="$BASE/${SOURCE_TAG}-frequency"
 DATA_DIR="$BASE/${RUN_TAG}-selected-1m"
 RUN_DIR="$BASE/${RUN_TAG}-soft-target-1m-8pass"
 EVAL_DIR="$BASE/${RUN_TAG}-eval"
@@ -107,9 +108,9 @@ if [[ ! -s "$DATA_DIR/manifest.json" ]]; then
   python3 "$SELECT" \
     --input-dir "$FREQ_DIR" \
     --output-dir "$DATA_DIR" \
-    --opening 300000 \
-    --middlegame 500000 \
-    --endgame 200000 \
+    --opening 208000 \
+    --middlegame 552000 \
+    --endgame 240000 \
     --seed "$SEED" \
     --max-roots-per-game "$MAX_ROOTS_PER_GAME"
   python3 - "$DATA_DIR/manifest.json" <<'PY'
