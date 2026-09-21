@@ -2,7 +2,9 @@
   "schema": "halfkp_s07_execution_v1",
   "lineage_id": "halfkp64-scratch-v1",
   "date": "2026-09-21",
-  "status": "planned",
+  "status": "running",
+  "launcher_pid_at_start": 314937,
+  "launch_log": "runs/halfkp64-scratch-v1/s07-eval-20260921-launch.log",
   "script": "scripts/run_halfkp_s07_1m_pipeline.sh",
   "source_policy": {
     "years": [2015, 2016, 2017],
