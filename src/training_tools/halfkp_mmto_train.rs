@@ -1115,15 +1115,25 @@ fn validate_lineage_and_dataset(args: &Args) -> Result<()> {
             | "halfkp_move_frequency_manifest_v1"
     );
     if !supported_schema
-        || manifest.min_player_rate.is_some_and(|rate| rate != 4000)
-        || manifest.min_opponent_rate.is_some_and(|rate| rate != 4000)
+        || !authorized_wdoor_rate_floor(manifest.min_player_rate, manifest.min_opponent_rate)
     {
         return Err(anyhow!(
-            "dataset manifest is not an authorized frozen WDoor rate-4000 derivative"
+            "dataset manifest is not an authorized frozen WDoor rate-floor derivative"
         ));
     }
     validate_manifest_outputs(&args.dataset_manifest, &manifest, &args.train, &args.valid)?;
     validate_dataset_splits(&args.train, &args.valid)
+}
+
+/// Keep the lineage gate explicit while allowing the historically calibrated
+/// 2500/2500 S07 corpus.  `None,None` remains valid for older frozen manifests
+/// that predate rate metadata; a mixed or unrecognized floor is rejected.
+fn authorized_wdoor_rate_floor(player: Option<i64>, opponent: Option<i64>) -> bool {
+    match (player, opponent) {
+        (None, None) => true,
+        (Some(left), Some(right)) if left == right => matches!(left, 2500 | 4000),
+        _ => false,
+    }
 }
 
 fn revalidate_dataset_artifacts(args: &Args, expected_manifest_sha256: &str) -> Result<()> {
@@ -2310,6 +2320,20 @@ fn write_run_manifest(
 mod tests {
     use super::*;
     use shogi_ai::evaluation::HALFKP_INPUTS;
+
+    #[test]
+    fn authorized_wdoor_rate_floor_accepts_historical_s07_floor() {
+        assert!(authorized_wdoor_rate_floor(Some(2500), Some(2500)));
+        assert!(authorized_wdoor_rate_floor(Some(4000), Some(4000)));
+        assert!(authorized_wdoor_rate_floor(None, None));
+    }
+
+    #[test]
+    fn authorized_wdoor_rate_floor_rejects_mixed_or_unreviewed_floor() {
+        assert!(!authorized_wdoor_rate_floor(Some(2500), Some(4000)));
+        assert!(!authorized_wdoor_rate_floor(Some(3000), Some(3000)));
+        assert!(!authorized_wdoor_rate_floor(Some(2500), None));
+    }
 
     fn pair_fixture(side_to_move: Color) -> (Weights, Pair) {
         let mut root = Position::default();
