@@ -146,34 +146,38 @@ PY
 
 DATASET_SHA_EXPECTED="$(sha256sum "$DATASET_MANIFEST" | awk '{print $1}')"
 echo "[4/6] Training one million roots for eight outer passes"
-if [[ ! -s "$RUN_DIR/checkpoint.json" ]]; then
-  "$TRAINER" \
-    --train "$TRAIN" \
-    --valid "$VALID" \
-    --dataset-manifest "$DATASET_MANIFEST" \
-    --expected-dataset-manifest-sha256 "$DATASET_SHA_EXPECTED" \
-    --init "$INIT" \
-    --model-manifest "$INIT_MANIFEST" \
-    --promotion-registry "$REGISTRY" \
-    --gate-report "$GATE_REPORT" \
-    --parent-generation 6 \
-    --output-dir "$RUN_DIR" \
-    --outer-iterations 8 \
-    --search-block-roots 1024 \
-    --jobs 12 \
-    --pair-batch-size 8192 \
-    --learning-rate 0.0001 \
-    --output-learning-rate-ratio 0.1 \
-    --gradient-clip-norm 1.0 \
-    --tau-cp 300 \
-    --max-train-roots 1000000 \
-    --max-valid-roots 12000 \
-    --pv-probe-roots 256 \
-    --checkpoint-roots 25000 \
-    --qsearch-node-limit 2000000
+TRAIN_ARGS=(
+  --train "$TRAIN"
+  --valid "$VALID"
+  --dataset-manifest "$DATASET_MANIFEST"
+  --expected-dataset-manifest-sha256 "$DATASET_SHA_EXPECTED"
+  --init "$INIT"
+  --model-manifest "$INIT_MANIFEST"
+  --promotion-registry "$REGISTRY"
+  --gate-report "$GATE_REPORT"
+  --parent-generation 6
+  --output-dir "$RUN_DIR"
+  --outer-iterations 8
+  --search-block-roots 1024
+  --jobs 12
+  --pair-batch-size 8192
+  --learning-rate 0.0001
+  --output-learning-rate-ratio 0.1
+  --gradient-clip-norm 1.0
+  --tau-cp 300
+  --max-train-roots 1000000
+  --max-valid-roots 12000
+  --pv-probe-roots 256
+  --checkpoint-roots 25000
+  --qsearch-node-limit 2000000
+)
+if [[ -s "$RUN_DIR/checkpoint.json" ]]; then
+  echo "resuming existing S07 training checkpoint: $RUN_DIR"
+  TRAIN_ARGS+=(--resume)
 else
-  echo "reusing existing S07 training checkpoint: $RUN_DIR"
+  echo "starting S07 training from accepted generation 6"
 fi
+"$TRAINER" "${TRAIN_ARGS[@]}"
 
 python3 - "$RUN_DIR/checkpoint.json" <<'PY'
 import json
