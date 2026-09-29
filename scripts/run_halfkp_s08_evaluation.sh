@@ -27,7 +27,7 @@ PY
       sleep 5
       continue
     fi
-    if ! pgrep -x halfkp_mmto_train >/dev/null 2>&1; then
+    if ! pgrep -f '/target/release/halfkp_mmto_train' >/dev/null 2>&1; then
       echo "continuation stopped before outer16" >&2
       exit 1
     fi
