@@ -65,8 +65,8 @@ S07は2015〜2017年、両者rate>=2500、序/中/終208k/552k/240k。
 
 | ID | 作業 | 完了条件 | 状態 |
 |---|---|---|---|
-| S08a | S07 outer8の成果物を凍結し、別runへ再開状態を複製 | model/optimizer/checkpoint/manifest/metricsとSHAを保存。元run・評価参照先を上書きしない | 未着手 |
-| S08b | 同一条件でouter12まで学習、保存してouter16まで継続 | 12/16の重み・optimizer・checkpointを独立保存、各pass指標とログを記録 | 未着手 |
+| S08a | S07 outer8の成果物を凍結し、別runへ再開状態を複製 | model/optimizer/checkpoint/manifest/metricsとSHAを保存。元run・評価参照先を上書きしない | 完了（`s08-retry-rate2500-v3-20260929/frozen-outer8`） |
+| S08b | 同一条件でouter12まで学習、保存してouter16まで継続 | 12/16の重み・optimizer・checkpointを独立保存、各pass指標とログを記録 | 実行中（`scripts/run_halfkp_s08_continuation.sh`） |
 | S08c | outer16対outer8を50局 | 未使用25組、先後交換、5秒/手。同一binary、各1 thread。paired区間・異常終了を報告 | 未着手 |
 | S08d | outer16対v2.5.0を100局 | 事前固定の未使用50組、同じ条件。少数対局の勝敗で追加候補を選び直さない | 未着手 |
 | S08e | 終盤回帰を確認し、維持・追加データ・確認対局を判断 | 既存の固定戦術/終盤テストも比較し、現候補を失わず結論を記録 | 未着手 |
@@ -123,6 +123,9 @@ v2.5.0は比較相手に限定する。より長く学べば必ず勝てると�
 - S07学習: `s07-retry-rate2500-v3-20260922-soft-target-1m-8pass/`のcheckpoint、run_manifest、metrics/outer_0001〜0008.json
 - S07対局: `s07-retry-rate2500-v3-20260922-eval/decision.json`と`v250-100g/{config.txt,match.log,games/}`
 - S07データ: `s07-retry-rate2500-v3-20260922-selected-1m/manifest.json`
+
+S08の実行ログは`runs/halfkp64-scratch-v1/s08-retry-rate2500-v3-20260929-s08.log`、
+実行定義は`scripts/run_halfkp_s08_continuation.sh`。
 
 継続元model SHA: `fbc1fada975cf410c076a775db1b0e66f8dc97b4e2d69695d0f1dfdda1d73b92`。
 optimizer SHA: `32b6dac26c10e3e0002b8c148887fbdbbf20027d57bc881cfa925b46a3e88cfc`。
