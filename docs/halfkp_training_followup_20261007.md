@@ -146,9 +146,9 @@ drawは0.5を正しく扱える形式へ最小修正するか、pilotでは除�
 |---|---|---|
 | P0 | S08結果再確認、次方針決定 | 完了（本書） |
 | P1 | v2.7.1 bundle/系譜固定、S08記録の完了整理 | 完了（model/optimizer SHA固定。終盤基準測定はP5へ） |
-| P2 | 2012–2014アーカイブ監査、独立追加1Mとholdout作成 | 進行中（320,535局を監査、rate記録なし。raw 2.2M局面生成済み、頻度集約中） |
+| P2 | 2012–2014アーカイブ監査、独立追加1Mとholdout作成 | 完了（rateなし320,535局を監査。追加1Mをphase別quotaで確保） |
 | P3 | リリース済み研究親の系譜を明示し、新datasetの再開可能runnerを用意 | 完了（`b8ea921`, `90cd02d`, `87dc610`） |
-| P4 | A/B学習、2/4/8 pass保存、共通valid比較 | 実行準備中（runner稼働、頻度集約中。データ固定後に学習開始） |
+| P4 | A/B学習、2/4/8 pass保存、共通valid比較 | 実行中（1M対照4 passを学習中。完了後2Mの2/4/8 passへ自動移行） |
 | P5 | 最終対局・序中盤/終盤診断、4M拡張かS10か判定 | 未着手 |
 | P6 | 条件付きS10の1,000局生成と勝敗補助学習pilot | 条件待ち |
 
@@ -157,10 +157,13 @@ drawは0.5を正しく扱える形式へ最小修正するか、pilotでは除�
 `runs/halfkp64-scratch-v1/s09-frequency-2m-20261007/`以下に保存し、学習は25,000 rootごとに再開可能なcheckpointを出す。
 計画外の新方式や実験結果の解釈を要する分岐は報告する。
 
-S09実行メモ: 2012–2014の320,535局はrate記録が0件だった。raw 2.2Mレコードは
-160,890局を走査して146,594局から作成し、頻度集約中。最初のrunnerはplotters/fontconfigの開発依存がなくbuildに失敗した。
+S09実行メモ: 2012–2014の320,535局はrate記録が0件だった。raw 2.2Mレコードを
+160,890局から走査・生成し、追加train 1,583,016位置を頻度集約した。
+S07と併せた2M trainはopening/middlegame/endgame各416k/1,104k/480k、valid 12k。
+manifest SHA-256: `56874c5428dad4345c4a2a78c2618c35057a0e23e44884cbd2915c791c506413`。
+最初のrunnerはplotters/fontconfigの開発依存がなくbuildに失敗した。
 plottersを`plotting-tools` featureへ分離し、学習・matchに必要なrelease binariesは
-`halfkp64,training-tools`のみで正常にbuildできることを確認した。初回build停止中と現在のデータ準備工程では学習未開始。
+`halfkp64,training-tools`のみで正常にbuildできることを確認した。現在は1M対照を学習中。
 
 ## 8. 根拠・参考資料
 
