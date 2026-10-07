@@ -53,7 +53,7 @@ for year in 2012 2013 2014; do
 done
 
 phase "building required release tools"
-CARGO_BUILD_JOBS=1 cargo build --release --locked --features halfkp64,training-tools,benchmark-tools \
+CARGO_BUILD_JOBS=1 cargo build --release --locked --features halfkp64,training-tools \
   --bin dataset_build --bin csa_rate_stats --bin halfkp_mmto_train --bin halfkp_promotion_match
 
 if [[ ! -s "$BASE/rate-audit.txt" ]]; then

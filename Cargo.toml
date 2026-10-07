@@ -13,9 +13,10 @@ resolver = "2"
 [features]
 default = []
 halfkp64 = []
-training-tools = ["dep:csa", "dep:glob", "dep:plotters", "dep:sha2"]
+training-tools = ["dep:csa", "dep:glob", "dep:sha2"]
 benchmark-tools = []
-research-tools = ["dep:glob", "dep:plotters"]
+plotting-tools = ["dep:plotters"]
+research-tools = ["dep:glob", "plotting-tools"]
 
 # Keep the distributed CPU binary optimized across Linux and Windows MSVC.
 # ThinLTO improves cross-module inlining without the memory cost of full LTO.
@@ -227,7 +228,7 @@ required-features = ["training-tools"]
 [[bin]]
 name = "kpp_learn"
 path = "src/kpp_learn.rs"
-required-features = ["training-tools"]
+required-features = ["training-tools", "plotting-tools"]
 
 [[bin]]
 name = "kpp_position_pool"
@@ -237,7 +238,7 @@ required-features = ["training-tools"]
 [[bin]]
 name = "kpp_self_learn"
 path = "src/bin/kpp_self_learn.rs"
-required-features = ["training-tools"]
+required-features = ["training-tools", "plotting-tools"]
 
 [[bin]]
 name = "rank_stats"
