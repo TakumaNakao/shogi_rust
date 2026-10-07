@@ -1,0 +1,26 @@
+{
+  "schema": "halfkp_s06_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-19",
+  "status": "running",
+  "script": "scripts/run_halfkp_s06_outer16_pipeline.sh",
+  "launcher_pid_at_start": 157666,
+  "launch_log": "runs/halfkp64-scratch-v1/s06-outer16-eval-20260919-launch.log",
+  "training": {
+    "resume_from": "runs/halfkp64-scratch-v1/s04-soft-target-250k-8pass-20260916/checkpoint.json",
+    "resume_completed_outer": 8,
+    "target_outer": 16,
+    "dataset": "runs/halfkp64-scratch-v1/s04-selected-250k-v3-20260916",
+    "dataset_manifest_sha256": "43d52824f0cbef4b98da6f9f99803360ea323f876a1ca04597f4b14c92cf22b4",
+    "feature_learning_rate": 0.0001,
+    "output_learning_rate_ratio": 0.1,
+    "jobs": 12,
+    "qsearch_node_limit": 2000000,
+    "teacher_policy": "WDoor move-frequency soft targets only; no external engine labels"
+  },
+  "evaluation": {
+    "output_dir": "runs/halfkp64-scratch-v1/s06-outer16-eval-20260919",
+    "gen6_screen": "taya36 lines 126-150, 25 pairs / 50 games, 5 seconds per move",
+    "v250_comparison": "conditional on phase gate and gen6 screen; taya36 lines 151-250, 100 games, 5 seconds per move"
+  }
+}

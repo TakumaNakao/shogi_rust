@@ -1,0 +1,64 @@
+{
+  "schema": "halfkp_s07_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-22",
+  "status": "completed",
+  "results_reviewed_at": "2026-09-29",
+  "launcher_pid_at_start": 698484,
+  "resumed_at": "2026-09-24",
+  "launch_log": "runs/halfkp64-scratch-v1/s07-retry-rate2500-v3-20260922-eval/pipeline.log",
+  "script": "scripts/run_halfkp_s07_1m_pipeline.sh",
+  "source_policy": {
+    "years": [2015, 2016, 2017],
+    "min_player_rate": 2500,
+    "min_opponent_rate": 2500,
+    "teacher": "observed WDoor move frequencies only",
+    "external_engine_labels": false,
+    "s04_source_years_excluded": true,
+    "selection_change": "use all available collision-free phase roots; no synthetic duplication"
+  },
+  "dataset": {
+    "source_raw_dir": "runs/halfkp64-scratch-v1/s07-retry-rate2500-v2-20260922-raw",
+    "source_frequency_dir": "runs/halfkp64-scratch-v1/s07-retry-rate2500-v2-20260922-frequency",
+    "selected_dir": "runs/halfkp64-scratch-v1/s07-retry-rate2500-v3-20260922-selected-1m",
+    "target_train_roots": 1000000,
+    "phase_targets": {
+      "opening": 208000,
+      "middlegame": 552000,
+      "endgame": 240000
+    },
+    "max_roots_per_game": 64,
+    "seed": 20260923
+  },
+  "training": {
+    "run_dir": "runs/halfkp64-scratch-v1/s07-retry-rate2500-v3-20260922-soft-target-1m-8pass",
+    "initialization": "accepted scratch generation 6 (not v2.5.0)",
+    "outer_passes": 8,
+    "jobs": 12,
+    "feature_learning_rate": 0.0001,
+    "output_learning_rate_ratio": 0.1,
+    "qsearch_node_limit": 2000000
+  },
+  "evaluation": {
+    "output_dir": "runs/halfkp64-scratch-v1/s07-retry-rate2500-v3-20260922-eval",
+    "gen6_screen": "taya36 lines 251-275, 25 pairs / 50 games, 5 seconds per move",
+    "v250_comparison": "taya36 lines 276-375 as input pool; actual 50 shuffled openings / 100 games, 5 seconds per move",
+    "results": {
+      "gen6_screen": {"wins": 28, "losses": 22, "draws": 0, "score": 0.56, "paired_ci95": [0.46, 0.66]},
+      "v250_comparison": {
+        "wins": 56, "losses": 44, "draws": 0, "score": 0.56,
+        "opening_pairs": 50,
+        "pair_outcomes": {"two_wins": 15, "one_win_one_loss": 26, "two_losses": 9},
+        "paired_ci95": [0.47, 0.65],
+        "bootstrap_resamples": 100000,
+        "bootstrap_seed": 20260929,
+        "bootstrap_method": "scripts/run_halfkp_paired_match.py:paired_percentile_bootstrap; reaggregated from game records"
+      }
+    }
+  },
+  "completed_outer": 8,
+  "model_sha256": "fbc1fada975cf410c076a775db1b0e66f8dc97b4e2d69695d0f1dfdda1d73b92",
+  "optimizer_sha256": "32b6dac26c10e3e0002b8c148887fbdbbf20027d57bc881cfa925b46a3e88cfc",
+  "decision": "Retain outer8 as research candidate; superiority over v2.5.0 is not established. Plan same-data continuation to outer12 and outer16; no promotion or release.",
+  "next_plan": "docs/halfkp_training_followup_20260929.md"
+}

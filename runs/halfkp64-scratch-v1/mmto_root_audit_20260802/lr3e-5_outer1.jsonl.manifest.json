@@ -1,0 +1,11 @@
+{
+  "schema": "halfkp_mmto_root_audit_v1",
+  "model_path": "runs/halfkp64-scratch-v1/prior-art-step4-lr3e-5-v1/model.previous",
+  "model_sha256": "720952bfe3f60bfaf1c809abcc671f1357a9d6382cf2ab1e3c62ea56ded17593",
+  "input_path": "training/halfkp64-scratch-v1/mmto_audit_valid_20260802.jsonl",
+  "input_sha256": "e0a710c116c5507df566a9716f28015efd1511d51016ebdc7a2b780e5a312cbe",
+  "tau_cp": 36.63,
+  "roots": 6099,
+  "games": 6099,
+  "rejected_bounds": 0
+}

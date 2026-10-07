@@ -6,6 +6,7 @@ use std::time::Duration;
 pub struct SearchLimits {
     pub max_depth: u8,
     pub time_limit: Option<Duration>,
+    pub max_nodes: Option<u64>,
 }
 
 impl SearchLimits {
@@ -13,6 +14,7 @@ impl SearchLimits {
         Self {
             max_depth,
             time_limit,
+            max_nodes: None,
         }
     }
 
@@ -29,6 +31,12 @@ impl SearchLimits {
     pub fn time_limit_ms(self) -> Option<u64> {
         self.time_limit
             .map(|limit| limit.as_millis().min(u64::MAX as u128) as u64)
+    }
+
+    pub fn with_max_nodes(mut self, max_nodes: u64) -> Self {
+        assert!(max_nodes > 0, "max_nodes must be positive");
+        self.max_nodes = Some(max_nodes);
+        self
     }
 }
 

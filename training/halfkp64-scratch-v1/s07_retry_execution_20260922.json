@@ -1,0 +1,52 @@
+{
+  "schema": "halfkp_s07_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-22",
+  "status": "failed",
+  "failure": {
+    "stage": "raw_dataset",
+    "reason": "rate 2500/2500 produced enough data for selection but the requested 400000 late records reached only 323481",
+    "observed_phase_records": {"opening": 400000, "middle": 700000, "late": 323481},
+    "stopped_at": "2026-09-22"
+  },
+  "launcher_pid_at_start": 330636,
+  "launch_log": "runs/halfkp64-scratch-v1/s07-retry-rate2500-20260922-launch.log",
+  "script": "scripts/run_halfkp_s07_1m_pipeline.sh",
+  "source_policy": {
+    "years": [2015, 2016, 2017],
+    "min_player_rate": 2500,
+    "min_opponent_rate": 2500,
+    "teacher": "observed WDoor move frequencies only",
+    "external_engine_labels": false,
+    "s04_source_years_excluded": true,
+    "reason_for_rate_floor": "historical 2015--2017 rate scale is lower than the recent 4000 floor"
+  },
+  "dataset": {
+    "run_tag": "s07-retry-rate2500-20260922",
+    "raw_dir": "runs/halfkp64-scratch-v1/s07-retry-rate2500-20260922-raw",
+    "frequency_dir": "runs/halfkp64-scratch-v1/s07-retry-rate2500-20260922-frequency",
+    "selected_dir": "runs/halfkp64-scratch-v1/s07-retry-rate2500-20260922-selected-1m",
+    "target_train_roots": 1000000,
+    "phase_targets": {
+      "opening": 300000,
+      "middlegame": 500000,
+      "endgame": 200000
+    },
+    "max_roots_per_game": 16,
+    "seed": 20260922
+  },
+  "training": {
+    "run_dir": "runs/halfkp64-scratch-v1/s07-retry-rate2500-20260922-soft-target-1m-8pass",
+    "initialization": "accepted scratch generation 6 (not v2.5.0)",
+    "outer_passes": 8,
+    "jobs": 12,
+    "feature_learning_rate": 0.0001,
+    "output_learning_rate_ratio": 0.1,
+    "qsearch_node_limit": 2000000
+  },
+  "evaluation": {
+    "output_dir": "runs/halfkp64-scratch-v1/s07-retry-rate2500-20260922-eval",
+    "gen6_screen": "taya36 lines 251-275, 25 pairs / 50 games, 5 seconds per move",
+    "v250_comparison": "conditional on gen6 screen; taya36 lines 276-375, 100 games, 5 seconds per move"
+  }
+}

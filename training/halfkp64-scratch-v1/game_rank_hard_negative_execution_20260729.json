@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "experiment": "phase12-game-rank-hard-negative-v1",
+  "status": "completed_rejected_at_parent_match",
+  "lineage": {
+    "lineage_id": "halfkp64-scratch-v1",
+    "accepted_parent_generation": 2,
+    "accepted_parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "v2_5_0_used_for_training": false,
+    "kpp_or_distillation_data_used": false,
+    "test_split_opened": false
+  },
+  "implementation": {
+    "commit": "87b7562",
+    "changes": [
+      "Share game-rank eligibility and current-model hard-negative selection between trainer and evaluator.",
+      "Use the accepted parent to freeze hard-negative identity for validation and paired model comparison.",
+      "Record sample-weighted softplus loss, signed margin, accuracy, eligible count, and paired changes.",
+      "Select game-rank-only checkpoints by the aligned fixed-pair smooth loss."
+    ],
+    "targeted_tests_passed": 25,
+    "full_library_tests_passed": 109,
+    "release_build_passed": true,
+    "zero_loss_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "zero_loss_byte_identical_to_parent": true
+  },
+  "pilot": {
+    "train_records": 9311,
+    "valid_records": 1809,
+    "eligible_valid_records": 1395,
+    "fixed_conditions": {
+      "epochs": [
+        1,
+        2
+      ],
+      "batch_size": 128,
+      "learning_rate": 0.00001,
+      "output_learning_rate": 0.000001,
+      "value_weight": 0.0,
+      "rank_weight": 0.0,
+      "game_rank_weight": 0.1,
+      "game_vs_search_weight": 0.0,
+      "rank_margin_cp": 20.0,
+      "rank_temperature_cp": 100.0,
+      "minimum_teacher_gap_cp": 15.0,
+      "game_regret_cap_cp": 300.0,
+      "seed": 20260728,
+      "output_limit": 0.2,
+      "selection": "last epoch; fixed accepted-parent hard-negative pairs"
+    },
+    "parent": {
+      "weighted_objective_loss": 4.40372715266992,
+      "mean_signed_margin_cp": -375.7273552884338,
+      "accuracy": 0.19426523297491038
+    },
+    "epoch_1": {
+      "model_sha256": "a93c52fec4154aae547aec9836c2c9a9b3d43c562d2e9b9d4ee20c3a27c26816",
+      "weighted_objective_loss": 4.386610387100646,
+      "mean_signed_margin_cp": -373.90503737644485,
+      "accuracy": 0.1978494623655914,
+      "margin_improved": 1107,
+      "margin_worsened": 288
+    },
+    "epoch_2": {
+      "model_sha256": "cd1f967d96723f5a974bb459a8dfea0ef5092b5da1e610594dc017eb6ae8323d",
+      "weighted_objective_loss": 4.378838898349287,
+      "mean_signed_margin_cp": -373.07665553417684,
+      "accuracy": 0.1978494623655914,
+      "margin_improved": 1110,
+      "margin_worsened": 285,
+      "all_search_pair_accuracy": 0.6371,
+      "selected_for_screen": true
+    },
+    "safety_gates": {
+      "exact_family_accuracy": 0.9080781746031747,
+      "exact_family_ci95_lower": 0.8962428571428581,
+      "health_score_abs_p99_cp": 1673.071,
+      "static_top1_accuracy": 0.7,
+      "search_200k_success_rate": 0.986,
+      "nan_inf_illegal_or_provenance_errors": 0,
+      "passed": true
+    },
+    "parent_screen": {
+      "games": 200,
+      "node_budget_per_move": 20000,
+      "candidate_wins": 104,
+      "parent_wins": 92,
+      "draws": 4,
+      "score": 0.53,
+      "score_wilson_95_lower": 0.4609168291500183,
+      "catastrophic_regression_score_min": 0.45,
+      "passed": true,
+      "interpretation": "Non-destructive pilot screen only; this is not a promotion result."
+    }
+  },
+  "full_run": {
+    "teacher_data": {
+      "train_source_roots": 556820,
+      "train_records": 180752,
+      "train_sha256": "eec8b92435b9c106b6dafacd72e927b6b23853c71af3c29bb3ffcc6a492ba1c6",
+      "valid_source_roots": 99660,
+      "raw_valid_records": 28827,
+      "filtered_valid_records": 23523,
+      "excluded_colliding_valid_records": 5304,
+      "filtered_valid_sha256": "5a337303bf0c41409093a54632e942c61f967efd6d7f39db501ec00166bd350f",
+      "train_unique_network_inputs": 2359738,
+      "final_network_input_overlap": 0,
+      "game_rank_eligible_train": 139439,
+      "game_rank_eligible_valid": 18011,
+      "parse_illegal_or_search_failures": 0,
+      "data_gates_passed": true
+    },
+    "parent": {
+      "weighted_objective_loss": 4.335108647266881,
+      "mean_signed_margin_cp": -370.4522729723889,
+      "accuracy": 0.17927932929876186,
+      "all_search_pair_accuracy": 0.6477
+    },
+    "epoch_1": {
+      "model_sha256": "2de54dd78b0b921a2fcb460386166641f3e05c145780cf3712aa738f4f4519b4",
+      "weighted_objective_loss": 4.26235460,
+      "mean_signed_margin_cp": -362.7266,
+      "accuracy": 0.182333,
+      "all_search_pair_accuracy": 0.6493
+    },
+    "epoch_2": {
+      "model_sha256": "6d6b949ac0f5fddd13d7042edf5c66d5373a5c9f0d174e7836a36b301437318d",
+      "weighted_objective_loss": 4.23170845,
+      "mean_signed_margin_cp": -359.4576,
+      "accuracy": 0.184054,
+      "all_search_pair_accuracy": 0.6500,
+      "selected_for_parent_match": true
+    },
+    "safety_gates": {
+      "exact_family_accuracy": 0.9076,
+      "exact_family_ci95_lower": 0.8957,
+      "health_score_abs_p99_cp": 1667.409,
+      "static_top1_accuracy": 0.699,
+      "search_200k_success_rate": 0.986,
+      "nan_inf_illegal_or_provenance_errors": 0,
+      "passed": true
+    },
+    "parent_match": {
+      "games": 400,
+      "opening_pairs": 200,
+      "node_budget_per_move": 20000,
+      "candidate_wins": 196,
+      "parent_wins": 196,
+      "draws": 8,
+      "score": 0.5,
+      "score_wilson_95_lower": 0.451234504169709,
+      "search_failures": 0,
+      "passed": false,
+      "decision": "reject_at_fixed_400_game_score_at_most_0_50"
+    }
+  },
+  "next_action": {
+    "step": "Stop this route. Do not extend to 800 games, run paired v2.5.0 transfer, or promote generation 3.",
+    "status": "stopped_by_precommitted_parent_gate",
+    "reason": "The full candidate scored exactly 0.50 after the fixed 400-game parent match; the plan rejects scores at or below 0.50."
+  }
+}

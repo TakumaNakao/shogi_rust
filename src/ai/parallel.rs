@@ -18,10 +18,15 @@ where
         limits: SearchLimits,
         threads: usize,
     ) -> SearchOutcome {
+        if limits.max_nodes.is_some() && resolve_search_threads(threads) != 1 {
+            self.last_search_failed = true;
+            return self.search_outcome(None);
+        }
         let best_move = self.find_best_move_parallel_internal(
             position,
             limits.max_depth,
             limits.time_limit_ms(),
+            limits.max_nodes,
             threads,
         );
         self.search_outcome(best_move)
@@ -47,6 +52,7 @@ where
         position: &mut Position,
         max_depth: u8,
         time_limit_ms: Option<u64>,
+        node_limit: Option<u64>,
         threads: usize,
     ) -> Option<Move> {
         let threads = resolve_search_threads(threads);
@@ -59,7 +65,14 @@ where
                 self.transposition_table = TranspositionTable::Local(HashMap::new());
             }
             return match catch_unwind(AssertUnwindSafe(|| {
-                self.find_best_move(position, max_depth, time_limit_ms)
+                self.find_best_move_with_root_offset(
+                    position,
+                    max_depth,
+                    time_limit_ms,
+                    node_limit,
+                    0,
+                    true,
+                )
             })) {
                 Ok(best_move) => best_move,
                 Err(_) => {
@@ -116,6 +129,7 @@ where
                                     &mut worker_position,
                                     max_depth,
                                     time_limit_ms,
+                                    node_limit,
                                     worker_id,
                                     false,
                                 )
@@ -143,6 +157,7 @@ where
                         position,
                         max_depth,
                         time_limit_ms,
+                        node_limit,
                         0,
                         true,
                     )

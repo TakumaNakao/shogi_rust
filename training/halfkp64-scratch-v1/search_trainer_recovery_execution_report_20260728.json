@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-28",
+  "experiment": "phase9-search-trainer-recovery-v1",
+  "decision": "stop_own_search_bootstrap_without_250k_scaleup",
+  "lineage": {
+    "lineage_id": "halfkp64-scratch-v1",
+    "accepted_parent_generation": 2,
+    "accepted_parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "v2_5_0_used_for_training": false,
+    "test_split_opened": false
+  },
+  "implementation": {
+    "search_trainer_fix_commit": "352a201",
+    "value_only_teacher_commit": "ab04d5b",
+    "targeted_search_trainer_tests_passed": 14,
+    "full_library_tests_passed_after_search_trainer_fix": 98,
+    "full_library_tests_passed_after_value_only_implementation": 98,
+    "value_only_jobs_1_and_4_byte_identical": true,
+    "value_only_smoke_sha256": "15ec13a0786bfcd17edacf9717c1eaa126f9e178ec4fa844df90759e70c6a587"
+  },
+  "zero_loss_recovery_gate": {
+    "records_train": 9311,
+    "records_valid": 1840,
+    "output_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "byte_identical_to_parent": true,
+    "validation_metrics_identical_to_parent": true,
+    "passed": true
+  },
+  "existing_one_percent_candidate_screen": {
+    "candidate_model_sha256": "06d88946384926be72d4f9917bd56fbf0f4db6f07140e56c15ed8bcddc3b8442",
+    "games_per_pair": 40,
+    "time_limit_ms": 100,
+    "seed": 20260729,
+    "candidate_vs_parent": {
+      "wins": 22,
+      "losses": 18,
+      "draws": 0,
+      "score": 0.55,
+      "required_minimum": 0.45,
+      "passed": true
+    },
+    "parent_vs_v2_5_0": {
+      "wins": 12,
+      "losses": 28,
+      "draws": 0,
+      "score": 0.30
+    },
+    "candidate_vs_v2_5_0": {
+      "wins": 11,
+      "losses": 29,
+      "draws": 0,
+      "score": 0.275
+    },
+    "paired_improvement_points": -2.5,
+    "required_improvement_points": 5.0,
+    "passed": false
+  },
+  "corrected_search_value_phase_a": {
+    "model_sha256": "5737a78d48e077582bf4ec63488835f8a751b3a9c90ae1f5b305edef8db4e480",
+    "train_records": 9311,
+    "valid_records": 1840,
+    "epochs": 8,
+    "seed": 20260728,
+    "output_limit": 0.2,
+    "initial_blended_valid_brier": 0.07024652,
+    "final_blended_valid_brier": 0.06508786855616643,
+    "relative_brier_improvement": 0.0734364,
+    "brier_gate_passed": true,
+    "initial_search_mae_cp": 153.458,
+    "final_search_mae_cp": 166.3568304652753,
+    "search_mae_parent_nonregression_passed": false,
+    "exact_family_accuracy": 0.9072964285714288,
+    "exact_family_ci95_lower": 0.8952742063492071,
+    "health_score_abs_p99_cp": 1677.2491,
+    "static_top1_accuracy": 0.701,
+    "search_200k_success_rate": 0.986,
+    "safety_gates_passed": true,
+    "primary_gates_passed": false,
+    "match_screen_run": false
+  },
+  "single_fallback": {
+    "mode": "value_only_root_search",
+    "teacher_depth": 6,
+    "max_nodes_per_root": 100000,
+    "requested_pilot_records": 20000,
+    "feasibility_sample_inputs": 100,
+    "completed_depth_6_records": 0,
+    "resource_limited_records": 100,
+    "search_nodes": 10000000,
+    "qsearch_nodes": 9308596,
+    "artifact": "runs/halfkp64-scratch-v1/phase9-search-trainer-recovery-v1/value-only-smoke/depth6-100k-final.hkst",
+    "feasible": false,
+    "training_run": false,
+    "reason": "No sampled root completed depth 6 within the preregistered 100000-node cap, so there was no valid teacher score to train on."
+  },
+  "stopped_actions": {
+    "fallback_20k_generation": "not_run_after_zero_of_100_feasibility_gate",
+    "fallback_training": "not_run_without_valid_teacher_records",
+    "fallback_match": "not_run_without_candidate",
+    "scale_to_250k": "not_eligible",
+    "promotion": "not_eligible",
+    "final_release_match": "not_eligible"
+  },
+  "conclusion": [
+    "The silent projection bug is repaired and the accepted generation-2 parent is now preserved exactly by a zero-loss training run.",
+    "The valid one-percent replay candidate did not improve the paired score against v2.5.0.",
+    "Corrected value-only Phase A improved its blended objective but materially regressed the search target it was intended to retain.",
+    "The one allowed deeper fallback could not produce any completed depth-6 teacher score under its fixed node cap.",
+    "Per the fixed stop rules, do not tune the blend, learning rate, seed, rank loss, depth, or node cap and do not scale own-search bootstrap to 250k."
+  ]
+}

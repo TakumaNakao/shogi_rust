@@ -1,0 +1,303 @@
+{
+  "schema": "halfkp_followup_review_20260913_v1",
+  "date": "2026-09-13",
+  "audited_commit": "62bfbef",
+  "scope": "read-only result/source audit and prospective plan; no training, model update, registry mutation or new matches",
+  "training": {
+    "config": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/config.json",
+      "sha256": "538721e4a4d3d4c97031089e9ce77885a43704ae2fab1e3aeccb950b9f85e537"
+    },
+    "csv": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/train.csv",
+      "sha256": "d5afd6eef5161fc7ad186838a2bd80806b30ceffaeca1b0bdcf12d5b3a24841c"
+    },
+    "manifest": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/model.bin.manifest.json",
+      "sha256": "6be873404b975e809bdeba6cf1391503e0f8927179e80c453e1a689bbef89fef"
+    },
+    "candidate": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/model.bin",
+      "sha256": "fc8e4ccbc187d433a6a642db2675b965ca7264e04ca6d67542e831cb23784512"
+    },
+    "epoch32_current": {
+      "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/checkpoints/current.binary",
+      "sha256": "c96eadac428549297b1ec4d6cc68ff93ff6fee87953881d8f44171c06ae6a63e"
+    },
+    "train_records": 2060908,
+    "completed_epochs": 32,
+    "presentations": 65949056,
+    "selected_epoch": 15,
+    "selected_validation_score": 0.009381642508346926,
+    "curve": [
+      {
+        "epoch": 1,
+        "train_value_loss": 0.00314058,
+        "score": 0.00942227,
+        "valid_model_result_brier": 0.20862198,
+        "valid_model_result_logloss": 0.6300007
+      },
+      {
+        "epoch": 4,
+        "train_value_loss": 0.00303477,
+        "score": 0.0093955,
+        "valid_model_result_brier": 0.20830829,
+        "valid_model_result_logloss": 0.62922524
+      },
+      {
+        "epoch": 8,
+        "train_value_loss": 0.00299253,
+        "score": 0.00938571,
+        "valid_model_result_brier": 0.20811736,
+        "valid_model_result_logloss": 0.62875019
+      },
+      {
+        "epoch": 12,
+        "train_value_loss": 0.00296769,
+        "score": 0.00938273,
+        "valid_model_result_brier": 0.20799786,
+        "valid_model_result_logloss": 0.62845115
+      },
+      {
+        "epoch": 15,
+        "train_value_loss": 0.00295397,
+        "score": 0.00938164,
+        "valid_model_result_brier": 0.20792751,
+        "valid_model_result_logloss": 0.62827564
+      },
+      {
+        "epoch": 16,
+        "train_value_loss": 0.00295002,
+        "score": 0.00938172,
+        "valid_model_result_brier": 0.20790676,
+        "valid_model_result_logloss": 0.62822363
+      },
+      {
+        "epoch": 20,
+        "train_value_loss": 0.0029363,
+        "score": 0.00938233,
+        "valid_model_result_brier": 0.2078367,
+        "valid_model_result_logloss": 0.62804719
+      },
+      {
+        "epoch": 24,
+        "train_value_loss": 0.00292514,
+        "score": 0.00938343,
+        "valid_model_result_brier": 0.20777927,
+        "valid_model_result_logloss": 0.62790198
+      },
+      {
+        "epoch": 28,
+        "train_value_loss": 0.00291574,
+        "score": 0.00938443,
+        "valid_model_result_brier": 0.20772783,
+        "valid_model_result_logloss": 0.62777295
+      },
+      {
+        "epoch": 32,
+        "train_value_loss": 0.00290764,
+        "score": 0.00938648,
+        "valid_model_result_brier": 0.20768594,
+        "valid_model_result_logloss": 0.62766614
+      }
+    ],
+    "metadata_discrepancy": {
+      "selected_validation_value_loss_per_record": 0.009384427555286377,
+      "selected_details_are_epoch": 28,
+      "expected_epoch": 15,
+      "cause": "resume initializes selected_validation from resumed current weights while selected epoch/score remain those of the saved best",
+      "effect": "selected detail metrics unreliable; candidate SHA and strict selected score preserved"
+    }
+  },
+  "matches": {
+    "screen-20k-250pair": {
+      "artifact": {
+        "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/gate/screen-20k-250pair/report.json",
+        "sha256": "6dbcd6aa2cb6cf13b121909b4c40cd0502c58dbab2faf161f3f5a819c9d6cbda"
+      },
+      "schema": "halfkp_resumable_paired_match_v1",
+      "candidate_sha256": "fc8e4ccbc187d433a6a642db2675b965ca7264e04ca6d67542e831cb23784512",
+      "parent_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+      "node_budget_per_move": 20000,
+      "pairs": 250,
+      "games": 500,
+      "score": 0.541,
+      "paired_score_ci95_lower": 0.498,
+      "paired_score_ci95_upper": 0.584,
+      "opening_pair_bootstrap": {
+        "method": "percentile",
+        "unit": "two_color_swapped_games_per_opening",
+        "resamples": 100000,
+        "seed": 20260916,
+        "ci95_lower": 0.498,
+        "ci95_upper": 0.584
+      },
+      "pair_score_distribution": {
+        "0.00": 51,
+        "0.25": 4,
+        "0.50": 120,
+        "0.75": 3,
+        "1.00": 72
+      },
+      "promotion_gate_passed": false,
+      "counts": {
+        "candidate_wins": 266,
+        "parent_wins": 225,
+        "draws": 9,
+        "candidate_black_wins": 145,
+        "candidate_white_wins": 121,
+        "search_failures": 0,
+        "missing_root_results": 0,
+        "illegal_moves": 0,
+        "non_finite_scores": 0,
+        "max_ply_draws": 8,
+        "repetition_draws": 1,
+        "perpetual_check_games": 12
+      }
+    },
+    "confirm-20k-250pair": {
+      "artifact": {
+        "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/gate/confirm-20k-250pair/report.json",
+        "sha256": "862210780e8b2a89f1da0980d2f037ebf4fb7ec62ceff2bb3537f819d6b4c8e0"
+      },
+      "schema": "halfkp_resumable_paired_match_v1",
+      "candidate_sha256": "fc8e4ccbc187d433a6a642db2675b965ca7264e04ca6d67542e831cb23784512",
+      "parent_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+      "node_budget_per_move": 20000,
+      "pairs": 250,
+      "games": 500,
+      "score": 0.54,
+      "paired_score_ci95_lower": 0.5,
+      "paired_score_ci95_upper": 0.581,
+      "opening_pair_bootstrap": {
+        "method": "percentile",
+        "unit": "two_color_swapped_games_per_opening",
+        "resamples": 100000,
+        "seed": 20260917,
+        "ci95_lower": 0.5,
+        "ci95_upper": 0.581
+      },
+      "pair_score_distribution": {
+        "0.00": 44,
+        "0.25": 3,
+        "0.50": 135,
+        "0.75": 5,
+        "1.00": 63
+      },
+      "promotion_gate_passed": false,
+      "counts": {
+        "candidate_wins": 266,
+        "parent_wins": 226,
+        "draws": 8,
+        "candidate_black_wins": 135,
+        "candidate_white_wins": 131,
+        "search_failures": 0,
+        "missing_root_results": 0,
+        "illegal_moves": 0,
+        "non_finite_scores": 0,
+        "max_ply_draws": 8,
+        "repetition_draws": 0,
+        "perpetual_check_games": 3
+      }
+    }
+  },
+  "opening_reuse_audit": {
+    "scope": "local runs/**/run.json fingerprint_inputs.selected_openings only; not a complete training-overlap audit",
+    "matches": [
+      {
+        "run": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-screen-20k-250pair/run.json",
+          "sha256": "618ea9e9e957f860e7b2075eef859d77a2c164841c2cd5ac95e76ded6a67c8fb"
+        },
+        "created_at": "2026-09-10T13:55:06.890603+00:00",
+        "selected_families": 250,
+        "earlier_uses": [
+          {
+            "run": "runs/halfkp64-scratch-v1/phase3-500k-preserved-target-qleaf-20260824/match-20k-1000g-finalreserve-20260824/run.json",
+            "created_at": "2026-08-24T09:56:22.772167+00:00",
+            "family_overlap": 250,
+            "record_sha256_overlap": 250
+          }
+        ],
+        "unused_independent_confirmation": false
+      },
+      {
+        "run": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen5-20260910/match-confirm-20k-250pair/run.json",
+          "sha256": "4a5e913535ea77025fb6a993ac25f84e7dc221fe8896e40a9dc145f222736be7"
+        },
+        "created_at": "2026-09-10T15:28:46.242461+00:00",
+        "selected_families": 250,
+        "earlier_uses": [
+          {
+            "run": "runs/halfkp64-scratch-v1/phase3-500k-preserved-target-qleaf-20260824/match-20k-1000g-finalreserve-20260824/run.json",
+            "created_at": "2026-08-24T09:56:22.772167+00:00",
+            "family_overlap": 250,
+            "record_sha256_overlap": 250
+          }
+        ],
+        "unused_independent_confirmation": false
+      },
+      {
+        "run": {
+          "path": "runs/halfkp64-scratch-v1/v4-value-gen6-2m-extended-seed20260911/gate/confirm-20k-250pair/run.json",
+          "sha256": "9ccaad39ae56d4057fe22997f085d9b7c876bb0544cfae8f654afed4b28cef4d"
+        },
+        "created_at": "2026-09-12T20:30:21.338973+00:00",
+        "selected_families": 250,
+        "earlier_uses": [
+          {
+            "run": "runs/halfkp64-scratch-v1/phase3-2m-preserved-target-20260825/match-20k-1000g-gen5-reserve-20260825/run.json",
+            "created_at": "2026-08-25T13:23:28.570413+00:00",
+            "family_overlap": 250,
+            "record_sha256_overlap": 250
+          },
+          {
+            "run": "runs/halfkp64-scratch-v1/phase3-2m-wide-20260826/match-20k-1000g-vs-1p18m-20260827/run.json",
+            "created_at": "2026-08-26T22:44:59.823958+00:00",
+            "family_overlap": 250,
+            "record_sha256_overlap": 250
+          },
+          {
+            "run": "runs/halfkp64-scratch-v1/phase3-2m-highrate-20260829/match-20k-1000g-vs-1p18m-20260829/run.json",
+            "created_at": "2026-08-29T12:41:43.547985+00:00",
+            "family_overlap": 250,
+            "record_sha256_overlap": 250
+          },
+          {
+            "run": "runs/halfkp64-scratch-v1/phase4-mmto-pv-pilot-20260830-b/match-20k-250g-vs-gen3-20260830/run.json",
+            "created_at": "2026-08-30T08:13:27.748879+00:00",
+            "family_overlap": 250,
+            "record_sha256_overlap": 250
+          }
+        ],
+        "unused_independent_confirmation": false
+      }
+    ],
+    "suite": {
+      "path": "training/halfkp64-scratch-v1/final_openings_seed20260730_2000.jsonl",
+      "sha256": "385b7f70d63ddfb17ea9b39e53d316d7dd1b6d5946e6b4c28a74230e262d2329"
+    },
+    "suite_unique_families": 2000,
+    "remaining_unused_families": 0
+  },
+  "conclusions": {
+    "candidate_promotion": false,
+    "candidate_superior_to_v250": "not demonstrated; candidate has no v250 match",
+    "gen6_status": "retain existing operational baseline; historical unused-confirmation claim is not supported",
+    "same_data_64_128_epochs": "not selected as the next experiment",
+    "gradient_bug": "not newly demonstrated; metadata and orchestration defects are confirmed"
+  },
+  "known_orchestration_defects": [
+    "v250 watcher acts on intermediate gate-decision.json before confirmation reaches terminal state",
+    "v250 watcher treats nonempty match.log as completion"
+  ],
+  "next_plan": "docs/halfkp_training_followup_20260913.md",
+  "advice": {
+    "agent": "review_training_strategy",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "scope": "unexpected evaluation-provenance and checkpoint metadata deviations",
+    "recommendation": "minimal correctness fixes, then fixed gen6/teacher/LR/loss 4M x 16; deeper teacher diagnostic only if needed"
+  }
+}

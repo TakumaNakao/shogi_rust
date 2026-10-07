@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "experiment": "phase10-corrected-direct-mmto-lite-v1",
+  "decision": "stop_after_corrected_9k_pilot_primary_gate_failure",
+  "post_audit_classification": "valid_negative_for_immediate_child_proxy_not_evidence_against_current_model_qsearch_pv_leaf_objective",
+  "lineage": {
+    "lineage_id": "halfkp64-scratch-v1",
+    "accepted_parent_generation": 2,
+    "accepted_parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "v2_5_0_used_for_training": false,
+    "test_split_opened": false
+  },
+  "implementation": {
+    "commit": "e568b31",
+    "true_mmto": false,
+    "gradient_position": "immediate root-move child rather than qsearch PV leaf",
+    "current_model_pv_refresh_during_training": false,
+    "changes": [
+      "Project center-king direct sparse gradients onto the correct mirror orbit and update both AdaGrad rows identically.",
+      "Reject an asymmetric init or optimizer state instead of silently projecting it.",
+      "Add manifest-backed --save-last-epoch with selected kind, epoch, SHA, and matching validation metrics.",
+      "Add non-conflicting search-pair accuracy for pairs not reversed by game-vs-search training.",
+      "Bind every HKST input to the accepted teacher model SHA and its declared output SHA.",
+      "Reject train/valid overlap over the union of every root and candidate child network input.",
+      "Add a deterministic record-level validation filter for cross-split network-input collisions."
+    ],
+    "targeted_tests_passed": 18,
+    "full_library_tests_passed": 102,
+    "release_build_passed": true
+  },
+  "split_filter": {
+    "raw_train_records": 9311,
+    "raw_valid_records": 1840,
+    "retained_valid_records": 1809,
+    "excluded_valid_records": 31,
+    "unique_train_network_inputs": 124777,
+    "colliding_network_inputs": 31,
+    "retained_valid_network_inputs": 24292,
+    "residual_overlap": 0,
+    "output_sha256": "eb2ccc0aa0e840f0c1a841879dd4c3cbdd941b913b980a2a4f6a0524f18e8ad6",
+    "output_manifest_sha256": "02d11bbd029089f1daf38299cb36065dcd0336a85a0d63fe91e31511c70c69e3",
+    "report": "runs/halfkp64-scratch-v1/phase10-corrected-mmto-lite-v1/split-filter-report.json"
+  },
+  "zero_loss_gate": {
+    "train_records": 9311,
+    "valid_records": 1809,
+    "output_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "byte_identical_to_parent": true,
+    "selected_kind": "last",
+    "selected_epoch": 1,
+    "selected_validation_matches_initial": true,
+    "center_mirror_symmetry_preserved": true,
+    "passed": true
+  },
+  "training": {
+    "common": {
+      "train_records": 9311,
+      "valid_records": 1809,
+      "epochs": 1,
+      "batch_size": 128,
+      "learning_rate": 0.00001,
+      "output_learning_rate": 0.000001,
+      "value_weight": 0.0,
+      "rank_weight": 0.1,
+      "legacy_game_rank_weight": 0.0,
+      "game_regret_cap_cp": 300,
+      "max_pairs_per_record": 4,
+      "seed": 20260728,
+      "output_limit": 0.20,
+      "swa_start_epoch": 3,
+      "early_stop_patience": 3,
+      "save_last_epoch": true
+    },
+    "control": {
+      "game_vs_search_weight": 0.0,
+      "model_sha256": "3bb40320eb9a341a525ecfcfae05a51f812bbac5883ec9efe4ce1c7f111fc5d4",
+      "selected_kind": "last",
+      "selected_epoch": 1,
+      "top1_accuracy": 0.1271420674405749,
+      "pair_accuracy": 0.6401361565800671,
+      "non_conflicting_pair_accuracy": 0.6400296751629484,
+      "game_move_top1_accuracy": 0.08181315644002211,
+      "game_vs_search_accuracy": 0.369546621043627,
+      "mean_regret_cp": 312.6770796209096
+    },
+    "treatment": {
+      "game_vs_search_weight": 0.1,
+      "model_sha256": "97436190deacbf252c85b471cc70d215dd911878bfff5a8daad5bb2f493a0227",
+      "selected_kind": "last",
+      "selected_epoch": 1,
+      "top1_accuracy": 0.12824765063571034,
+      "pair_accuracy": 0.6400360414476648,
+      "non_conflicting_pair_accuracy": 0.6399766838005405,
+      "game_move_top1_accuracy": 0.08181315644002211,
+      "game_vs_search_accuracy": 0.369546621043627,
+      "mean_regret_cp": 312.8554554850176
+    },
+    "treatment_minus_control": {
+      "game_vs_search_accuracy": 0.0,
+      "non_conflicting_pair_accuracy": -0.00005299136240788371,
+      "mean_regret_cp": 0.17837586410803397,
+      "mean_regret_reduction_fraction": -0.000570480817213161
+    }
+  },
+  "primary_gates": {
+    "game_vs_search_accuracy_improvement_required": 0.005,
+    "game_vs_search_accuracy_improvement_actual": 0.0,
+    "game_vs_search_accuracy_gate_passed": false,
+    "mean_regret_reduction_required": 0.01,
+    "mean_regret_reduction_actual": -0.000570480817213161,
+    "mean_regret_gate_passed": false,
+    "accuracy_or_regret_gate_passed": false,
+    "non_conflicting_pair_accuracy_regression_max": 0.01,
+    "non_conflicting_pair_accuracy_regression_actual": 0.00005299136240788371,
+    "non_conflicting_pair_gate_passed": true
+  },
+  "safety_gates": {
+    "exact_family_accuracy": 0.9080781746031747,
+    "exact_family_ci95_lower": 0.8962428571428581,
+    "exact_family_ci95_lower_required": 0.88,
+    "health_score_abs_p99_cp": 1674.3004,
+    "health_score_abs_p99_cp_max": 2500.0,
+    "health_symmetry_rmse_cp": 0.00005155409477782815,
+    "static_top1_accuracy": 0.699,
+    "static_top1_required": 0.68,
+    "search_200k_success_rate": 0.986,
+    "search_200k_required": 0.98,
+    "passed": true
+  },
+  "stopped_actions": {
+    "full_rate_4000_teacher_generation": "not_eligible",
+    "full_direct_epoch_1_or_2": "not_eligible",
+    "parent_400_game_match": "not_eligible",
+    "paired_v2_5_0_match": "not_eligible",
+    "promotion": "not_eligible",
+    "automatic_static_hard_negative_fallback": "not_allowed_by_plan"
+  },
+  "conclusion": [
+    "The repaired trainer preserves the accepted parent exactly under a full zero-loss epoch and keeps the correct center-king mirror symmetry.",
+    "The prior pilot leakage was removed at record granularity; 31 of 1,840 validation records were excluded and the residual all-input overlap is zero.",
+    "The corrected treatment is safe but does not move its intended held-out objective relative to the corrected control.",
+    "The game-vs-search accuracy is exactly unchanged and mean regret worsens slightly, so neither preregistered scale signal passes.",
+    "Per the fixed plan, do not tune the weight, learning rate, seed, or epoch count and do not spend 9-10 hours generating the full teacher."
+  ]
+}

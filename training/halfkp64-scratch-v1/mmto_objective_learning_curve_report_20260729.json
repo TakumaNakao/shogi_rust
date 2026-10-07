@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "experiment": "phase11-mmto-objective-learning-curve-v1",
+  "decision": "reject_fixed_mmto_lite_after_parent_objective_gate_failure",
+  "preregistered_by_commit": "d7dc549",
+  "implementation_commit": "a5d2d32",
+  "datasets": {
+    "train_records": 9311,
+    "valid_records": 1809,
+    "eligible_valid_records": 1169,
+    "valid_sha256": "eb2ccc0aa0e840f0c1a841879dd4c3cbdd941b913b980a2a4f6a0524f18e8ad6"
+  },
+  "fixed_conditions": {
+    "epochs_observed": [
+      1,
+      2,
+      4
+    ],
+    "batch_size": 128,
+    "learning_rate": 0.00001,
+    "output_learning_rate": 0.000001,
+    "rank_weight": 0.1,
+    "control_game_vs_search_weight": 0.0,
+    "treatment_game_vs_search_weight": 0.1,
+    "game_regret_cap_cp": 300.0,
+    "rank_margin_cp": 20.0,
+    "rank_temperature_cp": 100.0,
+    "seed": 20260728,
+    "selection": "last epoch only; no best or SWA substitution",
+    "hyperparameter_grid_used": false
+  },
+  "accepted_parent": {
+    "model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "objective_loss": 1.6151593468464585,
+    "mean_signed_margin_cp": -64.72366329295906,
+    "accuracy": 0.3772455089820359,
+    "non_conflicting_pair_accuracy": 0.6361613057071698
+  },
+  "curve": [
+    {
+      "epoch": 1,
+      "control": {
+        "model_sha256": "3bb40320eb9a341a525ecfcfae05a51f812bbac5883ec9efe4ce1c7f111fc5d4",
+        "objective_loss": 1.6239206877536254,
+        "mean_signed_margin_cp": -67.27909352577477,
+        "accuracy": 0.369546621043627,
+        "non_conflicting_pair_accuracy": 0.6400296751629484
+      },
+      "treatment": {
+        "model_sha256": "97436190deacbf252c85b471cc70d215dd911878bfff5a8daad5bb2f493a0227",
+        "objective_loss": 1.6223195575031955,
+        "mean_signed_margin_cp": -67.0443406676104,
+        "accuracy": 0.369546621043627,
+        "non_conflicting_pair_accuracy": 0.6399766838005405
+      },
+      "treatment_minus_control": {
+        "objective_loss": -0.0016011302504299607,
+        "mean_signed_margin_cp": 0.23475285816437008,
+        "margin_improved_records": 832,
+        "margin_worsened_records": 337
+      },
+      "treatment_minus_parent": {
+        "objective_loss": 0.007160210656736998,
+        "mean_signed_margin_cp": -2.320677374651339
+      },
+      "parent_objective_gate_passed": false
+    },
+    {
+      "epoch": 2,
+      "control": {
+        "model_sha256": "84b9263b773c00f35fb918edc7110fa726d8d18f6041b3693dafed46d17a3995",
+        "objective_loss": 1.6281779876263085,
+        "mean_signed_margin_cp": -68.41980804919788,
+        "accuracy": 0.3669803250641574,
+        "non_conflicting_pair_accuracy": 0.6413544592231466
+      },
+      "treatment": {
+        "model_sha256": "1ba6230c09d4ad7ad6fbc087f66865adc86ace4920a665a0f489ad8a37f58455",
+        "objective_loss": 1.625763195030606,
+        "mean_signed_margin_cp": -68.06420434449247,
+        "accuracy": 0.3669803250641574,
+        "non_conflicting_pair_accuracy": 0.641142493773515
+      },
+      "treatment_minus_control": {
+        "objective_loss": -0.002414792595702542,
+        "mean_signed_margin_cp": 0.35560370470541613,
+        "margin_improved_records": 842,
+        "margin_worsened_records": 327
+      },
+      "treatment_minus_parent": {
+        "objective_loss": 0.0106038481841475,
+        "mean_signed_margin_cp": -3.340541051533409
+      },
+      "parent_objective_gate_passed": false
+    },
+    {
+      "epoch": 4,
+      "control": {
+        "model_sha256": "95a09ad32a96f595a3de56ae21d2fe2f40efaa26ec2f0fd81c8a39099c51675f",
+        "objective_loss": 1.6343866570137853,
+        "mean_signed_margin_cp": -69.99829813310282,
+        "accuracy": 0.3644140290846878,
+        "non_conflicting_pair_accuracy": 0.6428382173705686
+      },
+      "treatment": {
+        "model_sha256": "e791a6ca2bf982e67c2df6304240ea15f9bf0211f4d6b8613a3a22b2dc7af47e",
+        "objective_loss": 1.6307095298069008,
+        "mean_signed_margin_cp": -69.45445049961374,
+        "accuracy": 0.3644140290846878,
+        "non_conflicting_pair_accuracy": 0.6423083037464893
+      },
+      "treatment_minus_control": {
+        "objective_loss": -0.0036771272068845118,
+        "mean_signed_margin_cp": 0.5438476334890794,
+        "margin_improved_records": 863,
+        "margin_worsened_records": 306
+      },
+      "treatment_minus_parent": {
+        "objective_loss": 0.015550182960442305,
+        "mean_signed_margin_cp": -4.73078720665468
+      },
+      "parent_objective_gate_passed": false
+    }
+  ],
+  "gate_results": {
+    "treatment_below_control_loss_at_every_epoch": true,
+    "treatment_above_control_margin_at_every_epoch": true,
+    "treatment_below_parent_loss_at_any_epoch": false,
+    "non_conflicting_pair_regression_from_parent_over_one_point_at_any_epoch": false,
+    "epoch_1_safety_gates_passed": true,
+    "epoch_2_and_4_expensive_safety_gates": "not_run_after_primary_parent_gate_failure",
+    "confirmation_passed": false
+  },
+  "interpretation": [
+    "The game-vs-search term is active and its causal treatment-control effect grows monotonically through epoch 4.",
+    "The ordinary search-rank objective moves the same held-out game-vs-search ordering in the opposite direction faster than the treatment recovers it.",
+    "More epochs on the same 9,311 records make the absolute objective worse relative to the accepted parent.",
+    "Per the preregistered gate, do not add epochs, tune the weights, or generate the full WDoor teacher for this fixed MMTO-lite route."
+  ],
+  "stopped_actions": {
+    "full_wdoor_teacher_generation": "not_eligible",
+    "full_direct_training": "not_eligible",
+    "matches": "not_eligible",
+    "promotion": "not_eligible"
+  },
+  "lineage": {
+    "accepted_parent_generation": 2,
+    "accepted_parent_unchanged": true,
+    "v2_5_0_used_for_training": false,
+    "test_split_opened": false
+  }
+}

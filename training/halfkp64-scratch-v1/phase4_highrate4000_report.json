@@ -1,0 +1,75 @@
+{
+  "schema": "halfkp_scratch_experiment_report_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-07-26",
+  "goal": "screen scratch HalfKP candidates against the v2.5.0 KPP-derived release weight",
+  "release_baseline": {
+    "path": "policy_weights_halfkp64_kpp_distilled_v2.5.0.binary",
+    "sha256": "91784d6f03f70580468a1509f968cbaaf598fbce084c22a739cb870344fb7c00",
+    "usage": "comparison_only"
+  },
+  "dataset": {
+    "source": "WDoor 2023-2025",
+    "minimum_rate_both_players": 4000,
+    "games_seen": 357141,
+    "games_used": 44228,
+    "records_before_hkcl_exclusion": 723867,
+    "train_records": 537723,
+    "valid_records": 80807,
+    "test_records": 62233,
+    "test_opened": false,
+    "joint_audit_records": 1050654,
+    "joint_family_split_collisions": 0,
+    "joint_network_split_collisions": 0,
+    "proof_revalidation_failures": 0
+  },
+  "candidates": [
+    {
+      "name": "phase4-highrate4000-v1-seed20260721",
+      "model_sha256": "23c2a650aac1217567442619b455a52eecbdff869cab7c795b9d2225974a4319",
+      "source_mix": [0.70, 0.15, 0.15],
+      "epochs": 2,
+      "exact_family_accuracy": 0.9101,
+      "exact_family_ci95_lower": 0.8985,
+      "highrate_family_accuracy": 0.8524,
+      "broad_wdoor_family_accuracy": 0.8322,
+      "health_score_abs_p99_cp": 1753.990,
+      "static_top1_accuracy": 0.715,
+      "search_200k_success_rate": 0.987,
+      "screen": {
+        "games": 20,
+        "time_limit_ms": 100,
+        "wins": 4,
+        "losses": 16,
+        "draws": 0,
+        "score_rate": 0.20
+      },
+      "decision": "rejected",
+      "reason": "v2.5.0_screen_below_45_percent"
+    },
+    {
+      "name": "phase4-highrate4000-v1-mix60-seed20260721",
+      "model_sha256": "1db4dc2b019786badea297fbd5bad94e3965644ab4c56f32f3d11f3b73576bc5",
+      "source_mix": [0.60, 0.25, 0.15],
+      "epochs": 2,
+      "exact_family_accuracy": 0.9084,
+      "exact_family_ci95_lower": 0.8965,
+      "highrate_family_accuracy": 0.8768,
+      "broad_wdoor_family_accuracy": 0.8510,
+      "health_score_abs_p99_cp": 1943.319,
+      "static_top1_accuracy": 0.706,
+      "search_200k_success_rate": 0.988,
+      "screen": {
+        "games": 20,
+        "time_limit_ms": 100,
+        "wins": 6,
+        "losses": 14,
+        "draws": 0,
+        "score_rate": 0.30
+      },
+      "decision": "rejected",
+      "reason": "v2.5.0_screen_below_45_percent"
+    }
+  ],
+  "conclusion": "High-rate game supervision improved offline game ranking but did not close the direct-play gap. Stop the bounded Phase 4 experiment and reconsider the deferred search-rank/replay integration."
+}

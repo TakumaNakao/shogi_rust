@@ -1,0 +1,38 @@
+{
+  "schema": "halfkp_s05_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-17",
+  "status": "screen_completed",
+  "candidate": {
+    "outer": 8,
+    "model": "runs/halfkp64-scratch-v1/s04-soft-target-250k-8pass-20260916/model.bin",
+    "model_sha256": "b9666c6e54b0fcdef8cc4d680ad83f88daf54b14957703a5f0cfe55474c08e3d",
+    "manifest": "training/halfkp64-scratch-v1/s05_candidate_outer8_manifest_20260917.json"
+  },
+  "screen": {
+    "opponent": "accepted scratch gen6",
+    "parent_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+    "openings": "taya36.sfen",
+    "openings_sha256": "22950f42a2d65292fa689a8c84e3af7dc160c571e9aa559699b0beaf1bc9adce",
+    "pairs": 25,
+    "games": 50,
+    "time_limit_ms": 5000,
+    "max_depth": 64,
+    "max_plies": 256,
+    "bootstrap_resamples": 100000,
+    "bootstrap_seed": 20260917,
+    "output_dir": "runs/halfkp64-scratch-v1/s05-outer8-vs-gen6-taya36-5s-25pair",
+    "candidate_wins": 30,
+    "parent_wins": 20,
+    "draws": 0,
+    "score": 0.6,
+    "paired_ci95": [0.46, 0.74],
+    "safety_violations": 0,
+    "screen_pass": true
+  },
+  "gates": {
+    "screen": "candidate score > 0.50 and safety violations == 0",
+    "confirmation": "only if screen passes: 100 unused opening pairs / 200 games, paired 95% lower bound > 0.50",
+    "v250_comparison": "only after independent confirmation; never a training teacher"
+  }
+}

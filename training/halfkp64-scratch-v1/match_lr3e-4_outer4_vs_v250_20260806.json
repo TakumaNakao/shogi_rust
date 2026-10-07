@@ -1,0 +1,16 @@
+{
+  "schema": "halfkp_match_result_v1",
+  "candidate": "runs/halfkp64-scratch-v1/prior-art-step4-lr3e-4-v1/model.bin",
+  "baseline": "policy_weights_halfkp64_kpp_distilled_v2.5.0.binary",
+  "games": 200,
+  "time_limit_ms": 1000,
+  "depth": 32,
+  "seed": 20260806,
+  "new_wins": 64,
+  "baseline_wins": 135,
+  "draws": 1,
+  "total_score_rate": 0.3225,
+  "total_score_rate_ci95": [0.2579, 0.3871],
+  "record_dir": "runs/halfkp64-scratch-v1/match_lr3e-4_outer4_vs_v250_1s_200g/games",
+  "decision": "reject_as_release_candidate_parent_relative_change_unproven"
+}

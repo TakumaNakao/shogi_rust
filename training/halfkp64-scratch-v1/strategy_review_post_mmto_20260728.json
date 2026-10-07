@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "review": "post_mmto_lite_strategy",
+  "date": "2026-07-28",
+  "goal": "produce a scratch-lineage HalfKP-64 model stronger than the v2.5.0 KPP-derived comparison weight",
+  "decision": "test_search_value_bootstrap_then_scale_only_on_direct_transfer",
+  "evidence": {
+    "accepted_generation_2_vs_v2_5_0": {
+      "games": 20,
+      "score": 0.35
+    },
+    "highrate_best_screen_vs_v2_5_0": {
+      "games": 20,
+      "score": 0.30
+    },
+    "long_direct": {
+      "best_40_game_score": 0.225,
+      "best_score_epoch": 32,
+      "epoch_128_score": 0.075,
+      "epoch_64_valid_loss": 0.04533218384456846,
+      "epoch_128_valid_loss": 0.04590280094421345,
+      "conclusion": "repeating the same game objectives improved WDoor ranking but did not improve play"
+    },
+    "search_rank": {
+      "teacher_holdout_improved": true,
+      "static_and_search_gates_regressed": true
+    },
+    "game_vs_search": {
+      "game_top1_delta_points": 0.06,
+      "regret_reduction_fraction": 0.001771,
+      "static_top1": 0.685,
+      "search_200k": 0.979,
+      "conclusion": "rejected"
+    }
+  },
+  "diagnosis": [
+    "The remaining gap is not explained by too few repetitions of the existing 537723-position game dataset; that line overfit after epoch 64.",
+    "Move-ranking proxy improvements have repeatedly failed to transfer to fixed-node search or direct play.",
+    "HalfKP-64 capacity is not the primary blocker because the v2.5.0 comparison model uses the same runtime architecture.",
+    "The untested low-complexity signal already supported by the repository is WDL regression to a blend of scratch-parent search value and the independent WDoor game result.",
+    "The accepted generation-2 parent is factor-only trained, while halfkp_search_train updates all direct HalfKP parameters, so search-value training can use the full model capacity without any KPP-derived target."
+  ],
+  "next_hypothesis": {
+    "name": "scratch_search_value_bootstrap",
+    "parent_generation": 2,
+    "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "target": "0.5 * sigmoid(root_search_score_cp / 600) + 0.5 * game_result",
+    "value_weight": 1.0,
+    "rank_weight": 0.0,
+    "game_rank_weight": 0.0,
+    "game_vs_search_weight": 0.0,
+    "loss_power": 2.5,
+    "reason": "compress the tactical information of deeper scratch search into the static evaluator while retaining an external outcome anchor"
+  },
+  "minimal_implementation": [
+    {
+      "component": "halfkp_search_train",
+      "change": "report model-versus-result and teacher-search-versus-result Brier/log-loss overall and by phase",
+      "training_behavior_change": false
+    },
+    {
+      "component": "halfkp_search_teacher",
+      "change": "only after the existing-data pilot passes, add --value-only to perform one capped root search and store its packed PV leaf as the single codec-compatible candidate",
+      "training_behavior_change": false,
+      "new_schema": false,
+      "new_binary": false
+    }
+  ],
+  "phase_a_existing_9k_pilot": {
+    "train_records": 9311,
+    "valid_records": 1840,
+    "teacher_depth": 4,
+    "max_nodes_per_search": 20000,
+    "epochs_max": 8,
+    "milestones": [1, 2, 4, 8],
+    "learning_rate": 0.0003,
+    "output_learning_rate": 0.00003,
+    "batch_size": 128,
+    "seed": 20260728,
+    "early_stop_patience": 2,
+    "swa": false,
+    "teacher_pre_gate": {
+      "teacher_result_brier_relative_improvement_min": 0.02,
+      "phase_nonregression_min_count": 2,
+      "phase_count": 3
+    },
+    "training_gates": {
+      "blended_valid_brier_relative_improvement_min": 0.05,
+      "search_mae_relative_improvement_min": 0.10,
+      "exact_family_accuracy_min": 0.90,
+      "exact_family_ci95_lower_min": 0.88,
+      "health_p99_cp_max": 2500,
+      "static_top1_min": 0.68,
+      "search_200k_min": 0.98,
+      "parent_diagnostic_games": 40,
+      "parent_diagnostic_score_min": 0.40
+    },
+    "failure_action": "reject search-value bootstrap without lambda, learning-rate, or rank-loss sweep"
+  },
+  "phase_b_250k": {
+    "prerequisite": "phase_a_passed",
+    "source": "existing WDoor rate-4000 train/valid JSONL",
+    "parent": "accepted generation 2",
+    "teacher_mode": "value_only",
+    "teacher_depth": 4,
+    "max_nodes_per_search": 20000,
+    "train_records_target": 250000,
+    "valid_records_target": 25000,
+    "epochs_max": 32,
+    "milestones": [4, 8, 16, 32],
+    "hyperparameters": "identical to phase A",
+    "selection": "best frozen validation checkpoint that passes every safety gate",
+    "matches": {
+      "parent_fixed_nodes_games": 200,
+      "parent_score_min": 0.50,
+      "parent_wilson_lower_min": 0.475,
+      "v2_5_0_baseline_games": 100,
+      "v2_5_0_candidate_games": 100,
+      "time_limit_ms": 100,
+      "required_score_gain_points_over_remeasured_parent": 5.0,
+      "candidate_score_min_for_next_generation": 0.40
+    },
+    "failure_action": "stop this objective; do not add more epochs or tune the 0.5 blend"
+  },
+  "phase_c_one_scaled_generation": {
+    "prerequisite": "phase_b_candidate_is_promoted_and_scores_at_least_40_percent_against_v2_5_0",
+    "source": "WDoor rate-3500 dataset built by the existing dataset_build pipeline",
+    "train_records_target": 750000,
+    "valid_records_target": 75000,
+    "parent": "the promoted phase-B scratch model",
+    "teacher_depth": 4,
+    "max_nodes_per_search": 20000,
+    "hyperparameters": "unchanged from phases A and B",
+    "max_additional_generations": 1,
+    "success_path": [
+      "100 ms and 100 games: score at least 45 percent",
+      "300 ms and 200 games: score at least 48 percent",
+      "1000 ms in 200-game batches, at most 800 games: Wilson 95 percent lower bound above 50 percent"
+    ],
+    "failure_action": "stop search-value bootstrap if the v2.5.0 score fails to improve by another 5 points"
+  },
+  "prohibited": [
+    "use v2.5.0 or any KPP-derived weight as initialization, teacher, target, anchor, or hard-negative miner",
+    "open the held-out test split before the final configuration is frozen",
+    "resume epoch-128 long-direct training",
+    "retune game-vs-search or search-rank weights",
+    "run a lambda, learning-rate, seed, or epoch grid",
+    "introduce a policy head, new dataset schema, dashboard, league, or TD implementation during this plan"
+  ],
+  "comparison_only_weight": {
+    "name": "v2.5.0",
+    "sha256": "91784d6f03f70580468a1509f968cbaaf598fbce084c22a739cb870344fb7c00"
+  }
+}

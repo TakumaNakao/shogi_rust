@@ -388,6 +388,7 @@ impl UsiEngine {
         SearchLimits {
             max_depth,
             time_limit: time_limit_ms.map(Duration::from_millis),
+            max_nodes: None,
         }
     }
 

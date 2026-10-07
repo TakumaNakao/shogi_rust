@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "role": "current_machine_readable_execution_source_of_truth",
+  "date": "2026-08-06",
+  "lineage": "halfkp64-scratch-v1",
+  "human_plan": "docs/halfkp_next_training_strategy_20260806.md",
+  "supersedes": "training/halfkp64-scratch-v1/mmto_lr1e4_reassessment_plan_20260802.json",
+  "status": "unattended_service_configured_runtime_status_is_authoritative",
+  "decision": {
+    "lr3e-4_outer4_release": "reject_not_strong_enough",
+    "lr3e-4_outer4_vs_parent": "unproven_point_estimate_positive",
+    "mmto_path": "continue_to_bounded_scale_test",
+    "primary_hypothesis": "corrected_mmto_training_volume_and_game_coverage_insufficient",
+    "new_wdoor_data_now": false,
+    "algorithm_change_now": false,
+    "selfplay_now": false,
+    "selfplay_is_planned_fallback": true,
+    "unattended_automatic_phases": ["A", "B", "C"],
+    "unattended_manual_only_phases": ["D", "E"]
+  },
+  "lineage_policy": {
+    "parent_generation": 2,
+    "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "parent_is_scratch_only": true,
+    "kpp_or_current_halfkp_teacher_used": false,
+    "v2_5_0_usage": "final_frozen_comparison_only",
+    "unattended_a_to_c_kpp_or_v2_5_0_usage": "none"
+  },
+  "evidence": {
+    "fixed_audit_parent": {
+      "roots": 6099,
+      "games": 6099,
+      "loss": 0.22240456536129616,
+      "agreement": 0.14526971634694213,
+      "regret_cp": 731.0339550797513,
+      "qnodes_per_root": 190060.38924413838
+    },
+    "fixed_audit_lr3e-4_outer4": {
+      "loss": 0.1908154638869634,
+      "loss_relative_change": -0.14203441113277626,
+      "loss_delta_bootstrap95": [-0.03393915399522419, -0.029131276910128005],
+      "agreement": 0.16445318904738482,
+      "regret_cp": 692.8342280645869,
+      "wrong_to_teacher": 229,
+      "teacher_to_wrong": 112,
+      "qnodes_per_root": 212031.91195277913,
+      "qnodes_relative_change": 0.11560285020998062,
+      "qnodes_relative_change_by_phase": {
+        "opening": 0.2099021821591538,
+        "middlegame": 0.1201088088417257,
+        "endgame": 0.1144854450098336
+      },
+      "rejected_bounds": 0
+    },
+    "training_volume_lr3e-4_outer4": {
+      "unique_roots": 10000,
+      "games_in_unique_roots": 459,
+      "outer_iterations": 4,
+      "pair_presentations": 3599728,
+      "full_one_outer_pairs": 56035622,
+      "fraction_of_full_one_outer": 0.06423999362405579
+    },
+    "available_train_data": {
+      "roots": 570875,
+      "games": 34582,
+      "opening_families": 14892
+    },
+    "match_lr3e-4_outer4_vs_v250": {
+      "games": 200,
+      "wins": 64,
+      "losses": 135,
+      "draws": 1,
+      "score": 0.3225,
+      "score_ci95": [0.2579, 0.3871],
+      "elo_estimate": -128.95
+    },
+    "match_parent_vs_v250": {
+      "games": 200,
+      "wins": 61,
+      "losses": 139,
+      "draws": 0,
+      "score": 0.305,
+      "score_ci95": [0.2412, 0.3688],
+      "elo_estimate": -143.07
+    },
+    "shared_baseline_proxy_candidate_minus_parent": {
+      "opening_pairs": 100,
+      "mean_score_delta": 0.0175,
+      "bootstrap95": [-0.07, 0.1025],
+      "candidate_better_pairs": 28,
+      "candidate_worse_pairs": 26,
+      "same_pairs": 46,
+      "candidate_minus_parent_by_side": {
+        "black": 0.13,
+        "white": -0.095
+      },
+      "interpretation": "no_proven_strength_change"
+    },
+    "audit_result_split": {
+      "winner_move_loss_delta": -0.029460239922339964,
+      "loser_move_loss_delta": -0.03692226670717352,
+      "interpretation": "outcome_unaware_objective_improves_loser_moves_more"
+    },
+    "coverage_limits": {
+      "in_check_positions": "excluded",
+      "loser_positions_after_ply80": "excluded",
+      "endgame_audit_loser_side": 0,
+      "implication": "defense_check_evasion_and_losing_endgames_not_measured"
+    }
+  },
+  "fixed_hard_safety": [
+    "provenance_and_sha_match",
+    "finite_values",
+    "no_illegal_move_or_root_restore_failure",
+    "zero_qsearch_bound_rejections",
+    "material_bits_unchanged",
+    "parameter_bounds_not_touched",
+    "per_outer_delta_caps_pass",
+    "checkpoint_resume_integrity"
+  ],
+  "unattended_execution": {
+    "status": "runtime_status_json_is_authoritative",
+    "automatic_phase_order": ["A", "B", "C"],
+    "manual_only_never_automatic": ["D", "E"],
+    "resume": "from_last_committed_outer_or_completed_opening_pair",
+    "each_completed_outer_requires": [
+      "immutable_model_optimizer_checkpoint_metrics_and_run_manifest_archive",
+      "fixed_6099_game_audit",
+      "same_250_opening_pair_parent_match",
+      "paired_bootstrap_gate_report"
+    ],
+    "development_openings": {
+      "seed": 20260731,
+      "pairs": 250,
+      "path": "training/halfkp64-scratch-v1/mmto_dev_openings_seed20260731_250/openings.jsonl",
+      "sha256": "06b6d7739a5973e391e6a275b8dd8be09842f0f061b598c5c30da40b578ba190",
+      "manifest": "training/halfkp64-scratch-v1/mmto_dev_openings_seed20260731_250/manifest.json",
+      "manifest_sha256": "e9485ee47fc4bba73490399710f2e8724646fe1dfc01676c2826b0ed3a7bd22a"
+    },
+    "kpp_or_v2_5_0_loaded": false
+  },
+  "phases": [
+    {
+      "id": "A",
+      "name": "direct_lr3e-4_outer4_vs_generation2_match",
+      "status": "unattended_service_execution_target_runtime_status_is_authoritative",
+      "candidate": "runs/halfkp64-scratch-v1/prior-art-step4-lr3e-4-v1/model.bin",
+      "parent": "runs/halfkp64-scratch-v1/phase3-wdoor250k-v1-mix70-epoch2-seed20260721/model.bin",
+      "opening_pairs": 250,
+      "openings_sha256": "06b6d7739a5973e391e6a275b8dd8be09842f0f061b598c5c30da40b578ba190",
+      "games": 500,
+      "nodes_per_move": 20000,
+      "color_swap": true,
+      "paired_bootstrap_resamples": 100000,
+      "stop": "safety_failure_or_paired_score_ci95_upper_below_0.45",
+      "purpose": "directional_diagnostic_not_promotion"
+    },
+    {
+      "id": "B",
+      "name": "game_balanced_100k_one_outer_scale_check",
+      "status": "blocked_by_phase_a",
+      "start": "accepted_generation2_zero_adagrad",
+      "train_roots": 100000,
+      "selection": "deterministic_game_and_phase_balanced_hash_sample",
+      "derived_dataset": {
+        "seed": 20260731,
+        "directory": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/derived-balanced-100k",
+        "train_sha256": "79cc64ced54eb95418dc0f2d6b78cfb9ad2102f3ad0545e5015cf3ffb5d99458",
+        "valid_roots": 10000,
+        "valid_sha256": "84fbd8233f0e2baa3ee96d9aa152edcf224555bcd947ce0758e84327f2f7db0d",
+        "manifest_sha256": "f1c388c35747599a83716b2de170c7828362281aecd25923ba5614072d482066"
+      },
+      "feature_learning_rate": 0.0003,
+      "output_learning_rate_ratio": 0.1,
+      "outer_iterations": 1,
+      "fallback_learning_rate": 0.0001,
+      "fallback_allowed_only_on": [
+        "outer_delta_limit_exceeded",
+        "parameter_bound_touched"
+      ],
+      "valid": [
+        "aggregate_10000_roots_across_all_valid_games",
+        "fixed_6099_game_audit"
+      ],
+      "parent_match_games": 500,
+      "parent_match_opening_pairs": 250,
+      "post_outer": ["immutable_archive", "fixed_audit", "parent_250_pair_match"],
+      "stop": "parent_score_below_0.475_and_ci95_upper_below_0.50",
+      "inherit_model_into_production": false
+    },
+    {
+      "id": "C",
+      "name": "full_existing_wdoor_mmto_outer1_to2_then_strictly_conditional_outer3_to4",
+      "status": "blocked_by_phase_b",
+      "start": "accepted_generation2_zero_adagrad",
+      "train_roots": 570875,
+      "valid_roots": 90759,
+      "audit_roots": 6099,
+      "learning_rate": "phase_b_safe_rate",
+      "milestones": [1, 2, 3, 4],
+      "estimated_wall_hours_per_outer": "40-50",
+      "parent_match_games_per_milestone": 500,
+      "parent_match_opening_pairs_per_milestone": 250,
+      "post_each_outer": ["immutable_archive", "fixed_6099_game_audit", "parent_250_pair_match"],
+      "outer1_stop": "paired_score_ci95_upper_below_0.45_or_score_below_0.475_and_ci95_upper_below_0.50",
+      "outer2_allowed_when": "not_clearly_regressed_and_offline_improving",
+      "objective_divergence": "offline_improves_at_outer1_and_outer2_but_parent_score_never_above_0.50",
+      "outer3_automatic_allowed_when": "outer2_score_at_least_0.525_and_at_least_outer1_score_and_paired_safety_passes_and_fixed_audit_loss_delta_ci95_upper_below_0",
+      "outer4_automatic_allowed_when": "outer3_score_at_least_0.525_and_at_least_outer2_score_and_paired_safety_passes_and_fixed_audit_loss_delta_ci95_upper_below_0",
+      "same_gate_required_after_each_extended_outer": true,
+      "outer5_or_later_automatic": false
+    },
+    {
+      "id": "D",
+      "name": "single_mmto_plus_root_wdl_ab",
+      "status": "conditional_on_phase_c_objective_divergence",
+      "automatic_execution": false,
+      "architecture_change": false,
+      "optimizer_change": false,
+      "train_roots": 100000,
+      "runs": ["mmto_only_control", "mmto_plus_wdl_candidate"],
+      "wdl_coefficient": "single_gradient_norm_calibration_to_10_percent_of_mmto_no_sweep",
+      "required": [
+        "wdl_brier_improves",
+        "mmto_fixed_audit_not_materially_worse",
+        "parent_match_better_than_mmto_only_control"
+      ],
+      "forbidden": ["coefficient_grid", "learning_rate_grid", "seed_grid"]
+    },
+    {
+      "id": "E",
+      "name": "scratch_only_selfplay_tdleaf_rootstrap",
+      "status": "conditional_on_phase_d_failure_or_post_promotion_plateau",
+      "automatic_execution": false,
+      "game_milestones": [200, 1000, 5000],
+      "opponents": "accepted_scratch_checkpoint_league_only",
+      "opening_source": "wdoor_positions_as_ballots_only",
+      "targets": ["terminal_wdl", "deeper_fixed_node_full_window_search_value"],
+      "initial_trace_scope": "root_and_pv_only",
+      "tree_internal_nodes": "deferred_until_rootstrap_failure",
+      "parent_match_games_per_generation": 500,
+      "forbidden": [
+        "kpp_or_v2_5_0_teacher",
+        "kpp_or_v2_5_0_opponent_in_generation",
+        "pure_result_only_clone_selfplay",
+        "alphazero_policy_head",
+        "mcts_rewrite"
+      ]
+    },
+    {
+      "id": "F",
+      "name": "final_v250_comparison",
+      "status": "blocked_by_parent_promotion_and_model_freeze",
+      "development_games": 400,
+      "development_minimum_score": 0.45,
+      "final_opening_pairs": 2000,
+      "final_games": 4000,
+      "no_retuning_from_v250_results": true
+    }
+  ],
+  "data_policy": {
+    "use_existing_570875_roots_before_adding_data": true,
+    "lower_rate_threshold": false,
+    "add_2026_wdoor_only_after_parent_transfer": true,
+    "future_minimum_rate_both_players": 4000,
+    "deduplicate_game_content_exact_sfen_and_network_input": true
+  },
+  "explicitly_deferred": [
+    "architecture_expansion",
+    "new_optimizer",
+    "learning_rate_grid",
+    "100k_four_outer",
+    "full_outer4_or_later_without_strength_trend",
+    "pure_alphazero_pipeline",
+    "new_low_rate_wdoor_data"
+  ]
+}

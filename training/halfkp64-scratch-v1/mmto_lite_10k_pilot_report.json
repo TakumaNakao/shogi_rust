@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "experiment": "phase7-wdoor-mmto-lite-10k-v1",
+  "date": "2026-07-28",
+  "decision": "reject_game_vs_search_loss_and_stop_before_match_or_scale",
+  "post_audit_classification": "valid_negative_for_immediate_child_proxy_not_evidence_against_current_model_qsearch_pv_leaf_objective",
+  "lineage": {
+    "parent_generation": 2,
+    "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "v2_5_0_used_for_training": false,
+    "test_split_opened": false
+  },
+  "implementation": {
+    "commit": "7cd5ee2adc394b8dc383c68a0aeb8e6cbed7e22c",
+    "option": "--game-vs-search-weight",
+    "true_mmto": false,
+    "gradient_position": "immediate root-move child rather than qsearch PV leaf",
+    "current_model_pv_refresh_during_training": false,
+    "tests": {
+      "targeted_passed": 9,
+      "full_library_passed": 93
+    }
+  },
+  "candidate_recall_audit": {
+    "source_roots": 1000,
+    "complete_roots": 268,
+    "top8": {
+      "hits": 254,
+      "recall": 0.947761,
+      "passed_0_95_gate": false
+    },
+    "top10": {
+      "hits": 258,
+      "recall": 0.962687,
+      "passed_0_95_gate": true
+    },
+    "fixed_candidate_top": 10
+  },
+  "teacher": {
+    "selection_depth": 2,
+    "teacher_depth": 4,
+    "max_nodes_per_search": 20000,
+    "tactical_candidate_limit": 2,
+    "train": {
+      "source_inputs": 28500,
+      "records": 9311,
+      "candidates": 115581,
+      "resource_limited": 19189,
+      "search_failed": 0,
+      "sha256": "891e9624d943feed38176dd54ce7f7b5084c36dd8721ab34b0ac8c349f619c81"
+    },
+    "valid": {
+      "source_inputs": 6200,
+      "records": 1840,
+      "candidates": 22886,
+      "resource_limited": 4360,
+      "search_failed": 0,
+      "sha256": "d80da05cd794e55f738d565109fd1381790106c34e59f66d08682ccfc11d3ea4"
+    }
+  },
+  "training": {
+    "common": {
+      "epochs": 1,
+      "learning_rate": 0.00001,
+      "output_learning_rate": 0.000001,
+      "value_weight": 0.0,
+      "rank_weight": 0.1,
+      "game_rank_weight": 0.0,
+      "game_regret_cap_cp": 300,
+      "seed": 20260728
+    },
+    "regret_coverage_before_training": {
+      "valid_records": 1840,
+      "game_search_mismatches": 1570,
+      "regret_le_300": 1191,
+      "eligible_fraction_all_records": 0.647283,
+      "used_600_cp_fallback": false
+    },
+    "control": {
+      "model_sha256": "686963499faaaca85837ccc5cc7599856e39b423332e200006ddc7d3c154acbb",
+      "game_vs_search_weight": 0.0,
+      "valid_top1": 0.138587,
+      "valid_pair_accuracy": 0.652863,
+      "valid_game_top1": 0.0815,
+      "valid_regret_mean_cp": 313.399,
+      "valid_game_vs_search_accuracy": 0.338371
+    },
+    "treatment": {
+      "model_sha256": "d32d5f7595c3c607a1a5abc85fda8521a08cc54d363d6f520385a2ce33146de5",
+      "game_vs_search_weight": 0.1,
+      "valid_top1": 0.140217,
+      "valid_pair_accuracy": 0.652863,
+      "valid_game_top1": 0.0821,
+      "valid_regret_mean_cp": 312.844,
+      "valid_game_vs_search_accuracy": 0.337531
+    },
+    "transfer_delta": {
+      "game_top1_points": 0.06,
+      "regret_reduction_fraction": 0.001771,
+      "passed_game_top1_or_regret_gate": false
+    }
+  },
+  "safety_gates": {
+    "exact_family_accuracy": 0.9049873015873016,
+    "exact_family_ci95_lower": 0.8927861111111112,
+    "health_score_abs_p99_cp": 1092.9265,
+    "static_top1_accuracy": 0.685,
+    "search_200k_success_rate": 0.979,
+    "exact_passed": true,
+    "health_passed": true,
+    "static_passed": false,
+    "search_200k_passed": false
+  },
+  "stopped_actions": {
+    "parent_100_game_match": "not_run_because_pre_match_gates_failed",
+    "v2_5_0_100_game_match": "not_run_because_pre_match_gates_failed",
+    "50k_training": "not_run_because_10k_gate_failed",
+    "promotion": "not_eligible"
+  },
+  "conclusion": [
+    "The direct game-move-versus-search-best pair was active on enough records, but did not transfer to the fixed validation objective.",
+    "The treatment also missed the static and fixed-node search safety gates.",
+    "Per the pre-registered plan, do not tune this loss weight, add epochs, run matches, or scale this experiment."
+  ]
+}

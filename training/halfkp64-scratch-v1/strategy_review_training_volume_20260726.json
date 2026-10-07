@@ -1,0 +1,60 @@
+{
+  "schema": "halfkp_scratch_strategy_review_v1",
+  "date": "2026-07-26",
+  "decision": "revise_plan",
+  "primary_diagnosis": "training_volume_and_trainable_capacity_are_insufficient",
+  "evidence": {
+    "v250": {
+      "samples_per_epoch": 32117302,
+      "epochs": 12,
+      "sample_presentations": 385407624,
+      "trainable_direct_parameters": 6750720
+    },
+    "accepted_scratch_major_stages": {
+      "record_presentations": 782140,
+      "v250_to_scratch_ratio": 492.76
+    },
+    "longest_rejected_highrate_line": {
+      "record_presentations": 2185586,
+      "v250_to_scratch_ratio": 176.34
+    },
+    "factor_only": {
+      "trainable_factor_parameters": 667904,
+      "direct_to_factor_capacity_ratio": 10.11
+    }
+  },
+  "conclusions": [
+    "The short pilots were valid implementation and safety checks, but were not credible attempts to exceed v2.5.0.",
+    "The next run must train direct HalfKP rows, not only shared factors.",
+    "Teacher redesign is secondary until a sufficiently long direct learning curve has been measured.",
+    "A one-root change in the 1000-root search gate is too strict to terminate training; direct play remains the strength criterion."
+  ],
+  "next_run": {
+    "parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "release_baseline_usage": "comparison_only",
+    "dataset": "wdoor-highrate4000-1m-hkcl-v1 plus existing exact and health replay",
+    "factorization": "direct",
+    "source_mix": {
+      "exact": 0.60,
+      "expert": 0.25,
+      "result": 0.15,
+      "search_rank": 0.0
+    },
+    "learning_rate": 0.001,
+    "maximum_epochs": 256,
+    "milestone_epochs": [4, 8, 16, 32, 64, 128, 256],
+    "minimum_epochs_without_divergence": 32,
+    "checkpoint_resume": true,
+    "estimated_record_presentations_at_256_epochs": 179641088,
+    "estimated_objective_presentations_at_256_epochs": 394636288
+  },
+  "promotion_policy": {
+    "milestone_matches_before_epoch_32_are_diagnostic": true,
+    "eligible_exact_family_accuracy": 0.90,
+    "eligible_exact_ci95_lower": 0.88,
+    "eligible_health_abs_p99_cp_below": 2000,
+    "eligible_static_top1_accuracy": 0.68,
+    "eligible_search_200k_success_rate": 0.98,
+    "final_claim": "up to 800 paired 1000ms games; lower 95% score bound above 50%"
+  }
+}

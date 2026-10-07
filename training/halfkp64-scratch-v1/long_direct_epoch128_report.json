@@ -1,0 +1,44 @@
+{
+  "schema": "halfkp_long_direct_milestone_report_v1",
+  "date": "2026-07-28",
+  "run": "phase6-long-direct-v1-seed20260721",
+  "milestone_epoch": 128,
+  "model_sha256": "02331ddc42c66411c30aed1cadadc0c038c5a0465ba9530c71865cd8b7483584",
+  "best_valid_loss": 0.04590280094421345,
+  "metrics": {
+    "exact_family_accuracy": 0.8929,
+    "exact_family_ci95_lower": 0.8798,
+    "highrate_family_accuracy": 0.8653,
+    "highrate_value_bce": 0.54416788,
+    "broad_family_accuracy": 0.8450,
+    "broad_value_bce": 0.68203551,
+    "health_score_abs_p99_cp": 1898.508,
+    "static_top1_accuracy": 0.676,
+    "search_200k_success_rate": 0.988
+  },
+  "diagnostic_match": {
+    "baseline": "v2.5.0 KPP-distilled HalfKP-64",
+    "games": 40,
+    "time_limit_ms": 100,
+    "depth": 32,
+    "seed": 20260726,
+    "candidate_wins": 3,
+    "baseline_wins": 37,
+    "draws": 0,
+    "candidate_score": 0.075,
+    "candidate_score_ci95_lower": 0.0,
+    "candidate_score_ci95_upper": 0.1566,
+    "usage": "diagnostic_only"
+  },
+  "gate": {
+    "catastrophic_stop": false,
+    "match_eligible": false,
+    "match_eligibility_failure": "exact_family_ci95_lower_static_search_and_direct_match"
+  },
+  "decision": "stop_this_lineage_and_retain_epoch16_or_epoch32_for_analysis",
+  "notes": [
+    "Validation loss, exact, static, and search degraded after epoch 64; the long run did not improve strength.",
+    "High-rate ranking reached its best value at epoch 128, but this did not transfer to direct play.",
+    "The 40-game result is consistent with the candidate remaining much weaker than v2.5.0."
+  ]
+}

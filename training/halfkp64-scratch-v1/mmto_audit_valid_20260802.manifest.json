@@ -1,0 +1,9 @@
+{
+  "schema": "halfkp_mmto_one_root_per_game_audit_v1",
+  "input": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/valid.jsonl",
+  "output": "training/halfkp64-scratch-v1/mmto_audit_valid_20260802.jsonl",
+  "seed": 20260802,
+  "records": 6099,
+  "unique_game_keys": 6099,
+  "unique_opening_families": 1892
+}

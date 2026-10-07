@@ -1,0 +1,40 @@
+{
+  "schema": "halfkp_search_replay_integration_report_v1",
+  "date": "2026-07-26",
+  "implementation": {
+    "trainer": "halfkp_scratch_train",
+    "search_input_format": "HKST0002",
+    "objective_groups": ["exact", "expert", "result", "search_rank"],
+    "absolute_search_value_weight": 0.0,
+    "requires_search_teacher_model_to_match_parent": true,
+    "search_rank_margin_cp": 20.0,
+    "search_min_rank_gap_cp": 15.0,
+    "search_max_pairs_per_record": 4
+  },
+  "verification": {
+    "unit_tests": 10,
+    "full_library_tests": 89,
+    "test_failures": 0,
+    "integration_train_records": 2001,
+    "integration_objectives": 6140,
+    "initial_combined_valid_loss": 0.32571746,
+    "final_combined_valid_loss": 0.32431975,
+    "deterministic_model_sha256": "5332508daec1dd131f288c53e841a2f5b1e7b54203503fd0627d29e8fbdf5f81"
+  },
+  "small_ab": {
+    "control_mix": [0.70, 0.15, 0.15, 0.0],
+    "combined_mix": [0.665, 0.1425, 0.1425, 0.05],
+    "control": {
+      "exact_family_accuracy": 0.9051,
+      "broad_wdoor_family_accuracy": 0.8053,
+      "health_score_abs_p99_cp": 1687.994
+    },
+    "combined": {
+      "exact_family_accuracy": 0.9055,
+      "broad_wdoor_family_accuracy": 0.8006,
+      "health_score_abs_p99_cp": 1689.562
+    },
+    "decision": "implementation_accepted_mix_not_promoted",
+    "reason": "The integration is deterministic and preserves safety metrics in the smoke test, but the 5% search mix reduced broad WDoor family accuracy by 0.47 percentage points on this small A/B."
+  }
+}

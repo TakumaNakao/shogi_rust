@@ -1,0 +1,44 @@
+{
+  "schema": "halfkp_long_direct_milestone_report_v1",
+  "date": "2026-07-27",
+  "run": "phase6-long-direct-v1-seed20260721",
+  "milestone_epoch": 32,
+  "model_sha256": "3c2e7b8ab29d4d4f830d0fa976e3642401bfde73ff0178133416dc86aeb5b3ff",
+  "best_valid_loss": 0.045430328231329246,
+  "metrics": {
+    "exact_family_accuracy": 0.9063,
+    "exact_family_ci95_lower": 0.8942,
+    "highrate_family_accuracy": 0.8610,
+    "highrate_value_bce": 0.56082089,
+    "broad_family_accuracy": 0.8413,
+    "broad_value_bce": 0.68385435,
+    "health_score_abs_p99_cp": 2155.183,
+    "static_top1_accuracy": 0.697,
+    "search_200k_success_rate": 0.989
+  },
+  "diagnostic_match": {
+    "baseline": "v2.5.0 KPP-distilled HalfKP-64",
+    "games": 40,
+    "time_limit_ms": 100,
+    "depth": 32,
+    "seed": 20260726,
+    "candidate_wins": 9,
+    "baseline_wins": 31,
+    "draws": 0,
+    "candidate_score": 0.225,
+    "candidate_score_ci95_lower": 0.0956,
+    "candidate_score_ci95_upper": 0.3544,
+    "usage": "diagnostic_only"
+  },
+  "gate": {
+    "catastrophic_stop": false,
+    "match_eligible": false,
+    "match_eligibility_failure": "exact_family_ci95_lower_and_health_p99"
+  },
+  "decision": "continue_to_epoch_64",
+  "notes": [
+    "Validation loss and WDoor ranking continued to improve, while exact and static metrics declined.",
+    "Health p99 remains below the 3000 cp continuation stop.",
+    "The 40-game result is an intermediate diagnostic and does not establish strength parity."
+  ]
+}

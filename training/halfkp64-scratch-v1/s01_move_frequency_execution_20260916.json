@@ -1,0 +1,82 @@
+{
+  "schema": "halfkp_s01_move_frequency_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-16",
+  "policy": {
+    "position_identity": "exact_sfen_board_side_hand_ignore_move_counter",
+    "split": "game_content_hash_train_valid_test_80_10_10",
+    "rate_floor": 4000,
+    "phase_records_per_game": [8, 8, 4],
+    "target_phase_records": {
+      "opening": 40000,
+      "middlegame": 40000,
+      "endgame": 20000
+    },
+    "preserve_position_duplicates": true,
+    "shuffle_seed": 20260916,
+    "cross_split_collision_policy": "exclude_position_from_all_splits"
+  },
+  "source_export": {
+    "input": ["data/wdoor/extract/2026"],
+    "manifest": "runs/halfkp64-scratch-v1/s01-raw-preserved-20260916/manifest.json",
+    "manifest_sha256": "9a565bd9897592c66e651dda06ca09b283e566274a3669a9d8e1f6bc505b930f",
+    "records": 100000,
+    "games_used": 5636,
+    "games_skipped_parse": 1595,
+    "phase_records": {
+      "opening": 40000,
+      "middlegame": 40000,
+      "endgame": 20000
+    }
+  },
+  "aggregation": {
+    "script": "scripts/aggregate_halfkp_move_frequencies.py",
+    "manifest": "runs/halfkp64-scratch-v1/s01-move-frequency-20260916/manifest.json",
+    "manifest_sha256": "5beb724efbdb601ba12bbdf612ee66b804fd670ab8cee3752ac64ea35e614431",
+    "raw_records": 100000,
+    "input_groups": 70476,
+    "cross_split_collision_positions": 1801,
+    "output_positions": {
+      "train": 54888,
+      "valid": 4910,
+      "test": 6784
+    },
+    "multi_move_positions": {
+      "train": 812,
+      "valid": 5,
+      "test": 27
+    },
+    "multi_move_observations": {
+      "train": 3622,
+      "valid": 12,
+      "test": 63
+    },
+    "phase_positions_train": {
+      "opening": 12450,
+      "middlegame": 26267,
+      "endgame": 16171
+    }
+  },
+  "control_audit": {
+    "input": "runs/halfkp64-scratch-v1/v4-t03-inventory-20260910/{train,valid,test}.jsonl",
+    "records": 173623,
+    "multi_move_positions": 0,
+    "interpretation": "existing dataset cannot provide frequency targets because its network-input deduplication removed repeated exact positions"
+  },
+  "decision": {
+    "status": "s01_complete_s02_soft_target_implemented",
+    "implementation": {
+      "file": "src/training_tools/halfkp_mmto_train.rs",
+      "schema": "halfkp_move_frequency_v1",
+      "loss": "RankNet pairwise logistic cross entropy",
+      "pair_temperature_cp": 300.0,
+      "pair_weight": "(count_i+count_j)/(N*(legal_moves-1))",
+      "legacy_v3_path": "preserved"
+    },
+    "tests": {
+      "mmto_module_tests": 10,
+      "result": "pass"
+    },
+    "next": "S03 fixed-leaf 512-root gradient reduction and 10000-root cost/terminal audit"
+  }
+}

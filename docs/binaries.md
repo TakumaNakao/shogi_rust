@@ -32,12 +32,18 @@ production buildではtraining/research targetと、それらだけが使う`csa
   `halfkp_dataset_shard`, `halfkp_rank_dataset`, `jsonl_shard`, `kpp_position_pool`,
   `rank_stats`
 - teacher/trainer: `bonanza_pairwise_train`, `halfkp_kpp_train`,
-  `halfkp_search_teacher`, `halfkp_search_train`, `halfkp_train`, `kpp_learn`,
-  `kpp_self_learn`
+  `halfkp_search_teacher`, `halfkp_search_train`, `halfkp_scratch_eval`, `halfkp_scratch_init`,
+  `halfkp_scratch_train`,
+  `halfkp_train`, `kpp_learn`, `kpp_self_learn`
 
 ```bash
 cargo build --release --features halfkp64,training-tools --bin halfkp_search_teacher --bin halfkp_search_train
 ```
+
+`halfkp_scratch_train`は通常のHKCL replayに加え、`--search-train`と`--search-valid`で
+accepted scratch parent自身が生成したHKST0002を受け取れる。`--source-mix-search`で
+exact/expert/result/search-rankの第4実効比率を指定する。search入力は順位だけに使われ、
+教師model SHA-256が`--init`と一致しない場合は拒否される。
 
 ## Benchmark and profile
 

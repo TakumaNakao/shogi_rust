@@ -1,0 +1,29 @@
+{
+  "schema": "halfkp_s08_execution_v1",
+  "status": "running",
+  "started_at": "2026-09-29",
+  "script": "scripts/run_halfkp_s08_continuation.sh",
+  "source_run": "runs/halfkp64-scratch-v1/s07-retry-rate2500-v3-20260922-soft-target-1m-8pass",
+  "frozen_outer8_run": "runs/halfkp64-scratch-v1/s08-retry-rate2500-v3-20260929/frozen-outer8",
+  "continuation_run": "runs/halfkp64-scratch-v1/s08-retry-rate2500-v3-20260929/continue-outer16",
+  "outer12_run": "runs/halfkp64-scratch-v1/s08-retry-rate2500-v3-20260929/outer12",
+  "outer16_run": "runs/halfkp64-scratch-v1/s08-retry-rate2500-v3-20260929/outer16",
+  "dataset_manifest_sha256": "5595e9eae6dd79e2e062aaf7cffa6a09e41c95cc7a2a9a793c789d2c28066eca",
+  "init_model_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc",
+  "s07_outer8_model_sha256": "fbc1fada975cf410c076a775db1b0e66f8dc97b4e2d69695d0f1dfdda1d73b92",
+  "training": {
+    "target_outers": [12, 16],
+    "jobs": 12,
+    "feature_learning_rate": 0.0001,
+    "output_learning_rate_ratio": 0.1,
+    "tau_cp": 300,
+    "qsearch_node_limit": 2000000,
+    "resume_optimizer": true
+  },
+  "evaluation": {
+    "outer16_vs_outer8": "planned_25_opening_pairs_50_games",
+    "outer16_vs_v250": "planned_50_opening_pairs_100_games",
+    "time_limit_ms": 5000,
+    "threads": 1
+  }
+}

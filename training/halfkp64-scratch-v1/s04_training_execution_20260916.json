@@ -1,0 +1,47 @@
+{
+  "schema": "halfkp_s04_training_execution_v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "date": "2026-09-16",
+  "status": "completed",
+  "started_at_local": "2026-09-16T11:45:00+09:00",
+  "process": {
+    "pid_at_start": 3412843,
+    "launcher": "setsid nohup",
+    "log": "runs/halfkp64-scratch-v1/s04-soft-target-250k-8pass-20260916.log"
+  },
+  "dataset": {
+    "manifest": "runs/halfkp64-scratch-v1/s04-selected-250k-v3-20260916/manifest.json",
+    "manifest_sha256": "43d52824f0cbef4b98da6f9f99803360ea323f876a1ca04597f4b14c92cf22b4",
+    "train_roots": 250000,
+    "valid_roots_limit": 6000,
+    "phase_ratio": "40/40/20"
+  },
+  "configuration": {
+    "outer_iterations": 8,
+    "checkpoint_roots": 25000,
+    "jobs": 12,
+    "pair_batch_size": 8192,
+    "tau_cp": 300.0,
+    "feature_learning_rate": 0.0001,
+    "output_learning_rate": 0.00001,
+    "qsearch_node_limit_per_root": 2000000,
+    "terminal_root_policy": "exclude_frequency_root_from_gradient",
+    "init_model_sha256": "162e17bacea3de80ecdbbdae765ca1157246c4febb6fa6a15f8d36b900d011dc"
+  },
+  "checkpoint_policy": "resume only at atomic 25000-root checkpoints; model snapshot is fixed for each outer",
+  "result": {
+    "completed_outer": 8,
+    "model_sha256": "b9666c6e54b0fcdef8cc4d680ad83f88daf54b14957703a5f0cfe55474c08e3d",
+    "valid_loss_outer_1": 0.3928441092692558,
+    "valid_loss_outer_8": 0.37744689309002083,
+    "valid_agreement_outer_8": 0.23710984652526298,
+    "train_aborted_roots_outer_8": 4237,
+    "valid_aborted_roots_outer_8": 201,
+    "phase_loss_outer_8": {
+      "opening": 0.40118367575895053,
+      "middlegame": 0.35927957748135597,
+      "endgame": 0.393309228328289
+    }
+  },
+  "next": "freeze one candidate from outer 2/4/8 using phase-weighted holdout metrics, run S05 gen6 screen and endgame regression, then conditionally run confirmation and v2.5.0 comparison"
+}

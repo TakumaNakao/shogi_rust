@@ -1,0 +1,352 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "scope": "HalfKP-64 scratch training failure audit and Bonanza-MMTO-objective-aligned recovery",
+  "status": "in_progress",
+  "last_review_date": "2026-07-30",
+  "current_strategy": "training/halfkp64-scratch-v1/mmto_lr1e4_reassessment_plan_20260802.json",
+  "current_execution_source_of_truth": "training/halfkp64-scratch-v1/mmto_lr1e4_reassessment_plan_20260802.json",
+  "decision": "bonanza_mmto_objective_aligned_halfkp_adaptation",
+  "historical_plan_source_of_truth": "docs/halfkp_prior_art_recovery_plan_20260729.md",
+  "lineage": {
+    "lineage_id": "halfkp64-scratch-v1",
+    "initial_generation": 2,
+    "initial_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "initial_model_is_scratch_only": true,
+    "v2_5_0_usage": "final_match_comparison_only",
+    "v2_5_0_used_for_training": false,
+    "kpp_or_current_halfkp_teacher_used": false
+  },
+  "audit_conclusion": {
+    "primary_cause": "The HalfKP experiments optimized immediate child positions or frozen proxies instead of current-model qsearch PV leaves refreshed after weight updates.",
+    "architecture_capacity_is_primary_suspect": false,
+    "new_fatal_gradient_sign_bug_found": false,
+    "current_model_qsearch_pv_leaf_objective_previously_implemented": false,
+    "phase14_highrate_policy_conclusion_valid": false
+  },
+  "critical_findings": [
+    {
+      "priority": "P0",
+      "id": "immediate_child_not_pv_leaf",
+      "evidence": [
+        "src/training_tools/halfkp_search_teacher.rs:189",
+        "src/training_tools/halfkp_policy_train.rs:345",
+        "docs/halfkp_from_scratch_training_plan.md:2221"
+      ]
+    },
+    {
+      "priority": "P0",
+      "id": "qsearch_discards_pv",
+      "evidence": [
+        "src/ai/qsearch.rs:126",
+        "src/ai/qsearch.rs:139",
+        "src/bin/mmto_tree_dump.rs:487"
+      ]
+    },
+    {
+      "priority": "P0",
+      "id": "frozen_teacher_without_current_model_pv_refresh",
+      "evidence": [
+        "training/halfkp64-scratch-v1/strategy_review_post_objective_curve_20260729.json"
+      ]
+    },
+    {
+      "priority": "P0",
+      "id": "pilot_scale_not_efficacy_scale",
+      "evidence": {
+        "phase14_train_roots": 50000,
+        "phase14_epochs": 2,
+        "bonanza_desired_moves": 4467116,
+        "bonanza_move_pairs": 368313024,
+        "bonanza_outer_iterations": 200
+      }
+    },
+    {
+      "priority": "P1",
+      "id": "phase14_wrong_dataset",
+      "planned_source": "rate-4000 WDoor",
+      "actual_source": "runs/halfkp64-scratch-v1/wdoor-phase3-250k-v1/train.jsonl",
+      "audited_both_rates_at_least_4000_fraction_in_first_50000": 0.136,
+      "phase14_epoch2_still_improving": true
+    },
+    {
+      "priority": "P1",
+      "id": "prior_implementation_confounds",
+      "items": [
+        "zero-gradient output projection",
+        "over-constrained factor symmetry",
+        "global decay of unseen rows",
+        "training and validation objective mismatch",
+        "candidate-child split collisions"
+      ]
+    },
+    {
+      "priority": "P2",
+      "id": "underpowered_and_arbitrary_early_gates",
+      "items": [
+        "20-40 game decisions",
+        "two-epoch top1 plus one point gate",
+        "point score thresholds used as permanent method rejection"
+      ]
+    }
+  ],
+  "phase14_reclassification": {
+    "previous": "rejected_method",
+    "corrected": "invalid_source_and_inconclusive",
+    "initial_valid_ce": 4.256464381475746,
+    "epoch2_valid_ce": 4.127225,
+    "initial_top1": 0.0733,
+    "epoch2_top1": 0.0784,
+    "epoch2_margin_improved": 8395,
+    "epoch2_margin_worsened": 1603,
+    "match_run": false
+  },
+  "prior_art_scale": {
+    "bonanza": {
+      "games": 47566,
+      "desired_moves": 4467116,
+      "move_pairs": 368313024,
+      "outer_iterations": 200,
+      "gradient_updates_per_pv_refresh": 32,
+      "search": "nominal depth 1 plus quiescence",
+      "parameters_approx": 40000000
+    },
+    "selected_local_dataset": {
+      "path": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2",
+      "games": 44228,
+      "train_games": 34582,
+      "train_roots": 570875,
+      "valid_roots": 90759,
+      "test_roots": 62233,
+      "min_player_rate": 4000,
+      "min_opponent_rate": 4000,
+      "audit_passed": true,
+      "stage_fingerprint": "bb1363e7fe376653a4c99437db2645cc930cb2518a7282ea7638819b0925f0b6",
+      "manifest_sha256": "d8da8088b02d3d0200aad2ecb061691c6c418173a16fe32819f03088af48708f",
+      "train_sha256": "c35673d69c9306f1dd4b1f2f32714adce4a43e7c1a086141bd6b7246b680eee6",
+      "valid_sha256": "3ce8745dbeb094a6a3f357494eb94aa5f57a716437bda66dd0ca13060f075f96",
+      "test_sha256": "85c73cdf519deff2a51bc2a92e0a746047cb1deae2187f3a1445dd2411b49893",
+      "move_pairs_per_outer": 56035622,
+      "move_pair_count_method": "exact sum of legal_moves minus one over the frozen train split"
+    },
+    "halfkp_direct_parameters": 6750720,
+    "pair_and_parameter_ratios": {
+      "local_roots_over_bonanza_desired_moves": 0.128,
+      "local_pairs_over_bonanza_pairs": 0.152,
+      "local_parameters_over_bonanza_parameters": 0.169
+    },
+    "comparability_conclusion": "unknown_not_inferred_from_ratios_because_feature_distribution_nonlinearity_optimizer_and_update_units_differ"
+  },
+  "training_specification": {
+    "teacher_label": "recorded WDoor move",
+    "negative_scope": "every other legal move",
+    "search_model": "current checkpoint",
+    "search_depth": 1,
+    "quiescence": true,
+    "search_limits": {
+      "wall_clock": null,
+      "node_cap": null,
+      "qply_cap": "existing deterministic engine MAX_QUIESCENCE_PLY"
+    },
+    "gradient_position": "actual qsearch PV leaf for both desired and alternative moves",
+    "refresh": "every outer iteration",
+    "search_snapshot": "immutable for every root in one outer iteration",
+    "updates_per_outer": "one streaming mini-batch pass over all generated leaf pairs; each mini-batch forwards the fixed leaves with the current update-side weights",
+    "leaf_reuse_passes": 1,
+    "bonanza_gradient_updates_per_pv_refresh": 32,
+    "adaptation_note": "One local pass contains about 6841 mini-batch updates, so it is not equated with one Bonanza full-gradient update and is not multiplied by 32.",
+    "loss": "mirrored sigmoid over desired-versus-all-alternative current search values",
+    "normalization": "equal weight per move pair, divided by total pair count rather than root count",
+    "sigmoid_tau_cp_fixed": 36.63,
+    "material_coefficient": "fixed to accepted scratch generation 2",
+    "regularization": {
+      "l1_lambda": 0.0,
+      "l2_lambda": 0.0,
+      "decoupled_weight_decay": 0.0,
+      "reason": "Bonanza integer-linear L1 has no direct scale-preserving transfer to layered HalfKP; avoid another batch-dependent unseen-row shrink confound."
+    },
+    "optimizer": {
+      "kind": "persistent_adagrad",
+      "search_block_roots": 1024,
+      "pair_batch_size": 8192,
+      "gradient_clip_global_norm": 1.0,
+      "output_learning_rate_ratio": 0.1,
+      "feature_and_hidden_parameter_limit": 1.0,
+      "output_and_output_bias_parameter_limit": 0.2,
+      "max_feature_and_hidden_delta_per_outer": 0.02,
+      "max_output_and_output_bias_delta_per_outer": 0.004,
+      "minimum_fixed_probe_root_best_move_unchanged": 0.9
+    },
+    "global_weight_decay": false,
+    "mixed_auxiliary_losses": false,
+    "test_split_provenance_audited": true,
+    "test_split_used_for_model_scoring_or_selection": false
+  },
+  "calibration": {
+    "train_roots": 10000,
+    "valid_roots": 2000,
+    "outer_iterations_each": 2,
+    "feature_learning_rates": [
+      0.000003,
+      0.00001,
+      0.00003
+    ],
+    "output_learning_rate_ratio": 0.1,
+    "pair_batch_size": 8192,
+    "gradient_clip_global_norm": 1.0,
+    "leaf_reuse_passes": 1,
+    "diagnostic_only": [
+      "p50_p90_p99_of_abs_delta_over_tau",
+      "fraction_of_pairs_with_mirrored_sigmoid_derivative_at_least_one_percent_of_its_maximum"
+    ],
+    "selection_uses_match_strength": false,
+    "selection": "largest rate passing semantics, finite, scale, candidate-final fresh-loss, parameter-delta, and 90-percent fixed-probe root-best-move-stability checks",
+    "selected_feature_learning_rate_provisional": 0.00003,
+    "post_run_review": "parent outer0 and outer1 fixed-valid history plus saturation diagnostics were not saved; reproduce only 3e-5 before 100k"
+  },
+  "full_run": {
+    "train_roots": 570875,
+    "valid_roots": 90759,
+    "move_pairs_per_outer": 56035622,
+    "move_pairs_at_200_outer": 11207124400,
+    "target_outer_iterations": 200,
+    "initial_milestones": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "later_milestones_after_outer16_gate": [
+      32,
+      64,
+      100,
+      144,
+      200
+    ],
+    "run_as_single_unreviewed_job": false,
+    "small_match_is_training_stop": false
+  },
+  "evaluation": {
+    "parent_match_checkpoints": [
+      8,
+      16,
+      32,
+      64,
+      100,
+      144,
+      200
+    ],
+    "parent_match_games_each": 500,
+    "parent_match_role": "diagnostic_only_not_checkpoint_selection_except_predefined_catastrophic_audit_gate",
+    "catastrophic_audit_gate": "paired_score_95_percent_upper_bound_below_0.45",
+    "checkpoint_selection": "lowest full-valid fresh MMTO loss among predefined safety-passing checkpoints; earliest iteration breaks an exact tie",
+    "test_split_scored_after_checkpoint_freeze": true,
+    "test_split_used_to_reselect_checkpoint": false,
+    "final_opening_suite": {
+      "pairs": 2000,
+      "seed": 20260730,
+      "created_and_sha256_frozen_before_step": 3,
+      "deduplicated_against_training_screen_and_parent_match_openings": true,
+      "used_for_intermediate_matches": false
+    },
+    "final_v2_5_0_games_fixed": 4000,
+    "final_opening_pairs": 2000,
+    "inference": {
+      "method": "paired percentile bootstrap clustered by opening pair",
+      "resamples": 100000,
+      "seed": 20260729,
+      "win_score": 1.0,
+      "draw_score": 0.5,
+      "loss_score": 0.0,
+      "optional_stopping": false
+    },
+    "success": "paired-bootstrap 95% score lower bound above 0.50",
+    "v2_5_0_result_fed_back_to_training": false
+  },
+  "steps": [
+    {
+      "id": 0,
+      "name": "correct_invalid_experiment_classifications",
+      "status": "completed",
+      "evidence": [
+        "training/halfkp64-scratch-v1/all_legal_policy_pilot_execution_20260729.json",
+        "training/halfkp64-scratch-v1/corrected_mmto_lite_pilot_execution_report_20260729.json",
+        "training/halfkp64-scratch-v1/mmto_lite_10k_pilot_report.json"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "implement_training_only_exact_qsearch_principal_leaf_trace",
+      "status": "completed",
+      "commit": "bacd856",
+      "evidence": [
+        "training/halfkp64-scratch-v1/qsearch_leaf_trace_step1_report_20260729.json"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "implement_single_streaming_halfkp_mmto_trainer",
+      "status": "completed",
+      "commit": "4275e2e",
+      "evidence": [
+        "training/halfkp64-scratch-v1/mmto_trainer_step2_report_20260729.json"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "verify_64_fixtures_and_1024_roots",
+      "status": "completed",
+      "commits": [
+        "38223d7",
+        "15b7634",
+        "4bfdc1d",
+        "a916fb3"
+      ],
+      "evidence": [
+        "training/halfkp64-scratch-v1/mmto_step3_verification_report_20260729.json",
+        "training/halfkp64-scratch-v1/final_openings_seed20260730_2000.manifest.json"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "calibrate_three_learning_rates_on_10k",
+      "status": "completed_with_followup_required",
+      "selected_learning_rate": 0.00003,
+      "selected_learning_rate_status": "provisional",
+      "evidence": [
+        "training/halfkp64-scratch-v1/mmto_step4_calibration_report_20260730.json",
+        "training/halfkp64-scratch-v1/mmto_post_step4_strategy_20260730.json"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "add_history_reproduce_3e5_on_10k_benchmark_jobs_then_run_100k_four_outer",
+      "status": "pending",
+      "evidence": [
+        "docs/halfkp_mmto_post_step4_strategy_20260730.md"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "run_full_milestones_then_continue_by_predefined_gate",
+      "status": "pending"
+    },
+    {
+      "id": 7,
+      "name": "run_parent_test_and_final_v2_5_0_evaluation",
+      "status": "pending"
+    }
+  ],
+  "deferred": [
+    "corrected one-ply CE as a promotion route",
+    "external learned teacher",
+    "scratch self-play and elmo-style value learning",
+    "policy head",
+    "architecture expansion",
+    "factor redesign",
+    "L1 or other regularization before the baseline matures",
+    "SWA",
+    "parallel alternative strategies"
+  ]
+}

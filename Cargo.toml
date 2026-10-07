@@ -75,6 +75,16 @@ path = "src/bin/halfkp_dataset_shard.rs"
 required-features = ["training-tools"]
 
 [[bin]]
+name = "halfkp_exact_generate"
+path = "src/bin/halfkp_exact_generate.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_curriculum_audit"
+path = "src/bin/halfkp_curriculum_audit.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
 name = "halfkp_kpp_train"
 path = "src/bin/halfkp_kpp_train.rs"
 required-features = ["training-tools"]
@@ -93,6 +103,116 @@ required-features = ["training-tools"]
 name = "halfkp_search_train"
 path = "src/bin/halfkp_search_train.rs"
 required-features = ["training-tools"]
+
+[[bin]]
+name = "halfkp_value_compare"
+path = "src/bin/halfkp_value_compare.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_policy_train"
+path = "src/bin/halfkp_policy_train.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_mmto_train"
+path = "src/bin/halfkp_mmto_train.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_dataset_prepare"
+path = "src/bin/halfkp_dataset_prepare.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_mmto_audit"
+path = "src/bin/halfkp_mmto_audit.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_wdl_audit"
+path = "src/bin/halfkp_wdl_audit.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_search_split_filter"
+path = "src/bin/halfkp_search_split_filter.rs"
+required-features = ["training-tools"]
+
+[[bin]]
+name = "halfkp_search_dedup"
+path = "src/bin/halfkp_search_dedup.rs"
+required-features = ["training-tools"]
+
+[[bin]]
+name = "halfkp_search_shuffle"
+path = "src/bin/halfkp_search_shuffle.rs"
+required-features = ["training-tools"]
+
+[[bin]]
+name = "halfkp_search_objective_eval"
+path = "src/bin/halfkp_search_objective_eval.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_scratch_init"
+path = "src/bin/halfkp_scratch_init.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_symmetry_generate"
+path = "src/bin/halfkp_symmetry_generate.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_health_generate"
+path = "src/bin/halfkp_health_generate.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_opening_report"
+path = "src/bin/halfkp_opening_report.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "game_dataset_audit"
+path = "src/bin/game_dataset_audit.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_game_generate"
+path = "src/bin/halfkp_game_generate.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_scratch_eval"
+path = "src/bin/halfkp_scratch_eval.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_prediction_compare"
+path = "src/bin/halfkp_prediction_compare.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_static_gate"
+path = "src/bin/halfkp_static_gate.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_search_gate"
+path = "src/bin/halfkp_search_gate.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_promotion_match"
+path = "src/bin/halfkp_promotion_match.rs"
+required-features = ["halfkp64", "training-tools"]
+
+[[bin]]
+name = "halfkp_scratch_train"
+path = "src/bin/halfkp_scratch_train.rs"
+required-features = ["halfkp64", "training-tools"]
 
 [[bin]]
 name = "halfkp_train"

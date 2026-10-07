@@ -1,0 +1,220 @@
+{
+  "schema": "halfkp_mmto_unattended_config_v1",
+  "workspace": "/home/kuro/shogi_rust",
+  "run_root": "runs/halfkp64-scratch-v1/unattended-mmto-full-lr1e-4-20260808-v1",
+  "lineage_id": "halfkp64-scratch-v1",
+  "forbid_kpp_and_v250": true,
+  "workflow": {
+    "mode": "phase_c_scaled_recovery",
+    "prior_run_root": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1",
+    "evidence": {
+      "status": {
+        "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/status.json",
+        "sha256": "375a63187b64eb1d3e26d6c73ba108fc13044a0d939b1d67c276b68231525169"
+      },
+      "phase_b_archive_manifest": {
+        "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/archives/phase-b/outer_0001/archive_manifest.json",
+        "sha256": "393c6b51c640ff9de6b4a5b2e0caa0f45f63a4def4d8df603b85e224f2c3d119"
+      },
+      "phase_b_model": {
+        "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/archives/phase-b/outer_0001/model.bin",
+        "sha256": "eccd82e96447182dea152967298f2361bc7ffa34c353e5b81b3bcb572bcbd9c7"
+      },
+      "phase_b_audit_marker": {
+        "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/evaluations/phase-b-outer-0001/audit_completed.json",
+        "sha256": "b82794fca97ab8e8de6fd064bc993ab2fccdbbfc8c49808517807749831d6733"
+      },
+      "phase_b_match_report": {
+        "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/evaluations/phase-b-outer-0001/match/report.json",
+        "sha256": "54249fcc081663bee97a0fc74150d1fb3f53c63f6f2c62e01550ba76043e9029"
+      },
+      "phase_c_failure_log": {
+        "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/logs/phase_c_full_train_outer_0001.attempt-01.log",
+        "sha256": "e398e98e90eaa824772ea1ad34f3ba8c67ceadd48a933955a54ed50974aa5d50"
+      },
+      "phase_c_checkpoint": {
+        "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/phase-c-full/checkpoint.json",
+        "sha256": "ec6abf4cf98061253970ba028302b4145f23a6ac50a2dee4c762271cf53160f7"
+      },
+      "phase_c_train_lock": {
+        "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/phase-c-full/unattended_train_lock.json",
+        "sha256": "bbd376fca22c4f943b74d5259eb3403a85aa642c0750d8cd25ce0a2eff10f9e5"
+      }
+    }
+  },
+  "plan": {
+    "path": "training/halfkp64-scratch-v1/full_mmto_recovery_plan_20260808.json",
+    "sha256": "9560fd1444f9ce0424a3656a4bd4c4335b57fcf95aecce5955b35ef4caea86f2"
+  },
+  "service": {
+    "heartbeat_seconds": 60,
+    "max_attempts": 3,
+    "retry_seconds": 60,
+    "minimum_free_gib": 20,
+    "unit_file": "scripts/systemd/halfkp-mmto-full-recovery-20260808.service"
+  },
+  "build": {
+    "command": [
+      "cargo",
+      "build",
+      "--release",
+      "--locked",
+      "--features",
+      "halfkp64,training-tools",
+      "--bin",
+      "halfkp_mmto_train",
+      "--bin",
+      "halfkp_mmto_audit",
+      "--bin",
+      "halfkp_promotion_match"
+    ],
+    "artifacts": {
+      "trainer": "target/release/halfkp_mmto_train",
+      "audit": "target/release/halfkp_mmto_audit",
+      "match": "target/release/halfkp_promotion_match"
+    },
+    "require_clean_git": true,
+    "git_revision": "lock_on_first_run"
+  },
+  "parent": {
+    "generation": 2,
+    "model": {
+      "path": "runs/halfkp64-scratch-v1/phase3-wdoor250k-v1-mix70-epoch2-seed20260721/model.bin",
+      "sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6"
+    },
+    "model_manifest": {
+      "path": "runs/halfkp64-scratch-v1/phase3-wdoor250k-v1-mix70-epoch2-seed20260721/model.bin.manifest.json",
+      "sha256": "ea18e1f835c9a3fd6f256da01f38ec8f2bdba4e75d5bf12cbbe935aa165349e7"
+    },
+    "promotion_registry": {
+      "path": "training/halfkp64-scratch-v1/promotion_registry.json",
+      "sha256": "709364eeddb425eb97749db3efa9f26049047dad6836b7427b0c5562823835f1"
+    },
+    "gate_report": {
+      "path": "training/halfkp64-scratch-v1/promotion_gen2_report.json",
+      "sha256": "d006cc7a8d43a6ba22e4e8b8ede179707d43436f1296651e8bf3f7874ad3b18a"
+    }
+  },
+  "trainer": {
+    "jobs": 8,
+    "search_block_roots": 1024,
+    "pair_batch_size": 8192,
+    "output_learning_rate_ratio": 0.1,
+    "gradient_clip_norm": 1.0,
+    "tau_cp": 36.63,
+    "pv_probe_roots": 1024,
+    "max_feature_delta_per_outer": 0.02,
+    "max_output_delta_per_outer": 0.004,
+    "extra_args": []
+  },
+  "audit": {
+    "input": {
+      "path": "training/halfkp64-scratch-v1/mmto_audit_valid_20260802.jsonl",
+      "sha256": "e0a710c116c5507df566a9716f28015efd1511d51016ebdc7a2b780e5a312cbe"
+    },
+    "parent_jsonl": {
+      "path": "runs/halfkp64-scratch-v1/mmto_root_audit_20260802/parent.jsonl",
+      "sha256": "1e723ee4be741ad7335c7bf46bc61d5973a03f3063166a13c453b587913828b3"
+    },
+    "parent_manifest": {
+      "path": "runs/halfkp64-scratch-v1/mmto_root_audit_20260802/parent.jsonl.manifest.json",
+      "sha256": "b052870331b3aa5f6d306d728948f7e4d5ed1444bae6a609910591b53798bba7"
+    },
+    "analyzer": {
+      "path": "scripts/analyze_mmto_root_audit.py",
+      "sha256": "01376d368fc4328d9873024e472f5a843f33b81d075b62384c0a1a8ec6e0b5e6"
+    },
+    "roots": 6099,
+    "seed": 20260806,
+    "jobs": 8,
+    "block_roots": 1024
+  },
+  "paired_match": {
+    "wrapper": {
+      "path": "scripts/run_halfkp_paired_match.py",
+      "sha256": "364c56fa8929d1bdc224a301d3e8ace70e04104a5f374d1298229c3e767833ce"
+    },
+    "openings": {
+      "path": "training/halfkp64-scratch-v1/mmto_dev_openings_seed20260731_250/openings.jsonl",
+      "sha256": "06b6d7739a5973e391e6a275b8dd8be09842f0f061b598c5c30da40b578ba190"
+    },
+    "openings_manifest": {
+      "path": "training/halfkp64-scratch-v1/mmto_dev_openings_seed20260731_250/manifest.json",
+      "sha256": "e9485ee47fc4bba73490399710f2e8724646fe1dfc01676c2826b0ed3a7bd22a"
+    },
+    "pairs": 250,
+    "nodes": 20000,
+    "max_depth": 64,
+    "max_plies": 256,
+    "bootstrap_resamples": 100000,
+    "bootstrap_seed": 20260806
+  },
+  "phases": {
+    "A": {
+      "candidate_model": {
+        "path": "runs/halfkp64-scratch-v1/prior-art-step4-lr3e-4-v1/model.bin",
+        "sha256": "70a2554897d14be0bc437728b9cedb572d766f121a66dc71251344aa45ea3c00"
+      },
+      "gate": {
+        "catastrophic_ci_upper_below": 0.45
+      }
+    },
+    "B": {
+      "start_policy": "accepted_generation2_zero_adagrad",
+      "output_dir": "runs/halfkp64-scratch-v1/unattended-mmto-full-lr1e-4-20260808-v1/unused-phase-b-primary",
+      "fallback_output_dir": "runs/halfkp64-scratch-v1/unattended-mmto-full-lr1e-4-20260808-v1/unused-phase-b-fallback",
+      "dataset": {
+        "train": {
+          "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/derived-balanced-100k/train.jsonl",
+          "sha256": "79cc64ced54eb95418dc0f2d6b78cfb9ad2102f3ad0545e5015cf3ffb5d99458"
+        },
+        "valid": {
+          "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/derived-balanced-100k/valid.jsonl",
+          "sha256": "84fbd8233f0e2baa3ee96d9aa152edcf224555bcd947ce0758e84327f2f7db0d"
+        },
+        "manifest": {
+          "path": "runs/halfkp64-scratch-v1/unattended-mmto-20260806-v1/derived-balanced-100k/manifest.json",
+          "sha256": "f1c388c35747599a83716b2de170c7828362281aecd25923ba5614072d482066"
+        }
+      },
+      "learning_rate": 0.0003,
+      "fallback_learning_rate": 0.0001,
+      "max_train_roots": 100000,
+      "max_valid_roots": 10000,
+      "gate": {
+        "score_below": 0.475,
+        "and_ci_upper_below": 0.5
+      }
+    },
+    "C": {
+      "start_policy": "accepted_generation2_zero_adagrad",
+      "output_dir": "runs/halfkp64-scratch-v1/unattended-mmto-full-lr1e-4-20260808-v1/phase-c-full-lr1e-4",
+      "dataset": {
+        "train": {
+          "path": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/train.jsonl",
+          "sha256": "c35673d69c9306f1dd4b1f2f32714adce4a43e7c1a086141bd6b7246b680eee6"
+        },
+        "valid": {
+          "path": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/valid.jsonl",
+          "sha256": "3ce8745dbeb094a6a3f357494eb94aa5f57a716437bda66dd0ca13060f075f96"
+        },
+        "manifest": {
+          "path": "runs/halfkp64-scratch-v1/wdoor-highrate4000-1m-v2/manifest.json",
+          "sha256": "d8da8088b02d3d0200aad2ecb061691c6c418173a16fe32819f03088af48708f"
+        }
+      },
+      "learning_rate": 0.0001,
+      "max_train_roots": null,
+      "max_valid_roots": 90759,
+      "max_outer": 4,
+      "gate": {
+        "catastrophic_ci_upper_below": 0.45,
+        "score_below": 0.475,
+        "and_ci_upper_below": 0.5
+      },
+      "extension_gate": {
+        "min_score": 0.525
+      }
+    }
+  }
+}

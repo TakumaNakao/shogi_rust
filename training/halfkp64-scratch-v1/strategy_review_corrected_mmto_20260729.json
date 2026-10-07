@@ -1,0 +1,408 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "scope": "Post-recovery HalfKP-64 scratch result audit and shortest next training strategy",
+  "decision": "harden_search_trainer_then_run_corrected_direct_only_wdoor_mmto_lite",
+  "status": "fixed_mmto_lite_rejected_after_objective_learning_curve_parent_gate_failure",
+  "execution_result_report": "training/halfkp64-scratch-v1/corrected_mmto_lite_pilot_execution_report_20260729.json",
+  "objective_aligned_evaluation_report": "training/halfkp64-scratch-v1/mmto_objective_aligned_evaluation_20260729.json",
+  "objective_aligned_confirmation": {
+    "status": "failed_parent_objective_gate",
+    "dataset_train_records": 9311,
+    "dataset_valid_records": 1809,
+    "epochs": [
+      1,
+      2,
+      4
+    ],
+    "epoch_1_artifact": "reuse_existing",
+    "epoch_2_and_4": "independent deterministic runs from accepted generation 2",
+    "same_hyperparameters_as_step_1": true,
+    "save_last_epoch": true,
+    "selection": "none; evaluate each fixed last-epoch artifact",
+    "pass_gates": {
+      "treatment_objective_loss_below_same_epoch_control": true,
+      "treatment_mean_margin_above_same_epoch_control": true,
+      "treatment_objective_loss_below_accepted_parent": true,
+      "non_conflicting_pair_accuracy_regression_from_parent_max": 0.01,
+      "exact_family_ci95_lower_min": 0.88,
+      "health_score_abs_p99_cp_max": 2500,
+      "static_top1_min": 0.68,
+      "search_200k_min": 0.98
+    },
+    "failure_action": "Stop fixed MMTO-lite without adding epochs or tuning hyperparameters."
+  },
+  "objective_aligned_learning_curve_report": "training/halfkp64-scratch-v1/mmto_objective_learning_curve_report_20260729.json",
+  "lineage": {
+    "lineage_id": "halfkp64-scratch-v1",
+    "accepted_parent_generation": 2,
+    "accepted_parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "v2_5_0_usage": "match_comparison_only",
+    "v2_5_0_used_for_training": false,
+    "test_split_opened": false
+  },
+  "source_reports": [
+    "training/halfkp64-scratch-v1/promotion_gen2_report.json",
+    "training/halfkp64-scratch-v1/long_direct_epoch32_report.json",
+    "training/halfkp64-scratch-v1/long_direct_epoch64_report.json",
+    "training/halfkp64-scratch-v1/long_direct_epoch128_report.json",
+    "training/halfkp64-scratch-v1/search_replay_1pct_report.json",
+    "training/halfkp64-scratch-v1/mmto_lite_10k_pilot_report.json",
+    "training/halfkp64-scratch-v1/search_trainer_recovery_execution_report_20260728.json"
+  ],
+  "answer_to_unexpected_failure": {
+    "conclusion": "Partly justified: no global sign or forward inversion was found, but several independent experimental confounders made the observed failure sequence materially worse and some earlier conclusions invalid.",
+    "confirmed_confounders": [
+      "The old search trainer silently clamped 104 of 129 output weights before learning.",
+      "Factor-only training imposed component-wise left-right ties that are stronger than the canonical HalfKP symmetry; this is a capacity concern, but its playing-strength effect has not been isolated by an A/B test.",
+      "The WDoor expert objective compared the recorded move with one deterministic quiet alternative rather than the move the engine was likely to choose.",
+      "Long-direct training applied global decoupled weight decay to all 6,750,720 direct feature parameters at every family batch.",
+      "The scratch validation objective does not reproduce training family normalization or source-mix multipliers.",
+      "Forty-game screens were incorrectly treated as capable of resolving a five-point difference."
+    ],
+    "fatal_global_sign_or_scale_bug_found": false,
+    "runtime_and_trainer_forward_match": true,
+    "teacher_and_trainer_score_signs_match": true,
+    "game_result_stm_conversion_correct": true,
+    "factor_fold_correct": true,
+    "incremental_eval_trace": {
+      "trace_evaluations": 30370,
+      "full_refresh_comparisons": 1024,
+      "max_abs_difference_cp": 0.000732
+    }
+  },
+  "evidence": {
+    "accepted_generation_2": {
+      "exact_family_accuracy": 0.9081,
+      "static_top1_accuracy": 0.700,
+      "search_200k_success_rate": 0.986,
+      "vs_v2_5_0_games": 40,
+      "vs_v2_5_0_wins": 12,
+      "vs_v2_5_0_losses": 28,
+      "vs_v2_5_0_score": 0.30
+    },
+    "long_direct_training_volume": {
+      "unique_wdoor_positions": 537723,
+      "record_presentations_through_epoch_128": 89820544,
+      "objective_presentations_through_epoch_128": 197318144,
+      "v2_5_0_sample_presentations": 385407624,
+      "objective_presentations_fraction_of_v2_5_0_samples": 0.512
+    },
+    "long_direct_decay": {
+      "families": 198520,
+      "batch_size": 256,
+      "updates_per_epoch": 776,
+      "feature_learning_rate": 0.001,
+      "weight_decay": 0.01,
+      "untouched_row_retention_per_update": 0.99999,
+      "untouched_row_retention_after_epoch_128": 0.37036,
+      "feature_rms_parent": 0.0403532,
+      "feature_rms_epoch_128": 0.0174372,
+      "feature_rms_reduction": 0.568,
+      "max_output_weight_parent": 0.174387,
+      "max_output_weight_epoch_128": 0.274904
+    },
+    "long_direct_results": {
+      "epoch_32": {
+        "valid_loss": 0.045430,
+        "vs_v2_5_0_wins": 9,
+        "vs_v2_5_0_losses": 31
+      },
+      "epoch_64": {
+        "valid_loss": 0.045332,
+        "vs_v2_5_0_wins": 6,
+        "vs_v2_5_0_losses": 34
+      },
+      "epoch_128": {
+        "valid_loss": 0.045903,
+        "exact_family_accuracy": 0.8929,
+        "static_top1_accuracy": 0.676,
+        "vs_v2_5_0_wins": 3,
+        "vs_v2_5_0_losses": 37
+      }
+    },
+    "search_replay_one_percent": {
+      "candidate_vs_parent_wins": 22,
+      "candidate_vs_parent_losses": 18,
+      "parent_vs_v2_5_0_wins": 12,
+      "parent_vs_v2_5_0_losses": 28,
+      "candidate_vs_v2_5_0_wins": 11,
+      "candidate_vs_v2_5_0_losses": 29,
+      "paired_candidate_only_improvements": 8,
+      "paired_parent_only_improvements": 9,
+      "paired_same_results": 23,
+      "exact_mcnemar_p": 1.0,
+      "interpretation": "No detectable difference; the one-win score difference is not evidence that the candidate regressed."
+    },
+    "corrected_value_phase_a": {
+      "train_records": 9311,
+      "valid_records": 1840,
+      "epochs": 8,
+      "blended_valid_brier_parent": 0.07024652,
+      "blended_valid_brier_candidate": 0.0650878686,
+      "blended_valid_brier_relative_improvement": 0.0734,
+      "search_mae_parent_cp": 153.458,
+      "search_mae_candidate_cp": 166.357,
+      "exact_family_accuracy": 0.9073,
+      "exact_family_ci95_lower": 0.8953,
+      "health_score_abs_p99_cp": 1677,
+      "static_top1_accuracy": 0.701,
+      "search_200k_success_rate": 0.986,
+      "decision": "reject_value_objective_direction_and_do_not_scale"
+    },
+    "depth_6_value_teacher_feasibility": {
+      "sample_inputs": 100,
+      "max_nodes_per_root": 100000,
+      "completed_records": 0,
+      "resource_limited_records": 100,
+      "decision": "stop_own_search_value_bootstrap"
+    },
+    "existing_mmto_dataset": {
+      "train_source_inputs": 28500,
+      "train_records": 9311,
+      "train_candidates": 115581,
+      "valid_source_inputs": 6200,
+      "valid_records": 1840,
+      "valid_candidates": 22886,
+      "selection_depth": 2,
+      "teacher_depth": 4,
+      "candidate_top": 10,
+      "tactical_candidate_limit": 2,
+      "max_nodes_per_search": 20000,
+      "top_10_candidate_recall": 0.962687,
+      "valid_game_search_mismatches": 1570,
+      "valid_regret_le_300": 1191,
+      "parent_model_sha256_verified": true,
+      "train_valid_root_packed_network_input_hash_overlap": 0,
+      "train_valid_all_root_and_candidate_packed_network_input_hash_overlap": 31,
+      "train_valid_position_hash_overlap": 1,
+      "split_gate_hash": "packed_network_input_hash",
+      "split_gate_scope": "the union of every root and candidate child network input",
+      "stored_candidate_position": "immediate child after the root move",
+      "teacher_label": "depth-4 search score for that root move",
+      "pv_leaf_stored": false
+    }
+  },
+  "implementation_constraints": {
+    "training_mode": "direct_only",
+    "factor_only_disabled": true,
+    "factor_projector_redesign_deferred": true,
+    "global_weight_decay": 0.0,
+    "output_limit": 0.20,
+    "swa": false,
+    "swa_start_epoch": 3,
+    "early_stop_patience": 3,
+    "new_trainer": false,
+    "new_dataset_schema": false,
+    "hyperparameter_grid": false,
+    "required_search_trainer_hardening": [
+      "Tie the effective gradients and AdaGrad state of center-king direct mirror rows without tying non-center rows.",
+      "Preserve exact byte identity for a zero-gradient batch.",
+      "Save the last epoch as a first-class manifest-backed artifact even when the validation composite does not improve.",
+      "Bind selected kind, epoch, model SHA, and validation metrics to the same artifact.",
+      "Report search-pair accuracy after excluding pairs that structurally conflict with the active game-vs-search objective.",
+      "Verify teacher model SHA, HKST output SHA, and train/valid separation over the union of every root and candidate packed network input before training."
+    ],
+    "required_hardening_before_any_future_scratch_trainer_reuse": [
+      "Make validation use the same family normalization and source-mix semantics as training."
+    ]
+  },
+  "execution_plan": [
+    {
+      "step": 0,
+      "name": "harden_search_trainer_and_pass_correctness_gate",
+      "status": "completed",
+      "requirements": [
+        "Use accepted generation 2 as both init and teacher.",
+        "Use v2.5.0 for matches only.",
+        "Keep the test split closed.",
+        "Maintain center-king direct mirror symmetry after a nonzero training batch.",
+        "Keep a zero-gradient batch byte-identical.",
+        "Add a manifest-backed save-last artifact with selected kind, epoch, SHA, and matching metrics.",
+        "Add non-conflicting search-pair accuracy.",
+        "Reject HKST parent/output SHA mismatches and any root-or-candidate packed-network-input split overlap.",
+        "Deterministically remove colliding valid records from the existing pilot and record the filtered count and output SHA.",
+        "Pass targeted tests, the full library tests, a release build, and the 9,311-record zero-loss identity run."
+      ]
+    },
+    {
+      "step": 1,
+      "name": "corrected_9k_mmto_lite_control_treatment",
+      "status": "failed_after_fixed_objective_learning_curve",
+      "dataset": {
+        "train_records": 9311,
+        "raw_valid_records": 1840,
+        "valid_records_after_filter": 1809,
+        "valid_filter_status": "completed: removed 31 colliding records; residual all-network-input overlap is zero"
+      },
+      "common": {
+        "epochs": 1,
+        "batch_size": 128,
+        "learning_rate": 0.00001,
+        "output_learning_rate": 0.000001,
+        "search_rank_weight": 0.1,
+        "value_weight": 0.0,
+        "legacy_game_rank_weight": 0.0,
+        "game_regret_cap_cp": 300,
+        "max_pairs_per_record": 4,
+        "seed": 20260728,
+        "output_limit": 0.20,
+        "swa_start_epoch": 3,
+        "early_stop_patience": 3,
+        "save_last_epoch": true
+      },
+      "control_game_vs_search_weight": 0.0,
+      "treatment_game_vs_search_weight": 0.1,
+      "scale_gates": {
+        "game_vs_search_accuracy_improvement_fraction_or_mean_regret_reduction_fraction": {
+          "accuracy_improvement_min": 0.005,
+          "mean_regret_reduction_min": 0.01
+        },
+        "non_conflicting_search_pair_accuracy_regression_max": 0.01,
+        "exact_family_ci95_lower_min": 0.88,
+        "health_score_abs_p99_cp_max": 2500,
+        "static_top1_min": 0.68,
+        "search_200k_min": 0.98,
+        "nan_inf_illegal_or_provenance_errors": 0
+      },
+      "match_required": false,
+      "failure_action": "Stop without tuning or automatically implementing a fallback, record the result, and perform a new strategy review."
+    },
+    {
+      "step": 2,
+      "name": "generate_full_rate_4000_wdoor_mmto_lite_teacher",
+      "status": "not_eligible_after_learning_curve_failure",
+      "source_train_roots": 556820,
+      "source_valid_roots": 99660,
+      "selection_depth": 2,
+      "teacher_depth": 4,
+      "candidate_top": 10,
+      "tactical_candidate_limit": 2,
+      "max_nodes_per_search": 20000,
+      "jobs": 4,
+      "shard_options": [
+        "--skip-positions",
+        "--max-positions"
+      ],
+      "estimated_train_records": 181900,
+      "estimated_valid_records": 29600,
+      "estimated_search_scored_immediate_child_comparisons_per_generation": 2200000,
+      "estimated_teacher_generation_wall_hours_per_generation": "9-10",
+      "minimum_data_gates": {
+        "train_records": 150000,
+        "valid_records": 15000,
+        "eligible_game_vs_search_pairs": 8000
+      },
+      "comparison_to_v2_5_0_training": "The 385M dense KPP-derived targets and approximately 2.2M depth-4-search-scored immediate-child comparisons are different information units and must not be compared as equivalent sample counts or wall time.",
+      "method_scope": "MMTO-lite: the trainer backpropagates the immediate child position, not a principal-variation leaf."
+    },
+    {
+      "step": 3,
+      "name": "train_full_direct_only_mmto_lite",
+      "status": "not_eligible_after_learning_curve_failure",
+      "epochs_saved": [
+        1,
+        2
+      ],
+      "maximum_epochs": 2,
+      "same_hyperparameters_as_step_1": true,
+      "swa_start_epoch": 3,
+      "early_stop_patience": 3,
+      "selection_rule": "Select epoch 2 only when its active game-vs-search validation objective improves over epoch 1 and every safety gate remains satisfied; otherwise select epoch 1.",
+      "match_eligibility": {
+        "game_vs_search_accuracy_improvement_fraction_or_mean_regret_reduction_fraction": {
+          "accuracy_improvement_min": 0.02,
+          "mean_regret_reduction_min": 0.03
+        },
+        "non_conflicting_search_pair_accuracy_regression_max": 0.01,
+        "exact_family_ci95_lower_min": 0.88,
+        "health_score_abs_p99_cp_max": 2500,
+        "static_top1_min": 0.68,
+        "search_200k_min": 0.98
+      }
+    },
+    {
+      "step": 4,
+      "name": "parent_and_release_baseline_matches",
+      "status": "not_eligible_after_learning_curve_failure",
+      "parent_match": {
+        "games": 400,
+        "limit": "20000 fixed nodes",
+        "score_min": 0.50,
+        "wilson_ci95_lower_min": 0.475,
+        "success_check": "once_after_all_400_games",
+        "interpretation": "This is a reproducible parent-improvement gate rather than a short non-regression screen."
+      },
+      "paired_v2_5_0_match": {
+        "games_per_model": 200,
+        "same_openings": true,
+        "record_opening_paired_difference": true,
+        "promotion_role": "diagnostic_only"
+      },
+      "forty_game_policy": "catastrophic-regression screen only; never resolve a five-point promotion margin"
+    },
+    {
+      "step": 5,
+      "name": "promote_and_repeat_one_teacher_generation",
+      "status": "not_eligible_after_learning_curve_failure",
+      "maximum_full_generations": 2,
+      "promotion_rule": "Promote solely on the clear parent-match gate; do not promote on a one-win directional change against v2.5.0.",
+      "after_generation_3": {
+        "v2_5_0_score_at_least_0_45": "Proceed to the 300 ms intermediate match without requiring a second generation.",
+        "v2_5_0_score_below_0_40": "Stop this fixed corrected-MMTO route.",
+        "v2_5_0_score_0_40_to_0_45": "Regenerate the teacher from promoted generation 3 and run exactly one more full generation."
+      },
+      "stop_after_two_generations_if": [
+        "Cumulative v2.5.0 score improvement is less than 0.05.",
+        "Candidate score against v2.5.0 is below 0.40."
+      ],
+      "after_generation_4": "Proceed to the 300 ms intermediate match only when both second-generation stop conditions are avoided."
+    },
+    {
+      "step": 6,
+      "name": "intermediate_300ms_match",
+      "status": "not_eligible_after_learning_curve_failure",
+      "time_ms": 300,
+      "games": 200,
+      "score_min": 0.48
+    },
+    {
+      "step": 7,
+      "name": "final_release_acceptance",
+      "status": "not_eligible_after_learning_curve_failure",
+      "time_ms": 1000,
+      "games": 800,
+      "operational_record_interval_games": 200,
+      "success_check": "once_after_all_800_games",
+      "early_stop": "futility_only",
+      "required_wilson_ci95_lower": 0.50
+    }
+  ],
+  "failure_policy": {
+    "trigger": "corrected 9k MMTO-lite step 1 fails",
+    "action": "Stop the plan, record the evidence, and conduct a new strategy review without changing the weight, epoch count, seed, or optimizer.",
+    "triggered": true,
+    "superseded": true,
+    "result": "The binary gate triggered, but objective-aligned re-evaluation showed treatment-control loss -0.00160113 and margin +0.2348 cp across 1,169 eligible records. The route is paused for one fixed learning-curve confirmation because treatment remains below the accepted parent.",
+    "deferred_candidate": "parent-static hard-negative WDoor",
+    "reason_deferred": "It requires generator changes, all-legal child evaluation, and scratch-validation repair, so it is broader than the current single-route plan."
+  },
+  "explicitly_deferred": [
+    "long_direct_epoch_256",
+    "more_random_quiet_hkcl_epochs",
+    "factor_only_or_piece_relative_only_training",
+    "factor_projector_redesign",
+    "search_value_mix_or_learning_rate_tuning",
+    "depth_6_100k_value_teacher_retry",
+    "loss_weight_seed_optimizer_or_source_mix_grid_search",
+    "KPP_or_v2_5_0_training_targets",
+    "parent_static_hard_negative_automatic_fallback",
+    "pv_leaf_teacher_semantics_and_codec_redesign",
+    "policy_head",
+    "new_dataset_schema",
+    "dashboard",
+    "self_play_league",
+    "TDLeaf",
+    "SWA"
+  ]
+}

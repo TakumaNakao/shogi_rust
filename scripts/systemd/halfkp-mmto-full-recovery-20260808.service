@@ -1,0 +1,18 @@
+[Unit]
+Description=Unattended HalfKP full MMTO recovery training
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=%h/shogi_rust
+Environment=RUST_FONTCONFIG_DLOPEN=1
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle:handle-lid-switch --mode=block "--who=HalfKP MMTO full recovery" "--why=Keep long-running shogi model training alive" /usr/bin/python3 -u %h/shogi_rust/scripts/halfkp_mmto_unattended.py run --config %h/shogi_rust/training/halfkp64-scratch-v1/unattended_mmto_recovery_20260808.json
+Restart=on-failure
+RestartSec=1s
+Nice=10
+KillMode=mixed
+TimeoutStopSec=120s
+
+[Install]
+WantedBy=default.target

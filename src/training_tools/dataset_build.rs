@@ -4,6 +4,8 @@ use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
+use shogi_ai::halfkp_training::PackedHalfKpPosition;
+use shogi_ai::opening::classify_opening;
 use shogi_ai::training_data::{
     capture_run_environment, collect_csa_files, csa_color, game_content_id, parse_csa_metadata,
     parse_csa_move, sha256_file, sha256_hex, split_for_game_content, CsaMetadata,
@@ -13,9 +15,9 @@ use shogi_ai::training_data::{
 use shogi_ai::utils::format_move_usi;
 use shogi_core::Color;
 use shogi_lib::Position;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +29,10 @@ struct Args {
     input: Vec<PathBuf>,
     #[arg(long)]
     output_dir: PathBuf,
+    #[arg(long)]
+    license_id: String,
+    #[arg(long)]
+    source_uri: String,
     #[arg(long, default_value_t = false)]
     reuse_if_matches: bool,
     #[arg(long, default_value_t = 9601)]
@@ -37,10 +43,29 @@ struct Args {
     valid_percent: u8,
     #[arg(long, default_value_t = 5)]
     test_percent: u8,
+    #[arg(long, default_value_t = 16)]
+    opening_prefix_plies: usize,
     #[arg(long)]
     max_games: Option<usize>,
     #[arg(long)]
     max_records: Option<usize>,
+    /// Frozen prior dataset used to preserve valid/test and exclude its inputs.
+    #[arg(long)]
+    base_dataset_manifest: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    freeze_base_eval: bool,
+    /// Supplement train cap; equivalent to --max-records for this membership build.
+    #[arg(long)]
+    max_train_records: Option<usize>,
+    /// Exclude games and opening families present in the base train split.
+    /// This is required when constructing an independent follow-up corpus.
+    #[arg(long, default_value_t = false)]
+    exclude_base_train: bool,
+    /// Keep repeated exact positions for a subsequent move-frequency audit.
+    /// The resulting JSONL is a pre-aggregation export and must not be used
+    /// directly as a training dataset.
+    #[arg(long, default_value_t = false)]
+    preserve_position_duplicates: bool,
     #[arg(long, default_value_t = 0)]
     target_opening_records: usize,
     #[arg(long, default_value_t = 0)]
@@ -83,11 +108,16 @@ struct Args {
 struct DatasetRecord {
     schema: &'static str,
     source: String,
+    license_id: String,
+    source_uri: String,
     game_index: usize,
     game_key: String,
+    opening_family: String,
     split: &'static str,
     ply: usize,
     phase: &'static str,
+    opening_stratum: u16,
+    opening_alias: String,
     side_to_move: &'static str,
     player_rate: Option<i32>,
     opponent_rate: Option<i32>,
@@ -123,6 +153,8 @@ struct DatasetStats {
     games_filtered: usize,
     records_written: usize,
     records_filtered: usize,
+    records_split_collision_filtered: usize,
+    records_duplicate_input_filtered: usize,
     phase: PhaseCounts,
     train: SplitCounts,
     valid: SplitCounts,
@@ -140,14 +172,22 @@ struct DatasetManifest {
     command: Vec<String>,
     input: Vec<String>,
     output_dir: String,
+    license_id: String,
+    source_uri: String,
     seed: u64,
     phase_policy_version: u32,
     split_policy_version: u32,
     shuffle_games: bool,
     valid_percent: u8,
     test_percent: u8,
+    opening_prefix_plies: usize,
     max_games: Option<usize>,
     max_records: Option<usize>,
+    base_dataset_manifest: Option<String>,
+    freeze_base_eval: bool,
+    max_train_records: Option<usize>,
+    exclude_base_train: bool,
+    preserve_position_duplicates: bool,
     target_opening_records: usize,
     target_middle_records: usize,
     target_late_records: usize,
@@ -188,6 +228,7 @@ struct OutputFileManifest {
 struct GameSource {
     path: PathBuf,
     game_id: String,
+    opening_family: String,
     bytes: u64,
 }
 
@@ -195,6 +236,12 @@ struct Writers {
     train: BufWriter<File>,
     valid: BufWriter<File>,
     test: BufWriter<File>,
+}
+
+struct CandidateRecord {
+    phase: Phase,
+    line: String,
+    network_input_hash: [u8; 32],
 }
 
 fn color_text(color: Color) -> &'static str {
@@ -380,10 +427,12 @@ fn process_game(
     game_index: usize,
     bytes: &[u8],
     game_id: &str,
+    opening_family: &str,
     split: Split,
     args: &Args,
     writers: &mut Writers,
     stats: &mut DatasetStats,
+    network_splits: &mut HashMap<[u8; 32], Split>,
 ) -> Result<usize> {
     let text = std::str::from_utf8(bytes)?;
     let record = csa::parse_csa(&text)?;
@@ -395,7 +444,7 @@ fn process_game(
     let mut position = Position::default();
     let mut eligible_seen = 0usize;
     let game_key = game_id.to_string();
-    let mut candidates = Vec::<(Phase, String)>::new();
+    let mut candidates = Vec::<CandidateRecord>::new();
 
     for (ply_index, csa_move) in record.moves.iter().enumerate() {
         let ply = ply_index + 1;
@@ -428,16 +477,22 @@ fn process_game(
                 continue;
             }
             let phase = phase_for_ply(ply);
+            let opening = classify_opening(&position);
             let opponent = move_color.flip();
             let is_winner_move = metadata.winner.map(|winner| winner == move_color);
             let out = DatasetRecord {
-                schema: "rank_value_dataset_v2_position",
+                schema: "rank_value_dataset_v3_position",
                 source: format!("sha256:{game_id}"),
+                license_id: args.license_id.clone(),
+                source_uri: args.source_uri.clone(),
                 game_index,
                 game_key: game_key.clone(),
+                opening_family: opening_family.to_string(),
                 split: split_text(split),
                 ply,
                 phase: phase_text(ply),
+                opening_stratum: opening.stratum_id(),
+                opening_alias: opening.alias(),
                 side_to_move: color_text(move_color),
                 player_rate: player_rate(&metadata, move_color),
                 opponent_rate: player_rate(&metadata, opponent),
@@ -451,7 +506,14 @@ fn process_game(
                 teacher_move: format_move_usi(mv),
             };
             let line = serde_json::to_string(&out)?;
-            candidates.push((phase, line));
+            let network_input_hash = PackedHalfKpPosition::from_position(&position)
+                .ok_or_else(|| anyhow!("game position lacks a king"))?
+                .network_input_hash();
+            candidates.push(CandidateRecord {
+                phase,
+                line,
+                network_input_hash,
+            });
         } else if ply >= args.min_ply {
             stats.records_filtered += 1;
         }
@@ -462,7 +524,7 @@ fn process_game(
     let mut selected = select_game_records(candidates, args, &game_key);
     stats.records_filtered += candidate_count.saturating_sub(selected.len());
     let mut written = 0usize;
-    for (phase, line) in selected.drain(..) {
+    for candidate in selected.drain(..) {
         if all_phase_targets_reached(args, stats)
             || args
                 .max_records
@@ -470,13 +532,25 @@ fn process_game(
         {
             break;
         }
-        if phase_target_reached(args, stats, phase) {
+        if phase_target_reached(args, stats, candidate.phase) {
             stats.records_filtered += 1;
             continue;
         }
-        write_record(writers, split, &line)?;
+        if !args.preserve_position_duplicates {
+            if let Some(&previous) = network_splits.get(&candidate.network_input_hash) {
+                stats.records_filtered += 1;
+                if previous != split {
+                    stats.records_split_collision_filtered += 1;
+                } else {
+                    stats.records_duplicate_input_filtered += 1;
+                }
+                continue;
+            }
+            network_splits.insert(candidate.network_input_hash, split);
+        }
+        write_record(writers, split, &candidate.line)?;
         increment_split_records(stats, split);
-        increment_phase_count(stats, phase);
+        increment_phase_count(stats, candidate.phase);
         stats.records_written += 1;
         written += 1;
     }
@@ -484,15 +558,15 @@ fn process_game(
 }
 
 fn select_game_records(
-    candidates: Vec<(Phase, String)>,
+    candidates: Vec<CandidateRecord>,
     args: &Args,
     game_key: &str,
-) -> Vec<(Phase, String)> {
+) -> Vec<CandidateRecord> {
     let mut rng = ChaCha8Rng::seed_from_u64(stable_hash(args.seed, game_key));
     if let Some(caps) = args.phase_records_per_game.as_deref() {
         let mut phases = [Vec::new(), Vec::new(), Vec::new()];
         for candidate in candidates {
-            let index = match candidate.0 {
+            let index = match candidate.phase {
                 Phase::Opening => 0,
                 Phase::Middlegame => 1,
                 Phase::Endgame => 2,
@@ -533,6 +607,32 @@ fn unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn opening_family_id(bytes: &[u8], prefix_plies: usize) -> Result<String> {
+    if prefix_plies == 0 {
+        return Err(anyhow!("opening prefix plies must be positive"));
+    }
+    let text = std::str::from_utf8(bytes)?;
+    let record = csa::parse_csa(text)?;
+    let mut position = Position::default();
+    let mut prefix = Vec::new();
+    for csa_move in record.moves.iter().take(prefix_plies) {
+        let mv = parse_csa_move(&position, &csa_move.action)
+            .ok_or_else(|| anyhow!("invalid CSA move in opening prefix"))?;
+        if !position.legal_moves().contains(&mv) {
+            return Err(anyhow!("illegal CSA move in opening prefix"));
+        }
+        prefix.extend_from_slice(format_move_usi(mv).as_bytes());
+        prefix.push(0);
+        position.do_move(mv);
+    }
+    if prefix.is_empty() {
+        return Err(anyhow!("game has no opening moves"));
+    }
+    let mut canonical = b"opening-family-v1\0".to_vec();
+    canonical.extend_from_slice(&prefix);
+    Ok(sha256_hex(&canonical))
+}
+
 fn dataset_stage_fingerprint(args: &Args, sources: &[GameSource]) -> Result<String> {
     let inputs = sources
         .iter()
@@ -546,11 +646,18 @@ fn dataset_stage_fingerprint(args: &Args, sources: &[GameSource]) -> Result<Stri
         "phase_policy_version": PHASE_POLICY_VERSION,
         "split_policy_version": SPLIT_POLICY_VERSION,
         "configuration": {
+            "license_id": args.license_id,
+            "source_uri": args.source_uri,
             "shuffle_games": args.shuffle_games,
             "valid_percent": args.valid_percent,
             "test_percent": args.test_percent,
+            "opening_prefix_plies": args.opening_prefix_plies,
             "max_games": args.max_games,
             "max_records": args.max_records,
+            "base_dataset_manifest": args.base_dataset_manifest,
+            "freeze_base_eval": args.freeze_base_eval,
+            "exclude_base_train": args.exclude_base_train,
+            "max_train_records": args.max_train_records,
             "target_opening_records": args.target_opening_records,
             "target_middle_records": args.target_middle_records,
             "target_late_records": args.target_late_records,
@@ -569,6 +676,7 @@ fn dataset_stage_fingerprint(args: &Args, sources: &[GameSource]) -> Result<Stri
             "exclude_loser_after_ply": args.exclude_loser_after_ply,
             "min_legal_moves": args.min_legal_moves,
             "exclude_in_check": args.exclude_in_check,
+            "preserve_position_duplicates": args.preserve_position_duplicates,
         }
     });
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
@@ -599,13 +707,91 @@ fn reusable_output(output_dir: &Path, expected_fingerprint: &str) -> Result<bool
     Ok(true)
 }
 
+fn manifest_output_path(manifest_path: &Path, name: &str) -> Result<PathBuf> {
+    let value: serde_json::Value =
+        serde_json::from_reader(BufReader::new(File::open(manifest_path)?))?;
+    let base = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow!("dataset manifest has no parent"))?;
+    let output = value["output_files"]
+        .as_array()
+        .and_then(|outputs| {
+            outputs.iter().find(|item| {
+                let Some(path) = item["path"].as_str() else {
+                    return false;
+                };
+                path == name
+                    || Path::new(path).file_name().and_then(|file| file.to_str()) == Some(name)
+            })
+        })
+        .ok_or_else(|| anyhow!("dataset manifest lacks {name}"))?;
+    let path = output["path"]
+        .as_str()
+        .ok_or_else(|| anyhow!("dataset output path is not a string"))?;
+    let resolved = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        base.join(path)
+    };
+    let expected = output["sha256"]
+        .as_str()
+        .ok_or_else(|| anyhow!("dataset output SHA is not a string"))?;
+    if sha256_file(&resolved)? != expected {
+        return Err(anyhow!("base dataset output SHA mismatch: {name}"));
+    }
+    Ok(resolved)
+}
+
+fn load_base_eval_exclusions(
+    manifest_path: &Path,
+    include_train: bool,
+) -> Result<(HashSet<String>, HashSet<String>, HashMap<[u8; 32], Split>)> {
+    let mut inputs = HashMap::new();
+    let mut eval_games = HashSet::new();
+    let mut eval_families = HashSet::new();
+    for name in ["train.jsonl", "valid.jsonl", "test.jsonl"] {
+        let path = manifest_output_path(manifest_path, name)?;
+        for line in BufReader::new(File::open(path)?).lines() {
+            let value: serde_json::Value = serde_json::from_str(&line?)?;
+            let sfen = value["sfen"]
+                .as_str()
+                .ok_or_else(|| anyhow!("base record lacks sfen"))?;
+            let position = shogi_ai::utils::position_from_sfen_or_usi(sfen)
+                .ok_or_else(|| anyhow!("invalid base SFEN"))?;
+            let packed = PackedHalfKpPosition::from_position(&position)
+                .ok_or_else(|| anyhow!("base position lacks king"))?;
+            let split = match name {
+                "train.jsonl" => Split::Train,
+                "valid.jsonl" => Split::Valid,
+                _ => Split::Test,
+            };
+            if include_train || matches!(split, Split::Valid | Split::Test) {
+                if let Some(game_key) = value["game_key"].as_str() {
+                    eval_games.insert(game_key.to_string());
+                }
+                if let Some(opening_family) = value["opening_family"].as_str() {
+                    eval_families.insert(opening_family.to_string());
+                }
+            }
+            inputs.insert(packed.network_input_hash(), split);
+        }
+    }
+    Ok((eval_games, eval_families, inputs))
+}
+
 pub fn run() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    if args.license_id.trim().is_empty() || args.source_uri.trim().is_empty() {
+        return Err(anyhow!("--license-id and --source-uri must be non-empty"));
+    }
     if args.valid_percent + args.test_percent > 100 {
         return Err(anyhow!("--valid-percent + --test-percent must be <= 100"));
     }
     if args.sample_every == 0 {
         return Err(anyhow!("--sample-every must be greater than zero"));
+    }
+    if args.opening_prefix_plies == 0 {
+        return Err(anyhow!("--opening-prefix-plies must be positive"));
     }
     if !(1..=100).contains(&args.target_minimum_percent) {
         return Err(anyhow!("--target-minimum-percent must be in 1..=100"));
@@ -619,6 +805,25 @@ pub fn run() -> Result<()> {
             "--phase-records-per-game requires three comma-separated values"
         ));
     }
+    if (args.freeze_base_eval || args.exclude_base_train) && args.base_dataset_manifest.is_none() {
+        return Err(anyhow!(
+            "--freeze-base-eval/--exclude-base-train requires --base-dataset-manifest"
+        ));
+    }
+    if args.preserve_position_duplicates && args.base_dataset_manifest.is_some() {
+        return Err(anyhow!(
+            "--preserve-position-duplicates cannot be combined with --base-dataset-manifest"
+        ));
+    }
+    if args.max_records.is_some() && args.max_train_records.is_some() {
+        return Err(anyhow!(
+            "use only one of --max-records and --max-train-records"
+        ));
+    }
+    if args.max_records.is_none() {
+        args.max_records = args.max_train_records;
+    }
+    let base_manifest = args.base_dataset_manifest.clone();
     let files = collect_csa_files(&args.input)?;
     let mut stats = DatasetStats::default();
     let mut sources_by_id = BTreeMap::new();
@@ -631,9 +836,17 @@ pub fn run() -> Result<()> {
             }
         };
         let game_id = game_content_id(&bytes);
+        let opening_family = match opening_family_id(&bytes, args.opening_prefix_plies) {
+            Ok(value) => value,
+            Err(_) => {
+                stats.games_skipped_parse += 1;
+                continue;
+            }
+        };
         let source = GameSource {
             path,
             game_id: game_id.clone(),
+            opening_family,
             bytes: bytes.len() as u64,
         };
         if sources_by_id.insert(game_id, source).is_some() {
@@ -641,6 +854,17 @@ pub fn run() -> Result<()> {
         }
     }
     let mut sources = sources_by_id.into_values().collect::<Vec<_>>();
+    let base_eval_exclusions = match args.base_dataset_manifest.as_deref() {
+        Some(path) if args.freeze_base_eval || args.exclude_base_train => {
+            Some(load_base_eval_exclusions(path, args.exclude_base_train)?)
+        }
+        _ => None,
+    };
+    if let Some((eval_games, eval_families, _)) = &base_eval_exclusions {
+        sources.retain(|source| {
+            !eval_games.contains(&source.game_id) && !eval_families.contains(&source.opening_family)
+        });
+    }
     let stage_fingerprint = dataset_stage_fingerprint(&args, &sources)?;
     if args.reuse_if_matches && reusable_output(&args.output_dir, &stage_fingerprint)? {
         println!("reused output_dir={}", args.output_dir.display());
@@ -659,6 +883,13 @@ pub fn run() -> Result<()> {
         })
         .collect();
     let mut writers = create_writers(&args.output_dir)?;
+    let mut network_splits = match base_eval_exclusions {
+        Some((_, _, inputs)) => inputs,
+        None => match args.base_dataset_manifest.as_deref() {
+            Some(path) => load_base_eval_exclusions(path, args.exclude_base_train)?.2,
+            None => HashMap::new(),
+        },
+    };
 
     for (game_index, source) in sources.iter().enumerate() {
         if all_phase_targets_reached(&args, &stats) {
@@ -684,20 +915,26 @@ pub fn run() -> Result<()> {
                 continue;
             }
         };
-        let split = split_for_game_content(
-            &source.game_id,
-            args.seed,
-            args.valid_percent,
-            args.test_percent,
-        );
+        let split = if args.freeze_base_eval {
+            Split::Train
+        } else {
+            split_for_game_content(
+                &source.opening_family,
+                args.seed,
+                args.valid_percent,
+                args.test_percent,
+            )
+        };
         match process_game(
             game_index,
             &bytes,
             &source.game_id,
+            &source.opening_family,
             split,
             &args,
             &mut writers,
             &mut stats,
+            &mut network_splits,
         ) {
             Ok(0) => stats.games_filtered += 1,
             Ok(_) => {
@@ -708,6 +945,20 @@ pub fn run() -> Result<()> {
         }
     }
     flush_writers(&mut writers)?;
+    drop(writers);
+    if args.freeze_base_eval {
+        let base_manifest = base_manifest
+            .as_deref()
+            .ok_or_else(|| anyhow!("frozen eval manifest disappeared"))?;
+        fs::copy(
+            manifest_output_path(base_manifest, "valid.jsonl")?,
+            args.output_dir.join("valid.jsonl"),
+        )?;
+        fs::copy(
+            manifest_output_path(base_manifest, "test.jsonl")?,
+            args.output_dir.join("test.jsonl"),
+        )?;
+    }
     let output_files = [
         ("train.jsonl", stats.train.records),
         ("valid.jsonl", stats.valid.records),
@@ -725,8 +976,8 @@ pub fn run() -> Result<()> {
     .collect::<Result<Vec<_>>>()?;
 
     let manifest = DatasetManifest {
-        schema_version: 3,
-        schema: "rank_value_dataset_v3_manifest",
+        schema_version: 4,
+        schema: "rank_value_dataset_v4_manifest",
         stage_fingerprint,
         environment: capture_run_environment(),
         created_unix_secs: unix_secs(),
@@ -738,14 +989,25 @@ pub fn run() -> Result<()> {
             .map(|path| path.to_string_lossy().to_string())
             .collect(),
         output_dir: args.output_dir.to_string_lossy().to_string(),
+        license_id: args.license_id.clone(),
+        source_uri: args.source_uri.clone(),
         seed: args.seed,
         phase_policy_version: PHASE_POLICY_VERSION,
         split_policy_version: SPLIT_POLICY_VERSION,
         shuffle_games: args.shuffle_games,
         valid_percent: args.valid_percent,
         test_percent: args.test_percent,
+        opening_prefix_plies: args.opening_prefix_plies,
         max_games: args.max_games,
         max_records: args.max_records,
+        base_dataset_manifest: args
+            .base_dataset_manifest
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        freeze_base_eval: args.freeze_base_eval,
+        exclude_base_train: args.exclude_base_train,
+        preserve_position_duplicates: args.preserve_position_duplicates,
+        max_train_records: args.max_train_records,
         target_opening_records: args.target_opening_records,
         target_middle_records: args.target_middle_records,
         target_late_records: args.target_late_records,

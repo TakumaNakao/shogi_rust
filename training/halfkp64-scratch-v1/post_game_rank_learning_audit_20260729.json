@@ -1,0 +1,228 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-29",
+  "scope": "Post-full-game-rank learning implementation, update-dose, and transfer audit",
+  "status": "planned_not_executed",
+  "conclusion": {
+    "fatal_current_trainer_bug_found": false,
+    "rejected_full_epoch_2_candidate_remains_rejected": true,
+    "game_rank_objective_rejection_withdrawn": true,
+    "primary_unresolved_issue": "The run used one thirtieth of the trainer default learning rate and moved each parameter group by only about 0.1 percent RMS while the held-out objective was still improving.",
+    "primary_transfer_risk": "Immediate-child ranking improvements may be redundant after 20000-node search and may not change playing strength."
+  },
+  "lineage": {
+    "lineage_id": "halfkp64-scratch-v1",
+    "accepted_parent_generation": 2,
+    "accepted_parent_model_sha256": "9a1bfc9b7b317f451fa9a6efb350fed0a50e3020659686cefccc98646b9b3db6",
+    "v2_5_0_usage": "match_comparison_only",
+    "v2_5_0_used_for_training": false,
+    "kpp_weights_scores_pvs_or_distillation_used": false,
+    "test_split_opened": false
+  },
+  "implementation_audit": {
+    "teacher_child_score_negation_correct": true,
+    "trainer_child_utility_perspective_correct": true,
+    "rank_gradient_direction_correct": true,
+    "runtime_and_trainer_forward_shared": true,
+    "feature_index_and_center_mirror_correct": true,
+    "adagrad_checkpoint_and_manifest_sha_checks_correct": true,
+    "zero_loss_parent_byte_identity": true,
+    "trainer_tests_passed": 19,
+    "objective_tests_passed": 5,
+    "incremental_refresh_tests_passed": 1,
+    "remaining_pre_run_checks": [
+      "Finite-difference check of the complete game-rank gradient for both sides to move.",
+      "Loss reduction on a fixed 1024-record train-only subset.",
+      "No-op byte identity under the final command."
+    ],
+    "known_nonfatal_issues": [
+      "Validation score treats objective weights as active/inactive rather than scaling by their magnitude; this does not change model ordering for game-rank-only training.",
+      "The train CSV rank loss includes game-rank-weight while validation reports unit-weight loss, producing a tenfold display-scale difference."
+    ]
+  },
+  "update_dose_audit": {
+    "old_learning_rate": 0.00001,
+    "old_output_learning_rate": 0.000001,
+    "trainer_default_learning_rate": 0.0003,
+    "trainer_default_output_learning_rate": 0.00003,
+    "epoch_2_parameter_delta": {
+      "feature": {
+        "changed": 962109,
+        "total": 6750720,
+        "rms": 0.000045522417,
+        "relative_to_parent_rms": 0.001128,
+        "max_abs": 0.000922888517
+      },
+      "hidden_bias": {
+        "changed": 61,
+        "total": 64,
+        "rms": 0.000401639335,
+        "relative_to_parent_rms": 0.000805,
+        "max_abs": 0.00101196766
+      },
+      "output_weight": {
+        "changed": 129,
+        "total": 129,
+        "rms": 0.0000967086941,
+        "relative_to_parent_rms": 0.000982,
+        "max_abs": 0.000102750957
+      },
+      "output_bias_changed": false
+    },
+    "epoch_2_over_epoch_1_delta_rms_ratio": {
+      "feature": 1.426,
+      "hidden_bias": 1.427,
+      "output_weight": 1.423,
+      "sqrt_2_reference": 1.4142135623730951
+    },
+    "validation_curve": {
+      "parent_loss": 4.335108647266881,
+      "epoch_1_loss": 4.26235460,
+      "epoch_2_loss": 4.231708448073377,
+      "parent_mean_margin_cp": -370.4522729723889,
+      "epoch_1_mean_margin_cp": -362.7266,
+      "epoch_2_mean_margin_cp": -359.45756221603864,
+      "margin_improved": 14462,
+      "margin_worsened": 3547,
+      "accuracy_gained": 114,
+      "accuracy_lost": 28
+    }
+  },
+  "match_reanalysis": {
+    "games": 400,
+    "candidate_wins": 196,
+    "parent_wins": 196,
+    "draws": 8,
+    "score": 0.5,
+    "opening_pairs": 200,
+    "candidate_better_pairs": 43,
+    "parent_better_pairs": 45,
+    "tied_pairs": 112,
+    "interpretation": "No evidence of a large improvement at this update dose; not proof that a materially larger update using the same objective cannot transfer."
+  },
+  "phase_a_correctly_dosed_game_rank": {
+    "status": "ready_after_pre_run_checks",
+    "reuse_existing_teacher_data": true,
+    "train_records": 180752,
+    "valid_records": 23523,
+    "init": "accepted generation 2 with fresh zero-state AdaGrad",
+    "fixed_hyperparameters": {
+      "epochs": [1, 2],
+      "batch_size": 128,
+      "learning_rate": 0.0003,
+      "output_learning_rate": 0.00003,
+      "value_weight": 0.0,
+      "rank_weight": 0.0,
+      "game_vs_search_weight": 0.0,
+      "game_rank_weight": 0.1,
+      "rank_margin_cp": 20.0,
+      "rank_temperature_cp": 100.0,
+      "minimum_teacher_gap_cp": 15.0,
+      "game_regret_cap_cp": 300.0,
+      "seed": 20260728,
+      "output_limit": 0.2,
+      "weight_decay": false,
+      "swa": false
+    },
+    "no_parameter_grid": true,
+    "offline_gate": {
+      "beat_old_epoch_2_fixed_pair_loss_and_margin": true,
+      "paired_margin_improved_greater_than_worsened": true,
+      "all_search_pair_accuracy_regression_max": 0.01,
+      "exact_family_ci95_lower_min": 0.88,
+      "health_score_abs_p99_cp_max": 2500,
+      "static_top1_min": 0.68,
+      "search_200k_min": 0.98,
+      "errors_or_limit_contacts": 0
+    },
+    "match_gate": {
+      "parent_games": 400,
+      "parent_limit": "20000 fixed nodes",
+      "reject_as_clear_regression_below_score": 0.48,
+      "require_for_v2_5_comparison_point_score_min": 0.50,
+      "require_for_v2_5_comparison_wilson_lower_min": 0.45,
+      "paired_v2_5_games_per_model": 200,
+      "paired_v2_5_time_ms": 100,
+      "candidate_v2_5_score_min": 0.40,
+      "candidate_minus_parent_v2_5_score_min": 0.05
+    },
+    "failure_action": "Stop game-rank permanently without further learning-rate, epoch, seed, weight, temperature, or regret-cap tuning."
+  },
+  "phase_b_all_legal_policy_ce": {
+    "status": "blocked_on_phase_a_failure",
+    "purpose": "Replace one search-confirmed pair per root with the full high-rate WDoor legal-move decision while using no KPP artifacts.",
+    "runtime_policy_head_added": false,
+    "new_model_format": false,
+    "new_dataset_schema": false,
+    "kpp_logic_reuse_only": [
+      "Legal move enumeration.",
+      "Stable softmax cross entropy.",
+      "Teacher top-one and probability metrics."
+    ],
+    "kpp_artifacts_forbidden": [
+      "KPP features.",
+      "KPP weights.",
+      "KPP scores or PVs.",
+      "KPP optimizer state.",
+      "HalfKP KPP distillation data."
+    ],
+    "sanity": {
+      "roots": 1024,
+      "learning_rate_candidates": [0.00001, 0.0001],
+      "selection": "Smallest rate reducing train-only CE by at least 10 percent in four passes without non-finite values or limit contact.",
+      "validation_or_match_used_for_lr_selection": false
+    },
+    "pilot": {
+      "train_roots": 50000,
+      "valid_roots": 10000,
+      "epochs": [1, 2],
+      "temperature_cp": 300.0,
+      "valid_ce_bootstrap_improvement_ci95_lower_above_zero": true,
+      "teacher_top1_improvement_min": 0.01,
+      "teacher_margin_improved_greater_than_worsened": true,
+      "actual_search_roots": 2000,
+      "actual_search_nodes": 20000,
+      "same_safety_gates": true,
+      "parent_match_games": 200,
+      "parent_score_min": 0.48,
+      "paired_v2_5_games_per_model": 200,
+      "candidate_v2_5_score_min": 0.35,
+      "candidate_minus_parent_v2_5_score_min": 0.05,
+      "failure_action": "Stop without temperature, learning-rate, epoch, winner-only, or top-k tuning."
+    },
+    "full": {
+      "train_roots": 556820,
+      "valid_roots": 99660,
+      "estimated_train_children_per_epoch": 54888942,
+      "epochs_initial": [1, 2],
+      "epoch_4_allowed_if_epoch_2_relative_ce_improvement_min": 0.005,
+      "maximum_epochs": 4,
+      "estimated_epoch_wall_limit_hours_before_replanning": 24,
+      "parent_match_games": 400,
+      "parent_score_min": 0.50,
+      "parent_wilson_lower_min": 0.45,
+      "candidate_v2_5_score_min": 0.40,
+      "candidate_minus_parent_v2_5_score_min": 0.05
+    }
+  },
+  "final_gate": {
+    "maximum_additional_generation_count": 1,
+    "rate_3500_expansion_only_if_v2_5_score_range": [0.40, 0.45],
+    "generation_4_v2_5_score_min": 0.45,
+    "generation_4_cumulative_improvement_min": 0.10,
+    "intermediate_time_ms": 300,
+    "intermediate_games": 200,
+    "intermediate_score_min": 0.48,
+    "final_time_ms": 1000,
+    "final_games": 800,
+    "final_wilson_ci95_lower_min": 0.50
+  },
+  "explicitly_not_used": [
+    "Current v2.5.0 or KPP-derived weights, scores, PVs, results, anchors, hard-negative selection, or distillation pools for training.",
+    "More game-vs-search, search-rank, search-value, long-direct, or quiet-expert tuning.",
+    "Multiple-seed or broad learning-rate grids.",
+    "Winner-only versus mixed-data A/B.",
+    "CSA evaluation comments without per-engine scale and sign calibration.",
+    "Automatic true-PV-leaf MMTO, self-play, or TD fallback."
+  ]
+}

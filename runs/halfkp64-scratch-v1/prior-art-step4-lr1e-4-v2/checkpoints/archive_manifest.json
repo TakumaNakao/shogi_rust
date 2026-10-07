@@ -1,0 +1,39 @@
+{
+  "schema": "halfkp_mmto_checkpoint_archive_v1",
+  "source_run": "runs/halfkp64-scratch-v1/prior-art-step4-lr1e-4-v2",
+  "lineage": "halfkp64-scratch-v1",
+  "parent_generation": 2,
+  "dataset_manifest_sha256": "d8da8088b02d3d0200aad2ecb061691c6c418173a16fe32819f03088af48708f",
+  "archives": {
+    "outer_0001": {
+      "model_sha256": "934b5675ec5ae92d5837704a6debeaf752521303dad6ee4388b3560d7811607f",
+      "optimizer_sha256": "6dab6bd0feee88b57bdebd6c2f11ea518ae24a1c18e187a0d63f15b76d308a6b",
+      "model_source": "model.previous",
+      "optimizer_source": "optimizer.previous",
+      "metrics_source": "metrics/outer_0001.json"
+    },
+    "outer_0002": {
+      "model_sha256": "d8fe5a48374b0435832fd28f286f5591982130c1b78a35f3b0499b40495d995e",
+      "optimizer_sha256": "9b584a2398f3ceb297f1c5737d6c0518b8bfb3cc5779f9bcf5f777837a339c54",
+      "model_source": "model.bin",
+      "optimizer_source": "optimizer.bin",
+      "metrics_source": "metrics/outer_0002.json",
+      "checkpoint_source": "checkpoint.json"
+    },
+    "outer_0003": {
+      "model_sha256": "bca0d82b7daa23dff28feed4900e189e8da69f9b65fb63892666ac706615a258",
+      "optimizer_sha256": "adadeaffbc5bc665e189cc1f15f599cebde433c74083de8d5700dfdb087c2f35",
+      "model_source": "model.previous",
+      "optimizer_source": "optimizer.previous",
+      "metrics_source": "metrics/outer_0003.json"
+    },
+    "outer_0004": {
+      "model_sha256": "ef1416e52756864901aa266688929dcbd6102fdaeb24786d113d3599cdbf70af",
+      "optimizer_sha256": "9c9acb1e530111052b34de0b337bddbec56d3c8fdec8d3254389312f75cc3d1f",
+      "model_source": "model.bin",
+      "optimizer_source": "optimizer.bin",
+      "metrics_source": "metrics/outer_0004.json",
+      "checkpoint_source": "checkpoint.json"
+    }
+  }
+}

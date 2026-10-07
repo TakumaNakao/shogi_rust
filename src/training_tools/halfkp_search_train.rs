@@ -5,22 +5,34 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use shogi_ai::evaluation::{HalfKpFlatModel, HalfKpHeader, HALFKP_HIDDEN, HALFKP_INPUTS};
+use shogi_ai::evaluation::{
+    HalfKpFlatModel, HalfKpHeader, HALFKP_HIDDEN, HALFKP_INPUTS, HALFKP_PIECE_STATES,
+    NUM_BOARD_PIECE_KINDS, NUM_SQUARES,
+};
 use shogi_ai::halfkp_training::{
     read_search_teacher_manifest, PackedHalfKpPosition, SearchTeacherReader, SearchTeacherRecord,
-    CANDIDATE_GAME_MOVE, SEARCH_TEACHER_SEMANTICS_ID, SEARCH_TEACHER_SEMANTICS_VERSION,
+    CANDIDATE_GAME_MOVE, CANDIDATE_QSEARCH_LEAF, CANDIDATE_SEARCH_BEST,
+    SEARCH_TEACHER_SEMANTICS_ID, SEARCH_TEACHER_SEMANTICS_VERSION,
 };
 use shogi_ai::training_data::{
     artifact_metadata, capture_run_environment, sha256_file, sha256_hex, ArtifactMetadata,
     RunEnvironment, PHASE_POLICY_VERSION, SPLIT_POLICY_VERSION,
 };
+use shogi_ai::training_tools::halfkp_search_objective::{
+    eligible_game_vs_search_pair, observe_game_rank_pair, observe_game_vs_search_pair,
+    select_game_rank_pair,
+};
+use shogi_ai::training_tools::scratch_lineage::{
+    require_accepted_parent, require_scratch_model_manifest,
+};
 use shogi_core::Color;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-const TARGET_SCALE: f32 = 1000.0;
+pub(super) const TARGET_SCALE: f32 = 1000.0;
+const HALFKP_BOARD_STATES: usize = 2 * NUM_BOARD_PIECE_KINDS * NUM_SQUARES;
 
 #[derive(Parser, Debug)]
 #[command(about = "Train HalfKP from own-search teachers, game results, and candidate rankings")]
@@ -33,6 +45,14 @@ struct Args {
     test: Vec<PathBuf>,
     #[arg(long)]
     init: PathBuf,
+    #[arg(long)]
+    model_manifest: PathBuf,
+    #[arg(long)]
+    promotion_registry: PathBuf,
+    #[arg(long)]
+    gate_report: PathBuf,
+    #[arg(long)]
+    parent_generation: u32,
     #[arg(long)]
     output: PathBuf,
     #[arg(long, default_value_t = 5)]
@@ -47,6 +67,9 @@ struct Args {
     kappa_cp: f32,
     #[arg(long, default_value_t = 0.5)]
     search_mix: f32,
+    /// Weight of absolute root value regression. Use zero for rank-only bootstrap.
+    #[arg(long, default_value_t = 1.0)]
+    value_weight: f32,
     #[arg(long)]
     search_mix_end: Option<f32>,
     #[arg(long, default_value_t = 2.5)]
@@ -55,6 +78,9 @@ struct Args {
     rank_weight: f32,
     #[arg(long, default_value_t = 0.025)]
     game_rank_weight: f32,
+    /// Rank the recorded game move's searched leaf above the scratch search-best leaf.
+    #[arg(long, default_value_t = 0.0)]
+    game_vs_search_weight: f32,
     #[arg(long, default_value_t = 20.0)]
     rank_margin_cp: f32,
     #[arg(long, default_value_t = 100.0)]
@@ -106,6 +132,9 @@ struct Args {
     /// Permit HKST0002 inputs created before teacher-semantics manifests.
     #[arg(long, default_value_t = false)]
     allow_legacy_teacher_semantics: bool,
+    /// Save the final non-SWA epoch even when it is not the best validation checkpoint.
+    #[arg(long, default_value_t = false)]
+    save_last_epoch: bool,
     #[arg(long)]
     log: Option<PathBuf>,
 }
@@ -117,11 +146,11 @@ enum OptimizerKind {
 }
 
 #[derive(Clone)]
-struct Weights {
-    feature_emb: Vec<f32>,
-    hidden_b: [f32; HALFKP_HIDDEN],
-    out_w: [f32; HALFKP_HIDDEN * 2 + 1],
-    out_b: f32,
+pub(super) struct Weights {
+    pub(super) feature_emb: Vec<f32>,
+    pub(super) hidden_b: [f32; HALFKP_HIDDEN],
+    pub(super) out_w: [f32; HALFKP_HIDDEN * 2 + 1],
+    pub(super) out_b: f32,
 }
 
 struct ScheduleFreeState {
@@ -154,6 +183,16 @@ struct CheckpointMeta {
     completed_epoch: usize,
     best_score: f64,
     stale_epochs: usize,
+    #[serde(default)]
+    selected_kind: SelectedKind,
+    #[serde(default)]
+    selected_epoch: usize,
+    #[serde(default = "default_infinite_score")]
+    selected_score: f64,
+    #[serde(default)]
+    selected_model_sha256: String,
+    #[serde(default)]
+    selected_validation: serde_json::Value,
     optimizer: OptimizerKind,
     schedule_step: u64,
     schedule_weight_sum: f64,
@@ -161,9 +200,19 @@ struct CheckpointMeta {
     swa_count: u64,
 }
 
+fn default_infinite_score() -> f64 {
+    f64::INFINITY
+}
+
 #[derive(Serialize)]
 struct TrainingRunManifest {
     schema_version: u32,
+    lineage_id: &'static str,
+    generation: u32,
+    parent_model_sha256: String,
+    parent_manifest_sha256: String,
+    parent_gate_report_sha256: String,
+    promotion_registry_sha256: String,
     stage: &'static str,
     stage_fingerprint: String,
     environment: RunEnvironment,
@@ -182,10 +231,35 @@ struct TrainingRunManifest {
     hyperparameters: serde_json::Value,
     completed_epoch: usize,
     best_validation_score: f64,
+    selected_kind: SelectedKind,
+    selected_epoch: usize,
+    selected_validation_score: f64,
+    selected_validation: serde_json::Value,
+    last_validation: serde_json::Value,
     final_validation: serde_json::Value,
     final_test: Option<serde_json::Value>,
+    model: ArtifactMetadata,
     output: ArtifactMetadata,
-    parent_manifest_sha256: Vec<String>,
+    teacher_manifest_sha256: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SelectedKind {
+    Initial,
+    Best,
+    Last,
+    Swa,
+}
+
+impl Default for SelectedKind {
+    fn default() -> Self {
+        Self::Initial
+    }
+}
+
+fn should_select_candidate(score: f64, selected_score: f64) -> bool {
+    score.is_finite() && score < selected_score
 }
 
 struct DenseGradient {
@@ -204,10 +278,10 @@ impl Default for DenseGradient {
     }
 }
 
-struct Forward {
-    black: [f32; HALFKP_HIDDEN],
-    white: [f32; HALFKP_HIDDEN],
-    raw: f32,
+pub(super) struct Forward {
+    pub(super) black: [f32; HALFKP_HIDDEN],
+    pub(super) white: [f32; HALFKP_HIDDEN],
+    pub(super) raw: f32,
 }
 
 struct RecordGradient {
@@ -237,16 +311,38 @@ struct Metrics {
     known_results: usize,
     value_loss: f64,
     search_abs_error: f64,
+    model_result_brier: f64,
+    teacher_result_brier: f64,
+    model_result_log_loss: f64,
+    teacher_result_log_loss: f64,
     pairs: usize,
     pair_correct: usize,
+    non_conflicting_pairs: usize,
+    non_conflicting_pair_correct: usize,
     top1_matches: usize,
     game_moves: usize,
     game_move_top1: usize,
+    game_search_mismatches: usize,
+    game_regret_threshold_counts: [usize; 4],
+    game_vs_search_eligible: usize,
+    game_vs_search_pairs: usize,
+    game_vs_search_pair_correct: usize,
+    game_vs_search_margin_sum_cp: f64,
+    game_vs_search_objective_loss_sum: f64,
+    game_vs_search_weight_sum: f64,
+    game_rank_eligible: usize,
+    game_rank_pair_correct: usize,
+    game_rank_margin_sum_cp: f64,
+    game_rank_objective_loss_sum: f64,
+    game_rank_weight_sum: f64,
     regret_sum: f64,
     regret_histogram: [u64; 121],
     log_loss: f64,
     phase_records: [usize; 3],
     phase_brier: [f64; 3],
+    phase_result_records: [usize; 3],
+    phase_model_result_brier: [f64; 3],
+    phase_teacher_result_brier: [f64; 3],
 }
 
 impl Default for Metrics {
@@ -256,16 +352,38 @@ impl Default for Metrics {
             known_results: 0,
             value_loss: 0.0,
             search_abs_error: 0.0,
+            model_result_brier: 0.0,
+            teacher_result_brier: 0.0,
+            model_result_log_loss: 0.0,
+            teacher_result_log_loss: 0.0,
             pairs: 0,
             pair_correct: 0,
+            non_conflicting_pairs: 0,
+            non_conflicting_pair_correct: 0,
             top1_matches: 0,
             game_moves: 0,
             game_move_top1: 0,
+            game_search_mismatches: 0,
+            game_regret_threshold_counts: [0; 4],
+            game_vs_search_eligible: 0,
+            game_vs_search_pairs: 0,
+            game_vs_search_pair_correct: 0,
+            game_vs_search_margin_sum_cp: 0.0,
+            game_vs_search_objective_loss_sum: 0.0,
+            game_vs_search_weight_sum: 0.0,
+            game_rank_eligible: 0,
+            game_rank_pair_correct: 0,
+            game_rank_margin_sum_cp: 0.0,
+            game_rank_objective_loss_sum: 0.0,
+            game_rank_weight_sum: 0.0,
             regret_sum: 0.0,
             regret_histogram: [0; 121],
             log_loss: 0.0,
             phase_records: [0; 3],
             phase_brier: [0.0; 3],
+            phase_result_records: [0; 3],
+            phase_model_result_brier: [0.0; 3],
+            phase_teacher_result_brier: [0.0; 3],
         }
     }
 }
@@ -273,9 +391,11 @@ impl Default for Metrics {
 struct TrainOptions {
     kappa_cp: f32,
     search_mix: f32,
+    value_weight: f32,
     loss_power: f32,
     rank_weight: f32,
     game_rank_weight: f32,
+    game_vs_search_weight: f32,
     rank_margin_cp: f32,
     rank_temperature_cp: f32,
     min_rank_gap_cp: f32,
@@ -283,8 +403,15 @@ struct TrainOptions {
     max_pairs_per_record: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ParameterMaxAbs {
+    feature_emb: f32,
+    hidden_b: f32,
+    output: f32,
+}
+
 impl Weights {
-    fn load(path: &Path) -> Result<Self> {
+    pub(super) fn load(path: &Path) -> Result<Self> {
         let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let flat = HalfKpFlatModel::decode(&bytes)?;
         if flat.header.target_scale != TARGET_SCALE {
@@ -298,7 +425,7 @@ impl Weights {
         })
     }
 
-    fn save(&self, path: &Path) -> Result<()> {
+    pub(super) fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -318,7 +445,7 @@ impl Weights {
         Ok(())
     }
 
-    fn zeros_like(&self) -> Self {
+    pub(super) fn zeros_like(&self) -> Self {
         Self {
             feature_emb: vec![0.0; self.feature_emb.len()],
             hidden_b: [0.0; HALFKP_HIDDEN],
@@ -341,7 +468,7 @@ impl Weights {
         self.out_b += (value.out_b - self.out_b) * rate;
     }
 
-    fn forward(&self, position: &PackedHalfKpPosition) -> Forward {
+    pub(super) fn forward(&self, position: &PackedHalfKpPosition) -> Forward {
         let forward = HalfKpFlatModel::forward_parts(
             &self.feature_emb,
             &self.hidden_b,
@@ -366,11 +493,160 @@ impl Weights {
             raw: forward.raw,
         }
     }
+
+    fn validate_parameter_limits(&self, output_limit: f32, label: &str) -> Result<ParameterMaxAbs> {
+        fn finite_max_abs(values: impl IntoIterator<Item = f32>, label: &str) -> Result<f32> {
+            let mut maximum = 0.0f32;
+            for value in values {
+                if !value.is_finite() {
+                    return Err(anyhow!("{label} contains a non-finite parameter"));
+                }
+                maximum = maximum.max(value.abs());
+            }
+            Ok(maximum)
+        }
+
+        let maxima = ParameterMaxAbs {
+            feature_emb: finite_max_abs(self.feature_emb.iter().copied(), label)?,
+            hidden_b: finite_max_abs(self.hidden_b, label)?,
+            output: finite_max_abs(
+                self.out_w
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(self.out_b)),
+                label,
+            )?,
+        };
+        if maxima.feature_emb > 1.0 {
+            return Err(anyhow!(
+                "{label} feature max abs {:.9} exceeds limit 1.0; refusing silent projection",
+                maxima.feature_emb
+            ));
+        }
+        if maxima.hidden_b > 1.0 {
+            return Err(anyhow!(
+                "{label} hidden-bias max abs {:.9} exceeds limit 1.0; refusing silent projection",
+                maxima.hidden_b
+            ));
+        }
+        if maxima.output > output_limit {
+            return Err(anyhow!(
+                "{label} output max abs {:.9} exceeds --output-limit {:.9}; \
+                 choose an explicit compatible limit instead of projecting the init model",
+                maxima.output,
+                output_limit
+            ));
+        }
+        Ok(maxima)
+    }
+
+    fn validate_center_mirror_symmetry(&self, label: &str) -> Result<()> {
+        for rank in 0..9 {
+            let king_bucket = 4 * 9 + rank;
+            for color_kind in 0..2 * NUM_BOARD_PIECE_KINDS {
+                for file in 0..4 {
+                    for piece_rank in 0..9 {
+                        let a_state = color_kind * NUM_SQUARES + file * 9 + piece_rank;
+                        let b_state = color_kind * NUM_SQUARES + (8 - file) * 9 + piece_rank;
+                        let a = (king_bucket * HALFKP_PIECE_STATES + a_state) * HALFKP_HIDDEN;
+                        let b = (king_bucket * HALFKP_PIECE_STATES + b_state) * HALFKP_HIDDEN;
+                        for h in 0..HALFKP_HIDDEN {
+                            if self.feature_emb[a + h].to_bits()
+                                != self.feature_emb[b + h].to_bits()
+                            {
+                                return Err(anyhow!(
+                                    "{label} violates center-king mirror symmetry at features {} and {} hidden {}",
+                                    king_bucket * HALFKP_PIECE_STATES + a_state,
+                                    king_bucket * HALFKP_PIECE_STATES + b_state,
+                                    h
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn center_mirror_feature(feature: usize) -> Option<usize> {
+    if feature >= HALFKP_INPUTS {
+        return None;
+    }
+    let king_bucket = feature / HALFKP_PIECE_STATES;
+    if king_bucket / 9 != 4 {
+        return None;
+    }
+    let state = feature % HALFKP_PIECE_STATES;
+    if state >= HALFKP_BOARD_STATES {
+        return None;
+    }
+    let color_kind = state / NUM_SQUARES;
+    let square = state % NUM_SQUARES;
+    let file = square / 9;
+    if file == 4 {
+        return Some(feature);
+    }
+    let rank = square % 9;
+    let mirrored_state = color_kind * NUM_SQUARES + (8 - file) * 9 + rank;
+    Some(king_bucket * HALFKP_PIECE_STATES + mirrored_state)
+}
+
+pub(super) fn project_center_mirror_sparse_gradient(
+    sparse: &mut HashMap<usize, [f32; HALFKP_HIDDEN]>,
+) {
+    let mut pairs = BTreeSet::new();
+    for feature in sparse.keys().copied().collect::<Vec<_>>() {
+        let Some(mirrored) = center_mirror_feature(feature) else {
+            continue;
+        };
+        if feature != mirrored {
+            pairs.insert((feature.min(mirrored), feature.max(mirrored)));
+        }
+    }
+    for (a, b) in pairs {
+        let a_row = sparse.get(&a).copied().unwrap_or([0.0; HALFKP_HIDDEN]);
+        let b_row = sparse.get(&b).copied().unwrap_or([0.0; HALFKP_HIDDEN]);
+        let mut projected = [0.0; HALFKP_HIDDEN];
+        for h in 0..HALFKP_HIDDEN {
+            projected[h] = 0.5 * (a_row[h] + b_row[h]);
+        }
+        sparse.insert(a, projected);
+        sparse.insert(b, projected);
+    }
 }
 
 pub fn run() -> Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
+    let accepted_parent = require_accepted_parent(
+        &args.promotion_registry,
+        &args.init,
+        &args.gate_report,
+        args.parent_generation,
+    )?;
+    let manifest_parent =
+        require_scratch_model_manifest(&args.model_manifest, &args.init, args.parent_generation)?;
+    if accepted_parent.model_sha256 != manifest_parent {
+        return Err(anyhow!(
+            "accepted parent and model manifest resolve to different model hashes"
+        ));
+    }
+    preflight_teacher_artifacts(
+        args.train.iter().chain(&args.valid).chain(&args.test),
+        &manifest_parent,
+        args.allow_legacy_teacher_semantics,
+    )?;
+    let split_audit = validate_train_valid_network_split(
+        &args.train,
+        &args.valid,
+        args.allow_legacy_teacher_semantics,
+    )?;
+    println!(
+        "network_split train_inputs={} valid_inputs={} overlap={}",
+        split_audit.train_inputs, split_audit.valid_inputs, split_audit.overlap
+    );
     let pool = if args.threads > 0 {
         Some(
             rayon::ThreadPoolBuilder::new()
@@ -423,9 +699,11 @@ pub fn run() -> Result<()> {
     let base_options = TrainOptions {
         kappa_cp: args.kappa_cp,
         search_mix: args.search_mix,
+        value_weight: args.value_weight,
         loss_power: args.loss_power,
         rank_weight: args.rank_weight,
         game_rank_weight: args.game_rank_weight,
+        game_vs_search_weight: args.game_vs_search_weight,
         rank_margin_cp: args.rank_margin_cp,
         rank_temperature_cp: args.rank_temperature_cp,
         min_rank_gap_cp: args.min_rank_gap_cp,
@@ -436,14 +714,45 @@ pub fn run() -> Result<()> {
         kappa_cp,
         ..base_options
     };
-    let run_fingerprint = training_fingerprint(&args)?;
-    let (mut weights, mut optimizer, mut swa, start_epoch, mut best, mut stale) =
-        initialize_training(&args, &run_fingerprint)?;
+    let run_fingerprint = training_fingerprint(&args, kappa_cp)?;
+    let (
+        mut weights,
+        mut optimizer,
+        mut swa,
+        start_epoch,
+        mut best,
+        mut stale,
+        resumed_selected_kind,
+        resumed_selected_epoch,
+        resumed_selected_score,
+    ) = initialize_training(&args, &run_fingerprint)?;
+    let maxima = weights.validate_parameter_limits(args.output_limit, "training weights")?;
+    weights.validate_center_mirror_symmetry("training weights")?;
+    match &optimizer {
+        OptimizerState::Adagrad(state) => {
+            state.validate_center_mirror_symmetry("AdaGrad state")?;
+        }
+        OptimizerState::ScheduleFree(state) => {
+            state
+                .z
+                .validate_parameter_limits(args.output_limit, "schedule-free z")?;
+            state.z.validate_center_mirror_symmetry("schedule-free z")?;
+            state
+                .variance
+                .validate_center_mirror_symmetry("schedule-free variance")?;
+        }
+    }
+    println!(
+        "parameter_max_abs feature={:.9} hidden_b={:.9} output={:.9} output_limit={:.9}",
+        maxima.feature_emb, maxima.hidden_b, maxima.output, args.output_limit
+    );
     let mut log = create_log(args.log.as_deref())?;
     options.search_mix = args.search_mix_end.unwrap_or(args.search_mix);
+    let game_rank_selector = Weights::load(&args.init)?;
     let initial_weights = evaluation_weights(&weights, &optimizer, args.schedule_free_beta1);
     let initial = evaluate_datasets(
         &initial_weights,
+        &game_rank_selector,
         &args.valid,
         args.max_valid_records,
         args.eval_chunk_records,
@@ -451,10 +760,59 @@ pub fn run() -> Result<()> {
         &options,
     )?;
     let mut final_valid_metrics = initial.clone();
+    let initial_score = validation_score(&initial, &options);
+    if !initial_score.is_finite() {
+        return Err(anyhow!("non-finite initial validation score"));
+    }
+    let mut selected_kind = if start_epoch == 0 {
+        SelectedKind::Initial
+    } else {
+        resumed_selected_kind
+    };
+    let mut selected_epoch = if start_epoch == 0 {
+        0
+    } else {
+        resumed_selected_epoch
+    };
+    let mut selected_validation = initial.clone();
+    if start_epoch > 0 {
+        let directory = args
+            .checkpoint_dir
+            .as_ref()
+            .ok_or_else(|| anyhow!("resumed training has no checkpoint directory"))?;
+        let selected_path = directory.join("selected.binary");
+        if !selected_path.is_file() {
+            return Err(anyhow!(
+                "checkpoint is missing selected model {}; refusing ambiguous resume",
+                selected_path.display()
+            ));
+        }
+        let selected_weights = Weights::load(&selected_path)?;
+        selected_validation = evaluate_datasets(
+            &selected_weights,
+            &game_rank_selector,
+            &args.valid,
+            args.max_valid_records,
+            args.eval_chunk_records,
+            args.allow_legacy_teacher_semantics,
+            &options,
+        )?;
+        let evaluated_score = validation_score(&selected_validation, &options);
+        if (evaluated_score - resumed_selected_score).abs() > 1e-12 {
+            return Err(anyhow!(
+                "checkpoint selected score does not match selected model: metadata={resumed_selected_score:.12} evaluated={evaluated_score:.12}"
+            ));
+        }
+    }
+    let mut selected_validation_score = if start_epoch == 0 {
+        initial_score
+    } else {
+        resumed_selected_score
+    };
     let mut completed_epoch = start_epoch;
     print_metrics("initial_valid", 0, &initial);
     if start_epoch == 0 {
-        best = validation_score(&initial);
+        best = initial_score;
         initial_weights.save(&args.output)?;
         println!(
             "initial checkpoint score={best:.8} output={}",
@@ -535,6 +893,7 @@ pub fn run() -> Result<()> {
         options.search_mix = args.search_mix_end.unwrap_or(args.search_mix);
         let valid_metrics = evaluate_datasets(
             &eval_weights,
+            &game_rank_selector,
             &args.valid,
             args.max_valid_records,
             args.eval_chunk_records,
@@ -543,11 +902,14 @@ pub fn run() -> Result<()> {
         )?;
         final_valid_metrics = valid_metrics.clone();
         print_metrics("valid", epoch, &valid_metrics);
-        let mut score = validation_score(&valid_metrics);
+        let mut score = validation_score(&valid_metrics, &options);
         let mut selected = &eval_weights;
+        let mut epoch_selected_kind = SelectedKind::Best;
+        let mut epoch_selected_metrics = valid_metrics.clone();
         if let Some(state) = &swa {
             let swa_metrics = evaluate_datasets(
                 &state.average,
+                &game_rank_selector,
                 &args.valid,
                 args.max_valid_records,
                 args.eval_chunk_records,
@@ -555,35 +917,68 @@ pub fn run() -> Result<()> {
                 &options,
             )?;
             print_metrics("swa_valid", epoch, &swa_metrics);
-            let swa_score = validation_score(&swa_metrics);
+            let swa_score = validation_score(&swa_metrics, &options);
             if swa_score < score {
                 score = swa_score;
                 selected = &state.average;
+                epoch_selected_kind = SelectedKind::Swa;
+                epoch_selected_metrics = swa_metrics;
             }
         }
         if let Some(writer) = log.as_mut() {
             writeln!(
                 writer,
-                "{epoch},{seen},{:.8},{:.8},{:.6},{:.6},{:.6},{:.6},{:.3},{:.8}",
+                "{epoch},{seen},{:.8},{:.8},{:.6},{:.6},{:.6},{:.6},{:.6},{:.3},{},{:.6},{:.6},{:.8},{},{:.6},{:.6},{:.8},{:.8},{:.8},{:.8},{:.8},{:.8}",
                 epoch_value_loss / seen.max(1) as f64,
                 epoch_rank_loss / epoch_pairs.max(1) as f64,
                 valid_metrics.value_loss / valid_metrics.records.max(1) as f64,
                 valid_metrics.search_abs_error / valid_metrics.records.max(1) as f64,
                 valid_metrics.top1_matches as f64 / valid_metrics.records.max(1) as f64,
                 valid_metrics.pair_correct as f64 / valid_metrics.pairs.max(1) as f64,
+                valid_metrics.non_conflicting_pair_correct as f64
+                    / valid_metrics.non_conflicting_pairs.max(1) as f64,
                 valid_metrics.regret_sum / valid_metrics.records.max(1) as f64,
-                score
+                valid_metrics.game_vs_search_pairs,
+                valid_metrics.game_vs_search_pair_correct as f64
+                    / valid_metrics.game_vs_search_eligible.max(1) as f64,
+                valid_metrics.game_vs_search_margin_sum_cp
+                    / valid_metrics.game_vs_search_eligible.max(1) as f64,
+                valid_metrics.game_vs_search_objective_loss_sum
+                    / valid_metrics.game_vs_search_weight_sum.max(f64::EPSILON),
+                valid_metrics.game_rank_eligible,
+                valid_metrics.game_rank_pair_correct as f64
+                    / valid_metrics.game_rank_eligible.max(1) as f64,
+                valid_metrics.game_rank_margin_sum_cp
+                    / valid_metrics.game_rank_eligible.max(1) as f64,
+                valid_metrics.game_rank_objective_loss_sum
+                    / valid_metrics.game_rank_weight_sum.max(f64::EPSILON),
+                score,
+                valid_metrics.model_result_brier / valid_metrics.known_results.max(1) as f64,
+                valid_metrics.model_result_log_loss / valid_metrics.known_results.max(1) as f64,
+                valid_metrics.teacher_result_brier / valid_metrics.known_results.max(1) as f64,
+                valid_metrics.teacher_result_log_loss / valid_metrics.known_results.max(1) as f64
             )?;
             writer.flush()?;
         }
-        if best - score >= args.min_valid_improvement {
-            best = score;
-            stale = 0;
+        if !score.is_finite() {
+            return Err(anyhow!("non-finite validation score at epoch {epoch}"));
+        }
+        // Candidate selection is an exact minimum.  The minimum improvement
+        // threshold is reserved for plateau/early-stop accounting below.
+        if should_select_candidate(score, selected_validation_score) {
             selected.save(&args.output)?;
+            selected_kind = epoch_selected_kind;
+            selected_epoch = epoch;
+            selected_validation = epoch_selected_metrics;
+            selected_validation_score = score;
             println!(
                 "best epoch={epoch} score={score:.8} output={}",
                 args.output.display()
             );
+        }
+        if best - score >= args.min_valid_improvement {
+            best = score;
+            stale = 0;
         } else {
             stale += 1;
             if stale >= args.early_stop_patience {
@@ -599,22 +994,41 @@ pub fn run() -> Result<()> {
             epoch,
             best,
             stale,
+            selected_kind,
+            selected_epoch,
+            selected_validation_score,
+            &selected_validation,
         )?;
         if stale >= args.early_stop_patience {
             break;
         }
     }
+    if args.save_last_epoch {
+        let last_weights = evaluation_weights(&weights, &optimizer, args.schedule_free_beta1);
+        last_weights.save(&args.output)?;
+        selected_kind = SelectedKind::Last;
+        selected_epoch = completed_epoch;
+        selected_validation = final_valid_metrics.clone();
+        selected_validation_score = validation_score(&selected_validation, &options);
+        println!(
+            "last checkpoint epoch={} score={:.8} output={}",
+            selected_epoch,
+            selected_validation_score,
+            args.output.display()
+        );
+    }
     let final_test_metrics = if test_records > 0 {
         let final_weights = Weights::load(&args.output)?;
         let test_metrics = evaluate_datasets(
             &final_weights,
+            &game_rank_selector,
             &args.test,
             None,
             args.eval_chunk_records,
             args.allow_legacy_teacher_semantics,
             &options,
         )?;
-        print_metrics("final_test", args.epochs, &test_metrics);
+        print_metrics("final_test", completed_epoch, &test_metrics);
         Some(test_metrics)
     } else {
         None
@@ -625,8 +1039,13 @@ pub fn run() -> Result<()> {
         resolved_threads,
         completed_epoch,
         best,
+        selected_kind,
+        selected_epoch,
+        selected_validation_score,
+        &selected_validation,
         &final_valid_metrics,
         final_test_metrics.as_ref(),
+        kappa_cp,
     )?;
     Ok(())
 }
@@ -638,13 +1057,21 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.output_learning_rate <= 0.0
         || args.kappa_cp <= 0.0
         || !(0.0..=1.0).contains(&args.search_mix)
+        || args.value_weight < 0.0
         || args
             .search_mix_end
             .is_some_and(|value| !(0.0..=1.0).contains(&value))
         || !(1.0..=4.0).contains(&args.loss_power)
         || args.rank_weight < 0.0
         || args.game_rank_weight < 0.0
+        || args.game_vs_search_weight < 0.0
+        || !args.rank_margin_cp.is_finite()
+        || !args.rank_temperature_cp.is_finite()
         || args.rank_temperature_cp <= 0.0
+        || !args.min_rank_gap_cp.is_finite()
+        || args.min_rank_gap_cp < 0.0
+        || !args.game_regret_cap_cp.is_finite()
+        || args.game_regret_cap_cp < 0.0
         || args.gradient_clip_norm <= 0.0
         || args.output_limit <= 0.0
         || args.early_stop_patience == 0
@@ -660,6 +1087,104 @@ fn validate_args(args: &Args) -> Result<()> {
         return Err(anyhow!("--resume requires --checkpoint-dir"));
     }
     Ok(())
+}
+
+fn preflight_teacher_artifacts<'a>(
+    paths: impl IntoIterator<Item = &'a PathBuf>,
+    expected_model_sha256: &str,
+    allow_legacy_teacher_semantics: bool,
+) -> Result<()> {
+    for path in paths {
+        let Some(manifest) = validate_teacher_semantics(path, allow_legacy_teacher_semantics)?
+        else {
+            continue;
+        };
+        let model = manifest
+            .model
+            .as_ref()
+            .ok_or_else(|| anyhow!("{} manifest has no teacher model artifact", path.display()))?;
+        if model.sha256 != expected_model_sha256 {
+            return Err(anyhow!(
+                "{} teacher model SHA {} does not match accepted parent {}",
+                path.display(),
+                model.sha256,
+                expected_model_sha256
+            ));
+        }
+        let output = manifest
+            .output
+            .as_ref()
+            .ok_or_else(|| anyhow!("{} manifest has no output artifact", path.display()))?;
+        let actual_sha256 = sha256_file(path)?;
+        if output.sha256 != actual_sha256 || output.records != Some(manifest.records) {
+            return Err(anyhow!(
+                "{} manifest output artifact does not match dataset bytes or record count",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NetworkSplitAudit {
+    train_inputs: usize,
+    valid_inputs: usize,
+    overlap: usize,
+}
+
+fn validate_train_valid_network_split(
+    train: &[PathBuf],
+    valid: &[PathBuf],
+    allow_legacy_teacher_semantics: bool,
+) -> Result<NetworkSplitAudit> {
+    let mut train_inputs = std::collections::HashSet::new();
+    for path in train {
+        visit_dataset_chunks(path, None, 4_096, allow_legacy_teacher_semantics, |chunk| {
+            for record in chunk {
+                train_inputs.insert(record.root.network_input_hash());
+                train_inputs.extend(
+                    record
+                        .candidates
+                        .iter()
+                        .map(|candidate| candidate.child.network_input_hash()),
+                );
+            }
+            Ok(())
+        })?;
+    }
+    let mut valid_inputs = std::collections::HashSet::new();
+    let mut overlap = std::collections::HashSet::new();
+    for path in valid {
+        visit_dataset_chunks(path, None, 4_096, allow_legacy_teacher_semantics, |chunk| {
+            for record in chunk {
+                for hash in std::iter::once(record.root.network_input_hash()).chain(
+                    record
+                        .candidates
+                        .iter()
+                        .map(|candidate| candidate.child.network_input_hash()),
+                ) {
+                    valid_inputs.insert(hash);
+                    if train_inputs.contains(&hash) {
+                        overlap.insert(hash);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
+    let audit = NetworkSplitAudit {
+        train_inputs: train_inputs.len(),
+        valid_inputs: valid_inputs.len(),
+        overlap: overlap.len(),
+    };
+    if audit.overlap != 0 {
+        return Err(anyhow!(
+            "train/valid HKST network-input overlap: {} hashes across roots and candidate children; filter the validation dataset before training",
+            audit.overlap
+        ));
+    }
+    Ok(audit)
 }
 
 fn visit_dataset_chunks(
@@ -774,7 +1299,7 @@ fn create_log(path: Option<&Path>) -> Result<Option<BufWriter<File>>> {
     if !exists {
         writeln!(
             writer,
-            "epoch,train_records,train_value_loss,train_rank_loss,valid_value_loss,valid_search_mae,valid_top1,valid_pair_accuracy,valid_regret_cp,score"
+            "epoch,train_records,train_value_loss,train_rank_loss,valid_value_loss,valid_search_mae,valid_top1,valid_pair_accuracy,valid_non_conflicting_pair_accuracy,valid_regret_cp,valid_game_vs_search_pairs,valid_game_vs_search_accuracy,valid_game_vs_search_mean_margin_cp,valid_game_vs_search_objective_loss,valid_game_rank_eligible,valid_game_rank_accuracy,valid_game_rank_mean_margin_cp,valid_game_rank_objective_loss,score,valid_model_result_brier,valid_model_result_logloss,valid_teacher_result_brier,valid_teacher_result_logloss"
         )?;
     }
     Ok(Some(writer))
@@ -789,7 +1314,7 @@ fn epoch_search_mix(args: &Args, epoch: usize) -> f32 {
     args.search_mix + (end - args.search_mix) * progress
 }
 
-fn training_fingerprint(args: &Args) -> Result<String> {
+fn training_fingerprint(args: &Args, effective_kappa_cp: f32) -> Result<String> {
     fn datasets(paths: &[PathBuf]) -> Result<Vec<serde_json::Value>> {
         paths
             .iter()
@@ -804,7 +1329,7 @@ fn training_fingerprint(args: &Args) -> Result<String> {
             .collect()
     }
 
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "schema_version": 1,
         "stage": "halfkp_search_train",
         "target": format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
@@ -827,8 +1352,9 @@ fn training_fingerprint(args: &Args) -> Result<String> {
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,
             "output_learning_rate": args.output_learning_rate,
-            "kappa_cp": args.kappa_cp,
+            "kappa_cp": effective_kappa_cp,
             "search_mix": args.search_mix,
+            "value_weight": args.value_weight,
             "search_mix_end": args.search_mix_end,
             "loss_power": args.loss_power,
             "rank_weight": args.rank_weight,
@@ -855,6 +1381,10 @@ fn training_fingerprint(args: &Args) -> Result<String> {
             "allow_legacy_teacher_semantics": args.allow_legacy_teacher_semantics,
         },
     });
+    value["hyperparameters"]["effective_kappa_cp"] = serde_json::json!(effective_kappa_cp);
+    value["hyperparameters"]["game_vs_search_weight"] =
+        serde_json::json!(args.game_vs_search_weight);
+    value["hyperparameters"]["save_last_epoch"] = serde_json::json!(args.save_last_epoch);
     Ok(sha256_hex(&serde_json::to_vec(&value)?))
 }
 
@@ -864,8 +1394,13 @@ fn write_training_manifest(
     threads: usize,
     completed_epoch: usize,
     best_validation_score: f64,
-    final_validation: &Metrics,
+    selected_kind: SelectedKind,
+    selected_epoch: usize,
+    selected_validation_score: f64,
+    selected_validation: &Metrics,
+    last_validation: &Metrics,
     final_test: Option<&Metrics>,
+    effective_kappa_cp: f32,
 ) -> Result<()> {
     fn dataset_artifacts(paths: &[PathBuf]) -> Result<Vec<ArtifactMetadata>> {
         paths
@@ -881,7 +1416,7 @@ fn write_training_manifest(
     inputs.insert("train".to_string(), dataset_artifacts(&args.train)?);
     inputs.insert("valid".to_string(), dataset_artifacts(&args.valid)?);
     inputs.insert("test".to_string(), dataset_artifacts(&args.test)?);
-    let parent_manifest_sha256 = args
+    let teacher_manifest_sha256 = args
         .train
         .iter()
         .chain(&args.valid)
@@ -895,6 +1430,12 @@ fn write_training_manifest(
         .and_then(|path| artifact_metadata(&path, None).ok());
     let manifest = TrainingRunManifest {
         schema_version: 1,
+        lineage_id: shogi_ai::training_tools::scratch_lineage::SCRATCH_LINEAGE_ID,
+        generation: args.parent_generation + 1,
+        parent_model_sha256: sha256_file(&args.init)?,
+        parent_manifest_sha256: sha256_file(&args.model_manifest)?,
+        parent_gate_report_sha256: sha256_file(&args.gate_report)?,
+        promotion_registry_sha256: sha256_file(&args.promotion_registry)?,
         stage: "halfkp_search_train",
         stage_fingerprint: run_fingerprint.to_string(),
         environment: capture_run_environment(),
@@ -919,12 +1460,14 @@ fn write_training_manifest(
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,
             "output_learning_rate": args.output_learning_rate,
-            "kappa_cp": args.kappa_cp,
+            "kappa_cp": effective_kappa_cp,
             "search_mix": args.search_mix,
+            "value_weight": args.value_weight,
             "search_mix_end": args.search_mix_end,
             "loss_power": args.loss_power,
             "rank_weight": args.rank_weight,
             "game_rank_weight": args.game_rank_weight,
+            "game_vs_search_weight": args.game_vs_search_weight,
             "rank_margin_cp": args.rank_margin_cp,
             "rank_temperature_cp": args.rank_temperature_cp,
             "min_rank_gap_cp": args.min_rank_gap_cp,
@@ -943,13 +1486,20 @@ fn write_training_manifest(
             "max_valid_records": args.max_valid_records,
             "train_chunk_records": args.train_chunk_records,
             "eval_chunk_records": args.eval_chunk_records,
+            "save_last_epoch": args.save_last_epoch,
         }),
         completed_epoch,
         best_validation_score,
-        final_validation: metrics_json(final_validation),
+        selected_kind,
+        selected_epoch,
+        selected_validation_score,
+        selected_validation: metrics_json(selected_validation),
+        last_validation: metrics_json(last_validation),
+        final_validation: metrics_json(last_validation),
         final_test: final_test.map(metrics_json),
+        model: artifact_metadata(&args.output, None)?,
         output: artifact_metadata(&args.output, None)?,
-        parent_manifest_sha256,
+        teacher_manifest_sha256,
     };
     let path = append_path_suffix(&args.output, ".manifest.json");
     let temporary = append_path_suffix(&path, ".tmp");
@@ -968,15 +1518,52 @@ fn metrics_json(metrics: &Metrics) -> serde_json::Value {
         "known_results": metrics.known_results,
         "value_loss": metrics.value_loss,
         "search_abs_error": metrics.search_abs_error,
+        "model_result_brier": metrics.model_result_brier,
+        "teacher_result_brier": metrics.teacher_result_brier,
+        "model_result_log_loss": metrics.model_result_log_loss,
+        "teacher_result_log_loss": metrics.teacher_result_log_loss,
         "pairs": metrics.pairs,
         "pair_correct": metrics.pair_correct,
+        "non_conflicting_pairs": metrics.non_conflicting_pairs,
+        "non_conflicting_pair_correct": metrics.non_conflicting_pair_correct,
         "top1_matches": metrics.top1_matches,
         "game_moves": metrics.game_moves,
         "game_move_top1": metrics.game_move_top1,
+        "game_search_mismatches": metrics.game_search_mismatches,
+        "game_regret_threshold_counts": {
+            "le_50_cp": metrics.game_regret_threshold_counts[0],
+            "le_150_cp": metrics.game_regret_threshold_counts[1],
+            "le_300_cp": metrics.game_regret_threshold_counts[2],
+            "le_600_cp": metrics.game_regret_threshold_counts[3],
+        },
+        "game_vs_search_eligible": metrics.game_vs_search_eligible,
+        "game_vs_search_pairs": metrics.game_vs_search_pairs,
+        "game_vs_search_pair_correct": metrics.game_vs_search_pair_correct,
+        "game_vs_search_margin_sum_cp": metrics.game_vs_search_margin_sum_cp,
+        "game_vs_search_mean_margin_cp": metrics.game_vs_search_margin_sum_cp
+            / metrics.game_vs_search_eligible.max(1) as f64,
+        "game_vs_search_objective_loss_sum": metrics.game_vs_search_objective_loss_sum,
+        "game_vs_search_weight_sum": metrics.game_vs_search_weight_sum,
+        "game_vs_search_weighted_objective_loss": metrics.game_vs_search_objective_loss_sum
+            / metrics.game_vs_search_weight_sum.max(f64::EPSILON),
+        "game_rank_eligible": metrics.game_rank_eligible,
+        "game_rank_pair_correct": metrics.game_rank_pair_correct,
+        "game_rank_accuracy": metrics.game_rank_pair_correct as f64
+            / metrics.game_rank_eligible.max(1) as f64,
+        "game_rank_margin_sum_cp": metrics.game_rank_margin_sum_cp,
+        "game_rank_mean_margin_cp": metrics.game_rank_margin_sum_cp
+            / metrics.game_rank_eligible.max(1) as f64,
+        "game_rank_objective_loss_sum": metrics.game_rank_objective_loss_sum,
+        "game_rank_weight_sum": metrics.game_rank_weight_sum,
+        "game_rank_weighted_objective_loss": metrics.game_rank_objective_loss_sum
+            / metrics.game_rank_weight_sum.max(f64::EPSILON),
         "regret_sum": metrics.regret_sum,
         "log_loss": metrics.log_loss,
         "phase_records": metrics.phase_records,
         "phase_brier": metrics.phase_brier,
+        "phase_result_records": metrics.phase_result_records,
+        "phase_model_result_brier": metrics.phase_model_result_brier,
+        "phase_teacher_result_brier": metrics.phase_teacher_result_brier,
     })
 }
 
@@ -989,7 +1576,17 @@ fn append_path_suffix(path: &Path, suffix: &str) -> PathBuf {
 fn initialize_training(
     args: &Args,
     run_fingerprint: &str,
-) -> Result<(Weights, OptimizerState, Option<SwaState>, usize, f64, usize)> {
+) -> Result<(
+    Weights,
+    OptimizerState,
+    Option<SwaState>,
+    usize,
+    f64,
+    usize,
+    SelectedKind,
+    usize,
+    f64,
+)> {
     if args.resume {
         let directory = args
             .checkpoint_dir
@@ -997,7 +1594,7 @@ fn initialize_training(
             .expect("validated checkpoint dir");
         let meta: CheckpointMeta =
             serde_json::from_reader(BufReader::new(File::open(directory.join("state.json"))?))?;
-        if meta.schema_version != 2 || meta.run_fingerprint.is_empty() {
+        if meta.schema_version < 3 || meta.run_fingerprint.is_empty() {
             if !args.allow_legacy_checkpoint {
                 return Err(anyhow!(
                     "checkpoint has no verifiable run fingerprint; pass \
@@ -1018,6 +1615,16 @@ fn initialize_training(
                     return Err(anyhow!(
                         "checkpoint file hash mismatch for {}",
                         path.display()
+                    ));
+                }
+            }
+            if meta.schema_version >= 3 {
+                let selected_path = directory.join("selected.binary");
+                if meta.selected_model_sha256.is_empty()
+                    || meta.selected_model_sha256 != sha256_file(&selected_path)?
+                {
+                    return Err(anyhow!(
+                        "checkpoint selected model hash is missing or invalid"
                     ));
                 }
             }
@@ -1065,6 +1672,9 @@ fn initialize_training(
             meta.completed_epoch,
             meta.best_score,
             meta.stale_epochs,
+            meta.selected_kind,
+            meta.selected_epoch,
+            meta.selected_score,
         ))
     } else {
         let weights = Weights::load(&args.init)?;
@@ -1081,7 +1691,17 @@ fn initialize_training(
                 }))
             }
         };
-        Ok((weights, optimizer, None, 0, f64::INFINITY, 0))
+        Ok((
+            weights,
+            optimizer,
+            None,
+            0,
+            f64::INFINITY,
+            0,
+            SelectedKind::Initial,
+            0,
+            f64::INFINITY,
+        ))
     }
 }
 
@@ -1094,12 +1714,24 @@ fn save_checkpoint(
     epoch: usize,
     best_score: f64,
     stale_epochs: usize,
+    selected_kind: SelectedKind,
+    selected_epoch: usize,
+    selected_score: f64,
+    selected_validation: &Metrics,
 ) -> Result<()> {
     let Some(directory) = &args.checkpoint_dir else {
         return Ok(());
     };
     fs::create_dir_all(directory)?;
     weights.save(&directory.join("current.binary"))?;
+    let selected_path = directory.join("selected.binary");
+    let selected_temporary = directory.join("selected.binary.tmp");
+    if args.output.is_file() {
+        fs::copy(&args.output, &selected_temporary)?;
+    } else {
+        weights.save(&selected_temporary)?;
+    }
+    fs::rename(selected_temporary, &selected_path)?;
     let (schedule_step, schedule_weight_sum, schedule_lr_max) = match optimizer {
         OptimizerState::Adagrad(state) => {
             state.save(&directory.join("adagrad.binary"))?;
@@ -1127,7 +1759,7 @@ fn save_checkpoint(
         state.average.save(&directory.join("swa.binary"))?;
     }
     let mut file_sha256 = BTreeMap::new();
-    let mut checkpoint_files = vec!["current.binary"];
+    let mut checkpoint_files = vec!["current.binary", "selected.binary"];
     match optimizer {
         OptimizerState::Adagrad(_) => checkpoint_files.push("adagrad.binary"),
         OptimizerState::ScheduleFree(_) => {
@@ -1145,12 +1777,17 @@ fn save_checkpoint(
         file_sha256.insert(name.to_string(), sha256_file(&directory.join(name))?);
     }
     let meta = CheckpointMeta {
-        schema_version: 2,
+        schema_version: 3,
         run_fingerprint: run_fingerprint.to_string(),
         file_sha256,
         completed_epoch: epoch,
         best_score,
         stale_epochs,
+        selected_kind,
+        selected_epoch,
+        selected_score,
+        selected_model_sha256: sha256_file(&selected_path)?,
+        selected_validation: metrics_json(selected_validation),
         optimizer: args.optimizer,
         schedule_step,
         schedule_weight_sum,
@@ -1203,6 +1840,35 @@ fn fit_kappa_datasets(
         .map_or(600.0, |(kappa, _)| kappa as f32))
 }
 
+fn value_target_for_record(
+    record: &SearchTeacherRecord,
+) -> (&PackedHalfKpPosition, f32, Option<f32>) {
+    let value_candidate = record.candidates.iter().find(|candidate| {
+        candidate.flags & (CANDIDATE_SEARCH_BEST | CANDIDATE_QSEARCH_LEAF)
+            == (CANDIDATE_SEARCH_BEST | CANDIDATE_QSEARCH_LEAF)
+    });
+    let value_position = value_candidate
+        .map(|candidate| &candidate.child)
+        .unwrap_or(&record.root);
+    let target_score_cp = value_candidate.map_or(record.root_search_score_cp, |candidate| {
+        if candidate.child.side_to_move == record.root.side_to_move {
+            record.root_search_score_cp
+        } else {
+            -record.root_search_score_cp
+        }
+    });
+    let target_result = record.result.map(|result| {
+        value_candidate.map_or(result, |candidate| {
+            if candidate.child.side_to_move == record.root.side_to_move {
+                result
+            } else {
+                1.0 - result
+            }
+        })
+    });
+    (value_position, target_score_cp, target_result)
+}
+
 fn compute_record_gradient(
     weights: &Weights,
     record: &SearchTeacherRecord,
@@ -1215,26 +1881,29 @@ fn compute_record_gradient(
         rank_loss: 0.0,
         pairs: 0,
     };
-    let root_forward = weights.forward(&record.root);
-    let model_cp = root_forward.raw * TARGET_SCALE;
+    let (value_position, target_score_cp, target_result) = value_target_for_record(record);
+    let value_forward = weights.forward(value_position);
+    let model_cp = value_forward.raw * TARGET_SCALE;
     let model_p = sigmoid(model_cp / options.kappa_cp);
-    let search_p = sigmoid(record.root_search_score_cp / options.kappa_cp);
-    let target = record
-        .result
+    let search_p = sigmoid(target_score_cp / options.kappa_cp);
+    let target = target_result
         .map(|result| options.search_mix * search_p + (1.0 - options.search_mix) * result)
         .unwrap_or(search_p);
     let error = model_p - target;
     let absolute_error = error.abs().max(1e-8);
-    gradient.value_loss = (absolute_error.powf(options.loss_power) * record.sample_weight) as f64;
+    gradient.value_loss = (absolute_error.powf(options.loss_power)
+        * record.sample_weight
+        * options.value_weight) as f64;
     let d_probability = options.loss_power
         * error.signum()
         * absolute_error.powf(options.loss_power - 1.0)
-        * record.sample_weight;
+        * record.sample_weight
+        * options.value_weight;
     let d_score_cp = d_probability * model_p * (1.0 - model_p) / options.kappa_cp;
     add_position_gradient(
         weights,
-        &record.root,
-        &root_forward,
+        value_position,
+        &value_forward,
         d_score_cp * TARGET_SCALE,
         &mut gradient,
     );
@@ -1246,7 +1915,15 @@ fn compute_record_gradient(
         .collect::<Vec<_>>();
     let utilities = forwards
         .iter()
-        .map(|forward| -forward.raw * TARGET_SCALE)
+        .zip(&record.candidates)
+        .map(|(forward, candidate)| {
+            let utility = forward.raw * TARGET_SCALE;
+            if candidate.child.side_to_move == record.root.side_to_move {
+                utility
+            } else {
+                -utility
+            }
+        })
         .collect::<Vec<_>>();
     let teacher_best = record
         .candidates
@@ -1255,9 +1932,18 @@ fn compute_record_gradient(
         .max_by(|lhs, rhs| lhs.1.score_cp.total_cmp(&rhs.1.score_cp))
         .map(|(index, _)| index)
         .unwrap_or(0);
+    let game_index = record
+        .candidates
+        .iter()
+        .position(|candidate| candidate.flags & CANDIDATE_GAME_MOVE != 0);
+    let game_vs_search_pair = eligible_game_vs_search_pair(record, options.game_regret_cap_cp);
+    let game_vs_search_eligible = game_vs_search_pair.is_some();
     let mut bad = (0..record.candidates.len())
         .filter(|&index| {
             index != teacher_best
+                && !(options.game_vs_search_weight > 0.0
+                    && game_vs_search_eligible
+                    && Some(index) == game_index)
                 && record.candidates[teacher_best].score_cp - record.candidates[index].score_cp
                     >= options.min_rank_gap_cp
         })
@@ -1277,37 +1963,39 @@ fn compute_record_gradient(
         );
     }
 
+    if options.game_vs_search_weight > 0.0 && game_vs_search_eligible {
+        let game_index = game_vs_search_pair.expect("eligible game move").game_index;
+        add_rank_pair(
+            weights,
+            record,
+            &forwards,
+            &utilities,
+            game_index,
+            teacher_best,
+            options.game_vs_search_weight * record.sample_weight,
+            options,
+            &mut gradient,
+        );
+    }
+
     if options.game_rank_weight > 0.0 {
-        if let Some(game_index) = record
-            .candidates
-            .iter()
-            .position(|candidate| candidate.flags & CANDIDATE_GAME_MOVE != 0)
-        {
-            let regret =
-                record.candidates[teacher_best].score_cp - record.candidates[game_index].score_cp;
-            if regret <= options.game_regret_cap_cp {
-                if let Some(bad_index) = (0..record.candidates.len())
-                    .filter(|&index| {
-                        index != game_index
-                            && record.candidates[game_index].score_cp
-                                - record.candidates[index].score_cp
-                                >= options.min_rank_gap_cp
-                    })
-                    .max_by(|&lhs, &rhs| utilities[lhs].total_cmp(&utilities[rhs]))
-                {
-                    add_rank_pair(
-                        weights,
-                        record,
-                        &forwards,
-                        &utilities,
-                        game_index,
-                        bad_index,
-                        options.game_rank_weight * record.sample_weight,
-                        options,
-                        &mut gradient,
-                    );
-                }
-            }
+        if let Some(pair) = select_game_rank_pair(
+            record,
+            &utilities,
+            options.game_regret_cap_cp,
+            options.min_rank_gap_cp,
+        ) {
+            add_rank_pair(
+                weights,
+                record,
+                &forwards,
+                &utilities,
+                pair.game_index,
+                pair.bad_index,
+                options.game_rank_weight * record.sample_weight,
+                options,
+                &mut gradient,
+            );
         }
     }
     gradient
@@ -1333,19 +2021,34 @@ fn add_rank_pair(
     let derivative = sigmoid(x) / options.rank_temperature_cp * weight;
     gradient.rank_loss += (softplus(x) * weight) as f64;
     gradient.pairs += 1;
-    // utility(child) = -score(child)
+    // utility(child) is expressed from the root side's perspective.  The
+    // loss is softplus((utility_bad - utility_good + margin) / temperature),
+    // so minimizing it moves the good utility up and the bad utility down.
+    // Convert that derivative back through the child-side perspective before
+    // passing it to the network (whose raw score is child-side-to-move based).
+    let good_sign = if record.candidates[good_index].child.side_to_move == record.root.side_to_move
+    {
+        1.0
+    } else {
+        -1.0
+    };
+    let bad_sign = if record.candidates[bad_index].child.side_to_move == record.root.side_to_move {
+        1.0
+    } else {
+        -1.0
+    };
     add_position_gradient(
         weights,
         &record.candidates[good_index].child,
         &forwards[good_index],
-        derivative * TARGET_SCALE,
+        -derivative * good_sign * TARGET_SCALE,
         gradient,
     );
     add_position_gradient(
         weights,
         &record.candidates[bad_index].child,
         &forwards[bad_index],
-        -derivative * TARGET_SCALE,
+        derivative * bad_sign * TARGET_SCALE,
         gradient,
     );
 }
@@ -1440,6 +2143,7 @@ fn apply_batch(
             }
         }
     }
+    project_center_mirror_sparse_gradient(sparse);
     let scale = 1.0 / records.len().max(1) as f32;
     let mut norm_squared = (dense.out_b * scale).powi(2);
     for value in dense.hidden_b.iter_mut().chain(dense.out_w.iter_mut()) {
@@ -1474,6 +2178,19 @@ fn apply_batch(
             *value *= clip;
         }
     }
+    let has_gradient = dense.out_b != 0.0
+        || dense
+            .hidden_b
+            .iter()
+            .chain(&dense.out_w)
+            .any(|&value| value != 0.0)
+        || sparse
+            .values()
+            .flat_map(|row| row.iter())
+            .any(|&value| value != 0.0);
+    if !has_gradient {
+        return (value_loss, rank_loss, pairs);
+    }
     match optimizer {
         OptimizerState::Adagrad(state) => apply_adagrad(weights, state, dense, sparse, args),
         OptimizerState::ScheduleFree(state) => {
@@ -1490,6 +2207,9 @@ fn adagrad_scalar(
     learning_rate: f32,
     limit: f32,
 ) {
+    if gradient == 0.0 {
+        return;
+    }
     *accumulator += gradient * gradient;
     *weight =
         (*weight - learning_rate * gradient / (accumulator.sqrt() + 1e-8)).clamp(-limit, limit);
@@ -1686,15 +2406,21 @@ fn evaluation_weights(weights: &Weights, optimizer: &OptimizerState, beta1: f32)
     evaluated
 }
 
-fn evaluate(weights: &Weights, records: &[SearchTeacherRecord], options: &TrainOptions) -> Metrics {
+fn evaluate(
+    weights: &Weights,
+    game_rank_selector: &Weights,
+    records: &[SearchTeacherRecord],
+    options: &TrainOptions,
+) -> Metrics {
     records
         .par_iter()
-        .map(|record| evaluate_record(weights, record, options))
+        .map(|record| evaluate_record(weights, game_rank_selector, record, options))
         .reduce(Metrics::default, merge_metrics)
 }
 
 fn evaluate_datasets(
     weights: &Weights,
+    game_rank_selector: &Weights,
     paths: &[PathBuf],
     limit: Option<usize>,
     chunk_records: usize,
@@ -1716,7 +2442,7 @@ fn evaluate_datasets(
             |chunk| {
                 metrics = merge_metrics(
                     std::mem::take(&mut metrics),
-                    evaluate(weights, chunk, options),
+                    evaluate(weights, game_rank_selector, chunk, options),
                 );
                 Ok(())
             },
@@ -1727,20 +2453,28 @@ fn evaluate_datasets(
 
 fn evaluate_record(
     weights: &Weights,
+    game_rank_selector: &Weights,
     record: &SearchTeacherRecord,
     options: &TrainOptions,
 ) -> Metrics {
-    let root_score = weights.forward(&record.root).raw * TARGET_SCALE;
-    let model_p = sigmoid(root_score / options.kappa_cp);
-    let search_p = sigmoid(record.root_search_score_cp / options.kappa_cp);
-    let target = record
-        .result
+    let (value_position, target_score_cp, target_result) = value_target_for_record(record);
+    let model_score = weights.forward(value_position).raw * TARGET_SCALE;
+    let model_p = sigmoid(model_score / options.kappa_cp);
+    let search_p = sigmoid(target_score_cp / options.kappa_cp);
+    let target = target_result
         .map(|result| options.search_mix * search_p + (1.0 - options.search_mix) * result)
         .unwrap_or(search_p);
     let utilities = record
         .candidates
         .iter()
-        .map(|candidate| -weights.forward(&candidate.child).raw * TARGET_SCALE)
+        .map(|candidate| {
+            let utility = weights.forward(&candidate.child).raw * TARGET_SCALE;
+            if candidate.child.side_to_move == record.root.side_to_move {
+                utility
+            } else {
+                -utility
+            }
+        })
         .collect::<Vec<_>>();
     let teacher_best = record
         .candidates
@@ -1759,7 +2493,7 @@ fn evaluate_record(
         records: 1,
         known_results: usize::from(record.result.is_some()),
         value_loss: ((model_p - target).powi(2) * record.sample_weight) as f64,
-        search_abs_error: (root_score - record.root_search_score_cp).abs() as f64,
+        search_abs_error: (model_score - target_score_cp).abs() as f64,
         top1_matches: usize::from(teacher_best == model_best),
         regret_sum: (record.candidates[teacher_best].score_cp
             - record.candidates[model_best].score_cp) as f64,
@@ -1774,6 +2508,29 @@ fn evaluate_record(
     let phase = (record.phase as usize).min(2);
     metrics.phase_records[phase] = 1;
     metrics.phase_brier[phase] = metrics.value_loss;
+    if let Some(result) = target_result {
+        let model_probability = model_p.clamp(1e-7, 1.0 - 1e-7);
+        let teacher_probability = search_p.clamp(1e-7, 1.0 - 1e-7);
+        let sample_weight = record.sample_weight as f64;
+        metrics.model_result_brier = ((model_p - result).powi(2) * record.sample_weight) as f64;
+        metrics.teacher_result_brier = ((search_p - result).powi(2) * record.sample_weight) as f64;
+        metrics.model_result_log_loss = -(f64::from(result) * f64::from(model_probability).ln()
+            + f64::from(1.0 - result) * f64::from(1.0 - model_probability).ln())
+            * sample_weight;
+        metrics.teacher_result_log_loss = -(f64::from(result)
+            * f64::from(teacher_probability).ln()
+            + f64::from(1.0 - result) * f64::from(1.0 - teacher_probability).ln())
+            * sample_weight;
+        metrics.phase_result_records[phase] = 1;
+        metrics.phase_model_result_brier[phase] = metrics.model_result_brier;
+        metrics.phase_teacher_result_brier[phase] = metrics.teacher_result_brier;
+    }
+    let game_index = record
+        .candidates
+        .iter()
+        .position(|candidate| candidate.flags & CANDIDATE_GAME_MOVE != 0);
+    let game_vs_search_pair = eligible_game_vs_search_pair(record, options.game_regret_cap_cp);
+    let game_vs_search_eligible = game_vs_search_pair.is_some();
     for bad_index in 0..record.candidates.len() {
         if bad_index == teacher_best
             || record.candidates[teacher_best].score_cp - record.candidates[bad_index].score_cp
@@ -1783,14 +2540,74 @@ fn evaluate_record(
         }
         metrics.pairs += 1;
         metrics.pair_correct += usize::from(utilities[teacher_best] > utilities[bad_index]);
+        if !(game_vs_search_eligible && game_index == Some(bad_index)) {
+            metrics.non_conflicting_pairs += 1;
+            metrics.non_conflicting_pair_correct +=
+                usize::from(utilities[teacher_best] > utilities[bad_index]);
+        }
     }
-    if let Some(game_index) = record
-        .candidates
-        .iter()
-        .position(|candidate| candidate.flags & CANDIDATE_GAME_MOVE != 0)
-    {
+    if let Some(game_index) = game_index {
         metrics.game_moves = 1;
         metrics.game_move_top1 = usize::from(game_index == model_best);
+        if game_index != teacher_best {
+            metrics.game_search_mismatches = 1;
+            let regret =
+                record.candidates[teacher_best].score_cp - record.candidates[game_index].score_cp;
+            for (index, threshold) in [50.0, 150.0, 300.0, 600.0].into_iter().enumerate() {
+                metrics.game_regret_threshold_counts[index] = usize::from(regret <= threshold);
+            }
+            if regret <= options.game_regret_cap_cp {
+                metrics.game_vs_search_eligible = 1;
+                metrics.game_vs_search_pair_correct =
+                    usize::from(utilities[game_index] > utilities[teacher_best]);
+                metrics.game_vs_search_pairs = usize::from(options.game_vs_search_weight > 0.0);
+            }
+        }
+    }
+    if let Some(pair) = game_vs_search_pair {
+        let observation = observe_game_vs_search_pair(
+            &utilities,
+            pair,
+            options.rank_margin_cp,
+            options.rank_temperature_cp,
+        );
+        metrics.game_vs_search_margin_sum_cp = f64::from(observation.signed_margin_cp);
+        metrics.game_vs_search_objective_loss_sum =
+            f64::from(observation.objective_loss) * f64::from(record.sample_weight);
+        metrics.game_vs_search_weight_sum = f64::from(record.sample_weight);
+    }
+    if options.game_rank_weight > 0.0 {
+        let selector_utilities = record
+            .candidates
+            .iter()
+            .map(|candidate| {
+                let utility = game_rank_selector.forward(&candidate.child).raw * TARGET_SCALE;
+                if candidate.child.side_to_move == record.root.side_to_move {
+                    utility
+                } else {
+                    -utility
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Some(pair) = select_game_rank_pair(
+            record,
+            &selector_utilities,
+            options.game_regret_cap_cp,
+            options.min_rank_gap_cp,
+        ) {
+            let observation = observe_game_rank_pair(
+                &utilities,
+                pair,
+                options.rank_margin_cp,
+                options.rank_temperature_cp,
+            );
+            metrics.game_rank_eligible = 1;
+            metrics.game_rank_pair_correct = usize::from(observation.correct);
+            metrics.game_rank_margin_sum_cp = f64::from(observation.signed_margin_cp);
+            metrics.game_rank_objective_loss_sum =
+                f64::from(observation.objective_loss) * f64::from(record.sample_weight);
+            metrics.game_rank_weight_sum = f64::from(record.sample_weight);
+        }
     }
     metrics
 }
@@ -1800,11 +2617,32 @@ fn merge_metrics(mut lhs: Metrics, rhs: Metrics) -> Metrics {
     lhs.known_results += rhs.known_results;
     lhs.value_loss += rhs.value_loss;
     lhs.search_abs_error += rhs.search_abs_error;
+    lhs.model_result_brier += rhs.model_result_brier;
+    lhs.teacher_result_brier += rhs.teacher_result_brier;
+    lhs.model_result_log_loss += rhs.model_result_log_loss;
+    lhs.teacher_result_log_loss += rhs.teacher_result_log_loss;
     lhs.pairs += rhs.pairs;
     lhs.pair_correct += rhs.pair_correct;
+    lhs.non_conflicting_pairs += rhs.non_conflicting_pairs;
+    lhs.non_conflicting_pair_correct += rhs.non_conflicting_pair_correct;
     lhs.top1_matches += rhs.top1_matches;
     lhs.game_moves += rhs.game_moves;
     lhs.game_move_top1 += rhs.game_move_top1;
+    lhs.game_search_mismatches += rhs.game_search_mismatches;
+    for index in 0..lhs.game_regret_threshold_counts.len() {
+        lhs.game_regret_threshold_counts[index] += rhs.game_regret_threshold_counts[index];
+    }
+    lhs.game_vs_search_eligible += rhs.game_vs_search_eligible;
+    lhs.game_vs_search_pairs += rhs.game_vs_search_pairs;
+    lhs.game_vs_search_pair_correct += rhs.game_vs_search_pair_correct;
+    lhs.game_vs_search_margin_sum_cp += rhs.game_vs_search_margin_sum_cp;
+    lhs.game_vs_search_objective_loss_sum += rhs.game_vs_search_objective_loss_sum;
+    lhs.game_vs_search_weight_sum += rhs.game_vs_search_weight_sum;
+    lhs.game_rank_eligible += rhs.game_rank_eligible;
+    lhs.game_rank_pair_correct += rhs.game_rank_pair_correct;
+    lhs.game_rank_margin_sum_cp += rhs.game_rank_margin_sum_cp;
+    lhs.game_rank_objective_loss_sum += rhs.game_rank_objective_loss_sum;
+    lhs.game_rank_weight_sum += rhs.game_rank_weight_sum;
     lhs.regret_sum += rhs.regret_sum;
     lhs.log_loss += rhs.log_loss;
     for index in 0..lhs.regret_histogram.len() {
@@ -1813,15 +2651,32 @@ fn merge_metrics(mut lhs: Metrics, rhs: Metrics) -> Metrics {
     for phase in 0..3 {
         lhs.phase_records[phase] += rhs.phase_records[phase];
         lhs.phase_brier[phase] += rhs.phase_brier[phase];
+        lhs.phase_result_records[phase] += rhs.phase_result_records[phase];
+        lhs.phase_model_result_brier[phase] += rhs.phase_model_result_brier[phase];
+        lhs.phase_teacher_result_brier[phase] += rhs.phase_teacher_result_brier[phase];
     }
     lhs
 }
 
-fn validation_score(metrics: &Metrics) -> f64 {
+fn validation_score(metrics: &Metrics, options: &TrainOptions) -> f64 {
     let brier = metrics.value_loss / metrics.records.max(1) as f64;
-    let pair_error = 1.0 - metrics.pair_correct as f64 / metrics.pairs.max(1) as f64;
+    let pair_error = 1.0
+        - metrics.non_conflicting_pair_correct as f64 / metrics.non_conflicting_pairs.max(1) as f64;
     let regret = metrics.regret_sum / metrics.records.max(1) as f64;
-    brier + 0.02 * pair_error + regret / 10_000.0
+    let mut score = f64::from(options.value_weight) * brier;
+    if options.rank_weight > 0.0 {
+        score += 0.02 * pair_error + regret / 10_000.0;
+    }
+    if options.game_rank_weight > 0.0 {
+        score +=
+            metrics.game_rank_objective_loss_sum / metrics.game_rank_weight_sum.max(f64::EPSILON);
+    }
+    if options.game_vs_search_weight > 0.0 {
+        let objective_loss = metrics.game_vs_search_objective_loss_sum
+            / metrics.game_vs_search_weight_sum.max(f64::EPSILON);
+        score += 0.02 * objective_loss;
+    }
+    score
 }
 
 fn regret_percentile(metrics: &Metrics, percentile: f64) -> f64 {
@@ -1838,20 +2693,52 @@ fn regret_percentile(metrics: &Metrics, percentile: f64) -> f64 {
 
 fn print_metrics(label: &str, epoch: usize, metrics: &Metrics) {
     println!(
-        "{label} epoch={epoch} records={} known_results={} brier={:.8} logloss={:.6} search_mae={:.3} top1={:.4} pair={:.4} regret_mean={:.2} regret_p95={:.1} game_top1={:.4} phase_brier={:.8}/{:.8}/{:.8}",
+        "{label} epoch={epoch} records={} known_results={} brier={:.8} logloss={:.6} search_mae={:.3} result_brier=model:{:.8}/teacher:{:.8} result_logloss=model:{:.6}/teacher:{:.6} top1={:.4} pair={:.4} non_conflicting_pair={:.4} regret_mean={:.2} regret_p95={:.1} game_top1={:.4} game_search_mismatch={} game_regret_le=50:{}/150:{}/300:{}/600:{} game_vs_search_eligible={} game_vs_search_pairs={} game_vs_search_accuracy={:.4} game_vs_search_margin={:.3}cp game_vs_search_objective_loss={:.8} game_rank_eligible={} game_rank_accuracy={:.4} game_rank_margin={:.3}cp game_rank_objective_loss={:.8} phase_brier={:.8}/{:.8}/{:.8} phase_result_brier=model:{:.8}/{:.8}/{:.8}|teacher:{:.8}/{:.8}/{:.8}",
         metrics.records,
         metrics.known_results,
         metrics.value_loss / metrics.records.max(1) as f64,
         metrics.log_loss / metrics.records.max(1) as f64,
         metrics.search_abs_error / metrics.records.max(1) as f64,
+        metrics.model_result_brier / metrics.known_results.max(1) as f64,
+        metrics.teacher_result_brier / metrics.known_results.max(1) as f64,
+        metrics.model_result_log_loss / metrics.known_results.max(1) as f64,
+        metrics.teacher_result_log_loss / metrics.known_results.max(1) as f64,
         metrics.top1_matches as f64 / metrics.records.max(1) as f64,
         metrics.pair_correct as f64 / metrics.pairs.max(1) as f64,
+        metrics.non_conflicting_pair_correct as f64
+            / metrics.non_conflicting_pairs.max(1) as f64,
         metrics.regret_sum / metrics.records.max(1) as f64,
         regret_percentile(metrics, 0.95),
         metrics.game_move_top1 as f64 / metrics.game_moves.max(1) as f64,
+        metrics.game_search_mismatches,
+        metrics.game_regret_threshold_counts[0],
+        metrics.game_regret_threshold_counts[1],
+        metrics.game_regret_threshold_counts[2],
+        metrics.game_regret_threshold_counts[3],
+        metrics.game_vs_search_eligible,
+        metrics.game_vs_search_pairs,
+        metrics.game_vs_search_pair_correct as f64
+            / metrics.game_vs_search_eligible.max(1) as f64,
+        metrics.game_vs_search_margin_sum_cp / metrics.game_vs_search_eligible.max(1) as f64,
+        metrics.game_vs_search_objective_loss_sum
+            / metrics.game_vs_search_weight_sum.max(f64::EPSILON),
+        metrics.game_rank_eligible,
+        metrics.game_rank_pair_correct as f64 / metrics.game_rank_eligible.max(1) as f64,
+        metrics.game_rank_margin_sum_cp / metrics.game_rank_eligible.max(1) as f64,
+        metrics.game_rank_objective_loss_sum
+            / metrics.game_rank_weight_sum.max(f64::EPSILON),
         metrics.phase_brier[0] / metrics.phase_records[0].max(1) as f64,
         metrics.phase_brier[1] / metrics.phase_records[1].max(1) as f64,
         metrics.phase_brier[2] / metrics.phase_records[2].max(1) as f64,
+        metrics.phase_model_result_brier[0] / metrics.phase_result_records[0].max(1) as f64,
+        metrics.phase_model_result_brier[1] / metrics.phase_result_records[1].max(1) as f64,
+        metrics.phase_model_result_brier[2] / metrics.phase_result_records[2].max(1) as f64,
+        metrics.phase_teacher_result_brier[0]
+            / metrics.phase_result_records[0].max(1) as f64,
+        metrics.phase_teacher_result_brier[1]
+            / metrics.phase_result_records[1].max(1) as f64,
+        metrics.phase_teacher_result_brier[2]
+            / metrics.phase_result_records[2].max(1) as f64,
     );
 }
 
@@ -1883,10 +2770,244 @@ fn softplus(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shogi_ai::halfkp_training::{search_teacher_manifest_path, SearchTeacherManifest};
-    use shogi_ai::halfkp_training::{SearchTeacherCandidate, SearchTeacherWriter};
+    use shogi_ai::halfkp_training::{
+        search_teacher_manifest_path, SearchTeacherCandidate, SearchTeacherManifest,
+        SearchTeacherProvenance, SearchTeacherWriter,
+    };
     use shogi_ai::position_hash::PositionHasher;
     use shogi_lib::Position;
+
+    fn test_args_with_output_limit(limit: &str) -> Args {
+        Args::try_parse_from([
+            "halfkp_search_train",
+            "--train",
+            "train.hkst",
+            "--valid",
+            "valid.hkst",
+            "--init",
+            "init.binary",
+            "--model-manifest",
+            "model.manifest.json",
+            "--promotion-registry",
+            "promotion_registry.json",
+            "--gate-report",
+            "gate_report.json",
+            "--parent-generation",
+            "2",
+            "--output",
+            "output.binary",
+            "--output-limit",
+            limit,
+        ])
+        .expect("parse test args")
+    }
+
+    fn out_of_legacy_limit_weights() -> Weights {
+        let mut out_w = [0.01; HALFKP_HIDDEN * 2 + 1];
+        out_w[7] = 0.174;
+        Weights {
+            feature_emb: vec![0.2; 8],
+            hidden_b: [0.5; HALFKP_HIDDEN],
+            out_w,
+            out_b: 0.02,
+        }
+    }
+
+    #[test]
+    fn init_limit_check_rejects_silent_output_projection() {
+        let weights = out_of_legacy_limit_weights();
+        let error = weights
+            .validate_parameter_limits(0.06, "test init")
+            .expect_err("reject incompatible legacy limit");
+        assert!(error.to_string().contains("explicit compatible limit"));
+
+        let maxima = weights
+            .validate_parameter_limits(0.20, "test init")
+            .expect("explicit compatible limit");
+        assert_eq!(0.2, maxima.feature_emb);
+        assert_eq!(0.5, maxima.hidden_b);
+        assert_eq!(0.174, maxima.output);
+    }
+
+    #[test]
+    fn all_zero_batch_is_byte_identity_for_both_optimizers() {
+        let args = test_args_with_output_limit("0.20");
+        let zero = RecordGradient {
+            dense: DenseGradient::default(),
+            positions: Vec::new(),
+            value_loss: 0.0,
+            rank_loss: 0.0,
+            pairs: 0,
+        };
+        for kind in [OptimizerKind::Adagrad, OptimizerKind::ScheduleFree] {
+            let original = out_of_legacy_limit_weights();
+            let mut weights = original.clone();
+            let mut optimizer = match kind {
+                OptimizerKind::Adagrad => OptimizerState::Adagrad(Box::new(weights.zeros_like())),
+                OptimizerKind::ScheduleFree => {
+                    OptimizerState::ScheduleFree(Box::new(ScheduleFreeState {
+                        z: weights.clone(),
+                        variance: weights.zeros_like(),
+                        last_weight_sum: Vec::new(),
+                        step: 0,
+                        weight_sum: 0.0,
+                        lr_max: 0.0,
+                    }))
+                }
+            };
+            let mut accumulator = BatchAccumulator::default();
+            apply_batch(
+                &mut weights,
+                &mut optimizer,
+                std::slice::from_ref(&zero),
+                &mut accumulator,
+                &args,
+            );
+            assert_eq!(original.feature_emb, weights.feature_emb);
+            assert_eq!(original.hidden_b, weights.hidden_b);
+            assert_eq!(original.out_w, weights.out_w);
+            assert_eq!(original.out_b, weights.out_b);
+            match optimizer {
+                OptimizerState::Adagrad(state) => {
+                    assert!(state.feature_emb.iter().all(|&value| value == 0.0));
+                    assert!(state.hidden_b.iter().all(|&value| value == 0.0));
+                    assert!(state.out_w.iter().all(|&value| value == 0.0));
+                    assert_eq!(0.0, state.out_b);
+                }
+                OptimizerState::ScheduleFree(state) => {
+                    assert_eq!(0, state.step);
+                    assert_eq!(0.0, state.weight_sum);
+                    assert_eq!(0.0, state.lr_max);
+                    assert_eq!(original.out_w, state.z.out_w);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wdl_probability_uses_cp_and_kappa_on_same_scale() {
+        let expected = 1.0_f32 / (1.0 + (-1.0_f32).exp());
+        let actual = sigmoid(600.0 / 600.0);
+        assert!((actual - expected).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn zero_adagrad_scalar_does_not_project_an_unrelated_weight() {
+        let mut weight = 0.174;
+        let mut accumulator = 0.0;
+        adagrad_scalar(&mut weight, &mut accumulator, 0.0, 0.001, 0.06);
+        assert_eq!(0.174, weight);
+        assert_eq!(0.0, accumulator);
+    }
+
+    #[test]
+    fn center_king_sparse_gradient_updates_mirror_pair_identically() {
+        let args = test_args_with_output_limit("0.20");
+        let king_bucket = 4 * 9;
+        let feature = king_bucket * HALFKP_PIECE_STATES;
+        let mirrored = center_mirror_feature(feature).expect("center mirror");
+        assert_ne!(feature, mirrored);
+        assert_eq!(None, center_mirror_feature(3 * 9 * HALFKP_PIECE_STATES));
+
+        let initial = Weights {
+            feature_emb: vec![0.0; HALFKP_INPUTS * HALFKP_HIDDEN],
+            hidden_b: [0.0; HALFKP_HIDDEN],
+            out_w: [0.0; HALFKP_HIDDEN * 2 + 1],
+            out_b: 0.0,
+        };
+        let mut weights = initial.clone();
+        let mut optimizer = OptimizerState::Adagrad(Box::new(initial.zeros_like()));
+        let gradient = RecordGradient {
+            dense: DenseGradient::default(),
+            positions: vec![PositionGradient {
+                features_black: vec![feature],
+                features_white: Vec::new(),
+                black_hidden: [1.0; HALFKP_HIDDEN],
+                white_hidden: [0.0; HALFKP_HIDDEN],
+            }],
+            value_loss: 0.0,
+            rank_loss: 0.0,
+            pairs: 0,
+        };
+        let mut accumulator = BatchAccumulator::default();
+        apply_batch(
+            &mut weights,
+            &mut optimizer,
+            &[gradient],
+            &mut accumulator,
+            &args,
+        );
+
+        let a = feature * HALFKP_HIDDEN;
+        let b = mirrored * HALFKP_HIDDEN;
+        assert_ne!(0.0, weights.feature_emb[a]);
+        assert_eq!(
+            &weights.feature_emb[a..a + HALFKP_HIDDEN],
+            &weights.feature_emb[b..b + HALFKP_HIDDEN]
+        );
+        let OptimizerState::Adagrad(state) = optimizer else {
+            panic!("AdaGrad state");
+        };
+        assert_eq!(
+            &state.feature_emb[a..a + HALFKP_HIDDEN],
+            &state.feature_emb[b..b + HALFKP_HIDDEN]
+        );
+        weights
+            .validate_center_mirror_symmetry("updated test weights")
+            .expect("symmetry");
+    }
+
+    #[test]
+    fn validation_score_uses_only_active_objectives() {
+        let mut metrics = Metrics {
+            records: 10,
+            value_loss: 2.0,
+            pairs: 10,
+            pair_correct: 0,
+            regret_sum: 10_000.0,
+            game_vs_search_eligible: 10,
+            game_vs_search_pair_correct: 0,
+            game_vs_search_objective_loss_sum: 10.0,
+            game_vs_search_weight_sum: 10.0,
+            game_rank_eligible: 10,
+            game_rank_pair_correct: 5,
+            game_rank_objective_loss_sum: 8.0,
+            game_rank_weight_sum: 10.0,
+            ..Metrics::default()
+        };
+        let (_, _, mut options) = game_vs_search_fixture();
+        options.value_weight = 1.0;
+        options.rank_weight = 0.0;
+        options.game_rank_weight = 0.0;
+        options.game_vs_search_weight = 0.0;
+        assert!((validation_score(&metrics, &options) - 0.2).abs() < 1e-12);
+
+        metrics.pair_correct = 10;
+        metrics.regret_sum = 0.0;
+        metrics.game_vs_search_pair_correct = 10;
+        assert!((validation_score(&metrics, &options) - 0.2).abs() < 1e-12);
+
+        options.value_weight = 0.0;
+        assert_eq!(0.0, validation_score(&metrics, &options));
+        options.rank_weight = 1.0;
+        metrics.pair_correct = 0;
+        assert!(validation_score(&metrics, &options) > 0.0);
+        options.rank_weight = 0.0;
+        options.game_rank_weight = 1.0;
+        assert!((validation_score(&metrics, &options) - 0.8).abs() < 1e-12);
+        options.game_rank_weight = 0.0;
+        options.game_vs_search_weight = 1.0;
+        metrics.game_vs_search_pair_correct = 0;
+        assert!((validation_score(&metrics, &options) - 0.02).abs() < 1e-12);
+    }
+
+    #[test]
+    fn candidate_selection_is_strict_and_rejects_nonfinite_scores() {
+        assert!(should_select_candidate(0.9, 1.0));
+        assert!(!should_select_candidate(1.0, 1.0));
+        assert!(!should_select_candidate(f64::NAN, 1.0));
+        assert!(!should_select_candidate(f64::INFINITY, 1.0));
+    }
 
     #[test]
     fn rejects_manifest_with_incompatible_teacher_semantics() {
@@ -1984,6 +3105,102 @@ mod tests {
     }
 
     #[test]
+    fn teacher_artifact_preflight_binds_parent_and_output_sha() {
+        let position = Position::default();
+        let packed = PackedHalfKpPosition::from_position(&position).expect("start position");
+        let path = std::env::temp_dir().join(format!(
+            "halfkp-search-train-preflight-{}.hkst",
+            std::process::id()
+        ));
+        let expected_model_sha = "a".repeat(64);
+        let mut writer = SearchTeacherWriter::create(&path).expect("create dataset");
+        writer.set_provenance(SearchTeacherProvenance {
+            model: Some(ArtifactMetadata {
+                path: "accepted-parent.binary".to_string(),
+                sha256: expected_model_sha.clone(),
+                bytes: 1,
+                records: None,
+            }),
+            ..SearchTeacherProvenance::default()
+        });
+        writer
+            .write_record(&SearchTeacherRecord {
+                position_hash: 1,
+                ply: 0,
+                phase: 0,
+                teacher_depth: 4,
+                result: None,
+                root_search_score_cp: 0.0,
+                sample_weight: 1.0,
+                root: packed.clone(),
+                candidates: vec![SearchTeacherCandidate {
+                    flags: 0,
+                    score_cp: 0.0,
+                    child: packed,
+                }],
+            })
+            .expect("write record");
+        writer.finish().expect("finish dataset");
+
+        preflight_teacher_artifacts(std::iter::once(&path), &expected_model_sha, false)
+            .expect("matching artifacts");
+        let error = preflight_teacher_artifacts(std::iter::once(&path), &"b".repeat(64), false)
+            .expect_err("reject teacher mismatch");
+        assert!(error.to_string().contains("does not match accepted parent"));
+
+        std::fs::remove_file(search_teacher_manifest_path(&path)).expect("remove manifest");
+        std::fs::remove_file(path).expect("remove dataset");
+    }
+
+    #[test]
+    fn split_audit_rejects_candidate_child_overlap() {
+        let position = Position::default();
+        let packed = PackedHalfKpPosition::from_position(&position).expect("start position");
+        let train_path = std::env::temp_dir().join(format!(
+            "halfkp-search-train-split-train-{}.hkst",
+            std::process::id()
+        ));
+        let valid_path = std::env::temp_dir().join(format!(
+            "halfkp-search-train-split-valid-{}.hkst",
+            std::process::id()
+        ));
+        for (path, position_hash) in [(&train_path, 1), (&valid_path, 2)] {
+            let mut writer = SearchTeacherWriter::create(path).expect("create dataset");
+            let mut root = packed.clone();
+            root.material_black += position_hash as f32;
+            writer
+                .write_record(&SearchTeacherRecord {
+                    position_hash,
+                    ply: 0,
+                    phase: 0,
+                    teacher_depth: 4,
+                    result: None,
+                    root_search_score_cp: 0.0,
+                    sample_weight: 1.0,
+                    root,
+                    candidates: vec![SearchTeacherCandidate {
+                        flags: 0,
+                        score_cp: 0.0,
+                        child: packed.clone(),
+                    }],
+                })
+                .expect("write record");
+            writer.finish().expect("finish dataset");
+        }
+        let error = validate_train_valid_network_split(
+            std::slice::from_ref(&train_path),
+            std::slice::from_ref(&valid_path),
+            false,
+        )
+        .expect_err("reject candidate overlap");
+        assert!(error.to_string().contains("network-input overlap"));
+        for path in [train_path, valid_path] {
+            std::fs::remove_file(search_teacher_manifest_path(&path)).expect("remove manifest");
+            std::fs::remove_file(path).expect("remove dataset");
+        }
+    }
+
+    #[test]
     fn adagrad_checkpoint_resume_matches_uninterrupted_updates() {
         let directory =
             std::env::temp_dir().join(format!("halfkp-search-train-resume-{}", std::process::id()));
@@ -1996,6 +3213,14 @@ mod tests {
             "valid.hkst",
             "--init",
             "init.binary",
+            "--model-manifest",
+            "model.manifest.json",
+            "--promotion-registry",
+            "promotion_registry.json",
+            "--gate-report",
+            "gate_report.json",
+            "--parent-generation",
+            "2",
             "--output",
             "output.binary",
             "--checkpoint-dir",
@@ -2023,9 +3248,11 @@ mod tests {
         let options = TrainOptions {
             kappa_cp: 600.0,
             search_mix: 1.0,
+            value_weight: 1.0,
             loss_power: 2.0,
             rank_weight: 0.0,
             game_rank_weight: 0.0,
+            game_vs_search_weight: 0.0,
             rank_margin_cp: 20.0,
             rank_temperature_cp: 100.0,
             min_rank_gap_cp: 15.0,
@@ -2060,11 +3287,27 @@ mod tests {
             1,
             0.25,
             0,
+            SelectedKind::Best,
+            1,
+            0.25,
+            &Metrics::default(),
         )
         .expect("save checkpoint");
-        let (mut resumed, mut resumed_optimizer, _, epoch, _, _) =
-            initialize_training(&args, fingerprint).expect("resume checkpoint");
+        let (
+            mut resumed,
+            mut resumed_optimizer,
+            _,
+            epoch,
+            _,
+            _,
+            selected_kind,
+            selected_epoch,
+            selected_score,
+        ) = initialize_training(&args, fingerprint).expect("resume checkpoint");
         assert_eq!(1, epoch);
+        assert!(matches!(selected_kind, SelectedKind::Best));
+        assert_eq!(1, selected_epoch);
+        assert_eq!(0.25, selected_score);
 
         let second_uninterrupted = vec![compute_record_gradient(&uninterrupted, &record, &options)];
         apply_batch(
@@ -2106,6 +3349,14 @@ mod tests {
             "valid.hkst",
             "--init",
             "init.binary",
+            "--model-manifest",
+            "model.manifest.json",
+            "--promotion-registry",
+            "promotion_registry.json",
+            "--gate-report",
+            "gate_report.json",
+            "--parent-generation",
+            "2",
             "--output",
             "output.binary",
             "--checkpoint-dir",
@@ -2142,14 +3393,30 @@ mod tests {
             2,
             0.5,
             1,
+            SelectedKind::Swa,
+            2,
+            0.4,
+            &Metrics::default(),
         )
         .expect("save checkpoint");
-        let (loaded_weights, loaded_optimizer, _, epoch, best, stale) =
-            initialize_training(&args, fingerprint).expect("resume checkpoint");
+        let (
+            loaded_weights,
+            loaded_optimizer,
+            _,
+            epoch,
+            best,
+            stale,
+            selected_kind,
+            selected_epoch,
+            selected_score,
+        ) = initialize_training(&args, fingerprint).expect("resume checkpoint");
         assert_eq!(weights.feature_emb, loaded_weights.feature_emb);
         assert_eq!(2, epoch);
         assert_eq!(0.5, best);
         assert_eq!(1, stale);
+        assert!(matches!(selected_kind, SelectedKind::Swa));
+        assert_eq!(2, selected_epoch);
+        assert_eq!(0.4, selected_score);
         let (OptimizerState::ScheduleFree(expected), OptimizerState::ScheduleFree(actual)) =
             (&optimizer, &loaded_optimizer)
         else {
@@ -2194,9 +3461,11 @@ mod tests {
         let options = TrainOptions {
             kappa_cp: 600.0,
             search_mix: 1.0,
+            value_weight: 1.0,
             loss_power: 2.0,
             rank_weight: 0.0,
             game_rank_weight: 0.0,
+            game_vs_search_weight: 0.0,
             rank_margin_cp: 20.0,
             rank_temperature_cp: 100.0,
             min_rank_gap_cp: 15.0,
@@ -2221,6 +3490,325 @@ mod tests {
         assert!(
             (analytic - numerical).abs() < 1e-4,
             "analytic={analytic} numerical={numerical}"
+        );
+    }
+
+    #[test]
+    fn preserved_qsearch_leaf_target_flips_score_and_result_by_side() {
+        let position = Position::default();
+        let root = PackedHalfKpPosition::from_position(&position).expect("start position");
+        let mut leaf = root.clone();
+        leaf.side_to_move = Color::White;
+        let record = SearchTeacherRecord {
+            position_hash: PositionHasher::calculate_hash(&position),
+            ply: 0,
+            phase: 0,
+            teacher_depth: 4,
+            result: Some(1.0),
+            root_search_score_cp: 120.0,
+            sample_weight: 1.0,
+            root,
+            candidates: vec![SearchTeacherCandidate {
+                flags: CANDIDATE_SEARCH_BEST | CANDIDATE_QSEARCH_LEAF,
+                score_cp: 120.0,
+                child: leaf,
+            }],
+        };
+        let (target_position, target_score, target_result) = value_target_for_record(&record);
+        assert_eq!(Color::White, target_position.side_to_move);
+        assert_eq!(-120.0, target_score);
+        assert_eq!(Some(0.0), target_result);
+    }
+
+    fn game_vs_search_fixture() -> (Weights, SearchTeacherRecord, TrainOptions) {
+        let position = Position::default();
+        let root = PackedHalfKpPosition::from_position(&position).expect("start position");
+        let mut search_child = root.clone();
+        search_child.features_black = vec![0];
+        let mut game_child = root.clone();
+        game_child.features_black = vec![1];
+        let weights = Weights {
+            feature_emb: vec![0.0; HALFKP_INPUTS * HALFKP_HIDDEN],
+            hidden_b: [0.5; HALFKP_HIDDEN],
+            out_w: [0.01; HALFKP_HIDDEN * 2 + 1],
+            out_b: 0.0,
+        };
+        let record = SearchTeacherRecord {
+            position_hash: PositionHasher::calculate_hash(&position),
+            ply: 0,
+            phase: 0,
+            teacher_depth: 4,
+            result: None,
+            root_search_score_cp: 100.0,
+            sample_weight: 1.0,
+            root,
+            candidates: vec![
+                SearchTeacherCandidate {
+                    flags: 0,
+                    score_cp: 100.0,
+                    child: search_child,
+                },
+                SearchTeacherCandidate {
+                    flags: CANDIDATE_GAME_MOVE,
+                    score_cp: 0.0,
+                    child: game_child,
+                },
+            ],
+        };
+        let options = TrainOptions {
+            kappa_cp: 600.0,
+            search_mix: 1.0,
+            value_weight: 0.0,
+            loss_power: 2.0,
+            rank_weight: 1.0,
+            game_rank_weight: 0.0,
+            game_vs_search_weight: 1.0,
+            rank_margin_cp: 20.0,
+            rank_temperature_cp: 100.0,
+            min_rank_gap_cp: 15.0,
+            game_regret_cap_cp: 300.0,
+            max_pairs_per_record: 4,
+        };
+        (weights, record, options)
+    }
+
+    #[test]
+    fn game_vs_search_adds_one_forward_pair_and_excludes_the_reverse_pair() {
+        let (weights, record, options) = game_vs_search_fixture();
+        let gradient = compute_record_gradient(&weights, &record, &options);
+        assert_eq!(1, gradient.pairs);
+        assert_eq!(3, gradient.positions.len());
+        // The game move is the good candidate, so minimizing the loss
+        // decreases its raw-score gradient (gradient descent raises it) and
+        // raises the bad search candidate's gradient (gradient descent lowers
+        // it).
+        assert!(gradient.positions[1].black_hidden[0] < 0.0);
+        assert!(gradient.positions[2].black_hidden[0] > 0.0);
+    }
+
+    #[test]
+    fn game_vs_search_weight_zero_preserves_existing_behavior() {
+        let (weights, record, mut options) = game_vs_search_fixture();
+        options.rank_weight = 0.0;
+        options.game_vs_search_weight = 0.0;
+        assert_eq!(
+            0,
+            compute_record_gradient(&weights, &record, &options).pairs
+        );
+    }
+
+    #[test]
+    fn game_rank_only_adds_search_confirmed_pair_in_correct_direction() {
+        let (weights, mut record, mut options) = game_vs_search_fixture();
+        let mut bad_child = record.root.clone();
+        bad_child.features_black = vec![2];
+        record.candidates.push(SearchTeacherCandidate {
+            flags: 0,
+            score_cp: -20.0,
+            child: bad_child,
+        });
+        options.rank_weight = 0.0;
+        options.game_rank_weight = 1.0;
+        options.game_vs_search_weight = 0.0;
+        let gradient = compute_record_gradient(&weights, &record, &options);
+        assert_eq!(1, gradient.pairs);
+        assert_eq!(3, gradient.positions.len());
+        assert!(gradient.positions[1].black_hidden[0] < 0.0);
+        assert!(gradient.positions[2].black_hidden[0] > 0.0);
+
+        let metrics = evaluate_record(&weights, &weights, &record, &options);
+        assert_eq!(1, metrics.game_rank_eligible);
+        assert_eq!(1.0, metrics.game_rank_weight_sum);
+        assert!(metrics.game_rank_objective_loss_sum > 0.0);
+    }
+
+    fn sparse_feature_gradient(gradient: &RecordGradient, feature: usize, hidden: usize) -> f32 {
+        gradient
+            .positions
+            .iter()
+            .map(|position| {
+                let black_count = position
+                    .features_black
+                    .iter()
+                    .filter(|&&candidate| candidate == feature)
+                    .count() as f32;
+                let white_count = position
+                    .features_white
+                    .iter()
+                    .filter(|&&candidate| candidate == feature)
+                    .count() as f32;
+                black_count * position.black_hidden[hidden]
+                    + white_count * position.white_hidden[hidden]
+            })
+            .sum()
+    }
+
+    fn assert_game_rank_gradient_matches_finite_difference(side_to_move: Color) {
+        const GAME_FEATURE: usize = 1;
+        const BAD_FEATURE: usize = 2;
+        const HIDDEN: usize = 0;
+
+        let (mut weights, mut record, mut options) = game_vs_search_fixture();
+        for candidate in &mut record.candidates {
+            candidate.child.side_to_move = side_to_move;
+            candidate.child.features_black.clear();
+            candidate.child.features_white.clear();
+        }
+        let game_index = record
+            .candidates
+            .iter()
+            .position(|candidate| candidate.flags & CANDIDATE_GAME_MOVE != 0)
+            .expect("game candidate");
+        match side_to_move {
+            Color::Black => record.candidates[game_index]
+                .child
+                .features_black
+                .push(GAME_FEATURE as u32),
+            Color::White => record.candidates[game_index]
+                .child
+                .features_white
+                .push(GAME_FEATURE as u32),
+        }
+        let mut bad_child = record.root.clone();
+        bad_child.side_to_move = side_to_move;
+        bad_child.features_black.clear();
+        bad_child.features_white.clear();
+        match side_to_move {
+            Color::Black => bad_child.features_black.push(BAD_FEATURE as u32),
+            Color::White => bad_child.features_white.push(BAD_FEATURE as u32),
+        }
+        record.candidates.push(SearchTeacherCandidate {
+            flags: 0,
+            score_cp: -20.0,
+            child: bad_child,
+        });
+        options.rank_weight = 0.0;
+        options.game_rank_weight = 1.0;
+        options.game_vs_search_weight = 0.0;
+        weights.feature_emb[GAME_FEATURE * HALFKP_HIDDEN + HIDDEN] = 0.10;
+        weights.feature_emb[BAD_FEATURE * HALFKP_HIDDEN + HIDDEN] = 0.20;
+
+        let gradient = compute_record_gradient(&weights, &record, &options);
+        assert_eq!(1, gradient.pairs);
+
+        let epsilon = 1e-3_f32;
+        let feature_index = GAME_FEATURE * HALFKP_HIDDEN + HIDDEN;
+        let analytic_feature = sparse_feature_gradient(&gradient, GAME_FEATURE, HIDDEN);
+        weights.feature_emb[feature_index] += epsilon;
+        let plus = compute_record_gradient(&weights, &record, &options).rank_loss;
+        weights.feature_emb[feature_index] -= 2.0 * epsilon;
+        let minus = compute_record_gradient(&weights, &record, &options).rank_loss;
+        weights.feature_emb[feature_index] += epsilon;
+        let numerical_feature = ((plus - minus) / f64::from(2.0 * epsilon)) as f32;
+        assert!(
+            (analytic_feature - numerical_feature).abs() < 2e-4,
+            "side={side_to_move:?} feature analytic={analytic_feature} numerical={numerical_feature}"
+        );
+
+        let output_index = if side_to_move == Color::Black {
+            HIDDEN
+        } else {
+            HALFKP_HIDDEN + HIDDEN
+        };
+        let analytic_output = gradient.dense.out_w[output_index];
+        weights.out_w[output_index] += epsilon;
+        let plus = compute_record_gradient(&weights, &record, &options).rank_loss;
+        weights.out_w[output_index] -= 2.0 * epsilon;
+        let minus = compute_record_gradient(&weights, &record, &options).rank_loss;
+        let numerical_output = ((plus - minus) / f64::from(2.0 * epsilon)) as f32;
+        assert!(
+            (analytic_output - numerical_output).abs() < 2e-4,
+            "side={side_to_move:?} output analytic={analytic_output} numerical={numerical_output}"
+        );
+    }
+
+    #[test]
+    fn game_rank_gradient_matches_finite_difference_for_both_sides() {
+        assert_game_rank_gradient_matches_finite_difference(Color::Black);
+        assert_game_rank_gradient_matches_finite_difference(Color::White);
+    }
+
+    #[test]
+    fn game_vs_search_respects_regret_cap_and_reports_thresholds() {
+        let (weights, record, mut options) = game_vs_search_fixture();
+        options.rank_weight = 0.0;
+        options.game_regret_cap_cp = 50.0;
+        assert_eq!(
+            0,
+            compute_record_gradient(&weights, &record, &options).pairs
+        );
+
+        options.game_regret_cap_cp = 300.0;
+        let metrics = evaluate_record(&weights, &weights, &record, &options);
+        assert_eq!(1, metrics.game_search_mismatches);
+        assert_eq!([0, 1, 1, 1], metrics.game_regret_threshold_counts);
+        assert_eq!(1, metrics.game_vs_search_eligible);
+        assert_eq!(1, metrics.game_vs_search_pairs);
+        assert_eq!(0.0, metrics.game_vs_search_margin_sum_cp);
+        assert!(
+            (metrics.game_vs_search_objective_loss_sum - f64::from((1.0_f32 + 0.2_f32.exp()).ln()))
+                .abs()
+                < 1e-7
+        );
+    }
+
+    #[test]
+    fn non_conflicting_pair_metric_excludes_active_reverse_pair() {
+        let (weights, mut record, options) = game_vs_search_fixture();
+        let mut independent_child = record.root.clone();
+        independent_child.features_black = vec![2];
+        record.candidates.push(SearchTeacherCandidate {
+            flags: 0,
+            score_cp: -100.0,
+            child: independent_child,
+        });
+        let metrics = evaluate_record(&weights, &weights, &record, &options);
+        assert_eq!(2, metrics.pairs);
+        assert_eq!(1, metrics.non_conflicting_pairs);
+    }
+
+    #[test]
+    fn result_diagnostics_compare_model_and_search_teacher_by_phase() {
+        let (weights, mut record, options) = game_vs_search_fixture();
+        record.result = Some(1.0);
+        record.phase = 2;
+        record.sample_weight = 0.5;
+        let model_p = sigmoid(weights.forward(&record.root).raw * TARGET_SCALE / options.kappa_cp);
+        let teacher_p = sigmoid(record.root_search_score_cp / options.kappa_cp);
+
+        let metrics = evaluate_record(&weights, &weights, &record, &options);
+        assert_eq!(1, metrics.known_results);
+        assert_eq!([0, 0, 1], metrics.phase_result_records);
+        assert!(
+            (metrics.model_result_brier - f64::from((model_p - 1.0).powi(2) * 0.5)).abs() < 1e-8
+        );
+        assert!(
+            (metrics.teacher_result_brier - f64::from((teacher_p - 1.0).powi(2) * 0.5)).abs()
+                < 1e-8
+        );
+        assert_eq!(
+            metrics.model_result_brier,
+            metrics.phase_model_result_brier[2]
+        );
+        assert_eq!(
+            metrics.teacher_result_brier,
+            metrics.phase_teacher_result_brier[2]
+        );
+        assert!(metrics.model_result_log_loss.is_finite());
+        assert!(metrics.teacher_result_log_loss.is_finite());
+
+        let json = metrics_json(&metrics);
+        assert_eq!(
+            metrics.teacher_result_brier,
+            json["teacher_result_brier"]
+                .as_f64()
+                .expect("teacher Brier")
+        );
+        assert_eq!(
+            metrics.phase_teacher_result_brier[2],
+            json["phase_teacher_result_brier"][2]
+                .as_f64()
+                .expect("phase teacher Brier")
         );
     }
 }
