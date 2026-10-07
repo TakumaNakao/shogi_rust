@@ -349,6 +349,10 @@ def main() -> int:
     # present in the S07 split and retain the split by opening family.
     eval_root_records = Counter()
     with test_path.open("w", encoding="utf-8") as test_output:
+        for line in base_paths["test"].open(encoding="utf-8"):
+            test_output.write(line if line.endswith("\n") else line + "\n")
+            eval_root_records["preserved_base_test"] += 1
+            eval_root_records["kept_test"] += 1
         for name in ("valid", "test"):
             for line in addition_paths[name].open(encoding="utf-8"):
                 row = json.loads(line)
