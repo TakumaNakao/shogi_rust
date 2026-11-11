@@ -31,6 +31,14 @@ enum Objective {
     Hybrid,
 }
 
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum FrequencyLoss {
+    #[default]
+    Ranknet,
+    Listwise,
+}
+
 #[derive(Parser, Debug)]
 #[command(about = "Train scratch HalfKP with refreshed forced-qsearch MMTO leaves")]
 struct Args {
@@ -65,6 +73,12 @@ struct Args {
     jobs: usize,
     #[arg(long, default_value_t = 8192)]
     pair_batch_size: usize,
+    /// Frequency objective; legacy single-move datasets retain their MMTO loss.
+    #[arg(long, value_enum, default_value_t = FrequencyLoss::Ranknet)]
+    frequency_loss: FrequencyLoss,
+    /// Batch complete input roots instead of splitting pairs (zero keeps legacy batching).
+    #[arg(long, default_value_t = 0)]
+    root_batch_size: usize,
     #[arg(long, default_value_t = 0.00001)]
     learning_rate: f32,
     #[arg(long, default_value_t = 0.1)]
@@ -231,10 +245,23 @@ struct Pair {
     alternative: Leaf,
     target_probability: f32,
     pair_weight: f32,
+    loss: PairLoss,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PairLoss {
+    LegacySigmoid,
+    Ranknet,
+}
+
+struct ListwiseRoot {
+    leaves: Vec<Leaf>,
+    targets: Vec<f32>,
 }
 
 #[derive(Clone)]
 struct Gradient {
+    input_roots: usize,
     hidden_b: [f32; HALFKP_HIDDEN],
     out_w: [f32; HALFKP_HIDDEN * 2 + 1],
     out_b: f32,
@@ -251,6 +278,7 @@ struct Gradient {
 impl Default for Gradient {
     fn default() -> Self {
         Self {
+            input_roots: 0,
             hidden_b: [0.0; HALFKP_HIDDEN],
             out_w: [0.0; HALFKP_HIDDEN * 2 + 1],
             out_b: 0.0,
@@ -277,6 +305,12 @@ struct UpdateDiagnostics {
     active_derivative_fraction: f64,
     update_batches: u64,
     clipped_batches: u64,
+    gradient_norm_mean: f64,
+    gradient_norm_max: f64,
+    clip_factor_mean: f64,
+    feature_updates: UpdateMagnitude,
+    hidden_updates: UpdateMagnitude,
+    output_updates: UpdateMagnitude,
     wdl_roots: u64,
     wdl_mean_brier: f64,
 }
@@ -292,9 +326,33 @@ impl Default for UpdateDiagnostics {
             active_derivative_fraction: 0.0,
             update_batches: 0,
             clipped_batches: 0,
+            gradient_norm_mean: 0.0,
+            gradient_norm_max: 0.0,
+            clip_factor_mean: 0.0,
+            feature_updates: UpdateMagnitude::default(),
+            hidden_updates: UpdateMagnitude::default(),
+            output_updates: UpdateMagnitude::default(),
             wdl_roots: 0,
             wdl_mean_brier: 0.0,
         }
+    }
+}
+
+#[derive(Default, Serialize, Clone)]
+struct UpdateMagnitude {
+    count: u64,
+    #[serde(skip)]
+    sum_squared: f64,
+    rms: f64,
+    max_abs: f64,
+}
+
+impl UpdateMagnitude {
+    fn record(&mut self, before: f32, after: f32) {
+        let delta = f64::from(after) - f64::from(before);
+        self.count += 1;
+        self.sum_squared += delta * delta;
+        self.max_abs = self.max_abs.max(delta.abs());
     }
 }
 
@@ -308,6 +366,7 @@ struct OuterDelta {
 #[derive(Serialize)]
 struct OuterMetricsFile {
     outer: usize,
+    train_metrics_start_root: usize,
     train: MetricReport,
     valid: MetricReport,
     wdl_valid_before: WdlReport,
@@ -337,6 +396,14 @@ struct SearchMetrics {
     terminal_roots: usize,
     aborted_roots: usize,
     agreement: usize,
+    modal_hits: usize,
+    observed_hits: usize,
+    selected_mass_sum: f64,
+    top3_mass_sum: f64,
+    listwise_roots: usize,
+    listwise_loss_sum: f64,
+    phase_modal_hits: [usize; 3],
+    phase_observed_hits: [usize; 3],
     regret_sum_cp: f64,
     qnodes: u64,
     #[serde(skip)]
@@ -362,6 +429,16 @@ impl SearchMetrics {
         self.terminal_roots += other.terminal_roots;
         self.aborted_roots += other.aborted_roots;
         self.agreement += other.agreement;
+        self.modal_hits += other.modal_hits;
+        self.observed_hits += other.observed_hits;
+        self.selected_mass_sum += other.selected_mass_sum;
+        self.top3_mass_sum += other.top3_mass_sum;
+        self.listwise_roots += other.listwise_roots;
+        self.listwise_loss_sum += other.listwise_loss_sum;
+        for index in 0..3 {
+            self.phase_modal_hits[index] += other.phase_modal_hits[index];
+            self.phase_observed_hits[index] += other.phase_observed_hits[index];
+        }
         self.regret_sum_cp += other.regret_sum_cp;
         self.qnodes += other.qnodes;
         self.best_moves.extend_from_slice(&other.best_moves);
@@ -378,6 +455,13 @@ struct MetricReport {
     terminal_roots: usize,
     aborted_roots: usize,
     agreement: f64,
+    agreement_definition: &'static str,
+    modal_move_accuracy: f64,
+    observed_move_accuracy: f64,
+    selected_teacher_mass: f64,
+    top3_teacher_mass: f64,
+    listwise_roots: usize,
+    mean_listwise_cross_entropy: f64,
     mean_regret_cp: f64,
     exact_leaves: usize,
     terminal_leaves: usize,
@@ -390,6 +474,8 @@ struct PhaseMetric {
     roots: usize,
     pairs: usize,
     mean_loss: f64,
+    modal_move_accuracy: f64,
+    observed_move_accuracy: f64,
 }
 
 #[derive(Default, Serialize, Clone)]
@@ -417,6 +503,8 @@ struct Checkpoint {
     roots_completed: usize,
     #[serde(default)]
     search_snapshot_sha256: Option<String>,
+    #[serde(default)]
+    training_config_sha256: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -441,6 +529,88 @@ struct RunManifest {
     elapsed_ms: u128,
 }
 
+#[derive(Parser)]
+#[command(
+    about = "Evaluate frequency targets with the trainer's fresh qsearch and both ranking metrics"
+)]
+struct EvaluateArgs {
+    #[arg(long)]
+    model: PathBuf,
+    #[arg(long, required = true)]
+    input: Vec<PathBuf>,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long, default_value_t = 300.0)]
+    tau_cp: f32,
+    #[arg(long, default_value_t = 12)]
+    jobs: usize,
+    #[arg(long, default_value_t = 12000)]
+    max_roots: usize,
+    #[arg(long, default_value_t = 2_000_000)]
+    qsearch_node_limit: u64,
+}
+
+pub fn evaluate() -> Result<()> {
+    let args = EvaluateArgs::parse();
+    if args.jobs == 0
+        || args.max_roots == 0
+        || !args.tau_cp.is_finite()
+        || args.tau_cp <= 0.0
+        || args.qsearch_node_limit == 0
+    {
+        return Err(anyhow!("invalid evaluation parameters"));
+    }
+    if args.output.exists() {
+        return Err(anyhow!("evaluation output already exists"));
+    }
+    let model_sha = sha256_file(&args.model)?;
+    let inputs_sha: Vec<_> = args
+        .input
+        .iter()
+        .map(|path| sha256_file(path))
+        .collect::<Result<_>>()?;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(args.jobs)
+        .build()?;
+    let metrics = fresh_evaluate(
+        &args.model,
+        &args.input,
+        "valid",
+        Some(args.max_roots),
+        args.tau_cp,
+        &pool,
+        256,
+        args.qsearch_node_limit,
+    )?;
+    if model_sha != sha256_file(&args.model)?
+        || inputs_sha
+            != args
+                .input
+                .iter()
+                .map(|path| sha256_file(path))
+                .collect::<Result<Vec<_>>>()?
+    {
+        return Err(anyhow!("evaluation inputs changed"));
+    }
+    if let Some(parent) = args.output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    atomic_json(
+        &args.output,
+        &serde_json::json!({
+            "schema": "halfkp_frequency_evaluation_v1", "model_sha256": model_sha,
+            "input_sha256": inputs_sha, "tau_cp": args.tau_cp, "qsearch_node_limit": args.qsearch_node_limit,
+            "metrics": report(&metrics), "environment": capture_run_environment(),
+        }),
+    )?;
+    println!(
+        "evaluated roots={} output={}",
+        metrics.roots,
+        args.output.display()
+    );
+    Ok(())
+}
+
 pub fn run() -> Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
@@ -456,6 +626,7 @@ pub fn run() -> Result<()> {
     let checkpoint_path = args.output_dir.join("checkpoint.json");
     let manifest_sha = sha256_file(&args.dataset_manifest)?;
     let init_sha = sha256_file(&args.init)?;
+    let config_sha = training_config_sha256(&args)?;
     let init_optimizer_sha = args
         .init_optimizer
         .as_ref()
@@ -484,6 +655,7 @@ pub fn run() -> Result<()> {
         {
             return Err(anyhow!("resume checkpoint provenance mismatch"));
         }
+        require_training_config(&checkpoint, &config_sha)?;
         if restore_checkpoint_artifacts_if_needed(
             &model_path,
             &optimizer_path,
@@ -500,11 +672,13 @@ pub fn run() -> Result<()> {
             if previous.schema_version != CHECKPOINT_SCHEMA
                 || previous.init_model_sha256 != init_sha
                 || previous.dataset_manifest_sha256 != manifest_sha
+                || previous.init_optimizer_sha256 != init_optimizer_sha
             {
                 return Err(anyhow!(
                     "current and previous checkpoint provenance mismatch"
                 ));
             }
+            require_training_config(&previous, &config_sha)?;
             restore_checkpoint_artifacts_if_needed(
                 &model_path,
                 &optimizer_path,
@@ -559,6 +733,7 @@ pub fn run() -> Result<()> {
             active_outer: None,
             roots_completed: 0,
             search_snapshot_sha256: None,
+            training_config_sha256: Some(config_sha.clone()),
         };
         atomic_json(&checkpoint_path, &checkpoint)?;
         (
@@ -574,7 +749,7 @@ pub fn run() -> Result<()> {
 
     for outer in start_outer + 1..=args.outer_iterations {
         let outer_started = Instant::now();
-        let before = weights.clone();
+        let train_metrics_start_root = resume_roots;
         weights.save(&model_path)?;
         // EngineEvaluator owns this immutable search-side copy while `weights`
         // is updated independently throughout the streaming pass.
@@ -586,6 +761,8 @@ pub fn run() -> Result<()> {
         } else {
             atomic_copy(&model_path, &snapshot_path)?;
         }
+        // Delta limits apply to the entire outer, including pre-interruption updates.
+        let before = Weights::load(&snapshot_path)?;
         let search_snapshot = Arc::new(EngineEvaluator::new(&snapshot_path, 0.0)?);
         let wdl_kappa_cp = wdl_objective
             .map(|(kappa, _)| kappa)
@@ -675,6 +852,7 @@ pub fn run() -> Result<()> {
                                     .unwrap_or(0.0),
                             )?;
                         }
+                        gradient.input_roots = 0;
                         commit_active_checkpoint(
                             &args.output_dir,
                             &checkpoint_path,
@@ -690,6 +868,7 @@ pub fn run() -> Result<()> {
                             roots_completed,
                             &previous_sha,
                             &snapshot_path,
+                            &config_sha,
                         )?;
                         next_checkpoint = next_checkpoint
                             .checked_add(args.checkpoint_roots)
@@ -774,11 +953,13 @@ pub fn run() -> Result<()> {
             active_outer: None,
             roots_completed: 0,
             search_snapshot_sha256: None,
+            training_config_sha256: Some(config_sha.clone()),
         };
         let metrics_dir = args.output_dir.join("metrics");
         fs::create_dir_all(&metrics_dir)?;
         let metrics_file = OuterMetricsFile {
             outer,
+            train_metrics_start_root,
             train: report(&last_train),
             valid: report(&last_valid),
             wdl_valid_before: wdl_valid_before.clone(),
@@ -871,7 +1052,7 @@ fn train_block(
             .collect::<Result<Vec<_>>>()
     })?;
     let samples = std::mem::take(block);
-    for (_sample, (pairs, sample_metrics)) in samples.into_iter().zip(searched) {
+    for (sample, (pairs, listwise, sample_metrics)) in samples.into_iter().zip(searched) {
         if let Some(sampler) = wdl_sampler.as_deref_mut() {
             let entry = sampler.next()?;
             add_wdl_gradient(
@@ -883,9 +1064,33 @@ fn train_block(
             )?;
         }
         metrics.merge(&sample_metrics);
-        for pair in pairs {
-            add_pair_gradient(weights, &pair, args.tau_cp, args.loss_weight, gradient)?;
-            if gradient.pairs == args.pair_batch_size {
+        if args.frequency_loss == FrequencyLoss::Listwise {
+            if !sample.soft_target {
+                return Err(anyhow!("listwise objective requires frequency records"));
+            }
+            if let Some(root) = listwise {
+                add_listwise_gradient(weights, &root, args.tau_cp, args.loss_weight, gradient)?;
+            }
+        } else {
+            for pair in pairs {
+                add_pair_gradient(weights, &pair, args.tau_cp, args.loss_weight, gradient)?;
+                if args.root_batch_size == 0 && gradient.pairs == args.pair_batch_size {
+                    apply_batch(
+                        weights,
+                        adagrad,
+                        gradient,
+                        wdl_gradient,
+                        args,
+                        material_bits,
+                        diagnostics,
+                        wdl_coefficient,
+                    )?;
+                }
+            }
+        }
+        if args.root_batch_size != 0 {
+            gradient.input_roots += 1;
+            if gradient.input_roots == args.root_batch_size && gradient.pairs != 0 {
                 apply_batch(
                     weights,
                     adagrad,
@@ -896,6 +1101,8 @@ fn train_block(
                     diagnostics,
                     wdl_coefficient,
                 )?;
+            } else if gradient.input_roots == args.root_batch_size {
+                gradient.input_roots = 0;
             }
         }
     }
@@ -1060,6 +1267,14 @@ fn load_wdl_sampler(args: &Args) -> Result<WdlSampler> {
 }
 
 fn validate_args(args: &Args) -> Result<()> {
+    if args.frequency_loss == FrequencyLoss::Listwise && args.root_batch_size == 0 {
+        return Err(anyhow!("listwise training requires --root-batch-size"));
+    }
+    if args.root_batch_size != 0 && args.objective != Objective::MmtoOnly {
+        return Err(anyhow!(
+            "root batching currently supports MMTO-only training"
+        ));
+    }
     if args.outer_iterations == 0
         || args.search_block_roots == 0
         || args.jobs == 0
@@ -1081,6 +1296,46 @@ fn validate_args(args: &Args) -> Result<()> {
         || args.pv_probe_roots == 0
     {
         return Err(anyhow!("invalid MMTO hyperparameter"));
+    }
+    Ok(())
+}
+
+fn training_config_sha256(args: &Args) -> Result<String> {
+    let value = serde_json::json!({
+        "loss_implementation": 2,
+        "frequency_loss": args.frequency_loss,
+        "root_batch_size": args.root_batch_size,
+        "pair_batch_size": args.pair_batch_size,
+        "learning_rate": args.learning_rate,
+        "output_ratio": args.output_learning_rate_ratio,
+        "tau_cp": args.tau_cp,
+        "loss_weight": args.loss_weight,
+        "clip_norm": args.gradient_clip_norm,
+        "feature_limit": args.feature_limit,
+        "output_limit": args.output_limit,
+        "feature_delta_limit": args.max_feature_delta_per_outer,
+        "output_delta_limit": args.max_output_delta_per_outer,
+        "qsearch_node_limit": args.qsearch_node_limit,
+        "search_block_roots": args.search_block_roots,
+        "checkpoint_roots": args.checkpoint_roots,
+        "max_train_roots": args.max_train_roots,
+        "max_valid_roots": args.max_valid_roots,
+        "pv_probe_roots": args.pv_probe_roots,
+        "train_paths": args.train,
+        "valid_paths": args.valid,
+        "objective": format!("{:?}", args.objective),
+        "wdl_weight": args.wdl_weight,
+        "wdl_kappa_cp": args.wdl_kappa_cp,
+        "wdl_pool_sha": args.expected_wdl_pool_manifest_sha256,
+        "wdl_objective_sha": args.expected_wdl_objective_manifest_sha256,
+        "wdl_seed": args.wdl_sampler_seed,
+    });
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
+}
+
+fn require_training_config(checkpoint: &Checkpoint, expected: &str) -> Result<()> {
+    if checkpoint.training_config_sha256.as_deref() != Some(expected) {
+        return Err(anyhow!("resume objective/configuration mismatch (legacy checkpoints require a new run initialized from the saved model and optimizer)"));
     }
     Ok(())
 }
@@ -1327,11 +1582,12 @@ fn search_sample(
     sample: &Sample,
     tau_cp: f32,
     qsearch_node_limit: u64,
-) -> Result<(Vec<Pair>, SearchMetrics)> {
+) -> Result<(Vec<Pair>, Option<ListwiseRoot>, SearchMetrics)> {
     let mut ai = ShogiAI::new(evaluator);
     ai.set_emit_info(false);
     let mut metrics = SearchMetrics::default();
-    let pairs = search_pairs(&mut ai, sample, tau_cp, qsearch_node_limit, &mut metrics)?;
+    let (pairs, listwise) =
+        search_pairs(&mut ai, sample, tau_cp, qsearch_node_limit, &mut metrics)?;
     if metrics.roots != 0 {
         let phase = sample.phase_index.min(2);
         metrics.phase_roots[phase] += 1;
@@ -1339,7 +1595,7 @@ fn search_sample(
         metrics.phase_loss_sum[phase] += metrics.loss_sum;
         metrics.phase_loss_weight_sum[phase] += metrics.loss_weight_sum;
     }
-    Ok((pairs, metrics))
+    Ok((pairs, listwise, metrics))
 }
 
 fn move_count(counts: &[(Move, u32)], target: Move) -> u32 {
@@ -1355,7 +1611,7 @@ fn search_pairs<E: Evaluator>(
     tau_cp: f32,
     qsearch_node_limit: u64,
     metrics: &mut SearchMetrics,
-) -> Result<Vec<Pair>> {
+) -> Result<(Vec<Pair>, Option<ListwiseRoot>)> {
     ai.reset_for_independent_search();
     ai.sennichite_detector.record_initial_position(&sample.root);
     let root_turn = sample.root.side_to_move();
@@ -1370,7 +1626,7 @@ fn search_pairs<E: Evaluator>(
         if remaining_qsearch_nodes == 0 {
             metrics.aborted_roots += 1;
             metrics.qnodes += ai.quiescence_nodes_searched();
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
         let Some(trace) = ai.forced_move_qsearch_leaf_trace_with_limit(
             &mut root,
@@ -1379,7 +1635,7 @@ fn search_pairs<E: Evaluator>(
         ) else {
             metrics.aborted_roots += 1;
             metrics.qnodes += ai.quiescence_nodes_searched();
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         };
         let leaf = if trace.has_exact_evaluation_leaf() {
             let position = trace.leaf.ok_or_else(|| anyhow!("missing exact leaf"))?;
@@ -1440,6 +1696,12 @@ fn search_pairs<E: Evaluator>(
     metrics.regret_sum_cp += f64::from(best_score - teacher_score);
     metrics.qnodes += ai.quiescence_nodes_searched();
     metrics.best_moves.push(best_move);
+    record_move_metrics(
+        &searched,
+        &sample.teacher_counts,
+        sample.phase_index,
+        metrics,
+    );
 
     let has_terminal = searched.iter().any(|(_, leaf)| {
         matches!(
@@ -1454,7 +1716,7 @@ fn search_pairs<E: Evaluator>(
     // experiment excludes them from the differentiable objective.  A mate
     // score is a rule outcome, not a static HalfKP target.
     if sample.soft_target && has_terminal {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
 
     if sample.soft_target {
@@ -1485,10 +1747,26 @@ fn search_pairs<E: Evaluator>(
                     alternative: clone_leaf(second),
                     target_probability: target,
                     pair_weight: weight,
+                    loss: PairLoss::Ranknet,
                 });
             }
         }
-        return Ok(pairs);
+        let listwise = ListwiseRoot {
+            targets: searched
+                .iter()
+                .map(|(mv, _)| move_count(counts, *mv) as f32 / total as f32)
+                .collect(),
+            leaves: searched.iter().map(|(_, leaf)| clone_leaf(leaf)).collect(),
+        };
+        let scores: Vec<f32> = listwise
+            .leaves
+            .iter()
+            .map(|leaf| leaf.fixed_score_cp)
+            .collect();
+        metrics.listwise_loss_sum +=
+            f64::from(listwise_loss_gradient(&scores, &listwise.targets, tau_cp)?.0);
+        metrics.listwise_roots += 1;
+        return Ok((pairs, Some(listwise)));
     }
 
     let (_, desired) = searched.swap_remove(teacher_index);
@@ -1505,10 +1783,111 @@ fn search_pairs<E: Evaluator>(
             alternative,
             target_probability: 1.0,
             pair_weight: 1.0,
+            loss: PairLoss::LegacySigmoid,
         });
     }
     let _ = desired.take();
-    Ok(pairs)
+    Ok((pairs, None))
+}
+
+fn record_move_metrics(
+    searched: &[(Move, Leaf)],
+    counts: &[(Move, u32)],
+    phase: usize,
+    metrics: &mut SearchMetrics,
+) {
+    let mut ranked: Vec<usize> = (0..searched.len()).collect();
+    // Same last-index tie break as the best_move chosen above.
+    ranked.sort_by(|&a, &b| {
+        searched[b]
+            .1
+            .fixed_score_cp
+            .total_cmp(&searched[a].1.fixed_score_cp)
+            .then(b.cmp(&a))
+    });
+    let total: u64 = counts.iter().map(|(_, count)| u64::from(*count)).sum();
+    let maximum = counts.iter().map(|(_, count)| *count).max().unwrap_or(0);
+    let selected = move_count(counts, searched[ranked[0]].0);
+    let modal = selected == maximum;
+    let observed = selected != 0;
+    metrics.modal_hits += usize::from(modal);
+    metrics.observed_hits += usize::from(observed);
+    metrics.phase_modal_hits[phase.min(2)] += usize::from(modal);
+    metrics.phase_observed_hits[phase.min(2)] += usize::from(observed);
+    metrics.selected_mass_sum += f64::from(selected) / total as f64;
+    metrics.top3_mass_sum += ranked
+        .iter()
+        .take(3)
+        .map(|&i| f64::from(move_count(counts, searched[i].0)) / total as f64)
+        .sum::<f64>();
+}
+
+fn listwise_loss_gradient(scores: &[f32], targets: &[f32], tau: f32) -> Result<(f32, Vec<f32>)> {
+    if scores.is_empty()
+        || scores.len() != targets.len()
+        || !tau.is_finite()
+        || tau <= 0.0
+        || scores.iter().any(|s| !s.is_finite())
+        || targets.iter().any(|t| !t.is_finite() || *t < 0.0)
+        || (targets.iter().sum::<f32>() - 1.0).abs() > 1e-5
+    {
+        return Err(anyhow!("invalid listwise scores/targets"));
+    }
+    let maximum = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let logits: Vec<f32> = scores.iter().map(|score| (score - maximum) / tau).collect();
+    let sum: f32 = logits.iter().map(|x| x.exp()).sum();
+    let log_sum = sum.ln();
+    let loss = logits
+        .iter()
+        .zip(targets)
+        .map(|(x, q)| q * (log_sum - x))
+        .sum();
+    let derivatives = logits
+        .iter()
+        .zip(targets)
+        .map(|(x, q)| (x.exp() / sum - q) / tau)
+        .collect();
+    Ok((loss, derivatives))
+}
+
+fn add_listwise_gradient(
+    weights: &Weights,
+    root: &ListwiseRoot,
+    tau: f32,
+    loss_weight: f32,
+    gradient: &mut Gradient,
+) -> Result<()> {
+    let evaluated: Vec<_> = root
+        .leaves
+        .iter()
+        .map(|leaf| current_leaf_score(weights, leaf))
+        .collect();
+    let scores: Vec<_> = evaluated.iter().map(|(score, _)| *score).collect();
+    let (loss, derivatives) = listwise_loss_gradient(&scores, &root.targets, tau)?;
+    for (index, ((leaf, (_, forward)), derivative)) in root
+        .leaves
+        .iter()
+        .zip(&evaluated)
+        .zip(derivatives)
+        .enumerate()
+    {
+        if let (Some(position), Some(forward)) = (leaf.packed.as_ref(), forward.as_ref()) {
+            add_position_gradient(
+                weights,
+                position,
+                forward,
+                loss_weight * derivative * leaf.root_sign * TARGET_SCALE,
+                gradient,
+            );
+        }
+        let relative = ((scores[0] - scores[index]).abs() / tau).min(80.0);
+        gradient.delta_hist[relative.floor() as usize] += 1;
+        gradient.active_derivative_pairs += u64::from(derivative.abs() >= 0.0025 / tau);
+    }
+    gradient.pairs += root.leaves.len();
+    gradient.pair_weight_sum += 1.0;
+    gradient.loss_sum += f64::from(loss * loss_weight);
+    Ok(())
 }
 
 fn clone_leaf(leaf: &Leaf) -> Leaf {
@@ -1531,9 +1910,9 @@ fn ranknet_probability(delta_cp: f32, tau_cp: f32) -> f32 {
 }
 
 fn ranknet_pair_loss(delta_cp: f32, tau_cp: f32, target_probability: f32) -> f32 {
-    let probability = ranknet_probability(delta_cp, tau_cp);
     let target = target_probability.clamp(0.0, 1.0);
-    -(target * probability.max(1e-7).ln() + (1.0 - target) * (1.0 - probability).max(1e-7).ln())
+    let x = delta_cp / tau_cp;
+    x.max(0.0) - target * x + (-x.abs()).exp().ln_1p()
 }
 
 fn current_leaf_score(weights: &Weights, leaf: &Leaf) -> (f32, Option<Forward>) {
@@ -1556,7 +1935,7 @@ fn add_pair_gradient(
     let (desired_score, desired_forward) = current_leaf_score(weights, &pair.desired);
     let (alternative_score, alternative_forward) = current_leaf_score(weights, &pair.alternative);
     let delta = desired_score - alternative_score;
-    let (loss, d_delta_cp) = if pair.target_probability == 1.0 && pair.pair_weight == 1.0 {
+    let (loss, d_delta_cp) = if pair.loss == PairLoss::LegacySigmoid {
         let loss = mirrored_sigmoid(delta, tau_cp);
         (loss, -loss_weight * loss * (1.0 - loss) / tau_cp)
     } else {
@@ -1798,11 +2177,17 @@ fn apply_mmto_batch(
         return Err(anyhow!("non-finite gradient norm"));
     }
     let clip = (args.gradient_clip_norm / norm_squared.sqrt()).min(1.0);
+    diagnostics.gradient_norm_mean += f64::from(norm_squared.sqrt());
+    diagnostics.gradient_norm_max = diagnostics
+        .gradient_norm_max
+        .max(f64::from(norm_squared.sqrt()));
+    diagnostics.clip_factor_mean += f64::from(clip);
     if clip < 1.0 {
         diagnostics.clipped_batches += 1;
     }
     let mut touched_parameter_bound = false;
     for h in 0..HALFKP_HIDDEN {
+        let before = weights.hidden_b[h];
         touched_parameter_bound |= adagrad_scalar(
             &mut weights.hidden_b[h],
             &mut adagrad.hidden_b[h],
@@ -1810,11 +2195,15 @@ fn apply_mmto_batch(
             args.learning_rate,
             args.feature_limit,
         );
+        diagnostics
+            .hidden_updates
+            .record(before, weights.hidden_b[h]);
     }
     for index in 0..weights.out_w.len() {
         if index == HALFKP_HIDDEN * 2 {
             continue;
         }
+        let before = weights.out_w[index];
         touched_parameter_bound |= adagrad_scalar(
             &mut weights.out_w[index],
             &mut adagrad.out_w[index],
@@ -1822,7 +2211,11 @@ fn apply_mmto_batch(
             args.learning_rate * args.output_learning_rate_ratio,
             args.output_limit,
         );
+        diagnostics
+            .output_updates
+            .record(before, weights.out_w[index]);
     }
+    let before = weights.out_b;
     touched_parameter_bound |= adagrad_scalar(
         &mut weights.out_b,
         &mut adagrad.out_b,
@@ -1830,9 +2223,11 @@ fn apply_mmto_batch(
         args.learning_rate * args.output_learning_rate_ratio,
         args.output_limit,
     );
+    diagnostics.output_updates.record(before, weights.out_b);
     for feature in features {
         let start = feature * HALFKP_HIDDEN;
         for h in 0..HALFKP_HIDDEN {
+            let before = weights.feature_emb[start + h];
             touched_parameter_bound |= adagrad_scalar(
                 &mut weights.feature_emb[start + h],
                 &mut adagrad.feature_emb[start + h],
@@ -1840,6 +2235,9 @@ fn apply_mmto_batch(
                 args.learning_rate,
                 args.feature_limit,
             );
+            diagnostics
+                .feature_updates
+                .record(before, weights.feature_emb[start + h]);
         }
     }
     if weights.out_w[HALFKP_HIDDEN * 2].to_bits() != material_bits {
@@ -2009,7 +2407,7 @@ fn evaluate_block(
             .collect::<Result<Vec<_>>>()
     })?;
     block.clear();
-    for (_, sample_metrics) in searched {
+    for (_, _, sample_metrics) in searched {
         metrics.merge(&sample_metrics);
     }
     Ok(())
@@ -2039,10 +2437,23 @@ fn report(metrics: &SearchMetrics) -> MetricReport {
             pairs: metrics.phase_pairs[index],
             mean_loss: metrics.phase_loss_sum[index]
                 / metrics.phase_loss_weight_sum[index].max(1.0),
+            modal_move_accuracy: metrics.phase_modal_hits[index] as f64
+                / metrics.phase_roots[index].max(1) as f64,
+            observed_move_accuracy: metrics.phase_observed_hits[index] as f64
+                / metrics.phase_roots[index].max(1) as f64,
         }),
         terminal_roots: metrics.terminal_roots,
         aborted_roots: metrics.aborted_roots,
         agreement: metrics.agreement as f64 / metrics.roots.max(1) as f64,
+        agreement_definition:
+            "legacy modal-score tied maximum; new move metrics use selected qsearch move",
+        modal_move_accuracy: metrics.modal_hits as f64 / metrics.roots.max(1) as f64,
+        observed_move_accuracy: metrics.observed_hits as f64 / metrics.roots.max(1) as f64,
+        selected_teacher_mass: metrics.selected_mass_sum / metrics.roots.max(1) as f64,
+        top3_teacher_mass: metrics.top3_mass_sum / metrics.roots.max(1) as f64,
+        listwise_roots: metrics.listwise_roots,
+        mean_listwise_cross_entropy: metrics.listwise_loss_sum
+            / metrics.listwise_roots.max(1) as f64,
         mean_regret_cp: metrics.regret_sum_cp / metrics.roots.max(1) as f64,
         exact_leaves: metrics.exact_leaves,
         terminal_leaves: metrics.terminal_leaves,
@@ -2052,6 +2463,15 @@ fn report(metrics: &SearchMetrics) -> MetricReport {
 }
 
 fn finalize_diagnostics(d: &mut UpdateDiagnostics) {
+    for magnitude in [
+        &mut d.feature_updates,
+        &mut d.hidden_updates,
+        &mut d.output_updates,
+    ] {
+        magnitude.rms = (magnitude.sum_squared / magnitude.count.max(1) as f64).sqrt();
+    }
+    d.gradient_norm_mean /= d.update_batches.max(1) as f64;
+    d.clip_factor_mean /= d.update_batches.max(1) as f64;
     let total = d.pairs.max(1);
     d.delta_over_tau_p50 = histogram_quantile(&d.delta_hist, total, 0.50);
     d.delta_over_tau_p90 = histogram_quantile(&d.delta_hist, total, 0.90);
@@ -2148,6 +2568,7 @@ fn commit_active_checkpoint(
     roots_completed: usize,
     previous_model_sha256: &str,
     snapshot_path: &Path,
+    config_sha: &str,
 ) -> Result<()> {
     fs::create_dir_all(output_dir)?;
     if checkpoint_path.exists() {
@@ -2179,6 +2600,7 @@ fn commit_active_checkpoint(
         active_outer: Some(active_outer),
         roots_completed,
         search_snapshot_sha256: Some(sha256_file(snapshot_path)?),
+        training_config_sha256: Some(config_sha.to_owned()),
     };
     atomic_json(checkpoint_path, &checkpoint)
 }
@@ -2274,6 +2696,20 @@ fn write_run_manifest(
         serde_json::json!(args.output_learning_rate_ratio),
     );
     hyperparameters.insert("pair_batch_size", serde_json::json!(args.pair_batch_size));
+    hyperparameters.insert("root_batch_size", serde_json::json!(args.root_batch_size));
+    hyperparameters.insert("frequency_loss", serde_json::json!(args.frequency_loss));
+    hyperparameters.insert(
+        "training_config_sha256",
+        serde_json::json!(training_config_sha256(args)?),
+    );
+    hyperparameters.insert(
+        "gradient_units",
+        serde_json::json!(if args.frequency_loss == FrequencyLoss::Listwise {
+            "legal_move_logits"
+        } else {
+            "pairs"
+        }),
+    );
     hyperparameters.insert("checkpoint_roots", serde_json::json!(args.checkpoint_roots));
     hyperparameters.insert(
         "search_block_roots",
@@ -2368,6 +2804,7 @@ mod tests {
                 alternative: leaves.remove(0),
                 target_probability: 1.0,
                 pair_weight: 1.0,
+                loss: PairLoss::LegacySigmoid,
             },
         )
     }
@@ -2375,7 +2812,7 @@ mod tests {
     fn pair_loss(weights: &Weights, pair: &Pair, tau_cp: f32) -> f32 {
         let desired = current_leaf_score(weights, &pair.desired).0;
         let alternative = current_leaf_score(weights, &pair.alternative).0;
-        if pair.target_probability == 1.0 && pair.pair_weight == 1.0 {
+        if pair.loss == PairLoss::LegacySigmoid {
             mirrored_sigmoid(desired - alternative, tau_cp)
         } else {
             ranknet_pair_loss(desired - alternative, tau_cp, pair.target_probability)
@@ -2518,6 +2955,7 @@ mod tests {
         let (mut weights, mut pair) = pair_fixture(Color::Black);
         pair.target_probability = 0.7;
         pair.pair_weight = 0.5;
+        pair.loss = PairLoss::Ranknet;
         let mut gradient = Gradient::default();
         add_pair_gradient(&weights, &pair, 300.0, 1.0, &mut gradient).expect("gradient");
         let epsilon = 1e-3;
@@ -2551,6 +2989,176 @@ mod tests {
             }
         }
         assert!((sum - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn two_legal_frequency_target_uses_ranknet_in_both_orders_and_colors() {
+        for side in [Color::Black, Color::White] {
+            let (weights, mut pair) = pair_fixture(side);
+            pair.loss = PairLoss::Ranknet;
+            let reversed = Pair {
+                desired: clone_leaf(&pair.alternative),
+                alternative: clone_leaf(&pair.desired),
+                target_probability: 0.0,
+                pair_weight: 1.0,
+                loss: PairLoss::Ranknet,
+            };
+            let mut direct_gradient = Gradient::default();
+            let mut reversed_gradient = Gradient::default();
+            add_pair_gradient(&weights, &pair, 300.0, 1.0, &mut direct_gradient).unwrap();
+            add_pair_gradient(&weights, &reversed, 300.0, 1.0, &mut reversed_gradient).unwrap();
+            assert!((direct_gradient.loss_sum - f64::from(2.0f32.ln())).abs() < 1e-6);
+            assert!((direct_gradient.loss_sum - reversed_gradient.loss_sum).abs() < 1e-6);
+            for (feature, row) in &direct_gradient.sparse {
+                for (a, b) in row.iter().zip(reversed_gradient.sparse[feature]) {
+                    assert!((a - b).abs() < 1e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn listwise_frequency_gradient_is_stable_shift_invariant_and_matches_difference() {
+        let scores = [-300.0, 50.0, 900.0];
+        let targets = [0.6, 0.4, 0.0];
+        let (loss, derivatives) = listwise_loss_gradient(&scores, &targets, 300.0).unwrap();
+        let shifted: Vec<_> = scores.iter().map(|s| s + 100000.0).collect();
+        let (shifted_loss, shifted_derivatives) =
+            listwise_loss_gradient(&shifted, &targets, 300.0).unwrap();
+        assert!((loss - shifted_loss).abs() < 1e-6);
+        assert!(derivatives.iter().sum::<f32>().abs() < 1e-8);
+        for index in 0..scores.len() {
+            assert!((derivatives[index] - shifted_derivatives[index]).abs() < 1e-6);
+            let mut plus = scores;
+            plus[index] += 0.5;
+            let mut minus = scores;
+            minus[index] -= 0.5;
+            let numerical = listwise_loss_gradient(&plus, &targets, 300.0).unwrap().0
+                - listwise_loss_gradient(&minus, &targets, 300.0).unwrap().0;
+            assert!((derivatives[index] - numerical).abs() < 1e-6);
+        }
+        assert!(
+            listwise_loss_gradient(&[30000.0, -30000.0], &[0.0, 1.0], 300.0)
+                .unwrap()
+                .0
+                .is_finite()
+        );
+        assert!(listwise_loss_gradient(&scores, &[0.0, 0.0, 0.0], 300.0).is_err());
+    }
+
+    #[test]
+    fn listwise_network_gradient_matches_difference_for_both_sides() {
+        for side in [Color::Black, Color::White] {
+            let (mut weights, pair) = pair_fixture(side);
+            let root = ListwiseRoot {
+                leaves: vec![pair.desired, pair.alternative],
+                targets: vec![0.7, 0.3],
+            };
+            let mut gradient = Gradient::default();
+            add_listwise_gradient(&weights, &root, 300.0, 1.0, &mut gradient).unwrap();
+            let (&feature, row) = gradient
+                .sparse
+                .iter()
+                .find(|(_, r)| r.iter().any(|x| x.abs() > 1e-6))
+                .expect("nonzero feature gradient");
+            let hidden = row.iter().position(|x| x.abs() > 1e-6).unwrap();
+            let parameter = feature * HALFKP_HIDDEN + hidden;
+            let loss = |w: &Weights| {
+                listwise_loss_gradient(
+                    &root
+                        .leaves
+                        .iter()
+                        .map(|leaf| current_leaf_score(w, leaf).0)
+                        .collect::<Vec<_>>(),
+                    &root.targets,
+                    300.0,
+                )
+                .unwrap()
+                .0
+            };
+            weights.feature_emb[parameter] += 1e-3;
+            let plus = loss(&weights);
+            weights.feature_emb[parameter] -= 2e-3;
+            let minus = loss(&weights);
+            assert!((row[hidden] - (plus - minus) / 2e-3).abs() < 2e-4);
+        }
+    }
+
+    #[test]
+    fn selected_move_metrics_do_not_count_unselected_ties_as_matches() {
+        let (_, pair) = pair_fixture(Color::Black);
+        let root = Position::default();
+        let moves = root.legal_moves();
+        let searched = vec![(moves[0], pair.desired), (moves[1], pair.alternative)];
+        let mut metrics = SearchMetrics::default();
+        record_move_metrics(&searched, &[(moves[0], 1)], 0, &mut metrics);
+        assert_eq!(metrics.modal_hits, 0);
+        assert_eq!(metrics.observed_hits, 0);
+        assert_eq!(metrics.top3_mass_sum, 1.0);
+        record_move_metrics(&searched, &[(moves[0], 1), (moves[1], 1)], 0, &mut metrics);
+        assert_eq!(metrics.modal_hits, 1);
+        assert_eq!(metrics.selected_mass_sum, 0.5);
+    }
+
+    #[test]
+    fn capture_probe_fixtures_have_legal_declared_moves() {
+        let document: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/search/material_capture_cases.json"
+        ))
+        .unwrap();
+        for case in document["cases"].as_array().unwrap() {
+            let position = position_from_sfen_or_usi(case["position"].as_str().unwrap()).unwrap();
+            for text in case["capture_moves"].as_array().unwrap() {
+                let mv = parse_usi_move_for_color(text.as_str().unwrap(), position.side_to_move())
+                    .unwrap();
+                assert!(
+                    position.legal_moves().contains(&mv),
+                    "{} {}",
+                    case["id"],
+                    text
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resume_fingerprint_freezes_loss_batching_and_optimizer_parameters() {
+        let mut args = Args::try_parse_from([
+            "train",
+            "--train",
+            "train.jsonl",
+            "--valid",
+            "valid.jsonl",
+            "--dataset-manifest",
+            "manifest.json",
+            "--expected-dataset-manifest-sha256",
+            "sha",
+            "--init",
+            "parent.bin",
+            "--model-manifest",
+            "parent.json",
+            "--promotion-registry",
+            "registry.json",
+            "--gate-report",
+            "gate.json",
+            "--parent-generation",
+            "7",
+            "--output-dir",
+            "run",
+        ])
+        .unwrap();
+        let original = training_config_sha256(&args).unwrap();
+        args.outer_iterations += 1;
+        assert_eq!(original, training_config_sha256(&args).unwrap());
+        args.frequency_loss = FrequencyLoss::Listwise;
+        assert_ne!(original, training_config_sha256(&args).unwrap());
+        assert!(validate_args(&args).is_err());
+        args.frequency_loss = FrequencyLoss::Ranknet;
+        args.root_batch_size = 128;
+        assert_ne!(original, training_config_sha256(&args).unwrap());
+        args.root_batch_size = 0;
+        args.learning_rate *= 2.0;
+        assert_ne!(original, training_config_sha256(&args).unwrap());
     }
 
     #[test]

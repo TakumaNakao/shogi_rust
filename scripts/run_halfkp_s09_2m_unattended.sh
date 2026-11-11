@@ -11,6 +11,7 @@ DATA="$BASE/dataset-2m"
 LINEAGE="$BASE/research-parent"
 CONTROL="$BASE/control-1m-4pass"
 RUN="$BASE/train-2m-8pass"
+EVAL_DIR="$BASE/evaluation"
 S07="$ROOT_DIR/runs/halfkp64-scratch-v1/s07-retry-rate2500-v3-20260922-selected-1m"
 S08="$ROOT_DIR/runs/halfkp64-scratch-v1/s08-retry-rate2500-v3-20260929"
 PARENT="$S08/outer16/model.bin"
@@ -121,6 +122,16 @@ checkpoint_outer() {
 }
 save_pass() {
   local src="$1" dst="$2" outer="$3"
+  if [[ -s "$dst/SHA256SUMS" ]]; then
+    (cd "$dst" && sha256sum --status -c SHA256SUMS)
+    return
+  fi
+  [[ "$(checkpoint_outer "$src/checkpoint.json")" -eq "$outer" ]] || {
+    phase "cannot recreate missing outer$outer snapshot from a different completed outer"; exit 2;
+  }
+  [[ ! -e "$dst/model.bin" && ! -e "$dst/optimizer.bin" && ! -e "$dst/metric.json" ]] || {
+    phase "incomplete snapshot requires inspection: $dst"; exit 2;
+  }
   mkdir -p "$dst"
   cp --reflink=auto "$src/model.bin" "$dst/model.bin"
   cp --reflink=auto "$src/optimizer.bin" "$dst/optimizer.bin"
@@ -175,4 +186,4 @@ python3 scripts/run_halfkp_paired_match.py \
   --bootstrap-resamples 100000 --bootstrap-seed 20261008 --output-dir "$EVAL_DIR/v250-50g"
 
 phase "S09 training and reserved 100-game screen are complete"
-printf 'completed_at=%s\ncontrol_outer=4\ntrain_2m_outer=8\ndataset_manifest_sha256=%s\n' "$(now)" "$DATA_SHA" > "$BASE/COMPLETE"
+printf 'completed_at=%s\ncontrol_outer=4\ntrain_2m_outer=8\ndataset_manifest_sha256=%s\n' "$(date -u +%FT%TZ)" "$DATA_SHA" > "$BASE/COMPLETE"

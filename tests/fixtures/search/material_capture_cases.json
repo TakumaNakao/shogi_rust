@@ -1,0 +1,11 @@
+{
+  "description": "Immediate undefended-piece captures in sparse legal positions. Diagnostic capture sets, not claims of unique game-theoretic optimality.",
+  "cases": [
+    {"id": "black-capture-checking-rook", "position": "sfen 4k4/9/9/9/9/9/9/4r4/4KG3 b - 1", "capture_moves": ["5i5h", "4i5h"]},
+    {"id": "white-capture-checking-rook", "position": "sfen 3gk4/4R4/9/9/9/9/9/9/4K4 w - 2", "capture_moves": ["5a5b", "6a5b"]},
+    {"id": "black-silver-takes-bishop", "position": "sfen 4k4/9/9/9/9/9/5b3/4S4/4K4 b - 1", "capture_moves": ["5h4g"]},
+    {"id": "white-silver-takes-bishop", "position": "sfen 4k4/4s4/3B5/9/9/9/9/9/4K4 w - 2", "capture_moves": ["5b6c"]},
+    {"id": "black-rook-takes-gold", "position": "sfen 4k4/9/7g1/9/9/9/9/7R1/4K4 b - 1", "capture_moves": ["2h2c", "2h2c+"]},
+    {"id": "white-rook-takes-gold", "position": "sfen 4k4/1r7/9/9/9/9/1G7/9/4K4 w - 2", "capture_moves": ["8b8g", "8b8g+"]}
+  ]
+}

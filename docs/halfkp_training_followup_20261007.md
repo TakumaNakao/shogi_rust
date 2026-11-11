@@ -1,7 +1,8 @@
 # v2.7.1後の重み学習計画
 
 決定日: 2026-10-07。[9/29計画](halfkp_training_followup_20260929.md)の後続方針を更新する。
-本書の方針に従い、S09の実行準備とデータ監査を開始した。学習開始後は下表を更新する。
+2026-10-25更新: S09の学習とtaya36対局は完了。後続方針は[10/25再検討計画](halfkp_training_followup_20261025.md)を正本とする。
+本書のS10自動移行は保留し、実装の境界条件修正・評価条件統一・目的関数の比較を先に行う。
 
 ## 1. 決定
 
@@ -148,11 +149,12 @@ drawは0.5を正しく扱える形式へ最小修正するか、pilotでは除�
 | P1 | v2.7.1 bundle/系譜固定、S08記録の完了整理 | 完了（model/optimizer SHA固定。終盤基準測定はP5へ） |
 | P2 | 2012–2014アーカイブ監査、独立追加1Mとholdout作成 | 完了（rateなし320,535局を監査。追加1Mをphase別quotaで確保） |
 | P3 | リリース済み研究親の系譜を明示し、新datasetの再開可能runnerを用意 | 完了（`b8ea921`, `90cd02d`, `87dc610`） |
-| P4 | A/B学習、2/4/8 pass保存、共通valid比較 | 実行中（1M対照4 passを学習中。完了後2Mの2/4/8 passへ自動移行） |
-| P5 | 最終対局・序中盤/終盤診断、4M拡張かS10か判定 | 未着手 |
-| P6 | 条件付きS10の1,000局生成と勝敗補助学習pilot | 条件待ち |
+| P4 | A/B学習、2/4/8 pass保存、共通valid比較 | 完了。1M対照4周と2Mの2/4/8周を保存しSHA一致確認。等提示量A4対B2のvalid loss改善は約0.26% |
+| P5 | 最終対局・序中盤/終盤診断、4M拡張かS10か判定 | 一部完了。B8対v2.7.1は23勝27敗、対v2.5.0は28勝22敗。浅い開始局面・固定戦術/終盤診断は未完了、10/25計画R2へ移管 |
+| P6 | 条件付きS10の1,000局生成と勝敗補助学習pilot | 保留。10/25計画の損失関数比較後に再判断。4Mへの自動拡張もしない |
 
-正常な工程は`scripts/run_halfkp_s09_2m_unattended.sh`で自動遷移する。
+実行定義は`scripts/run_halfkp_s09_2m_unattended.sh`。学習後に未定義`EVAL_DIR`で停止したため、対局は別途再開して両50局を完了した。
+末尾の`now`未定義と中間snapshotの再実行時上書きリスクもあるため、修正前にrunner全体を再実行しない。
 実行ログ・監査結果・固定データ・outer別モデル/optimizerは
 `runs/halfkp64-scratch-v1/s09-frequency-2m-20261007/`以下に保存し、学習は25,000 rootごとに再開可能なcheckpointを出す。
 計画外の新方式や実験結果の解釈を要する分岐は報告する。
@@ -163,7 +165,8 @@ S07と併せた2M trainはopening/middlegame/endgame各416k/1,104k/480k、valid 
 manifest SHA-256: `56874c5428dad4345c4a2a78c2618c35057a0e23e44884cbd2915c791c506413`。
 最初のrunnerはplotters/fontconfigの開発依存がなくbuildに失敗した。
 plottersを`plotting-tools` featureへ分離し、学習・matchに必要なrelease binariesは
-`halfkp64,training-tools`のみで正常にbuildできることを確認した。現在は1M対照を学習中。
+`halfkp64,training-tools`のみで正常にbuildできることを確認した。その後、1M対照4周と2M本学習8周を完了した。
+`evaluation/MATCHES_COMPLETE`と両対局の`completed.json`は存在する。runner全体の`COMPLETE`はなく、未完了の序盤・終盤診断も含めて全計画完了とは扱わない。
 
 ## 8. 根拠・参考資料
 

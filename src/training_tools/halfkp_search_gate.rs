@@ -32,6 +32,9 @@ struct Args {
     max_depth: u8,
     #[arg(long)]
     json: Option<PathBuf>,
+    /// Optional per-position diagnostics (including inconclusive searches).
+    #[arg(long)]
+    details_json: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -72,6 +75,10 @@ struct Report {
 
 pub fn run() -> Result<()> {
     let args = Args::parse();
+    if args.details_json.as_ref().is_some_and(|p| p.exists()) {
+        return Err(anyhow!("refusing to overwrite position diagnostics"));
+    }
+    let mut details = Vec::new();
     if args.nodes == 0 || args.max_depth == 0 {
         return Err(anyhow!("--nodes and --max-depth must be positive"));
     }
@@ -120,6 +127,13 @@ pub fn run() -> Result<()> {
                 SearchLimits::new(args.max_depth, None).with_max_nodes(args.nodes),
             );
             report.nodes_searched += outcome.stats.nodes;
+            details.push(serde_json::json!({
+                "id": report.roots, "sfen": record.root_sfen,
+                "search_failed": outcome.failed,
+                "depth": outcome.root.as_ref().map(|r| r.completed_depth).unwrap_or(0),
+                "best_move": outcome.root.as_ref().map(|r| format!("{:?}", r.best_move)),
+                "successful": false, "proof_status": null,
+            }));
             if outcome.failed {
                 report.search_failed += 1;
                 continue;
@@ -159,6 +173,9 @@ pub fn run() -> Result<()> {
             } else {
                 selected.root.status == MateProofStatus::ProvenNoMate
             };
+            let detail = details.last_mut().expect("position diagnostic");
+            detail["successful"] = serde_json::json!(successful);
+            detail["proof_status"] = serde_json::json!(format!("{:?}", selected.root.status));
             if successful {
                 report.successful += 1;
                 role_mut(&mut report, root_is_attacker).successful += 1;
@@ -174,6 +191,12 @@ pub fn run() -> Result<()> {
     report.success_rate_conclusive = ratio(report.successful, report.conclusive);
     report.mean_nodes = report.nodes_searched as f64 / report.roots.max(1) as f64;
     let bytes = serde_json::to_vec_pretty(&report)?;
+    if let Some(path) = args.details_json {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, serde_json::to_vec_pretty(&details)?)?;
+    }
     println!("{}", String::from_utf8_lossy(&bytes));
     if let Some(path) = args.json {
         if path.exists() {

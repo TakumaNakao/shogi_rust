@@ -1,13 +1,15 @@
 # HalfKP-64 重みゼロスタート学習方針
 
-- Status: **履歴・設計資料。現在の実行正本は2026-08-30再計画**
+- Status: **履歴・設計資料。現在の開発方針は2026-10-31再計画**
 - 作成日: 2026-07-21
 - 対象: v2.6.0以降のHalfKP-64評価関数
 - 前提計算機: AMD Ryzen 7 PRO 4750U、8 core / 16 thread、RAM 14 GiB、GPUなし
 
 関連文書:
 
-- [`halfkp_training_strategy_v3_20260830.md`](halfkp_training_strategy_v3_20260830.md)（現在の実行正本）
+- [`halfkp_training_followup_20261031.md`](halfkp_training_followup_20261031.md)（現在の開発方針・作業一覧）
+- [`halfkp_training_followup_20261025.md`](halfkp_training_followup_20261025.md)（S10比較実験の履歴）
+- [`halfkp_training_strategy_v3_20260830.md`](halfkp_training_strategy_v3_20260830.md)（履歴計画）
 - [`halfkp_v250_breakthrough_plan_20260823.md`](halfkp_v250_breakthrough_plan_20260823.md)（履歴計画）
 - [`halfkp_mmto_post_step4_strategy_20260730.md`](halfkp_mmto_post_step4_strategy_20260730.md)
 - [`halfkp_prior_art_recovery_plan_20260729.md`](halfkp_prior_art_recovery_plan_20260729.md)
