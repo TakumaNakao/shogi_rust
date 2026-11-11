@@ -33,7 +33,12 @@
 
 ## HalfKP・学習
 
-- [`halfkp_training_strategy_v4_20260909.md`](halfkp_training_strategy_v4_20260909.md): 現行正本。実験再監査、rank符号不具合、外部評価を使わない教師更新・独立棋譜の価値学習、進捗表
+- [`halfkp_training_followup_20261031.md`](halfkp_training_followup_20261031.md): 現行正本。S10比較の考察、固定問題Gateの再検討、品質固定1M Listwise・8周の次期計画
+- [`halfkp_training_followup_20261025.md`](halfkp_training_followup_20261025.md): S09再評価とS10損失比較の完了記録。後続は10/31計画へ移管
+- [`halfkp_training_followup_20261007.md`](halfkp_training_followup_20261007.md): S09の2M拡張計画と完了記録。後続は10/25計画へ移管
+- [`halfkp_training_followup_20260929.md`](halfkp_training_followup_20260929.md): S07/S08の継続学習と評価の履歴
+- [`halfkp_opening_middlegame_plan_20260916.md`](halfkp_opening_middlegame_plan_20260916.md): 棋譜手の頻度付き順位学習へ移行した際の設計
+- [`halfkp_training_strategy_v4_20260909.md`](halfkp_training_strategy_v4_20260909.md): 履歴計画。実験再監査、rank符号不具合、教師更新・独立棋譜の価値学習
 - [`halfkp_training_v4_tasks.md`](halfkp_training_v4_tasks.md): v4の実装・実験タスクT01～T12、依存関係、完了条件、継続・停止規則
 - [`halfkp_training_strategy_v3_20260830.md`](halfkp_training_strategy_v3_20260830.md): 旧計画。十分量MMTOは完了・候補不採用、後続作業はv4へ移管
 - [`halfkp_next_training_plan_post_wdl_ab_20260818.md`](halfkp_next_training_plan_post_wdl_ab_20260818.md): WDL A/B後の履歴計画、dense MMTO、deep-search bootstrap、進捗表

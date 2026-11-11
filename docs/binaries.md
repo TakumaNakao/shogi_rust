@@ -32,9 +32,13 @@ production buildではtraining/research targetと、それらだけが使う`csa
   `halfkp_dataset_shard`, `halfkp_rank_dataset`, `jsonl_shard`, `kpp_position_pool`,
   `rank_stats`
 - teacher/trainer: `bonanza_pairwise_train`, `halfkp_kpp_train`,
+  `halfkp_mmto_train`, `halfkp_frequency_evaluate`,
   `halfkp_search_teacher`, `halfkp_search_train`, `halfkp_scratch_eval`, `halfkp_scratch_init`,
   `halfkp_scratch_train`,
   `halfkp_train`, `kpp_learn`, `kpp_self_learn`
+
+`halfkp_frequency_evaluate`はtrainerと同じfresh qsearch・頻度損失で固定holdoutを評価する。
+学習を行わず、モデル/inputのSHA、実際に選ばれた手の頻度指標、両損失をJSONへ保存する。
 
 ```bash
 cargo build --release --features halfkp64,training-tools --bin halfkp_search_teacher --bin halfkp_search_train

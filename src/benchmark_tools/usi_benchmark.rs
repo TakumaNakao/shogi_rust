@@ -157,7 +157,9 @@ impl EngineProcess {
         if bytes == 0 {
             return Err(anyhow!("engine exited before producing expected output"));
         }
-        Ok(line.trim().to_string())
+        let line = line.trim().to_string();
+        validate_engine_output(&line)?;
+        Ok(line)
     }
 
     fn read_until(&mut self, expected: &str) -> Result<()> {
@@ -177,17 +179,52 @@ impl EngineProcess {
         loop {
             let line = self.read_line()?;
             if let Some(rest) = line.strip_prefix("bestmove ") {
-                return Ok(rest
+                return rest
                     .split_whitespace()
                     .next()
-                    .unwrap_or("resign")
-                    .to_string());
+                    .map(str::to_string)
+                    .ok_or_else(|| anyhow!("engine returned an empty bestmove"));
             }
         }
     }
 
     fn new_game(&mut self) -> Result<()> {
         self.send("usinewgame")
+    }
+}
+
+fn validate_engine_output(line: &str) -> Result<()> {
+    if line.starts_with("info string Error:") || line.contains("Internal search error") {
+        return Err(anyhow!("engine reported an error: {line}"));
+    }
+    let tokens: Vec<_> = line.split_whitespace().collect();
+    for window in tokens.windows(3) {
+        if window[0] == "score" && window[1] == "cp" {
+            let value: f64 = window[2]
+                .parse()
+                .context("invalid engine centipawn score")?;
+            if !value.is_finite() {
+                return Err(anyhow!("non-finite engine score"));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::validate_engine_output;
+
+    #[test]
+    fn fallback_error_and_nonfinite_score_cannot_be_counted_as_normal_play() {
+        assert!(validate_engine_output(
+            "info string Internal search error; returning a legal fallback move"
+        )
+        .is_err());
+        assert!(validate_engine_output("info string Error: Evaluation file is not set").is_err());
+        assert!(validate_engine_output("info depth 4 score cp NaN").is_err());
+        assert!(validate_engine_output("info depth 4 score cp 125").is_ok());
+        assert!(validate_engine_output("info depth 4 score mate -3").is_ok());
     }
 }
 

@@ -143,6 +143,7 @@ fn validate_registry(registry: &PromotionRegistry) -> Result<()> {
             && entry.decision != "accepted_gate"
             && entry.decision != "accepted_promotion_match"
             && entry.decision != "accepted_internal_scratch_parent"
+            && entry.decision != "accepted_released_research_parent"
         {
             return Err(anyhow!("invalid promotion decision"));
         }

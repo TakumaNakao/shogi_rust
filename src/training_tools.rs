@@ -37,8 +37,10 @@ pub mod halfkp_train;
 pub mod halfkp_value_compare;
 pub mod halfkp_wdl_audit;
 pub mod jsonl_shard;
+#[cfg(feature = "plotting-tools")]
 pub mod kpp_learn;
 pub mod kpp_position_pool;
+#[cfg(feature = "plotting-tools")]
 pub mod kpp_self_learn;
 pub mod rank_stats;
 pub mod scratch_lineage;
